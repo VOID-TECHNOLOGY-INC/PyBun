@@ -10,39 +10,41 @@
 Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; parallelizable items marked (||).
 
 ### M0: Repo & CI Scaffold (Week 0–1)
-- PR0.1: Baseline repo (Rust workspace layout, formatting/lint config, minimal CLI stub `pybun --help`).  
+- [DONE] PR0.1: Baseline repo (Rust workspace layout, formatting/lint config, minimal CLI stub `pybun --help`).  
   - Depends on: none.  
   - Tests: unit for arg parsing; CI: fmt + clippy + `cargo test` (minimal).
-- PR0.2: CI matrix bootstrap (macOS/Linux, Python 3.9–3.12 toolchains available) + cache for cargo.  
+- [DONE] PR0.2: CI matrix bootstrap (macOS/Linux, Python 3.9–3.12 toolchains available) + cache for cargo.  
   - Depends on: PR0.1.  
   - Tests: noop smoke workflow to validate runners.
-- PR0.3 ||: DX scripts (`justfile`/`Makefile`, `./scripts/dev`) + issue templates.  
+- [PENDING] PR0.3 ||: DX scripts (`justfile`/`Makefile`, `./scripts/dev`) + issue templates.  
   - Depends on: PR0.1.  
   - Tests: script self-check (`just lint` dry-run).
-- PR0.4: Release/build bootstrap (cross-target builds, codesign placeholders, artifact layout for bundled CPython/data dir).  
+- [PENDING] PR0.4: Release/build bootstrap (cross-target builds, codesign placeholders, artifact layout for bundled CPython/data dir).  
   - Depends on: PR0.1.  
   - Tests: build workflow dry-run producing unsigned artifacts for macOS/Linux/Windows (stub).
 
 ### M1: Fast Installer (Phase 1)
-- PR1.1: Lockfile spec + serializer (`pybun.lockb` binary format, read/write, schema tests).  
+- [DONE] PR1.1: Lockfile spec + serializer (`pybun.lockb` binary format, read/write, schema tests).  
   - Depends on: M0.  
   - Tests: unit for encoding/decoding; golden tests for cross-platform entries.
-- PR1.2: Resolver core (SAT solver, index client abstraction, offline cache hooks).  
+- [IN PROGRESS] PR1.2: Resolver core (SAT solver, index client abstraction, offline cache hooks).  
+  - Current: exact-version resolver + in-memory index; JSON fixture loading via CLI `install`. SAT/specifier ranges/index client not yet implemented.  
   - Depends on: PR1.1.  
   - Tests: unit for graph resolution, conflict reporting; integration with fake index.
-- PR1.3: Installer CLI `pybun install/add/remove` with global cache + hardlink strategy.  
+- [IN PROGRESS] PR1.3: Installer CLI `pybun install/add/remove` with global cache + hardlink strategy.  
+  - Current: `pybun install --require --index --lock` writes lockfile via resolver; cache/hardlinks/add/remove pending.  
   - Depends on: PR1.2.  
   - Tests: integration with temporary cache dir; smoke E2E `pybun add requests && pybun run -c "import requests"`.
-- PR1.4: PEP 723 runner support (`pybun run script.py` auto env create, embedded deps).  
+- [PENDING] PR1.4: PEP 723 runner support (`pybun run script.py` auto env create, embedded deps).  
   - Depends on: PR1.3.  
   - Tests: integration E2E executing sample script; JSON output snapshot.
-- PR1.5: Auto env selection (`PYBUN_ENV`, `.python-version`, global env fallback).  
+- [PENDING] PR1.5: Auto env selection (`PYBUN_ENV`, `.python-version`, global env fallback).  
   - Depends on: PR1.3.  
   - Tests: integration verifying env priority; smoke E2E switching Python versions if available.
-- PR1.6: CPython runtime management (embedded version table, download + verify missing versions, data dir layout).  
+- [PENDING] PR1.6: CPython runtime management (embedded version table, download + verify missing versions, data dir layout).  
   - Depends on: PR1.3.  
   - Tests: integration simulating cache miss → download → reuse; ABI mismatch warning; offline mode failure path.
-- PR1.7: Single-binary packaging flow (bundle CPython where allowed, otherwise bootstrap downloader) + `pybun x <pkg>` command.  
+- [PENDING] PR1.7: Single-binary packaging flow (bundle CPython where allowed, otherwise bootstrap downloader) + `pybun x <pkg>` command.  
   - Depends on: PR1.6, PR0.4.  
   - Tests: smoke executing bundled binary on macOS/Linux; `pybun x cowsay` fixture; artifact size check.
 
