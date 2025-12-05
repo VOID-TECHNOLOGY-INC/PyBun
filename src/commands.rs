@@ -1,7 +1,7 @@
 use crate::cli::{Cli, Commands, McpCommands, OutputFormat, SelfCommands};
 use crate::lockfile::{Lockfile, Package, PackageSource};
-use crate::resolver::{resolve, InMemoryIndex, ResolveError};
-use color_eyre::eyre::{eyre, Result};
+use crate::resolver::{InMemoryIndex, ResolveError, resolve};
+use color_eyre::eyre::{Result, eyre};
 use serde::Deserialize;
 use std::fs;
 use std::path::PathBuf;
