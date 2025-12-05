@@ -55,6 +55,15 @@ pub struct InstallArgs {
     /// Use offline mode when cache is sufficient.
     #[arg(long)]
     pub offline: bool,
+    /// Requirements to install (temporary M1 flag).
+    #[arg(long = "require", value_name = "NAME==VERSION")]
+    pub requirements: Vec<crate::resolver::Requirement>,
+    /// Path to index JSON (temporary M1 flag).
+    #[arg(long)]
+    pub index: Option<std::path::PathBuf>,
+    /// Path to write lockfile.
+    #[arg(long, default_value = "pybun.lockb")]
+    pub lock: std::path::PathBuf,
 }
 
 #[derive(Args, Debug)]

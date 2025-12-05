@@ -1,0 +1,22 @@
+[
+  {
+    "name": "app",
+    "version": "1.0.0",
+    "dependencies": ["lib-a==1.0.0", "lib-b==2.0.0"]
+  },
+  {
+    "name": "lib-a",
+    "version": "1.0.0",
+    "dependencies": ["lib-c==1.0.0"]
+  },
+  {
+    "name": "lib-b",
+    "version": "2.0.0",
+    "dependencies": []
+  },
+  {
+    "name": "lib-c",
+    "version": "1.0.0",
+    "dependencies": []
+  }
+]
