@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::str::FromStr;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Requirement {
@@ -11,6 +12,18 @@ impl Requirement {
         Self {
             name: name.into(),
             version: version.into(),
+        }
+    }
+}
+
+impl FromStr for Requirement {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if let Some((name, version)) = s.split_once("==") {
+            Ok(Requirement::exact(name.trim(), version.trim()))
+        } else {
+            Err("requirements must be NAME==VERSION".into())
         }
     }
 }
@@ -117,9 +130,5 @@ impl PackageIndex for InMemoryIndex {
 }
 
 fn parse_req(input: &str) -> Requirement {
-    if let Some((name, version)) = input.split_once("==") {
-        Requirement::exact(name.trim(), version.trim())
-    } else {
-        Requirement::exact(input.trim(), "*")
-    }
+    Requirement::from_str(input).unwrap_or_else(|_| Requirement::exact(input.trim(), "*"))
 }
