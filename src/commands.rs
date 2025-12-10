@@ -1,5 +1,5 @@
 use crate::cli::{Cli, Commands, McpCommands, OutputFormat, SelfCommands};
-use crate::env::{find_python_env, EnvSource};
+use crate::env::{EnvSource, find_python_env};
 use crate::index::load_index_from_path;
 use crate::lockfile::{Lockfile, Package, PackageSource};
 use crate::pep723;

@@ -68,7 +68,10 @@ pub fn find_python_env(working_dir: &Path) -> Result<PythonEnv> {
             });
         }
         // If PYBUN_ENV is set but invalid, warn and continue
-        eprintln!("warning: PYBUN_ENV={} is not a valid venv, ignoring", venv_path);
+        eprintln!(
+            "warning: PYBUN_ENV={} is not a valid venv, ignoring",
+            venv_path
+        );
     }
 
     // 2. Check PYBUN_PYTHON (explicit binary)
@@ -76,7 +79,11 @@ pub fn find_python_env(working_dir: &Path) -> Result<PythonEnv> {
         let python = PathBuf::from(&python_path);
         if python.exists() || which_executable(&python_path).is_some() {
             return Ok(PythonEnv {
-                python_path: if python.exists() { python } else { PathBuf::from(&python_path) },
+                python_path: if python.exists() {
+                    python
+                } else {
+                    PathBuf::from(&python_path)
+                },
                 version: None,
                 source: EnvSource::PybunPython,
             });
@@ -234,16 +241,18 @@ fn find_pyenv_python(version: &str) -> Option<PathBuf> {
     let pyenv_root = std::env::var("PYENV_ROOT")
         .map(PathBuf::from)
         .ok()
-        .or_else(|| {
-            dirs::home_dir().map(|h| h.join(".pyenv"))
-        })?;
+        .or_else(|| dirs::home_dir().map(|h| h.join(".pyenv")))?;
 
     if !pyenv_root.exists() {
         return None;
     }
 
     // Check exact version
-    let exact_path = pyenv_root.join("versions").join(version).join("bin").join("python");
+    let exact_path = pyenv_root
+        .join("versions")
+        .join(version)
+        .join("bin")
+        .join("python");
     if exact_path.exists() {
         return Some(exact_path);
     }
@@ -295,7 +304,7 @@ fn which_executable(name: &str) -> Option<PathBuf> {
             if full_path.is_file() {
                 return Some(full_path);
             }
-            
+
             // On Windows, also check with .exe extension
             #[cfg(windows)]
             {
@@ -304,7 +313,7 @@ fn which_executable(name: &str) -> Option<PathBuf> {
                     return Some(with_ext);
                 }
             }
-            
+
             None
         })
     })
@@ -403,7 +412,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let pybun_dir = temp.path().join(".pybun").join("venv");
         fs::create_dir_all(&pybun_dir).unwrap();
-        
+
         // Create bin/python for Unix
         let bin = pybun_dir.join("bin");
         fs::create_dir_all(&bin).unwrap();
@@ -413,4 +422,3 @@ mod tests {
         assert_eq!(result, Some(pybun_dir));
     }
 }
-
