@@ -187,4 +187,3 @@ mod tests {
         assert!(!cache.has_wheel("foo", "1.0.0", "foo-1.0.0-py3-none-any.whl"));
     }
 }
-

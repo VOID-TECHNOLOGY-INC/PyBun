@@ -1,5 +1,5 @@
-use assert_cmd::cargo::cargo_bin_cmd;
 use assert_cmd::Command;
+use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
 use std::fs;
 use tempfile::tempdir;
@@ -28,13 +28,7 @@ fn run_script_with_args() {
     fs::write(&script, "import sys; print(sys.argv[1:])").unwrap();
 
     bin()
-        .args([
-            "run",
-            script.to_str().unwrap(),
-            "--",
-            "arg1",
-            "arg2",
-        ])
+        .args(["run", script.to_str().unwrap(), "--", "arg1", "arg2"])
         .assert()
         .success();
 }
@@ -45,7 +39,9 @@ fn run_inline_code() {
         .args(["run", "-c", "--", "print('inline')"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("executed inline code successfully"));
+        .stdout(predicate::str::contains(
+            "executed inline code successfully",
+        ));
 }
 
 #[test]
@@ -59,10 +55,7 @@ fn run_missing_script() {
 
 #[test]
 fn run_no_target_error() {
-    bin()
-        .args(["run"])
-        .assert()
-        .failure();
+    bin().args(["run"]).assert().failure();
 }
 
 #[test]
@@ -110,4 +103,3 @@ fn run_script_with_exit_code() {
         .success() // pybun itself succeeds, reports script exit code
         .stdout(predicate::str::contains("\"exit_code\":42"));
 }
-

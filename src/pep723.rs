@@ -250,4 +250,3 @@ import numpy
         assert_eq!(metadata.dependencies, vec!["numpy"]);
     }
 }
-

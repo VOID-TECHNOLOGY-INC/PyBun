@@ -315,4 +315,3 @@ mod tests {
         assert_eq!(loaded.dependencies(), vec!["requests>=2.28.0"]);
     }
 }
-

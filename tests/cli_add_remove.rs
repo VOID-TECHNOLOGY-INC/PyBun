@@ -1,5 +1,5 @@
-use assert_cmd::cargo::cargo_bin_cmd;
 use assert_cmd::Command;
+use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
 use std::fs;
 use tempfile::tempdir;
@@ -182,4 +182,3 @@ dependencies = ["requests>=2.28.0"]
         .success()
         .stdout(predicate::str::contains("\"removed\":true"));
 }
-

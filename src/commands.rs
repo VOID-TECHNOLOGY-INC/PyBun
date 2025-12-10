@@ -3,7 +3,7 @@ use crate::index::load_index_from_path;
 use crate::lockfile::{Lockfile, Package, PackageSource};
 use crate::pep723;
 use crate::project::Project;
-use crate::resolver::{ResolveError, Requirement, resolve};
+use crate::resolver::{Requirement, ResolveError, resolve};
 use color_eyre::eyre::{Result, eyre};
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -354,11 +354,7 @@ fn remove_package(args: &crate::cli::PackageArgs) -> Result<RemoveOutcome> {
     }
 
     let summary = if removed {
-        format!(
-            "removed {} from {}",
-            package_name,
-            project.path().display()
-        )
+        format!("removed {} from {}", package_name, project.path().display())
     } else {
         format!("{} was not found in dependencies", package_name)
     };
@@ -433,14 +429,20 @@ fn run_script(args: &crate::cli::RunArgs) -> Result<RunOutcome> {
     }
 
     // Execute
-    let status = cmd.status().map_err(|e| eyre!("failed to execute Python: {}", e))?;
+    let status = cmd
+        .status()
+        .map_err(|e| eyre!("failed to execute Python: {}", e))?;
 
     let exit_code = status.code().unwrap_or(-1);
 
     let summary = if status.success() {
         format!("executed {} successfully", script_path.display())
     } else {
-        format!("script {} exited with code {}", script_path.display(), exit_code)
+        format!(
+            "script {} exited with code {}",
+            script_path.display(),
+            exit_code
+        )
     };
 
     Ok(RunOutcome {
@@ -468,7 +470,9 @@ fn run_python_code(args: &crate::cli::RunArgs) -> Result<RunOutcome> {
         cmd.arg(arg);
     }
 
-    let status = cmd.status().map_err(|e| eyre!("failed to execute Python: {}", e))?;
+    let status = cmd
+        .status()
+        .map_err(|e| eyre!("failed to execute Python: {}", e))?;
 
     let exit_code = status.code().unwrap_or(-1);
 
