@@ -1,0 +1,249 @@
+#!/usr/bin/env bash
+# PyBun Development Helper Script
+# Usage: ./scripts/dev <command> [args]
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+
+cd "$PROJECT_ROOT"
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+info() {
+    echo -e "${BLUE}[INFO]${NC} $1"
+}
+
+success() {
+    echo -e "${GREEN}[OK]${NC} $1"
+}
+
+warn() {
+    echo -e "${YELLOW}[WARN]${NC} $1"
+}
+
+error() {
+    echo -e "${RED}[ERROR]${NC} $1"
+    exit 1
+}
+
+# Show usage
+usage() {
+    cat << EOF
+PyBun Development Helper Script
+
+Usage: ./scripts/dev <command> [args]
+
+Commands:
+  setup       Install development dependencies
+  build       Build the project (debug)
+  release     Build release binary
+  test        Run all tests
+  lint        Run clippy linter
+  fmt         Format code
+  check       Run fmt, lint, and test
+  ci          Run CI checks (same as check)
+  run         Run pybun with arguments
+  clean       Clean build artifacts
+  watch       Watch for changes and rebuild
+  bench       Run benchmarks (if available)
+  coverage    Generate test coverage report
+  help        Show this help message
+
+Examples:
+  ./scripts/dev setup
+  ./scripts/dev build
+  ./scripts/dev test
+  ./scripts/dev run install --help
+  ./scripts/dev run run examples/hello.py
+
+EOF
+}
+
+# Setup development environment
+cmd_setup() {
+    info "Setting up development environment..."
+    
+    # Check Rust toolchain
+    if ! command -v rustc &> /dev/null; then
+        error "Rust is not installed. Please install from https://rustup.rs/"
+    fi
+    success "Rust toolchain found: $(rustc --version)"
+    
+    # Install clippy if not present
+    if ! rustup component list | grep -q "clippy.*installed"; then
+        info "Installing clippy..."
+        rustup component add clippy
+    fi
+    success "Clippy is installed"
+    
+    # Install rustfmt if not present
+    if ! rustup component list | grep -q "rustfmt.*installed"; then
+        info "Installing rustfmt..."
+        rustup component add rustfmt
+    fi
+    success "Rustfmt is installed"
+    
+    # Optionally install cargo-watch
+    if ! command -v cargo-watch &> /dev/null; then
+        warn "cargo-watch not installed. Install with: cargo install cargo-watch"
+    else
+        success "cargo-watch is installed"
+    fi
+    
+    # Build project
+    info "Building project..."
+    cargo build
+    
+    success "Development environment is ready!"
+}
+
+# Build debug
+cmd_build() {
+    info "Building debug binary..."
+    cargo build
+    success "Debug binary built at target/debug/pybun"
+}
+
+# Build release
+cmd_release() {
+    info "Building release binary..."
+    cargo build --release
+    success "Release binary built at target/release/pybun"
+}
+
+# Run tests
+cmd_test() {
+    info "Running tests..."
+    if [ "$1" = "-v" ] || [ "$1" = "--verbose" ]; then
+        cargo test -- --nocapture
+    else
+        cargo test
+    fi
+    success "All tests passed!"
+}
+
+# Run linter
+cmd_lint() {
+    info "Running clippy..."
+    cargo clippy --all-targets --all-features -- -D warnings
+    success "Lint check passed!"
+}
+
+# Format code
+cmd_fmt() {
+    if [ "$1" = "--check" ]; then
+        info "Checking code formatting..."
+        cargo fmt -- --check
+        success "Format check passed!"
+    else
+        info "Formatting code..."
+        cargo fmt
+        success "Code formatted!"
+    fi
+}
+
+# Run all checks
+cmd_check() {
+    cmd_fmt --check
+    cmd_lint
+    cmd_test
+    success "All checks passed!"
+}
+
+# CI checks (alias for check)
+cmd_ci() {
+    cmd_check
+}
+
+# Run pybun
+cmd_run() {
+    cargo run -- "$@"
+}
+
+# Clean build artifacts
+cmd_clean() {
+    info "Cleaning build artifacts..."
+    cargo clean
+    success "Clean complete!"
+}
+
+# Watch mode
+cmd_watch() {
+    if ! command -v cargo-watch &> /dev/null; then
+        error "cargo-watch not installed. Install with: cargo install cargo-watch"
+    fi
+    info "Starting watch mode..."
+    if [ "$1" = "test" ]; then
+        cargo watch -x test
+    else
+        cargo watch -x build
+    fi
+}
+
+# Generate coverage
+cmd_coverage() {
+    if ! command -v cargo-tarpaulin &> /dev/null; then
+        error "cargo-tarpaulin not installed. Install with: cargo install cargo-tarpaulin"
+    fi
+    info "Generating coverage report..."
+    cargo tarpaulin --out Html
+    success "Coverage report generated at tarpaulin-report.html"
+}
+
+# Main entry point
+case "${1:-}" in
+    setup)
+        cmd_setup
+        ;;
+    build)
+        cmd_build
+        ;;
+    release)
+        cmd_release
+        ;;
+    test)
+        shift
+        cmd_test "$@"
+        ;;
+    lint)
+        cmd_lint
+        ;;
+    fmt)
+        shift
+        cmd_fmt "$@"
+        ;;
+    check)
+        cmd_check
+        ;;
+    ci)
+        cmd_ci
+        ;;
+    run)
+        shift
+        cmd_run "$@"
+        ;;
+    clean)
+        cmd_clean
+        ;;
+    watch)
+        shift
+        cmd_watch "$@"
+        ;;
+    coverage)
+        cmd_coverage
+        ;;
+    help|--help|-h|"")
+        usage
+        ;;
+    *)
+        error "Unknown command: $1\nRun './scripts/dev help' for usage."
+        ;;
+esac
+

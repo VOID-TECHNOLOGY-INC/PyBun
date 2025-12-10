@@ -1,0 +1,9 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Documentation
+    url: https://github.com/VOID-TECHNOLOGY-INC/PyBun/tree/main/docs
+    about: Check out the documentation for usage and specifications
+  - name: Discussions
+    url: https://github.com/VOID-TECHNOLOGY-INC/PyBun/discussions
+    about: Ask questions and discuss ideas with the community
+

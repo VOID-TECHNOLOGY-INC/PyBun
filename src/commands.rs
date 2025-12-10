@@ -1,4 +1,5 @@
 use crate::cli::{Cli, Commands, McpCommands, OutputFormat, SelfCommands};
+use crate::env::{find_python_env, EnvSource};
 use crate::index::load_index_from_path;
 use crate::lockfile::{Lockfile, Package, PackageSource};
 use crate::pep723;
@@ -417,7 +418,8 @@ fn run_script(args: &crate::cli::RunArgs) -> Result<RunOutcome> {
     };
 
     // Find Python interpreter
-    let python = find_python_interpreter()?;
+    let (python, env_source) = find_python_interpreter()?;
+    eprintln!("info: using Python from {}", env_source);
 
     // Build command
     let mut cmd = ProcessCommand::new(&python);
@@ -460,7 +462,8 @@ fn run_python_code(args: &crate::cli::RunArgs) -> Result<RunOutcome> {
         .first()
         .ok_or_else(|| eyre!("code argument required after -c"))?;
 
-    let python = find_python_interpreter()?;
+    let (python, env_source) = find_python_interpreter()?;
+    eprintln!("info: using Python from {}", env_source);
 
     let mut cmd = ProcessCommand::new(&python);
     cmd.arg("-c").arg(code);
@@ -491,49 +494,16 @@ fn run_python_code(args: &crate::cli::RunArgs) -> Result<RunOutcome> {
 }
 
 /// Find the Python interpreter to use.
+/// Uses the new env module with full priority-based selection.
+///
 /// Priority:
-/// 1. PYBUN_PYTHON environment variable
-/// 2. python3
-/// 3. python
-fn find_python_interpreter() -> Result<String> {
-    // Check environment variable first
-    if let Ok(python) = std::env::var("PYBUN_PYTHON") {
-        return Ok(python);
-    }
-
-    // Try python3 first
-    if which_python("python3").is_some() {
-        return Ok("python3".to_string());
-    }
-
-    // Fall back to python
-    if which_python("python").is_some() {
-        return Ok("python".to_string());
-    }
-
-    Err(eyre!(
-        "Python interpreter not found. Set PYBUN_PYTHON environment variable or ensure python3/python is in PATH"
-    ))
-}
-
-/// Check if a Python executable exists in PATH.
-fn which_python(name: &str) -> Option<PathBuf> {
-    std::env::var_os("PATH").and_then(|paths| {
-        std::env::split_paths(&paths).find_map(|dir| {
-            let full_path = dir.join(name);
-            if full_path.is_file() {
-                Some(full_path)
-            } else {
-                // On Windows, also check with .exe extension
-                #[cfg(windows)]
-                {
-                    let with_ext = dir.join(format!("{}.exe", name));
-                    if with_ext.is_file() {
-                        return Some(with_ext);
-                    }
-                }
-                None
-            }
-        })
-    })
+/// 1. PYBUN_ENV environment variable (venv path)
+/// 2. PYBUN_PYTHON environment variable (explicit binary)
+/// 3. Project-local .pybun/venv directory
+/// 4. .python-version file (pyenv-style)
+/// 5. System Python (python3/python in PATH)
+fn find_python_interpreter() -> Result<(String, EnvSource)> {
+    let working_dir = std::env::current_dir()?;
+    let env = find_python_env(&working_dir)?;
+    Ok((env.python_path.to_string_lossy().to_string(), env.source))
 }

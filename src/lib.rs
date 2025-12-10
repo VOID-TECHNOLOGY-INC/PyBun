@@ -1,6 +1,7 @@
 pub mod cache;
 pub mod cli;
 pub mod commands;
+pub mod env;
 pub mod index;
 pub mod lockfile;
 pub mod pep723;
