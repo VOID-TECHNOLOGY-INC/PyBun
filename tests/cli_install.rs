@@ -33,6 +33,30 @@ fn install_writes_lockfile_from_index() {
 }
 
 #[test]
+fn install_picks_latest_matching_version_for_minimum_spec() {
+    let temp = tempdir().unwrap();
+    let lock_path = temp.path().join("pybun.lockb");
+    let index = index_multi_version_path();
+
+    bin()
+        .args([
+            "install",
+            "--index",
+            index.to_str().unwrap(),
+            "--require",
+            "app==1.0.0",
+            "--lock",
+            lock_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let lock = Lockfile::load_from_path(&lock_path).expect("lock loads");
+    let lib = lock.packages.get("lib").expect("lib entry");
+    assert_eq!(lib.version, "2.0.0");
+}
+
+#[test]
 fn install_fails_on_missing_package() {
     let temp = tempdir().unwrap();
     let lock_path = temp.path().join("pybun.lockb");
@@ -59,4 +83,12 @@ fn index_path() -> std::path::PathBuf {
         .join("tests")
         .join("fixtures")
         .join("index.json")
+}
+
+fn index_multi_version_path() -> std::path::PathBuf {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("manifest dir");
+    std::path::Path::new(&manifest_dir)
+        .join("tests")
+        .join("fixtures")
+        .join("index_multi_version.json")
 }

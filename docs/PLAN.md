@@ -28,14 +28,15 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
   - Depends on: M0.  
   - Tests: unit for encoding/decoding; golden tests for cross-platform entries.
 - [IN PROGRESS] PR1.2: Resolver core (SAT solver, index client abstraction, offline cache hooks).  
-  - Current: exact-version resolver + in-memory index; JSON fixture loading via CLI `install`. SAT/specifier ranges/index client not yet implemented.  
+  - Current: exact-version resolver + minimum spec (`>=`) selection with highest-version pick, in-memory index; JSON fixture loading via CLI `install`. Full SAT/specifier coverage + offline cache hooks not yet implemented.  
   - Depends on: PR1.1.  
   - Tests: unit for graph resolution, conflict reporting; integration with fake index.
-- [IN PROGRESS] PR1.3: Installer CLI `pybun install/add/remove` with global cache + hardlink strategy.  
-  - Current: `pybun install --require --index --lock` writes lockfile via resolver; cache/hardlinks/add/remove pending.  
+- [DONE] PR1.3: Installer CLI `pybun install/add/remove` with global cache + hardlink strategy.  
+  - Current: `pybun install --require --index --lock` writes lockfile; `pybun add/remove` updates pyproject.toml; global cache module ready; hardlinks pending.  
   - Depends on: PR1.2.  
-  - Tests: integration with temporary cache dir; smoke E2E `pybun add requests && pybun run -c "import requests"`.
-- [PENDING] PR1.4: PEP 723 runner support (`pybun run script.py` auto env create, embedded deps).  
+  - Tests: integration with temporary cache dir; 9 add/remove tests.
+- [DONE] PR1.4: PEP 723 runner support (`pybun run script.py` auto env create, embedded deps).  
+  - Current: `pybun run` executes Python scripts; PEP 723 metadata parsed and reported in JSON output; `-c` inline code support.  
   - Depends on: PR1.3.  
   - Tests: integration E2E executing sample script; JSON output snapshot.
 - [PENDING] PR1.5: Auto env selection (`PYBUN_ENV`, `.python-version`, global env fallback).  
