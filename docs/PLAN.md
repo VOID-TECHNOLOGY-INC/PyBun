@@ -16,8 +16,9 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
 - [DONE] PR0.2: CI matrix bootstrap (macOS/Linux, Python 3.9–3.12 toolchains available) + cache for cargo.  
   - Depends on: PR0.1.  
   - Tests: noop smoke workflow to validate runners.
-- [PENDING] PR0.3 ||: DX scripts (`justfile`/`Makefile`, `./scripts/dev`) + issue templates.  
+- [DONE] PR0.3 ||: DX scripts (`justfile`/`Makefile`, `./scripts/dev`) + issue templates.  
   - Depends on: PR0.1.  
+  - Current: `justfile`, `Makefile`, `scripts/dev` added; GitHub issue templates and PR template created.
   - Tests: script self-check (`just lint` dry-run).
 - [PENDING] PR0.4: Release/build bootstrap (cross-target builds, codesign placeholders, artifact layout for bundled CPython/data dir).  
   - Depends on: PR0.1.  
@@ -39,9 +40,10 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
   - Current: `pybun run` executes Python scripts; PEP 723 metadata parsed and reported in JSON output; `-c` inline code support.  
   - Depends on: PR1.3.  
   - Tests: integration E2E executing sample script; JSON output snapshot.
-- [PENDING] PR1.5: Auto env selection (`PYBUN_ENV`, `.python-version`, global env fallback).  
+- [DONE] PR1.5: Auto env selection (`PYBUN_ENV`, `.python-version`, global env fallback).  
   - Depends on: PR1.3.  
-  - Tests: integration verifying env priority; smoke E2E switching Python versions if available.
+  - Current: `src/env.rs` module implements full priority-based Python environment selection (PYBUN_ENV, PYBUN_PYTHON, .pybun/venv, .python-version, system PATH). Integrated with `pybun run`.
+  - Tests: unit tests for venv discovery, version file parsing, pyenv integration; integration verifying env priority.
 - [PENDING] PR1.6: CPython runtime management (embedded version table, download + verify missing versions, data dir layout).  
   - Depends on: PR1.3.  
   - Tests: integration simulating cache miss → download → reuse; ABI mismatch warning; offline mode failure path.
