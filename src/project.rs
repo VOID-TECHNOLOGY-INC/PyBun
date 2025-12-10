@@ -189,18 +189,17 @@ impl Project {
         let mut removed = false;
         let name_lower = name.to_lowercase();
 
-        if let Value::Table(ref mut root) = self.raw {
-            if let Some(Value::Table(project)) = root.get_mut("project") {
-                if let Some(Value::Array(deps)) = project.get_mut("dependencies") {
-                    let before = deps.len();
-                    deps.retain(|v| {
-                        v.as_str()
-                            .map(|s| extract_package_name(s).to_lowercase() != name_lower)
-                            .unwrap_or(true)
-                    });
-                    removed = deps.len() < before;
-                }
-            }
+        if let Value::Table(ref mut root) = self.raw
+            && let Some(Value::Table(project)) = root.get_mut("project")
+            && let Some(Value::Array(deps)) = project.get_mut("dependencies")
+        {
+            let before = deps.len();
+            deps.retain(|v| {
+                v.as_str()
+                    .map(|s| extract_package_name(s).to_lowercase() != name_lower)
+                    .unwrap_or(true)
+            });
+            removed = deps.len() < before;
         }
 
         removed
@@ -240,7 +239,7 @@ fn extract_package_name(dep: &str) -> &str {
     let dep = dep.trim();
     // Find first version specifier character
     let end = dep
-        .find(|c: char| c == '=' || c == '>' || c == '<' || c == '!' || c == '~' || c == '[')
+        .find(['=', '>', '<', '!', '~', '['])
         .unwrap_or(dep.len());
     dep[..end].trim()
 }
