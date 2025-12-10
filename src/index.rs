@@ -58,7 +58,6 @@ mod tests {
         }]);
         let pkg = index.get("app", "1.0.0").expect("package");
         assert_eq!(pkg.dependencies.len(), 1);
-        assert_eq!(pkg.dependencies[0].name, "dep");
-        assert_eq!(pkg.dependencies[0].version, "2.0.0");
+        assert_eq!(pkg.dependencies[0].to_string(), "dep==2.0.0");
     }
 }

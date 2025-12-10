@@ -78,8 +78,8 @@ pub struct PackageArgs {
 
 #[derive(Args, Debug)]
 pub struct RunArgs {
-    /// Script or module to execute.
-    #[arg(value_name = "TARGET")]
+    /// Script or module to execute. Use -c for inline code.
+    #[arg(value_name = "TARGET", allow_hyphen_values = true)]
     pub target: Option<String>,
     /// Run in sandboxed mode for untrusted code.
     #[arg(long)]
