@@ -48,6 +48,49 @@ pub enum Commands {
     SelfCmd(SelfCommands),
     /// Manage caches.
     Gc(GcArgs),
+    /// Manage Python versions (install, list, remove).
+    #[command(subcommand)]
+    Python(PythonCommands),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum PythonCommands {
+    /// List installed and available Python versions.
+    List(PythonListArgs),
+    /// Install a Python version.
+    Install(PythonInstallArgs),
+    /// Remove an installed Python version.
+    Remove(PythonRemoveArgs),
+    /// Show path to Python for a version.
+    Which(PythonWhichArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct PythonListArgs {
+    /// Show all available versions (not just installed).
+    #[arg(long)]
+    pub all: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct PythonInstallArgs {
+    /// Version to install (e.g., 3.11, 3.12.7).
+    #[arg(value_name = "VERSION")]
+    pub version: String,
+}
+
+#[derive(Args, Debug)]
+pub struct PythonRemoveArgs {
+    /// Version to remove.
+    #[arg(value_name = "VERSION")]
+    pub version: String,
+}
+
+#[derive(Args, Debug)]
+pub struct PythonWhichArgs {
+    /// Version to look up.
+    #[arg(value_name = "VERSION")]
+    pub version: Option<String>,
 }
 
 #[derive(Args, Debug)]

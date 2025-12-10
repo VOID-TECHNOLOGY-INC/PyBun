@@ -44,8 +44,9 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
   - Depends on: PR1.3.  
   - Current: `src/env.rs` module implements full priority-based Python environment selection (PYBUN_ENV, PYBUN_PYTHON, .pybun/venv, .python-version, system PATH). Integrated with `pybun run`.
   - Tests: unit tests for venv discovery, version file parsing, pyenv integration; integration verifying env priority.
-- [PENDING] PR1.6: CPython runtime management (embedded version table, download + verify missing versions, data dir layout).  
+- [DONE] PR1.6: CPython runtime management (embedded version table, download + verify missing versions, data dir layout).  
   - Depends on: PR1.3.  
+  - Current: `src/runtime.rs` implements full CPython runtime management with version table (3.9-3.12), python-build-standalone integration, download/verify/extract flow, ABI compatibility checking. `pybun python list/install/remove/which` commands implemented. Integration tests in `tests/runtime_management.rs`.
   - Tests: integration simulating cache miss → download → reuse; ABI mismatch warning; offline mode failure path.
 - [PENDING] PR1.7: Single-binary packaging flow (bundle CPython where allowed, otherwise bootstrap downloader) + `pybun x <pkg>` command.  
   - Depends on: PR1.6, PR0.4.  

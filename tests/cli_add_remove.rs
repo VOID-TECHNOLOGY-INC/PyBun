@@ -182,3 +182,4 @@ dependencies = ["requests>=2.28.0"]
         .success()
         .stdout(predicate::str::contains("\"removed\":true"));
 }
+
