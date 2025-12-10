@@ -8,12 +8,13 @@
 //! Note: Actual download tests are skipped in CI to avoid network dependencies.
 //! They can be run locally with `cargo test -- --ignored`
 
+use assert_cmd::cargo::cargo_bin_cmd;
 use assert_cmd::Command;
 use predicates::prelude::*;
 use tempfile::TempDir;
 
 fn pybun() -> Command {
-    Command::cargo_bin("pybun").unwrap()
+    cargo_bin_cmd!("pybun")
 }
 
 // ---------------------------------------------------------------------------

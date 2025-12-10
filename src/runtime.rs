@@ -101,6 +101,7 @@ impl std::fmt::Display for Platform {
 }
 
 #[cfg(target_os = "linux")]
+#[allow(dead_code)]
 fn is_musl() -> bool {
     // Check if we're running on musl by looking at /proc/self/exe ldd output
     // or checking for Alpine-specific files
@@ -111,6 +112,7 @@ fn is_musl() -> bool {
 }
 
 #[cfg(not(target_os = "linux"))]
+#[allow(dead_code)]
 fn is_musl() -> bool {
     false
 }
