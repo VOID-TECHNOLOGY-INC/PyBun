@@ -1,0 +1,62 @@
+[
+  {
+    "name": "root-max",
+    "version": "1.0.0",
+    "dependencies": ["lib<=2.0.0"]
+  },
+  {
+    "name": "root-max-excl",
+    "version": "1.0.0",
+    "dependencies": ["lib<2.0.0"]
+  },
+  {
+    "name": "root-min-excl",
+    "version": "1.0.0",
+    "dependencies": ["lib>1.0.0"]
+  },
+  {
+    "name": "root-not-eq",
+    "version": "1.0.0",
+    "dependencies": ["lib!=1.5.0"]
+  },
+  {
+    "name": "root-compat",
+    "version": "1.0.0",
+    "dependencies": ["lib~=1.4.0"]
+  },
+  {
+    "name": "lib",
+    "version": "1.0.0",
+    "dependencies": []
+  },
+  {
+    "name": "lib",
+    "version": "1.4.0",
+    "dependencies": []
+  },
+  {
+    "name": "lib",
+    "version": "1.4.5",
+    "dependencies": []
+  },
+  {
+    "name": "lib",
+    "version": "1.5.0",
+    "dependencies": []
+  },
+  {
+    "name": "lib",
+    "version": "1.9.0",
+    "dependencies": []
+  },
+  {
+    "name": "lib",
+    "version": "2.0.0",
+    "dependencies": []
+  },
+  {
+    "name": "lib",
+    "version": "2.1.0",
+    "dependencies": []
+  }
+]
