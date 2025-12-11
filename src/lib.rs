@@ -4,6 +4,7 @@ pub mod commands;
 pub mod env;
 pub mod index;
 pub mod lockfile;
+pub mod mcp;
 pub mod paths;
 pub mod pep723;
 pub mod project;

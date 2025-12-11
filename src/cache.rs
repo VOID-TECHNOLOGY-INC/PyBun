@@ -5,10 +5,15 @@
 //! - ~/.cache/pybun/envs/      (virtual environments)
 //! - ~/.cache/pybun/build/     (build object cache)
 //! - ~/.cache/pybun/logs/      (structured event logs)
+//!
+//! ## GC (Garbage Collection)
+//! The cache supports LRU-based garbage collection with configurable size limits.
+//! Use `pybun gc --max-size` to enforce cache size limits.
 
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 use thiserror::Error;
 
 const DEFAULT_CACHE_DIR: &str = ".cache/pybun";
@@ -138,6 +143,244 @@ impl Default for Cache {
     }
 }
 
+/// Result of a garbage collection operation
+#[derive(Debug, Clone, Default)]
+pub struct GcResult {
+    /// Total bytes freed
+    pub freed_bytes: u64,
+    /// Number of files removed
+    pub files_removed: usize,
+    /// Files that would be removed (dry-run mode)
+    pub would_remove: Vec<PathBuf>,
+    /// Current cache size before GC (bytes)
+    pub size_before: u64,
+    /// Current cache size after GC (bytes)
+    pub size_after: u64,
+}
+
+/// A cached entry with metadata for LRU eviction
+#[derive(Debug, Clone)]
+struct CacheEntry {
+    path: PathBuf,
+    size: u64,
+    accessed: SystemTime,
+}
+
+impl Cache {
+    /// Run garbage collection on the cache.
+    ///
+    /// If `max_bytes` is provided, removes least-recently-used files until
+    /// the cache is under the limit.
+    ///
+    /// If `dry_run` is true, reports what would be deleted without actually deleting.
+    pub fn gc(&self, max_bytes: Option<u64>, dry_run: bool) -> Result<GcResult> {
+        let mut result = GcResult::default();
+
+        // Collect all cache entries
+        let mut entries = self.collect_cache_entries()?;
+        result.size_before = entries.iter().map(|e| e.size).sum();
+
+        // Sort by access time (oldest first for LRU eviction)
+        entries.sort_by(|a, b| a.accessed.cmp(&b.accessed));
+
+        let max_bytes = max_bytes.unwrap_or(u64::MAX);
+        let mut current_size = result.size_before;
+
+        // Evict entries until we're under the limit
+        for entry in entries {
+            if current_size <= max_bytes {
+                break;
+            }
+
+            if dry_run {
+                result.would_remove.push(entry.path.clone());
+            } else {
+                if let Err(e) = fs::remove_file(&entry.path) {
+                    // Log but don't fail on individual file errors
+                    eprintln!(
+                        "warning: failed to remove {}: {}",
+                        entry.path.display(),
+                        e
+                    );
+                    continue;
+                }
+                result.files_removed += 1;
+            }
+
+            result.freed_bytes += entry.size;
+            current_size = current_size.saturating_sub(entry.size);
+        }
+
+        result.size_after = if dry_run {
+            result.size_before - result.freed_bytes
+        } else {
+            current_size
+        };
+
+        // Clean up empty directories
+        if !dry_run {
+            self.remove_empty_dirs()?;
+        }
+
+        Ok(result)
+    }
+
+    /// Calculate total cache size in bytes
+    pub fn total_size(&self) -> Result<u64> {
+        let entries = self.collect_cache_entries()?;
+        Ok(entries.iter().map(|e| e.size).sum())
+    }
+
+    /// Collect all cache entries with metadata
+    fn collect_cache_entries(&self) -> Result<Vec<CacheEntry>> {
+        let mut entries = Vec::new();
+
+        // Collect from packages directory
+        if let Ok(dirs) = fs::read_dir(self.packages_dir()) {
+            for dir_entry in dirs.flatten() {
+                if dir_entry.path().is_dir() {
+                    self.collect_entries_from_dir(&dir_entry.path(), &mut entries)?;
+                }
+            }
+        }
+
+        // Collect from build directory
+        if let Ok(files) = fs::read_dir(self.build_dir()) {
+            for file_entry in files.flatten() {
+                if let Some(entry) = self.entry_from_path(&file_entry.path())? {
+                    entries.push(entry);
+                }
+            }
+        }
+
+        Ok(entries)
+    }
+
+    fn collect_entries_from_dir(
+        &self,
+        dir: &Path,
+        entries: &mut Vec<CacheEntry>,
+    ) -> Result<()> {
+        if let Ok(files) = fs::read_dir(dir) {
+            for file_entry in files.flatten() {
+                let path = file_entry.path();
+                if path.is_file() {
+                    if let Some(entry) = self.entry_from_path(&path)? {
+                        entries.push(entry);
+                    }
+                } else if path.is_dir() {
+                    self.collect_entries_from_dir(&path, entries)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn entry_from_path(&self, path: &Path) -> Result<Option<CacheEntry>> {
+        let metadata = match fs::metadata(path) {
+            Ok(m) => m,
+            Err(_) => return Ok(None),
+        };
+
+        if !metadata.is_file() {
+            return Ok(None);
+        }
+
+        // Use modified time as a proxy for access time (more reliably available)
+        let accessed = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+
+        Ok(Some(CacheEntry {
+            path: path.to_path_buf(),
+            size: metadata.len(),
+            accessed,
+        }))
+    }
+
+    fn remove_empty_dirs(&self) -> Result<()> {
+        self.remove_empty_dirs_recursive(&self.packages_dir())?;
+        self.remove_empty_dirs_recursive(&self.build_dir())?;
+        Ok(())
+    }
+
+    fn remove_empty_dirs_recursive(&self, dir: &Path) -> Result<bool> {
+        if !dir.exists() || !dir.is_dir() {
+            return Ok(false);
+        }
+
+        let mut is_empty = true;
+        if let Ok(entries) = fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    if !self.remove_empty_dirs_recursive(&path)? {
+                        is_empty = false;
+                    }
+                } else {
+                    is_empty = false;
+                }
+            }
+        }
+
+        if is_empty && dir != self.packages_dir() && dir != self.build_dir() {
+            let _ = fs::remove_dir(dir);
+        }
+
+        Ok(is_empty)
+    }
+}
+
+/// Parse a size string like "10G", "500M", "1K" into bytes
+pub fn parse_size(s: &str) -> std::result::Result<u64, String> {
+    let s = s.trim().to_uppercase();
+
+    // Handle plain numbers
+    if let Ok(n) = s.parse::<u64>() {
+        return Ok(n);
+    }
+
+    // Find where the number ends and unit begins
+    let (num_str, unit) = if let Some(pos) = s.find(|c: char| !c.is_ascii_digit() && c != '.') {
+        (&s[..pos], &s[pos..])
+    } else {
+        return Err(format!("invalid size format: {}", s));
+    };
+
+    let num: f64 = num_str
+        .parse()
+        .map_err(|_| format!("invalid number: {}", num_str))?;
+
+    let multiplier: u64 = match unit {
+        "B" => 1,
+        "K" | "KB" | "KIB" => 1024,
+        "M" | "MB" | "MIB" => 1024 * 1024,
+        "G" | "GB" | "GIB" => 1024 * 1024 * 1024,
+        "T" | "TB" | "TIB" => 1024 * 1024 * 1024 * 1024,
+        _ => return Err(format!("unknown size unit: {}", unit)),
+    };
+
+    Ok((num * multiplier as f64) as u64)
+}
+
+/// Format bytes as human-readable size
+pub fn format_size(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = KB * 1024;
+    const GB: u64 = MB * 1024;
+    const TB: u64 = GB * 1024;
+
+    if bytes >= TB {
+        format!("{:.2} TB", bytes as f64 / TB as f64)
+    } else if bytes >= GB {
+        format!("{:.2} GB", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{:.2} MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.2} KB", bytes as f64 / KB as f64)
+    } else {
+        format!("{} B", bytes)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -185,5 +428,83 @@ mod tests {
         let cache = Cache::with_root(temp.path());
 
         assert!(!cache.has_wheel("foo", "1.0.0", "foo-1.0.0-py3-none-any.whl"));
+    }
+
+    #[test]
+    fn gc_on_empty_cache() {
+        let temp = tempdir().unwrap();
+        let cache = Cache::with_root(temp.path());
+        cache.ensure_dirs().unwrap();
+
+        let result = cache.gc(None, false).unwrap();
+        assert_eq!(result.freed_bytes, 0);
+        assert_eq!(result.files_removed, 0);
+    }
+
+    #[test]
+    fn gc_removes_files_when_over_limit() {
+        let temp = tempdir().unwrap();
+        let cache = Cache::with_root(temp.path());
+        cache.ensure_dirs().unwrap();
+
+        // Create some files
+        let pkg_dir = cache.packages_dir().join("test-pkg");
+        fs::create_dir_all(&pkg_dir).unwrap();
+
+        let file1 = pkg_dir.join("file1.whl");
+        let file2 = pkg_dir.join("file2.whl");
+
+        fs::write(&file1, vec![0u8; 1024]).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        fs::write(&file2, vec![0u8; 1024]).unwrap();
+
+        // GC with max 1KB should remove at least one file
+        let result = cache.gc(Some(1024), false).unwrap();
+        assert!(result.files_removed >= 1);
+        assert!(result.freed_bytes >= 1024);
+    }
+
+    #[test]
+    fn gc_dry_run_does_not_delete() {
+        let temp = tempdir().unwrap();
+        let cache = Cache::with_root(temp.path());
+        cache.ensure_dirs().unwrap();
+
+        let pkg_dir = cache.packages_dir().join("test-pkg");
+        fs::create_dir_all(&pkg_dir).unwrap();
+        let file = pkg_dir.join("file.whl");
+        fs::write(&file, vec![0u8; 1024]).unwrap();
+
+        let result = cache.gc(Some(0), true).unwrap();
+        assert!(!result.would_remove.is_empty());
+        assert_eq!(result.files_removed, 0);
+        // File should still exist
+        assert!(file.exists());
+    }
+
+    #[test]
+    fn parse_size_various_formats() {
+        assert_eq!(parse_size("100").unwrap(), 100);
+        assert_eq!(parse_size("1K").unwrap(), 1024);
+        assert_eq!(parse_size("1KB").unwrap(), 1024);
+        assert_eq!(parse_size("1M").unwrap(), 1024 * 1024);
+        assert_eq!(parse_size("1MB").unwrap(), 1024 * 1024);
+        assert_eq!(parse_size("1G").unwrap(), 1024 * 1024 * 1024);
+        assert_eq!(parse_size("1GB").unwrap(), 1024 * 1024 * 1024);
+        assert_eq!(parse_size("10g").unwrap(), 10 * 1024 * 1024 * 1024);
+    }
+
+    #[test]
+    fn parse_size_invalid() {
+        assert!(parse_size("invalid").is_err());
+        assert!(parse_size("").is_err());
+    }
+
+    #[test]
+    fn format_size_various() {
+        assert_eq!(format_size(100), "100 B");
+        assert_eq!(format_size(1024), "1.00 KB");
+        assert_eq!(format_size(1024 * 1024), "1.00 MB");
+        assert_eq!(format_size(1024 * 1024 * 1024), "1.00 GB");
     }
 }
