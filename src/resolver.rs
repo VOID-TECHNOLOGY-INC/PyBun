@@ -6,8 +6,21 @@ use std::str::FromStr;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VersionSpec {
+    /// ==version
     Exact(String),
+    /// >=version
     Minimum(String),
+    /// >version
+    MinimumExclusive(String),
+    /// <=version
+    MaximumInclusive(String),
+    /// <version
+    Maximum(String),
+    /// !=version
+    NotEqual(String),
+    /// ~=version (compatible release - PEP 440)
+    Compatible(String),
+    /// Any version
     Any,
 }
 
@@ -32,6 +45,41 @@ impl Requirement {
         }
     }
 
+    pub fn minimum_exclusive(name: impl Into<String>, version: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            spec: VersionSpec::MinimumExclusive(version.into()),
+        }
+    }
+
+    pub fn maximum_inclusive(name: impl Into<String>, version: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            spec: VersionSpec::MaximumInclusive(version.into()),
+        }
+    }
+
+    pub fn maximum(name: impl Into<String>, version: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            spec: VersionSpec::Maximum(version.into()),
+        }
+    }
+
+    pub fn not_equal(name: impl Into<String>, version: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            spec: VersionSpec::NotEqual(version.into()),
+        }
+    }
+
+    pub fn compatible(name: impl Into<String>, version: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            spec: VersionSpec::Compatible(version.into()),
+        }
+    }
+
     pub fn any(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
@@ -43,6 +91,11 @@ impl Requirement {
         match &self.spec {
             VersionSpec::Exact(v) => format!("=={v}"),
             VersionSpec::Minimum(v) => format!(">={v}"),
+            VersionSpec::MinimumExclusive(v) => format!(">{v}"),
+            VersionSpec::MaximumInclusive(v) => format!("<={v}"),
+            VersionSpec::Maximum(v) => format!("<{v}"),
+            VersionSpec::NotEqual(v) => format!("!={v}"),
+            VersionSpec::Compatible(v) => format!("~={v}"),
             VersionSpec::Any => "*".to_string(),
         }
     }
@@ -50,7 +103,16 @@ impl Requirement {
     fn is_satisfied_by(&self, version: &str) -> bool {
         match &self.spec {
             VersionSpec::Exact(v) => v == version,
-            VersionSpec::Minimum(min) => meets_minimum(version, min),
+            VersionSpec::Minimum(min) => compare_versions(version, min) != Ordering::Less,
+            VersionSpec::MinimumExclusive(min) => {
+                compare_versions(version, min) == Ordering::Greater
+            }
+            VersionSpec::MaximumInclusive(max) => {
+                compare_versions(version, max) != Ordering::Greater
+            }
+            VersionSpec::Maximum(max) => compare_versions(version, max) == Ordering::Less,
+            VersionSpec::NotEqual(v) => v != version,
+            VersionSpec::Compatible(base) => is_compatible_release(version, base),
             VersionSpec::Any => true,
         }
     }
@@ -61,6 +123,11 @@ impl fmt::Display for Requirement {
         match &self.spec {
             VersionSpec::Exact(v) => write!(f, "{}=={}", self.name, v),
             VersionSpec::Minimum(v) => write!(f, "{}>={}", self.name, v),
+            VersionSpec::MinimumExclusive(v) => write!(f, "{}>{}", self.name, v),
+            VersionSpec::MaximumInclusive(v) => write!(f, "{}<={}", self.name, v),
+            VersionSpec::Maximum(v) => write!(f, "{}<{}", self.name, v),
+            VersionSpec::NotEqual(v) => write!(f, "{}!={}", self.name, v),
+            VersionSpec::Compatible(v) => write!(f, "{}~={}", self.name, v),
             VersionSpec::Any => write!(f, "{}", self.name),
         }
     }
@@ -71,15 +138,41 @@ impl FromStr for Requirement {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let normalized = s.trim();
-        if let Some((name, version)) = normalized.split_once("==") {
-            Ok(Requirement::exact(name.trim(), version.trim()))
-        } else if let Some((name, version)) = normalized.split_once(">=") {
-            Ok(Requirement::minimum(name.trim(), version.trim()))
-        } else if normalized.is_empty() {
-            Err("requirement cannot be empty".into())
-        } else {
-            Ok(Requirement::any(normalized))
+        if normalized.is_empty() {
+            return Err("requirement cannot be empty".into());
         }
+
+        // Parse operators in order of specificity (longer operators first)
+        // ~= must come before other operators
+        if let Some((name, version)) = normalized.split_once("~=") {
+            return Ok(Requirement::compatible(name.trim(), version.trim()));
+        }
+        // == exact match
+        if let Some((name, version)) = normalized.split_once("==") {
+            return Ok(Requirement::exact(name.trim(), version.trim()));
+        }
+        // != not equal
+        if let Some((name, version)) = normalized.split_once("!=") {
+            return Ok(Requirement::not_equal(name.trim(), version.trim()));
+        }
+        // >= minimum inclusive (must come before >)
+        if let Some((name, version)) = normalized.split_once(">=") {
+            return Ok(Requirement::minimum(name.trim(), version.trim()));
+        }
+        // <= maximum inclusive (must come before <)
+        if let Some((name, version)) = normalized.split_once("<=") {
+            return Ok(Requirement::maximum_inclusive(name.trim(), version.trim()));
+        }
+        // > minimum exclusive
+        if let Some((name, version)) = normalized.split_once('>') {
+            return Ok(Requirement::minimum_exclusive(name.trim(), version.trim()));
+        }
+        // < maximum exclusive
+        if let Some((name, version)) = normalized.split_once('<') {
+            return Ok(Requirement::maximum(name.trim(), version.trim()));
+        }
+        // No operator - any version
+        Ok(Requirement::any(normalized))
     }
 }
 
@@ -158,7 +251,14 @@ fn select_package(
                     constraint: req.constraint_display(),
                 })
         }
-        VersionSpec::Minimum(_) | VersionSpec::Any => {
+        // All other specifiers: filter candidates and pick the highest matching version
+        VersionSpec::Minimum(_)
+        | VersionSpec::MinimumExclusive(_)
+        | VersionSpec::MaximumInclusive(_)
+        | VersionSpec::Maximum(_)
+        | VersionSpec::NotEqual(_)
+        | VersionSpec::Compatible(_)
+        | VersionSpec::Any => {
             let candidates = index.all(&req.name);
             let candidate = candidates
                 .into_iter()
@@ -224,15 +324,52 @@ fn parse_req(input: &str) -> Requirement {
 }
 
 fn version_cmp(a: &str, b: &str) -> Ordering {
+    compare_versions(a, b)
+}
+
+/// Compare two version strings, returning their ordering.
+fn compare_versions(a: &str, b: &str) -> Ordering {
     match (Version::parse(a), Version::parse(b)) {
         (Ok(left), Ok(right)) => left.cmp(&right),
         _ => a.cmp(b),
     }
 }
 
-fn meets_minimum(version: &str, minimum: &str) -> bool {
-    match (Version::parse(version), Version::parse(minimum)) {
-        (Ok(parsed_version), Ok(parsed_min)) => parsed_version >= parsed_min,
-        _ => version >= minimum,
+/// Check if a version satisfies the compatible release constraint (~=).
+/// PEP 440 compatible release:
+/// - ~=X.Y.Z is equivalent to >=X.Y.Z, <X.(Y+1).0
+/// - ~=X.Y is equivalent to >=X.Y, <(X+1).0
+fn is_compatible_release(version: &str, base: &str) -> bool {
+    // First check if version meets the minimum
+    if compare_versions(version, base) == Ordering::Less {
+        return false;
+    }
+
+    let base_parts: Vec<&str> = base.split('.').collect();
+    let version_parts: Vec<&str> = version.split('.').collect();
+
+    if base_parts.len() >= 3 {
+        // ~=X.Y.Z -> >=X.Y.Z, <X.(Y+1).0
+        // Check major version matches
+        if version_parts.first() != base_parts.first() {
+            return false;
+        }
+        // Parse minor versions
+        let base_minor: u64 = base_parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+        let version_minor: u64 = version_parts
+            .get(1)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        // Version minor must be <= base minor (same minor series)
+        version_minor == base_minor
+    } else if base_parts.len() == 2 {
+        // ~=X.Y -> >=X.Y, <(X+1).0
+        // Check major version matches
+        version_parts.first() == base_parts.first()
+    } else if base_parts.len() == 1 {
+        // ~=X -> treated as >=X (unusual but valid)
+        compare_versions(version, base) != Ordering::Less
+    } else {
+        false
     }
 }

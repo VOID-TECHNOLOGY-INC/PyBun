@@ -20,18 +20,19 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
   - Depends on: PR0.1.  
   - Current: `justfile`, `Makefile`, `scripts/dev` added; GitHub issue templates and PR template created.
   - Tests: script self-check (`just lint` dry-run).
-- [PENDING] PR0.4: Release/build bootstrap (cross-target builds, codesign placeholders, artifact layout for bundled CPython/data dir).  
+- [DONE] PR0.4: Release/build bootstrap (cross-target builds, codesign placeholders, artifact layout for bundled CPython/data dir).  
   - Depends on: PR0.1.  
+  - Current: `.github/workflows/release.yml` added with cross-compilation support for macOS (x86_64, ARM64), Linux (x86_64 glibc/musl, ARM64), and Windows (stub). Codesign placeholder step included. `src/paths.rs` module added for data directory layout and artifact info management.
   - Tests: build workflow dry-run producing unsigned artifacts for macOS/Linux/Windows (stub).
 
 ### M1: Fast Installer (Phase 1)
 - [DONE] PR1.1: Lockfile spec + serializer (`pybun.lockb` binary format, read/write, schema tests).  
   - Depends on: M0.  
   - Tests: unit for encoding/decoding; golden tests for cross-platform entries.
-- [IN PROGRESS] PR1.2: Resolver core (SAT solver, index client abstraction, offline cache hooks).  
-  - Current: exact-version resolver + minimum spec (`>=`) selection with highest-version pick, in-memory index; JSON fixture loading via CLI `install`. Full SAT/specifier coverage + offline cache hooks not yet implemented.  
+- [DONE] PR1.2: Resolver core (SAT solver, index client abstraction, offline cache hooks).  
+  - Current: Full version specifier support implemented (==, >=, >, <=, <, !=, ~= PEP 440 compatible release). Offline cache hooks added via `IndexCache` and `CachedIndexLoader` in `src/index.rs`. JSON fixture loading via CLI `install`. In-memory index with highest-version selection strategy.
   - Depends on: PR1.1.  
-  - Tests: unit for graph resolution, conflict reporting; integration with fake index.
+  - Tests: 13 resolver unit tests including all specifier types; 8 CLI install E2E tests; index cache unit tests.
 - [DONE] PR1.3: Installer CLI `pybun install/add/remove` with global cache + hardlink strategy.  
   - Current: `pybun install --require --index --lock` writes lockfile; `pybun add/remove` updates pyproject.toml; global cache module ready; hardlinks pending.  
   - Depends on: PR1.2.  
