@@ -252,10 +252,7 @@ impl McpServer {
     }
 
     fn handle_tools_call(&self, id: Value, params: Value) -> JsonRpcResponse {
-        let tool_name = params
-            .get("name")
-            .and_then(|n| n.as_str())
-            .unwrap_or("");
+        let tool_name = params.get("name").and_then(|n| n.as_str()).unwrap_or("");
         let tool_args = params.get("arguments").cloned().unwrap_or(json!({}));
 
         let result = match tool_name {
@@ -310,10 +307,7 @@ impl McpServer {
     }
 
     fn handle_resources_read(&self, id: Value, params: Value) -> JsonRpcResponse {
-        let uri = params
-            .get("uri")
-            .and_then(|u| u.as_str())
-            .unwrap_or("");
+        let uri = params.get("uri").and_then(|u| u.as_str()).unwrap_or("");
 
         let content = match uri {
             "pybun://cache/info" => self.read_cache_info(),
@@ -341,11 +335,7 @@ impl McpServer {
         let requirements = args
             .get("requirements")
             .and_then(|r| r.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str())
-                    .collect::<Vec<_>>()
-            })
+            .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>())
             .unwrap_or_default();
 
         Ok(json!({
@@ -360,11 +350,7 @@ impl McpServer {
         let requirements = args
             .get("requirements")
             .and_then(|r| r.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str())
-                    .collect::<Vec<_>>()
-            })
+            .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>())
             .unwrap_or_default();
 
         let offline = args
@@ -401,15 +387,15 @@ impl McpServer {
 
     fn call_gc(&self, args: Value) -> Result<String, String> {
         let max_size = args.get("max_size").and_then(|s| s.as_str());
-        let dry_run = args.get("dry_run").and_then(|d| d.as_bool()).unwrap_or(false);
+        let dry_run = args
+            .get("dry_run")
+            .and_then(|d| d.as_bool())
+            .unwrap_or(false);
 
         use crate::cache::{Cache, format_size, parse_size};
 
         let cache = Cache::new().map_err(|e| e.to_string())?;
-        let max_bytes = max_size
-            .map(|s| parse_size(s))
-            .transpose()
-            .map_err(|e| e)?;
+        let max_bytes = max_size.map(|s| parse_size(s)).transpose().map_err(|e| e)?;
 
         let result = cache.gc(max_bytes, dry_run).map_err(|e| e.to_string())?;
 
@@ -424,7 +410,10 @@ impl McpServer {
     }
 
     fn call_doctor(&self, args: Value) -> Result<String, String> {
-        let verbose = args.get("verbose").and_then(|v| v.as_bool()).unwrap_or(false);
+        let verbose = args
+            .get("verbose")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
         Ok(json!({
             "status": "healthy",

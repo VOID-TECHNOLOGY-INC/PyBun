@@ -197,11 +197,7 @@ impl Cache {
             } else {
                 if let Err(e) = fs::remove_file(&entry.path) {
                     // Log but don't fail on individual file errors
-                    eprintln!(
-                        "warning: failed to remove {}: {}",
-                        entry.path.display(),
-                        e
-                    );
+                    eprintln!("warning: failed to remove {}: {}", entry.path.display(), e);
                     continue;
                 }
                 result.files_removed += 1;
@@ -256,11 +252,7 @@ impl Cache {
         Ok(entries)
     }
 
-    fn collect_entries_from_dir(
-        &self,
-        dir: &Path,
-        entries: &mut Vec<CacheEntry>,
-    ) -> Result<()> {
+    fn collect_entries_from_dir(&self, dir: &Path, entries: &mut Vec<CacheEntry>) -> Result<()> {
         if let Ok(files) = fs::read_dir(dir) {
             for file_entry in files.flatten() {
                 let path = file_entry.path();

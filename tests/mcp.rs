@@ -122,7 +122,7 @@ fn mcp_serve_lists_available_tools() {
         // Initialize first
         let init_req = r#"{"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0.1.0"}}}"#;
         writeln!(stdin, "{}", init_req).ok();
-        
+
         // Then request tools list
         let tools_req = r#"{"jsonrpc":"2.0","method":"tools/list","id":2,"params":{}}"#;
         writeln!(stdin, "{}", tools_req).ok();
@@ -133,8 +133,8 @@ fn mcp_serve_lists_available_tools() {
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     // Should list some tools
-    let has_tools = stdout.contains("tools") 
-        || stdout.contains("resolve") 
+    let has_tools = stdout.contains("tools")
+        || stdout.contains("resolve")
         || stdout.contains("install")
         || stdout.contains("run");
 

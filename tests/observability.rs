@@ -115,7 +115,11 @@ fn duration_ms_in_response() {
 
     let duration = json["duration_ms"].as_u64().unwrap();
     // Duration should be reasonable (less than 30 seconds for gc)
-    assert!(duration < 30000, "duration should be reasonable: {}", duration);
+    assert!(
+        duration < 30000,
+        "duration should be reasonable: {}",
+        duration
+    );
 }
 
 #[test]

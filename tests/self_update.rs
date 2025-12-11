@@ -80,7 +80,14 @@ fn self_update_stable_channel() {
 
     let output = pybun_bin()
         .env("PYBUN_HOME", temp.path())
-        .args(["--format=json", "self", "update", "--channel", "stable", "--dry-run"])
+        .args([
+            "--format=json",
+            "self",
+            "update",
+            "--channel",
+            "stable",
+            "--dry-run",
+        ])
         .output()
         .unwrap();
 
@@ -102,7 +109,14 @@ fn self_update_nightly_channel() {
 
     let output = pybun_bin()
         .env("PYBUN_HOME", temp.path())
-        .args(["--format=json", "self", "update", "--channel", "nightly", "--dry-run"])
+        .args([
+            "--format=json",
+            "self",
+            "update",
+            "--channel",
+            "nightly",
+            "--dry-run",
+        ])
         .output()
         .unwrap();
 

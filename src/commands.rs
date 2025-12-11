@@ -228,10 +228,7 @@ pub fn execute(cli: Cli) -> Result<()> {
                         collector.error(e.to_string());
                         (
                             "mcp serve".to_string(),
-                            RenderDetail::error(
-                                e.to_string(),
-                                json!({"error": e.to_string()}),
-                            ),
+                            RenderDetail::error(e.to_string(), json!({"error": e.to_string()})),
                         )
                     } else {
                         (
@@ -247,7 +244,10 @@ pub fn execute(cli: Cli) -> Result<()> {
                     (
                         "mcp serve".to_string(),
                         stub_detail(
-                            format!("port={} (HTTP mode not yet implemented, use --stdio)", args.port),
+                            format!(
+                                "port={} (HTTP mode not yet implemented, use --stdio)",
+                                args.port
+                            ),
                             json!({"port": args.port, "mode": "http", "status": "not_implemented"}),
                         ),
                     )
@@ -1104,7 +1104,10 @@ fn parse_package_spec(spec: &str) -> (String, Option<String>) {
 // pybun self update
 // ---------------------------------------------------------------------------
 
-fn run_self_update(args: &crate::cli::SelfUpdateArgs, collector: &mut EventCollector) -> RenderDetail {
+fn run_self_update(
+    args: &crate::cli::SelfUpdateArgs,
+    collector: &mut EventCollector,
+) -> RenderDetail {
     let current_version = env!("CARGO_PKG_VERSION");
     let channel = &args.channel;
 
@@ -1189,10 +1192,7 @@ fn run_gc(args: &crate::cli::GcArgs, collector: &mut EventCollector) -> Result<R
         None
     };
 
-    collector.info(format!(
-        "Running GC on cache at {}",
-        cache.root().display()
-    ));
+    collector.info(format!("Running GC on cache at {}", cache.root().display()));
 
     // Ensure cache directories exist
     cache
