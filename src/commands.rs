@@ -277,7 +277,15 @@ pub fn execute(cli: Cli) -> Result<()> {
     let diagnostics = Vec::new(); // Diagnostics already handled inline
 
     let is_error = detail.is_error;
-    let rendered = render(&command, detail, cli.format, duration, events, diagnostics, trace_id);
+    let rendered = render(
+        &command,
+        detail,
+        cli.format,
+        duration,
+        events,
+        diagnostics,
+        trace_id,
+    );
     println!("{rendered}");
 
     // Exit with error code if command failed
@@ -305,12 +313,8 @@ fn render(
             } else {
                 Status::Ok
             };
-            let mut envelope = JsonEnvelope::new(
-                format!("pybun {command}"),
-                status,
-                duration,
-                detail.json,
-            );
+            let mut envelope =
+                JsonEnvelope::new(format!("pybun {command}"), status, duration, detail.json);
             envelope.events = events;
             envelope.diagnostics = diagnostics;
             envelope.trace_id = trace_id;
@@ -427,7 +431,10 @@ fn run_doctor(args: &crate::cli::DoctorArgs, collector: &mut EventCollector) -> 
     )
 }
 
-fn install(args: &crate::cli::InstallArgs, _collector: &mut EventCollector) -> Result<InstallOutcome> {
+fn install(
+    args: &crate::cli::InstallArgs,
+    _collector: &mut EventCollector,
+) -> Result<InstallOutcome> {
     if args.requirements.is_empty() {
         return Err(eyre!(
             "no requirements provided (temporary flag --require needed)"
@@ -508,7 +515,6 @@ impl RenderDetail {
         }
     }
 }
-
 
 // ---------------------------------------------------------------------------
 // pybun add
@@ -704,7 +710,10 @@ fn run_script(args: &crate::cli::RunArgs, collector: &mut EventCollector) -> Res
     })
 }
 
-fn run_python_code(args: &crate::cli::RunArgs, _collector: &mut EventCollector) -> Result<RunOutcome> {
+fn run_python_code(
+    args: &crate::cli::RunArgs,
+    _collector: &mut EventCollector,
+) -> Result<RunOutcome> {
     // pybun run -c "print('hello')" -- equivalent to python -c "..."
     let code = args
         .passthrough
@@ -764,7 +773,10 @@ fn find_python_interpreter() -> Result<(String, EnvSource)> {
 use crate::cache::Cache;
 use crate::runtime::{RuntimeManager, supported_versions};
 
-fn handle_python_command(cmd: &PythonCommands, collector: &mut EventCollector) -> Result<(String, RenderDetail)> {
+fn handle_python_command(
+    cmd: &PythonCommands,
+    collector: &mut EventCollector,
+) -> Result<(String, RenderDetail)> {
     match cmd {
         PythonCommands::List(args) => {
             collector.event(EventType::PythonListStart);

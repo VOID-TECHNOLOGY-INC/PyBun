@@ -263,7 +263,12 @@ pub struct JsonEnvelope {
 }
 
 impl JsonEnvelope {
-    pub fn new(command: impl Into<String>, status: Status, duration: Duration, detail: Value) -> Self {
+    pub fn new(
+        command: impl Into<String>,
+        status: Status,
+        duration: Duration,
+        detail: Value,
+    ) -> Self {
         Self {
             version: SCHEMA_VERSION.to_string(),
             command: command.into(),
@@ -360,7 +365,8 @@ impl EventCollector {
     /// Record an event with data
     pub fn event_with_data(&mut self, event_type: EventType, data: Value) {
         let timestamp_ms = self.start.elapsed().as_millis() as u64;
-        self.events.push(Event::new(event_type, timestamp_ms).with_data(data));
+        self.events
+            .push(Event::new(event_type, timestamp_ms).with_data(data));
     }
 
     /// Record a diagnostic
@@ -394,7 +400,12 @@ impl EventCollector {
     }
 
     /// Build the final envelope
-    pub fn build_envelope(self, command: impl Into<String>, status: Status, detail: Value) -> JsonEnvelope {
+    pub fn build_envelope(
+        self,
+        command: impl Into<String>,
+        status: Status,
+        detail: Value,
+    ) -> JsonEnvelope {
         let duration = self.start.elapsed();
         let mut envelope = JsonEnvelope::new(command, status, duration, detail);
         envelope.events = self.events;
@@ -481,11 +492,8 @@ mod tests {
         collector.event(EventType::CommandStart);
         collector.warning("something might be wrong");
 
-        let envelope = collector.build_envelope(
-            "pybun test",
-            Status::Ok,
-            json!({"result": "passed"}),
-        );
+        let envelope =
+            collector.build_envelope("pybun test", Status::Ok, json!({"result": "passed"}));
 
         assert!(!envelope.events.is_empty());
         assert!(!envelope.diagnostics.is_empty());
