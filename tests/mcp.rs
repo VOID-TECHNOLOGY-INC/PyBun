@@ -2,7 +2,7 @@
 //!
 //! PR4.3: MCP server `pybun mcp serve` with RPC endpoints
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::Write;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 use tempfile::tempdir;

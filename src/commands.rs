@@ -1170,6 +1170,7 @@ fn run_self_update(
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 struct UpdateCheck {
     current_version: String,
     channel: String,

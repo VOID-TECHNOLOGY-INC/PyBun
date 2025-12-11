@@ -395,7 +395,7 @@ impl McpServer {
         use crate::cache::{Cache, format_size, parse_size};
 
         let cache = Cache::new().map_err(|e| e.to_string())?;
-        let max_bytes = max_size.map(|s| parse_size(s)).transpose().map_err(|e| e)?;
+        let max_bytes = max_size.map(parse_size).transpose()?;
 
         let result = cache.gc(max_bytes, dry_run).map_err(|e| e.to_string())?;
 
