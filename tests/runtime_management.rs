@@ -113,7 +113,7 @@ fn python_install_unsupported_version_fails() {
 
     cmd.assert()
         .failure()
-        .stderr(predicate::str::contains("not supported"));
+        .stdout(predicate::str::contains("not supported"));
 }
 
 // ---------------------------------------------------------------------------
@@ -130,7 +130,7 @@ fn python_remove_not_installed_fails() {
 
     cmd.assert()
         .failure()
-        .stderr(predicate::str::contains("not installed"));
+        .stdout(predicate::str::contains("not installed"));
 }
 
 // ---------------------------------------------------------------------------

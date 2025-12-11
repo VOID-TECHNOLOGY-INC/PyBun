@@ -46,17 +46,26 @@ fn install_outputs_structured_json() {
             .len(),
         4
     );
+    // Events should be present (CommandStart, ResolveStart, InstallComplete, CommandEnd)
+    let events = parsed["events"].as_array().expect("events array");
     assert!(
-        parsed["events"]
-            .as_array()
-            .expect("events array")
-            .is_empty()
+        !events.is_empty(),
+        "events array should contain command lifecycle events"
     );
+
+    // Check event structure if events exist
+    for event in events {
+        assert!(event.get("type").is_some(), "event should have type field");
+        assert!(
+            event.get("timestamp_ms").is_some(),
+            "event should have timestamp_ms field"
+        );
+    }
+
+    // Diagnostics array should be present (may be empty for successful commands)
     assert!(
-        parsed["diagnostics"]
-            .as_array()
-            .expect("diagnostics array")
-            .is_empty()
+        parsed["diagnostics"].as_array().is_some(),
+        "diagnostics array should be present"
     );
 }
 

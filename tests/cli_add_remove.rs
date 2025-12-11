@@ -151,7 +151,7 @@ fn remove_fails_without_pyproject() {
         .args(["remove", "requests"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("pyproject.toml not found"));
+        .stdout(predicate::str::contains("pyproject.toml not found"));
 }
 
 #[test]

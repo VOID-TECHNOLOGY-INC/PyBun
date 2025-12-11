@@ -18,7 +18,7 @@ fn x_requires_package_argument() {
         .args(["x"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("package name is required"));
+        .stdout(predicate::str::contains("package name is required"));
 }
 
 #[test]

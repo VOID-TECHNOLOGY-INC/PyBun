@@ -74,7 +74,7 @@ fn install_fails_on_missing_package() {
         ])
         .assert()
         .failure()
-        .stderr(predicates::str::contains("missing").or(predicates::str::contains("Missing")));
+        .stdout(predicates::str::contains("missing").or(predicates::str::contains("Missing")));
 }
 
 fn index_path() -> std::path::PathBuf {
