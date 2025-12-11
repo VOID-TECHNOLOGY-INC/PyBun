@@ -86,16 +86,33 @@ pub fn execute(cli: Cli) -> Result<()> {
                 ),
             )
         }
-        Commands::X(args) => (
-            "x".to_string(),
-            stub_detail(
-                format!(
-                    "package={:?} passthrough={:?}",
-                    args.package, args.passthrough
+        Commands::X(args) => {
+            let XOutcome {
+                summary,
+                package,
+                version,
+                passthrough,
+                temp_env,
+                python_version,
+                exit_code,
+                cleanup,
+            } = execute_tool(args)?;
+            (
+                "x".to_string(),
+                RenderDetail::with_json(
+                    summary,
+                    json!({
+                        "package": package,
+                        "version": version,
+                        "passthrough": passthrough,
+                        "temp_env": temp_env,
+                        "python_version": python_version,
+                        "exit_code": exit_code,
+                        "cleanup": cleanup,
+                    }),
                 ),
-                json!({"package": args.package, "passthrough": args.passthrough}),
-            ),
-        ),
+            )
+        }
         Commands::Test(args) => (
             "test".to_string(),
             stub_detail(
@@ -634,6 +651,168 @@ fn python_remove(args: &crate::cli::PythonRemoveArgs) -> Result<(String, RenderD
     Ok(("remove".to_string(), RenderDetail::with_json(summary, json)))
 }
 
+// ---------------------------------------------------------------------------
+// pybun x (execute tool ad-hoc)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug)]
+struct XOutcome {
+    summary: String,
+    package: String,
+    version: Option<String>,
+    passthrough: Vec<String>,
+    temp_env: String,
+    python_version: String,
+    exit_code: i32,
+    cleanup: bool,
+}
+
+fn execute_tool(args: &crate::cli::ToolArgs) -> Result<XOutcome> {
+    let package_spec = args
+        .package
+        .as_ref()
+        .ok_or_else(|| eyre!("package name is required"))?;
+
+    // Parse package name and version
+    let (package_name, version) = parse_package_spec(package_spec);
+
+    // Check for dry-run mode (for testing)
+    let dry_run = std::env::var("PYBUN_X_DRY_RUN").is_ok();
+
+    // Find Python interpreter
+    let working_dir = std::env::current_dir()?;
+    let env = find_python_env(&working_dir)?;
+    let python_path = env.python_path.to_string_lossy().to_string();
+    let python_version = env.version.clone().unwrap_or_else(|| "unknown".to_string());
+
+    // Create temporary environment
+    let temp_dir =
+        tempfile::tempdir().map_err(|e| eyre!("failed to create temp directory: {}", e))?;
+    let temp_env_path = temp_dir.path().to_string_lossy().to_string();
+
+    if dry_run {
+        // In dry-run mode, just return the planned actions
+        return Ok(XOutcome {
+            summary: format!("would execute {} (dry-run)", package_name),
+            package: package_name,
+            version,
+            passthrough: args.passthrough.clone(),
+            temp_env: temp_env_path,
+            python_version,
+            exit_code: 0,
+            cleanup: true,
+        });
+    }
+
+    // Create virtual environment in temp directory
+    let venv_path = temp_dir.path().join("venv");
+    eprintln!(
+        "info: creating temporary environment at {}",
+        venv_path.display()
+    );
+
+    let venv_status = ProcessCommand::new(&python_path)
+        .args(["-m", "venv"])
+        .arg(&venv_path)
+        .status()
+        .map_err(|e| eyre!("failed to create virtual environment: {}", e))?;
+
+    if !venv_status.success() {
+        return Err(eyre!("failed to create virtual environment"));
+    }
+
+    // Get pip path in venv
+    let pip_path = if cfg!(windows) {
+        venv_path.join("Scripts").join("pip.exe")
+    } else {
+        venv_path.join("bin").join("pip")
+    };
+
+    // Get python path in venv
+    let venv_python = if cfg!(windows) {
+        venv_path.join("Scripts").join("python.exe")
+    } else {
+        venv_path.join("bin").join("python")
+    };
+
+    // Install the package
+    eprintln!("info: installing {}...", package_spec);
+    let install_status = ProcessCommand::new(&pip_path)
+        .args(["install", "--quiet", package_spec])
+        .status()
+        .map_err(|e| eyre!("failed to install package: {}", e))?;
+
+    if !install_status.success() {
+        return Err(eyre!("failed to install package {}", package_spec));
+    }
+
+    // Find and execute the entry point
+    // Most packages have a console script with the same name as the package
+    let entry_point = if cfg!(windows) {
+        venv_path
+            .join("Scripts")
+            .join(format!("{}.exe", package_name))
+    } else {
+        venv_path.join("bin").join(&package_name)
+    };
+
+    let exit_code = if entry_point.exists() {
+        // Execute the console script directly
+        eprintln!("info: executing {}...", entry_point.display());
+        let mut cmd = ProcessCommand::new(&entry_point);
+        for arg in &args.passthrough {
+            cmd.arg(arg);
+        }
+        let status = cmd
+            .status()
+            .map_err(|e| eyre!("failed to execute {}: {}", package_name, e))?;
+        status.code().unwrap_or(-1)
+    } else {
+        // Fallback: try to run as a module
+        eprintln!("info: executing python -m {}...", package_name);
+        let mut cmd = ProcessCommand::new(&venv_python);
+        cmd.args(["-m", &package_name]);
+        for arg in &args.passthrough {
+            cmd.arg(arg);
+        }
+        let status = cmd
+            .status()
+            .map_err(|e| eyre!("failed to execute module {}: {}", package_name, e))?;
+        status.code().unwrap_or(-1)
+    };
+
+    // Cleanup is automatic when temp_dir is dropped
+    let summary = if exit_code == 0 {
+        format!("executed {} successfully", package_name)
+    } else {
+        format!("{} exited with code {}", package_name, exit_code)
+    };
+
+    Ok(XOutcome {
+        summary,
+        package: package_name,
+        version,
+        passthrough: args.passthrough.clone(),
+        temp_env: temp_env_path,
+        python_version,
+        exit_code,
+        cleanup: true,
+    })
+}
+
+/// Parse a package specification like "cowsay==6.1" into (name, version)
+fn parse_package_spec(spec: &str) -> (String, Option<String>) {
+    // Handle various specifier formats
+    for sep in ["==", ">=", "<=", "!=", "~=", ">", "<"] {
+        if let Some(idx) = spec.find(sep) {
+            let name = spec[..idx].to_string();
+            let version = spec[idx + sep.len()..].to_string();
+            return (name, Some(version));
+        }
+    }
+    (spec.to_string(), None)
+}
+
 fn python_which(args: &crate::cli::PythonWhichArgs) -> Result<(String, RenderDetail)> {
     let cache = Cache::new().map_err(|e| eyre!("failed to initialize cache: {}", e))?;
     let manager = RuntimeManager::new(cache);
@@ -688,4 +867,51 @@ fn python_which(args: &crate::cli::PythonWhichArgs) -> Result<(String, RenderDet
     });
 
     Ok(("which".to_string(), RenderDetail::with_json(summary, json)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_package_spec_simple_name() {
+        let (name, version) = parse_package_spec("cowsay");
+        assert_eq!(name, "cowsay");
+        assert_eq!(version, None);
+    }
+
+    #[test]
+    fn parse_package_spec_exact_version() {
+        let (name, version) = parse_package_spec("cowsay==6.1");
+        assert_eq!(name, "cowsay");
+        assert_eq!(version, Some("6.1".to_string()));
+    }
+
+    #[test]
+    fn parse_package_spec_minimum_version() {
+        let (name, version) = parse_package_spec("requests>=2.28.0");
+        assert_eq!(name, "requests");
+        assert_eq!(version, Some("2.28.0".to_string()));
+    }
+
+    #[test]
+    fn parse_package_spec_maximum_version() {
+        let (name, version) = parse_package_spec("numpy<2.0");
+        assert_eq!(name, "numpy");
+        assert_eq!(version, Some("2.0".to_string()));
+    }
+
+    #[test]
+    fn parse_package_spec_compatible_version() {
+        let (name, version) = parse_package_spec("flask~=2.0.0");
+        assert_eq!(name, "flask");
+        assert_eq!(version, Some("2.0.0".to_string()));
+    }
+
+    #[test]
+    fn parse_package_spec_not_equal() {
+        let (name, version) = parse_package_spec("django!=3.0");
+        assert_eq!(name, "django");
+        assert_eq!(version, Some("3.0".to_string()));
+    }
 }

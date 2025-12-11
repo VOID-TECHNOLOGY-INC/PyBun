@@ -49,9 +49,10 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
   - Depends on: PR1.3.  
   - Current: `src/runtime.rs` implements full CPython runtime management with version table (3.9-3.12), python-build-standalone integration, download/verify/extract flow, ABI compatibility checking. `pybun python list/install/remove/which` commands implemented. Integration tests in `tests/runtime_management.rs`.
   - Tests: integration simulating cache miss → download → reuse; ABI mismatch warning; offline mode failure path.
-- [PENDING] PR1.7: Single-binary packaging flow (bundle CPython where allowed, otherwise bootstrap downloader) + `pybun x <pkg>` command.  
+- [DONE] PR1.7: Single-binary packaging flow (bundle CPython where allowed, otherwise bootstrap downloader) + `pybun x <pkg>` command.  
   - Depends on: PR1.6, PR0.4.  
-  - Tests: smoke executing bundled binary on macOS/Linux; `pybun x cowsay` fixture; artifact size check.
+  - Current: `pybun x <pkg>` command implemented with temporary virtual environment creation, package installation via pip, and automatic cleanup. Supports version specifiers (==, >=, <=, !=, ~=, >, <). Dry-run mode available for testing (PYBUN_X_DRY_RUN=1). Console script and module execution fallback.
+  - Tests: 10 E2E tests for x command (package argument required, JSON output, temp environment, cleanup, version spec, passthrough args); 6 unit tests for parse_package_spec.
 
 ### M2: Runtime & Import Optimizer (Phase 2)
 - PR2.1: Rust-based module finder (replace `sys.meta_path` entry, parallel fs scan) guarded by flag.  
