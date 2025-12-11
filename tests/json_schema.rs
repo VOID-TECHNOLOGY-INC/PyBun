@@ -84,7 +84,8 @@ fn json_duration_is_non_negative() {
 
     let duration = json.get("duration_ms").expect("duration_ms field");
     assert!(duration.is_u64(), "duration_ms must be a u64");
-    assert!(duration.as_u64().unwrap() >= 0, "duration_ms must be >= 0");
+    // u64 is always >= 0, so we just verify it's a valid number
+    let _ = duration.as_u64().expect("duration_ms is a valid u64");
 }
 
 /// Events field must be an array
@@ -226,16 +227,16 @@ fn json_trace_id_format_when_present() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON output");
 
-    if let Some(trace_id) = json.get("trace_id") {
-        if !trace_id.is_null() {
-            let trace_str = trace_id.as_str().expect("trace_id must be a string");
-            // UUID format: 8-4-4-4-12 hex chars
-            assert!(
-                trace_str.len() >= 32,
-                "trace_id should be UUID format: {}",
-                trace_str
-            );
-        }
+    if let Some(trace_id) = json.get("trace_id")
+        && !trace_id.is_null()
+    {
+        let trace_str = trace_id.as_str().expect("trace_id must be a string");
+        // UUID format: 8-4-4-4-12 hex chars
+        assert!(
+            trace_str.len() >= 32,
+            "trace_id should be UUID format: {}",
+            trace_str
+        );
     }
 }
 
