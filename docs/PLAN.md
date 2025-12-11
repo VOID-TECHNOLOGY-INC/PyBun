@@ -80,9 +80,10 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
   - Tests: snapshot of JSON diagnostics; E2E on plugins fixture repo.
 
 ### M4: AI/MCP & Structured Output (Phase 3)
-- PR4.1: Global JSON event schema + `--format=json` for all commands.  
+- [DONE] PR4.1: Global JSON event schema + `--format=json` for all commands.  
   - Depends on: M1 core CLI.  
-  - Tests: schema validation; golden event stream for install/run/test flows.
+  - Current: `src/schema.rs` module implements formal JSON schema with `JsonEnvelope`, `Event`, `Diagnostic` types. Event streaming with `EventCollector` for command lifecycle tracking (CommandStart, CommandEnd, ResolveStart, InstallComplete, etc.). All commands produce structured JSON with `--format=json`. Trace ID support via `PYBUN_TRACE=1`. Schema version "1" for future compatibility.
+  - Tests: 19 JSON schema tests validating envelope structure, event/diagnostic fields, all command JSON output; unit tests for schema module.
 - PR4.2: Self-healing diagnostics (dependency conflict trees, build error hints).  
   - Depends on: PR4.1, PR1.2 resolver diagnostics.  
   - Tests: integration with crafted conflicts; snapshot of suggestions.

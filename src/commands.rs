@@ -5,113 +5,197 @@ use crate::lockfile::{Lockfile, Package, PackageSource};
 use crate::pep723;
 use crate::project::Project;
 use crate::resolver::{Requirement, ResolveError, resolve};
+use crate::schema::{Diagnostic, Event, EventCollector, EventType, JsonEnvelope, Status};
 use color_eyre::eyre::{Result, eyre};
 use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::process::Command as ProcessCommand;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 pub fn execute(cli: Cli) -> Result<()> {
-    let start = Instant::now();
+    let mut collector = EventCollector::new();
+
+    // Record command start
+    collector.event(EventType::CommandStart);
+
     let (command, detail) = match &cli.command {
         Commands::Install(args) => {
-            let InstallOutcome {
-                summary,
-                packages,
-                lockfile,
-            } = install(args)?;
-            (
-                "install".to_string(),
-                RenderDetail::with_json(
+            collector.event(EventType::ResolveStart);
+            let result = install(args, &mut collector);
+            match result {
+                Ok(InstallOutcome {
                     summary,
-                    json!({
-                        "lockfile": lockfile.display().to_string(),
-                        "packages": packages,
-                    }),
-                ),
-            )
+                    packages,
+                    lockfile,
+                }) => {
+                    collector.event(EventType::InstallComplete);
+                    (
+                        "install".to_string(),
+                        RenderDetail::with_json(
+                            summary,
+                            json!({
+                                "lockfile": lockfile.display().to_string(),
+                                "packages": packages,
+                            }),
+                        ),
+                    )
+                }
+                Err(e) => {
+                    collector.error(e.to_string());
+                    (
+                        "install".to_string(),
+                        RenderDetail::error(
+                            e.to_string(),
+                            json!({
+                                "error": e.to_string(),
+                            }),
+                        ),
+                    )
+                }
+            }
         }
         Commands::Add(args) => {
-            let AddOutcome {
-                summary,
-                package,
-                version,
-                added_deps,
-            } = add_package(args)?;
-            (
-                "add".to_string(),
-                RenderDetail::with_json(
+            let result = add_package(args);
+            match result {
+                Ok(AddOutcome {
                     summary,
-                    json!({
-                        "package": package,
-                        "version": version,
-                        "added_dependencies": added_deps,
-                    }),
+                    package,
+                    version,
+                    added_deps,
+                }) => (
+                    "add".to_string(),
+                    RenderDetail::with_json(
+                        summary,
+                        json!({
+                            "package": package,
+                            "version": version,
+                            "added_dependencies": added_deps,
+                        }),
+                    ),
                 ),
-            )
+                Err(e) => {
+                    collector.error(e.to_string());
+                    (
+                        "add".to_string(),
+                        RenderDetail::error(
+                            e.to_string(),
+                            json!({
+                                "error": e.to_string(),
+                            }),
+                        ),
+                    )
+                }
+            }
         }
         Commands::Remove(args) => {
-            let RemoveOutcome {
-                summary,
-                package,
-                removed,
-            } = remove_package(args)?;
-            (
-                "remove".to_string(),
-                RenderDetail::with_json(
+            let result = remove_package(args);
+            match result {
+                Ok(RemoveOutcome {
                     summary,
-                    json!({
-                        "package": package,
-                        "removed": removed,
-                    }),
+                    package,
+                    removed,
+                }) => (
+                    "remove".to_string(),
+                    RenderDetail::with_json(
+                        summary,
+                        json!({
+                            "package": package,
+                            "removed": removed,
+                        }),
+                    ),
                 ),
-            )
+                Err(e) => {
+                    collector.error(e.to_string());
+                    (
+                        "remove".to_string(),
+                        RenderDetail::error(
+                            e.to_string(),
+                            json!({
+                                "error": e.to_string(),
+                            }),
+                        ),
+                    )
+                }
+            }
         }
         Commands::Run(args) => {
-            let RunOutcome {
-                summary,
-                target,
-                exit_code,
-                pep723_deps,
-            } = run_script(args)?;
-            (
-                "run".to_string(),
-                RenderDetail::with_json(
+            collector.event(EventType::ScriptStart);
+            let result = run_script(args, &mut collector);
+            match result {
+                Ok(RunOutcome {
                     summary,
-                    json!({
-                        "target": target,
-                        "exit_code": exit_code,
-                        "pep723_dependencies": pep723_deps,
-                    }),
-                ),
-            )
+                    target,
+                    exit_code,
+                    pep723_deps,
+                }) => {
+                    collector.event(EventType::ScriptEnd);
+                    (
+                        "run".to_string(),
+                        RenderDetail::with_json(
+                            summary,
+                            json!({
+                                "target": target,
+                                "exit_code": exit_code,
+                                "pep723_dependencies": pep723_deps,
+                            }),
+                        ),
+                    )
+                }
+                Err(e) => {
+                    collector.error(e.to_string());
+                    (
+                        "run".to_string(),
+                        RenderDetail::error(
+                            e.to_string(),
+                            json!({
+                                "error": e.to_string(),
+                            }),
+                        ),
+                    )
+                }
+            }
         }
         Commands::X(args) => {
-            let XOutcome {
-                summary,
-                package,
-                version,
-                passthrough,
-                temp_env,
-                python_version,
-                exit_code,
-                cleanup,
-            } = execute_tool(args)?;
-            (
-                "x".to_string(),
-                RenderDetail::with_json(
+            collector.event(EventType::EnvCreate);
+            let result = execute_tool(args, &mut collector);
+            match result {
+                Ok(XOutcome {
                     summary,
-                    json!({
-                        "package": package,
-                        "version": version,
-                        "passthrough": passthrough,
-                        "temp_env": temp_env,
-                        "python_version": python_version,
-                        "exit_code": exit_code,
-                        "cleanup": cleanup,
-                    }),
+                    package,
+                    version,
+                    passthrough,
+                    temp_env,
+                    python_version,
+                    exit_code,
+                    cleanup,
+                }) => (
+                    "x".to_string(),
+                    RenderDetail::with_json(
+                        summary,
+                        json!({
+                            "package": package,
+                            "version": version,
+                            "passthrough": passthrough,
+                            "temp_env": temp_env,
+                            "python_version": python_version,
+                            "exit_code": exit_code,
+                            "cleanup": cleanup,
+                        }),
+                    ),
                 ),
-            )
+                Err(e) => {
+                    collector.error(e.to_string());
+                    (
+                        "x".to_string(),
+                        RenderDetail::error(
+                            e.to_string(),
+                            json!({
+                                "error": e.to_string(),
+                            }),
+                        ),
+                    )
+                }
+            }
         }
         Commands::Test(args) => (
             "test".to_string(),
@@ -131,13 +215,11 @@ pub fn execute(cli: Cli) -> Result<()> {
             "build".to_string(),
             stub_detail(format!("sbom={}", args.sbom), json!({"sbom": args.sbom})),
         ),
-        Commands::Doctor(args) => (
-            "doctor".to_string(),
-            stub_detail(
-                format!("verbose={}", args.verbose),
-                json!({"verbose": args.verbose}),
-            ),
-        ),
+        Commands::Doctor(args) => {
+            collector.info("Running environment diagnostics");
+            let detail = run_doctor(args, &mut collector);
+            ("doctor".to_string(), detail)
+        }
         Commands::Mcp(cmd) => match cmd {
             McpCommands::Serve(args) => (
                 "mcp serve".to_string(),
@@ -161,31 +243,82 @@ pub fn execute(cli: Cli) -> Result<()> {
             ),
         ),
         Commands::Python(cmd) => {
-            let (subcmd, detail) = handle_python_command(cmd)?;
-            (format!("python {}", subcmd), detail)
+            match handle_python_command(cmd, &mut collector) {
+                Ok((subcmd, detail)) => (format!("python {}", subcmd), detail),
+                Err(e) => {
+                    collector.error(e.to_string());
+                    // Determine subcommand name for error reporting
+                    let subcmd = match cmd {
+                        PythonCommands::List(_) => "list",
+                        PythonCommands::Install(_) => "install",
+                        PythonCommands::Remove(_) => "remove",
+                        PythonCommands::Which(_) => "which",
+                    };
+                    (
+                        format!("python {}", subcmd),
+                        RenderDetail::error(
+                            e.to_string(),
+                            json!({
+                                "error": e.to_string(),
+                            }),
+                        ),
+                    )
+                }
+            }
         }
     };
 
-    let rendered = render(&command, detail, cli.format, start.elapsed());
+    // Record command end
+    collector.event(EventType::CommandEnd);
+
+    let duration = collector.elapsed();
+    let trace_id = collector.trace_id().map(String::from);
+    let events = collector.into_events();
+    let diagnostics = Vec::new(); // Diagnostics already handled inline
+
+    let is_error = detail.is_error;
+    let rendered = render(
+        &command,
+        detail,
+        cli.format,
+        duration,
+        events,
+        diagnostics,
+        trace_id,
+    );
     println!("{rendered}");
+
+    // Exit with error code if command failed
+    if is_error {
+        std::process::exit(1);
+    }
+
     Ok(())
 }
 
-fn render(command: &str, detail: RenderDetail, format: OutputFormat, duration: Duration) -> String {
+fn render(
+    command: &str,
+    detail: RenderDetail,
+    format: OutputFormat,
+    duration: Duration,
+    events: Vec<Event>,
+    diagnostics: Vec<Diagnostic>,
+    trace_id: Option<String>,
+) -> String {
     match format {
         OutputFormat::Text => format!("pybun {command}: {}", detail.text),
         OutputFormat::Json => {
-            let envelope = JsonEnvelope {
-                version: "1",
-                command: format!("pybun {command}"),
-                status: "ok",
-                duration_ms: duration.as_millis() as u64,
-                detail: detail.json,
-                events: Vec::new(),
-                diagnostics: Vec::new(),
-                trace_id: None,
+            let status = if detail.is_error {
+                Status::Error
+            } else {
+                Status::Ok
             };
-            serde_json::to_string(&envelope).expect("json render")
+            let mut envelope =
+                JsonEnvelope::new(format!("pybun {command}"), status, duration, detail.json);
+            envelope.events = events;
+            envelope.diagnostics = diagnostics;
+            envelope.trace_id = trace_id;
+            envelope.to_json()
         }
     }
 }
@@ -202,7 +335,106 @@ fn stub_detail(message: String, payload: Value) -> RenderDetail {
     )
 }
 
-fn install(args: &crate::cli::InstallArgs) -> Result<InstallOutcome> {
+// ---------------------------------------------------------------------------
+// pybun doctor
+// ---------------------------------------------------------------------------
+
+fn run_doctor(args: &crate::cli::DoctorArgs, collector: &mut EventCollector) -> RenderDetail {
+    let mut checks: Vec<Value> = Vec::new();
+    let mut all_ok = true;
+
+    // Check Python availability
+    let working_dir = std::env::current_dir().unwrap_or_default();
+    match find_python_env(&working_dir) {
+        Ok(env) => {
+            checks.push(json!({
+                "name": "python",
+                "status": "ok",
+                "message": format!("Python found at {}", env.python_path.display()),
+                "source": format!("{}", env.source),
+                "version": env.version,
+            }));
+            collector.info(format!("Python found: {}", env.python_path.display()));
+        }
+        Err(e) => {
+            checks.push(json!({
+                "name": "python",
+                "status": "error",
+                "message": format!("Python not found: {}", e),
+            }));
+            collector.warning(format!("Python not found: {}", e));
+            all_ok = false;
+        }
+    }
+
+    // Check cache directory
+    match Cache::new() {
+        Ok(cache) => {
+            let cache_dir = cache.root();
+            checks.push(json!({
+                "name": "cache",
+                "status": "ok",
+                "message": format!("Cache directory: {}", cache_dir.display()),
+                "path": cache_dir.display().to_string(),
+            }));
+        }
+        Err(e) => {
+            checks.push(json!({
+                "name": "cache",
+                "status": "error",
+                "message": format!("Cache initialization failed: {}", e),
+            }));
+            collector.warning(format!("Cache initialization failed: {}", e));
+            all_ok = false;
+        }
+    }
+
+    // Check for pyproject.toml
+    match Project::discover(&working_dir) {
+        Ok(project) => {
+            checks.push(json!({
+                "name": "project",
+                "status": "ok",
+                "message": format!("Project found at {}", project.path().display()),
+                "path": project.path().display().to_string(),
+                "dependencies": project.dependencies(),
+            }));
+        }
+        Err(_) => {
+            checks.push(json!({
+                "name": "project",
+                "status": "info",
+                "message": "No pyproject.toml found in current directory",
+            }));
+            collector.info("No pyproject.toml found");
+        }
+    }
+
+    let status = if all_ok { "healthy" } else { "issues_found" };
+    let summary = if all_ok {
+        "All checks passed".to_string()
+    } else {
+        "Some issues found".to_string()
+    };
+
+    if args.verbose {
+        collector.info("Verbose diagnostics enabled");
+    }
+
+    RenderDetail::with_json(
+        summary,
+        json!({
+            "status": status,
+            "checks": checks,
+            "verbose": args.verbose,
+        }),
+    )
+}
+
+fn install(
+    args: &crate::cli::InstallArgs,
+    _collector: &mut EventCollector,
+) -> Result<InstallOutcome> {
     if args.requirements.is_empty() {
         return Err(eyre!(
             "no requirements provided (temporary flag --require needed)"
@@ -263,6 +495,7 @@ struct InstallOutcome {
 struct RenderDetail {
     text: String,
     json: Value,
+    is_error: bool,
 }
 
 impl RenderDetail {
@@ -270,21 +503,17 @@ impl RenderDetail {
         Self {
             text: text.into(),
             json,
+            is_error: false,
         }
     }
-}
 
-#[derive(serde::Serialize)]
-struct JsonEnvelope {
-    version: &'static str,
-    command: String,
-    status: &'static str,
-    duration_ms: u64,
-    detail: Value,
-    events: Vec<Value>,
-    diagnostics: Vec<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    trace_id: Option<String>,
+    fn error(text: impl Into<String>, json: Value) -> Self {
+        Self {
+            text: text.into(),
+            json,
+            is_error: true,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -405,7 +634,7 @@ struct RunOutcome {
     pep723_deps: Vec<String>,
 }
 
-fn run_script(args: &crate::cli::RunArgs) -> Result<RunOutcome> {
+fn run_script(args: &crate::cli::RunArgs, collector: &mut EventCollector) -> Result<RunOutcome> {
     let target = args
         .target
         .as_ref()
@@ -416,7 +645,7 @@ fn run_script(args: &crate::cli::RunArgs) -> Result<RunOutcome> {
 
     // Check for -c flag style execution
     if target == "-c" {
-        return run_python_code(args);
+        return run_python_code(args, collector);
     }
 
     // Ensure the script exists
@@ -481,7 +710,10 @@ fn run_script(args: &crate::cli::RunArgs) -> Result<RunOutcome> {
     })
 }
 
-fn run_python_code(args: &crate::cli::RunArgs) -> Result<RunOutcome> {
+fn run_python_code(
+    args: &crate::cli::RunArgs,
+    _collector: &mut EventCollector,
+) -> Result<RunOutcome> {
     // pybun run -c "print('hello')" -- equivalent to python -c "..."
     let code = args
         .passthrough
@@ -541,11 +773,29 @@ fn find_python_interpreter() -> Result<(String, EnvSource)> {
 use crate::cache::Cache;
 use crate::runtime::{RuntimeManager, supported_versions};
 
-fn handle_python_command(cmd: &PythonCommands) -> Result<(String, RenderDetail)> {
+fn handle_python_command(
+    cmd: &PythonCommands,
+    collector: &mut EventCollector,
+) -> Result<(String, RenderDetail)> {
     match cmd {
-        PythonCommands::List(args) => python_list(args),
-        PythonCommands::Install(args) => python_install(args),
-        PythonCommands::Remove(args) => python_remove(args),
+        PythonCommands::List(args) => {
+            collector.event(EventType::PythonListStart);
+            let result = python_list(args);
+            collector.event(EventType::PythonListComplete);
+            result
+        }
+        PythonCommands::Install(args) => {
+            collector.event(EventType::PythonInstallStart);
+            let result = python_install(args);
+            collector.event(EventType::PythonInstallComplete);
+            result
+        }
+        PythonCommands::Remove(args) => {
+            collector.event(EventType::PythonRemoveStart);
+            let result = python_remove(args);
+            collector.event(EventType::PythonRemoveComplete);
+            result
+        }
         PythonCommands::Which(args) => python_which(args),
     }
 }
@@ -667,7 +917,7 @@ struct XOutcome {
     cleanup: bool,
 }
 
-fn execute_tool(args: &crate::cli::ToolArgs) -> Result<XOutcome> {
+fn execute_tool(args: &crate::cli::ToolArgs, _collector: &mut EventCollector) -> Result<XOutcome> {
     let package_spec = args
         .package
         .as_ref()

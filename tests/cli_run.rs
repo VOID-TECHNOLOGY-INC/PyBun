@@ -50,7 +50,7 @@ fn run_missing_script() {
         .args(["run", "nonexistent.py"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("script not found"));
+        .stdout(predicate::str::contains("script not found"));
 }
 
 #[test]
