@@ -11,3 +11,4 @@ pub mod project;
 pub mod resolver;
 pub mod runtime;
 pub mod schema;
+pub mod self_heal;

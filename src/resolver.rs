@@ -191,12 +191,23 @@ pub struct Resolution {
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum ResolveError {
     #[error("package {name} with constraint {constraint} not found")]
-    Missing { name: String, constraint: String },
+    Missing {
+        name: String,
+        constraint: String,
+        #[allow(dead_code)]
+        requested_by: Option<String>,
+        #[allow(dead_code)]
+        available_versions: Vec<String>,
+    },
     #[error("version conflict for {name}: existing {existing} vs requested {requested}")]
     Conflict {
         name: String,
         existing: String,
         requested: String,
+        #[allow(dead_code)]
+        existing_chain: Vec<String>,
+        #[allow(dead_code)]
+        requested_chain: Vec<String>,
     },
 }
 
@@ -211,28 +222,37 @@ pub fn resolve(
     index: &impl PackageIndex,
 ) -> Result<Resolution, ResolveError> {
     let mut resolved: BTreeMap<String, ResolvedPackage> = BTreeMap::new();
-    let mut stack: Vec<Requirement> = requirements;
+    // Track where each requirement came from (None = direct/user requirement).
+    let mut stack: Vec<(Requirement, Option<String>)> =
+        requirements.into_iter().map(|r| (r, None)).collect();
+    // Track which package introduced (required) a given resolved package.
+    let mut parents: BTreeMap<String, Option<String>> = BTreeMap::new();
 
-    while let Some(req) = stack.pop() {
+    while let Some((req, requested_by)) = stack.pop() {
         if let Some(existing) = resolved.get(&req.name) {
             if !req.is_satisfied_by(&existing.version) {
+                let existing_chain = build_chain(&parents, &req.name);
+                let requested_chain = build_requested_chain(&parents, &req.name, requested_by);
                 return Err(ResolveError::Conflict {
                     name: req.name.clone(),
                     existing: existing.version.clone(),
                     requested: req.constraint_display(),
+                    existing_chain,
+                    requested_chain,
                 });
             }
             continue;
         }
 
-        let pkg = select_package(&req, index)?;
+        let pkg = select_package(&req, index, requested_by.as_deref())?;
 
         // queue dependencies before inserting to keep deterministic traversal order
         for dep in pkg.dependencies.iter().rev() {
-            stack.push(dep.clone());
+            stack.push((dep.clone(), Some(pkg.name.clone())));
         }
 
         resolved.insert(req.name.clone(), pkg);
+        parents.insert(req.name.clone(), requested_by);
     }
 
     Ok(Resolution { packages: resolved })
@@ -241,6 +261,7 @@ pub fn resolve(
 fn select_package(
     req: &Requirement,
     index: &impl PackageIndex,
+    requested_by: Option<&str>,
 ) -> Result<ResolvedPackage, ResolveError> {
     match &req.spec {
         VersionSpec::Exact(version) => {
@@ -249,6 +270,8 @@ fn select_package(
                 .ok_or_else(|| ResolveError::Missing {
                     name: req.name.clone(),
                     constraint: req.constraint_display(),
+                    requested_by: requested_by.map(ToString::to_string),
+                    available_versions: available_versions(index, &req.name),
                 })
         }
         // All other specifiers: filter candidates and pick the highest matching version
@@ -270,6 +293,8 @@ fn select_package(
                 Err(ResolveError::Missing {
                     name: req.name.clone(),
                     constraint: req.constraint_display(),
+                    requested_by: requested_by.map(ToString::to_string),
+                    available_versions: available_versions(index, &req.name),
                 })
             }
         }
@@ -325,6 +350,39 @@ fn parse_req(input: &str) -> Requirement {
 
 fn version_cmp(a: &str, b: &str) -> Ordering {
     compare_versions(a, b)
+}
+
+fn available_versions(index: &impl PackageIndex, name: &str) -> Vec<String> {
+    let mut versions: Vec<String> = index.all(name).into_iter().map(|p| p.version).collect();
+    versions.sort_by(|a, b| version_cmp(b, a));
+    versions.dedup();
+    versions
+}
+
+fn build_chain(parents: &BTreeMap<String, Option<String>>, start: &str) -> Vec<String> {
+    let mut chain: Vec<String> = Vec::new();
+    let mut current: Option<String> = Some(start.to_string());
+    while let Some(name) = current {
+        chain.push(name.clone());
+        current = parents.get(&name).cloned().flatten();
+    }
+    chain.reverse();
+    chain
+}
+
+fn build_requested_chain(
+    parents: &BTreeMap<String, Option<String>>,
+    package: &str,
+    requested_by: Option<String>,
+) -> Vec<String> {
+    match requested_by {
+        Some(parent) => {
+            let mut chain = build_chain(parents, &parent);
+            chain.push(package.to_string());
+            chain
+        }
+        None => vec![package.to_string()],
+    }
 }
 
 /// Compare two version strings, returning their ordering.

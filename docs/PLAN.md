@@ -84,9 +84,10 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
   - Depends on: M1 core CLI.  
   - Current: `src/schema.rs` module implements formal JSON schema with `JsonEnvelope`, `Event`, `Diagnostic` types. Event streaming with `EventCollector` for command lifecycle tracking (CommandStart, CommandEnd, ResolveStart, InstallComplete, etc.). All commands produce structured JSON with `--format=json`. Trace ID support via `PYBUN_TRACE=1`. Schema version "1" for future compatibility.
   - Tests: 19 JSON schema tests validating envelope structure, event/diagnostic fields, all command JSON output; unit tests for schema module.
-- PR4.2: Self-healing diagnostics (dependency conflict trees, build error hints).  
+- [DONE] PR4.2: Self-healing diagnostics (dependency conflict trees, build error hints).  
   - Depends on: PR4.1, PR1.2 resolver diagnostics.  
-  - Tests: integration with crafted conflicts; snapshot of suggestions.
+  - Current: JSON output now includes `diagnostics` collected during execution (fix: collector diagnostics were previously dropped). Added `src/self_heal.rs` to emit structured diagnostics for resolver failures: `E_RESOLVE_MISSING` (available versions + hints) and `E_RESOLVE_CONFLICT` (conflict chains/tree context). Resolver now tracks requirement provenance to build conflict chains.
+  - Tests: integration tests in `tests/json_output.rs` verifying resolver errors emit structured diagnostic codes + conflict chains; conflict fixture `tests/fixtures/index_conflict.json`.
 - [DONE] PR4.3: MCP server `pybun mcp serve` (RPC endpoints: resolve, install, run, test).  
   - Depends on: PR4.1.  
   - Current: `src/mcp.rs` implements MCP server with JSON-RPC protocol support. Stdio mode via `--stdio` flag. Tools: `pybun_resolve`, `pybun_install`, `pybun_run`, `pybun_gc`, `pybun_doctor`. Resources: `pybun://cache/info`, `pybun://env/info`. Full MCP protocol compliance (initialize, tools/list, tools/call, resources/list, resources/read, shutdown).
