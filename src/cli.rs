@@ -180,9 +180,12 @@ pub enum McpCommands {
 
 #[derive(Args, Debug)]
 pub struct McpServeArgs {
-    /// Port to bind.
+    /// Port to bind (for HTTP mode).
     #[arg(long, default_value_t = 9999)]
     pub port: u16,
+    /// Use stdio mode for MCP communication.
+    #[arg(long)]
+    pub stdio: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -196,6 +199,9 @@ pub struct SelfUpdateArgs {
     /// Channel to update from (stable/nightly).
     #[arg(long, default_value = "stable")]
     pub channel: String,
+    /// Check for updates without installing.
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 #[derive(Args, Debug)]
@@ -203,4 +209,7 @@ pub struct GcArgs {
     /// Maximum cache size (e.g., 10G); LRU eviction if exceeded.
     #[arg(long)]
     pub max_size: Option<String>,
+    /// Preview what would be deleted without actually deleting.
+    #[arg(long)]
+    pub dry_run: bool,
 }

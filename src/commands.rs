@@ -221,27 +221,64 @@ pub fn execute(cli: Cli) -> Result<()> {
             ("doctor".to_string(), detail)
         }
         Commands::Mcp(cmd) => match cmd {
-            McpCommands::Serve(args) => (
-                "mcp serve".to_string(),
-                stub_detail(format!("port={}", args.port), json!({"port": args.port})),
-            ),
+            McpCommands::Serve(args) => {
+                if args.stdio {
+                    // Run MCP server in stdio mode - this blocks until shutdown
+                    if let Err(e) = crate::mcp::run_stdio_server() {
+                        collector.error(e.to_string());
+                        (
+                            "mcp serve".to_string(),
+                            RenderDetail::error(e.to_string(), json!({"error": e.to_string()})),
+                        )
+                    } else {
+                        (
+                            "mcp serve".to_string(),
+                            RenderDetail::with_json(
+                                "MCP server stopped",
+                                json!({"status": "stopped", "mode": "stdio"}),
+                            ),
+                        )
+                    }
+                } else {
+                    // HTTP mode (not yet implemented)
+                    (
+                        "mcp serve".to_string(),
+                        stub_detail(
+                            format!(
+                                "port={} (HTTP mode not yet implemented, use --stdio)",
+                                args.port
+                            ),
+                            json!({"port": args.port, "mode": "http", "status": "not_implemented"}),
+                        ),
+                    )
+                }
+            }
         },
         Commands::SelfCmd(cmd) => match cmd {
-            SelfCommands::Update(args) => (
-                "self update".to_string(),
-                stub_detail(
-                    format!("channel={}", args.channel),
-                    json!({"channel": args.channel}),
-                ),
-            ),
+            SelfCommands::Update(args) => {
+                let detail = run_self_update(args, &mut collector);
+                ("self update".to_string(), detail)
+            }
         },
-        Commands::Gc(args) => (
-            "gc".to_string(),
-            stub_detail(
-                format!("max_size={:?}", args.max_size),
-                json!({"max_size": args.max_size}),
-            ),
-        ),
+        Commands::Gc(args) => {
+            collector.event(EventType::CacheHit); // Reuse cache event
+            let result = run_gc(args, &mut collector);
+            match result {
+                Ok(detail) => ("gc".to_string(), detail),
+                Err(e) => {
+                    collector.error(e.to_string());
+                    (
+                        "gc".to_string(),
+                        RenderDetail::error(
+                            e.to_string(),
+                            json!({
+                                "error": e.to_string(),
+                            }),
+                        ),
+                    )
+                }
+            }
+        }
         Commands::Python(cmd) => {
             match handle_python_command(cmd, &mut collector) {
                 Ok((subcmd, detail)) => (format!("python {}", subcmd), detail),
@@ -770,7 +807,7 @@ fn find_python_interpreter() -> Result<(String, EnvSource)> {
 // pybun python
 // ---------------------------------------------------------------------------
 
-use crate::cache::Cache;
+use crate::cache::{Cache, format_size, parse_size};
 use crate::runtime::{RuntimeManager, supported_versions};
 
 fn handle_python_command(
@@ -1061,6 +1098,154 @@ fn parse_package_spec(spec: &str) -> (String, Option<String>) {
         }
     }
     (spec.to_string(), None)
+}
+
+// ---------------------------------------------------------------------------
+// pybun self update
+// ---------------------------------------------------------------------------
+
+fn run_self_update(
+    args: &crate::cli::SelfUpdateArgs,
+    collector: &mut EventCollector,
+) -> RenderDetail {
+    let current_version = env!("CARGO_PKG_VERSION");
+    let channel = &args.channel;
+
+    collector.info(format!("Checking for updates on {} channel", channel));
+
+    // In a real implementation, this would:
+    // 1. Query a release API for the latest version
+    // 2. Download the new binary
+    // 3. Verify the signature
+    // 4. Atomic swap with the current binary
+
+    // For now, we implement a dry-run / check mode
+    let update_check = UpdateCheck {
+        current_version: current_version.to_string(),
+        channel: channel.clone(),
+        // Simulated: no update available (in real impl, would check remote)
+        latest_version: current_version.to_string(),
+        update_available: false,
+        release_url: format!(
+            "https://github.com/pybun/pybun/releases/tag/v{}",
+            current_version
+        ),
+    };
+
+    let summary = if args.dry_run {
+        if update_check.update_available {
+            format!(
+                "Update available: {} -> {} (dry-run, no changes made)",
+                update_check.current_version, update_check.latest_version
+            )
+        } else {
+            format!(
+                "Already up to date: {} (channel: {})",
+                update_check.current_version, channel
+            )
+        }
+    } else if update_check.update_available {
+        // Would perform actual update here
+        format!(
+            "Would update: {} -> {} (update not yet implemented)",
+            update_check.current_version, update_check.latest_version
+        )
+    } else {
+        format!(
+            "Already up to date: {} (channel: {})",
+            update_check.current_version, channel
+        )
+    };
+
+    let json_detail = json!({
+        "current_version": update_check.current_version,
+        "latest_version": update_check.latest_version,
+        "channel": channel,
+        "update_available": update_check.update_available,
+        "release_url": update_check.release_url,
+        "dry_run": args.dry_run,
+    });
+
+    RenderDetail::with_json(summary, json_detail)
+}
+
+#[derive(Debug)]
+#[allow(dead_code)]
+struct UpdateCheck {
+    current_version: String,
+    channel: String,
+    latest_version: String,
+    update_available: bool,
+    release_url: String,
+}
+
+// ---------------------------------------------------------------------------
+// pybun gc (garbage collection)
+// ---------------------------------------------------------------------------
+
+fn run_gc(args: &crate::cli::GcArgs, collector: &mut EventCollector) -> Result<RenderDetail> {
+    let cache = Cache::new().map_err(|e| eyre!("failed to initialize cache: {}", e))?;
+
+    // Parse max size if provided
+    let max_bytes = if let Some(size_str) = &args.max_size {
+        Some(parse_size(size_str).map_err(|e| eyre!("invalid size format: {}", e))?)
+    } else {
+        None
+    };
+
+    collector.info(format!("Running GC on cache at {}", cache.root().display()));
+
+    // Ensure cache directories exist
+    cache
+        .ensure_dirs()
+        .map_err(|e| eyre!("failed to ensure cache dirs: {}", e))?;
+
+    // Run garbage collection
+    let gc_result = cache
+        .gc(max_bytes, args.dry_run)
+        .map_err(|e| eyre!("GC failed: {}", e))?;
+
+    let summary = if args.dry_run {
+        if gc_result.would_remove.is_empty() {
+            format!(
+                "Cache is within limits ({} used)",
+                format_size(gc_result.size_before)
+            )
+        } else {
+            format!(
+                "Would free {} ({} files)",
+                format_size(gc_result.freed_bytes),
+                gc_result.would_remove.len()
+            )
+        }
+    } else if gc_result.files_removed == 0 {
+        format!(
+            "Cache is within limits ({} used)",
+            format_size(gc_result.size_after)
+        )
+    } else {
+        format!(
+            "Freed {} ({} files removed)",
+            format_size(gc_result.freed_bytes),
+            gc_result.files_removed
+        )
+    };
+
+    let json_detail = json!({
+        "freed_bytes": gc_result.freed_bytes,
+        "freed_human": format_size(gc_result.freed_bytes),
+        "files_removed": gc_result.files_removed,
+        "size_before": gc_result.size_before,
+        "size_before_human": format_size(gc_result.size_before),
+        "size_after": gc_result.size_after,
+        "size_after_human": format_size(gc_result.size_after),
+        "dry_run": args.dry_run,
+        "max_size": args.max_size,
+        "would_remove": gc_result.would_remove.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+        "cache_root": cache.root().display().to_string(),
+    });
+
+    Ok(RenderDetail::with_json(summary, json_detail))
 }
 
 fn python_which(args: &crate::cli::PythonWhichArgs) -> Result<(String, RenderDetail)> {

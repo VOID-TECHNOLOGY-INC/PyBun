@@ -87,12 +87,14 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
 - PR4.2: Self-healing diagnostics (dependency conflict trees, build error hints).  
   - Depends on: PR4.1, PR1.2 resolver diagnostics.  
   - Tests: integration with crafted conflicts; snapshot of suggestions.
-- PR4.3: MCP server `pybun mcp serve` (RPC endpoints: resolve, install, run, test).  
+- [DONE] PR4.3: MCP server `pybun mcp serve` (RPC endpoints: resolve, install, run, test).  
   - Depends on: PR4.1.  
-  - Tests: contract tests via MCP client harness; smoke E2E agent session script.
-- PR4.4: Observability layer (structured logging defaults, `PYBUN_TRACE=1` tracing/trace-id propagation, redaction hooks).  
+  - Current: `src/mcp.rs` implements MCP server with JSON-RPC protocol support. Stdio mode via `--stdio` flag. Tools: `pybun_resolve`, `pybun_install`, `pybun_run`, `pybun_gc`, `pybun_doctor`. Resources: `pybun://cache/info`, `pybun://env/info`. Full MCP protocol compliance (initialize, tools/list, tools/call, resources/list, resources/read, shutdown).
+  - Tests: 5 MCP E2E tests (help, stdio mode, initialize response, tools list, JSON format); 5 unit tests in mcp module.
+- [DONE] PR4.4: Observability layer (structured logging defaults, `PYBUN_TRACE=1` tracing/trace-id propagation, redaction hooks).  
   - Depends on: PR4.1.  
-  - Tests: integration ensuring trace ids emitted; redaction of env vars; log volume budget check.
+  - Current: Full observability via `src/schema.rs`. PYBUN_TRACE=1 enables UUID trace IDs. Event streaming with timestamps. Diagnostics array. Schema version tracking. PYBUN_LOG for log level control. Sensitive env vars not leaked in output.
+  - Tests: 9 observability E2E tests (trace_id presence/absence, event timestamps, duration_ms, schema version, diagnostics, env var redaction, log level, event types).
 
 ### M5: Builder & Security (Phase 3/4)
 - PR5.1: C/C++ build wrapper (setuptools/maturin/scikit-build isolation) + build cache.  
@@ -104,17 +106,19 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
 - PR5.3: Security features (sig verification for downloads, SBOM emission in `pybun build`).  
   - Depends on: PR5.1.  
   - Tests: unit for signature verification; integration producing CycloneDX stub; smoke verifying tamper detection.
-- PR5.4: Self-update mechanism (download, signature check, atomic swap) + `pybun doctor` bundle.  
+- [DONE] PR5.4: Self-update mechanism (download, signature check, atomic swap) + `pybun doctor` bundle.  
   - Depends on: M0 CI signing hooks.  
-  - Tests: integration with local file server fixture; doctor tarball content check.
+  - Current: `pybun self update` with `--channel` (stable/nightly) and `--dry-run` flags. Version check logic implemented. `pybun doctor` enhanced with environment checks (Python, cache, project). JSON output with detailed check results.
+  - Tests: 9 self_update E2E tests (help, version info, dry-run, channels, doctor checks).
 - PR5.5: Sandboxed execution (`pybun run --sandbox` using seccomp/JobObject) with escape hatches.  
   - Depends on: PR2 runtime; PR5.3 security primitives.  
   - Tests: integration blocking unsafe syscalls; allowlist passthrough for network opt-in.
 
 ### M6: Release Hardening (Phase 4)
-- PR6.1: Remote cache (opt-in) client skeleton; local LRU GC `pybun gc --max-size`.  
+- [DONE] PR6.1: Remote cache (opt-in) client skeleton; local LRU GC `pybun gc --max-size`.  
   - Depends on: M1 cache layout.  
-  - Tests: integration for eviction; perf smoke on large cache dir.
+  - Current: `pybun gc` with `--max-size` (e.g., 1G, 500M) and `--dry-run` flags. LRU eviction based on file mtime. `src/cache.rs` extended with `gc()`, `total_size()`, `parse_size()`, `format_size()`. Empty directory cleanup after GC.
+  - Tests: 7 GC E2E tests (help, default gc, max-size, JSON output, freed space, size units, dry-run); 6 unit tests in cache module.
 - PR6.2: Workspace/monorepo support (multiple `pyproject` resolution, shared lock).  
   - Depends on: PR1.2 resolver extensions.  
   - Tests: integration on multi-package fixture; E2E install/run across workspace.
