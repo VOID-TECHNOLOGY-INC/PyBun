@@ -1,6 +1,6 @@
 use crate::cli::{
     Cli, Commands, LazyImportArgs, McpCommands, ModuleFindArgs, OutputFormat, PythonCommands,
-    SelfCommands,
+    SelfCommands, WatchArgs,
 };
 use crate::env::{EnvSource, find_python_env};
 use crate::index::load_index_from_path;
@@ -333,6 +333,25 @@ pub fn execute(cli: Cli) -> Result<()> {
                     collector.error(e.to_string());
                     (
                         "lazy-import".to_string(),
+                        RenderDetail::error(
+                            e.to_string(),
+                            json!({
+                                "error": e.to_string(),
+                            }),
+                        ),
+                    )
+                }
+            }
+        }
+        Commands::Watch(args) => {
+            collector.event(EventType::WatchStart);
+            let result = run_watch(args, &mut collector);
+            match result {
+                Ok(detail) => ("watch".to_string(), detail),
+                Err(e) => {
+                    collector.error(e.to_string());
+                    (
+                        "watch".to_string(),
                         RenderDetail::error(
                             e.to_string(),
                             json!({
@@ -1485,6 +1504,7 @@ fn run_module_find(args: &ModuleFindArgs, collector: &mut EventCollector) -> Res
 // pybun lazy-import
 // ---------------------------------------------------------------------------
 
+use crate::hot_reload::{HotReloadConfig, HotReloadWatcher, generate_shell_watcher_command};
 use crate::lazy_import::{LazyImportConfig, LazyImportDecision, generate_lazy_import_python_code};
 
 fn run_lazy_import(args: &LazyImportArgs, collector: &mut EventCollector) -> Result<RenderDetail> {
@@ -1598,6 +1618,142 @@ fn run_lazy_import(args: &LazyImportArgs, collector: &mut EventCollector) -> Res
         json!({
             "help": true,
             "available_options": ["--generate", "--check", "--show-config", "--allow", "--deny", "--log-imports", "--no-fallback", "-o"],
+        }),
+    ))
+}
+
+// ---------------------------------------------------------------------------
+// pybun watch (hot reload)
+// ---------------------------------------------------------------------------
+
+fn run_watch(args: &WatchArgs, collector: &mut EventCollector) -> Result<RenderDetail> {
+    // Build configuration
+    let mut config = HotReloadConfig::dev();
+
+    // Set watch paths
+    if !args.paths.is_empty() {
+        config.watch_paths = args.paths.clone();
+    } else {
+        config.watch_paths = vec![std::env::current_dir()?];
+    }
+
+    // Set include patterns
+    if !args.include.is_empty() {
+        config.include_patterns = args.include.clone();
+    }
+
+    // Set exclude patterns (merge with defaults)
+    for pattern in &args.exclude {
+        if !config.exclude_patterns.contains(pattern) {
+            config.exclude_patterns.push(pattern.clone());
+        }
+    }
+
+    config.debounce_ms = args.debounce;
+    config.clear_on_reload = args.clear;
+
+    // Handle --show-config mode
+    if args.show_config {
+        collector.info("Showing watch configuration");
+
+        let stats = HotReloadWatcher::new(config.clone()).stats();
+
+        let text = format!(
+            "Watch Configuration:\n  Paths: {:?}\n  Include patterns: {:?}\n  Exclude patterns: {} patterns\n  Debounce: {}ms\n  Clear on reload: {}",
+            config.watch_paths,
+            config.include_patterns,
+            config.exclude_patterns.len(),
+            config.debounce_ms,
+            config.clear_on_reload
+        );
+
+        return Ok(RenderDetail::with_json(
+            text,
+            json!({
+                "watch_paths": config.watch_paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+                "include_patterns": config.include_patterns,
+                "exclude_patterns": config.exclude_patterns,
+                "debounce_ms": config.debounce_ms,
+                "clear_on_reload": config.clear_on_reload,
+                "stats": {
+                    "is_running": stats.is_running,
+                    "watched_paths": stats.watched_paths,
+                    "include_patterns": stats.include_patterns,
+                    "exclude_patterns": stats.exclude_patterns,
+                },
+            }),
+        ));
+    }
+
+    // Handle --shell-command mode
+    if args.shell_command {
+        let target = args
+            .target
+            .as_ref()
+            .map(|t| format!("pybun run {}", t))
+            .unwrap_or_else(|| "echo 'File changed'".to_string());
+
+        let cmd = generate_shell_watcher_command(&config, &target);
+
+        collector.info("Generated shell watcher command");
+
+        return Ok(RenderDetail::with_json(
+            cmd.clone(),
+            json!({
+                "shell_command": cmd,
+                "target": target,
+                "watch_paths": config.watch_paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+            }),
+        ));
+    }
+
+    // Default mode: start watching
+    let target = args.target.as_ref();
+
+    if target.is_none() {
+        let text = "Usage: pybun watch [TARGET] [OPTIONS]\n\nWatch for file changes and re-run a script.\n\nExamples:\n  pybun watch main.py              # Watch current dir, run main.py on changes\n  pybun watch main.py -p src       # Watch src directory\n  pybun watch --show-config        # Show configuration\n  pybun watch --shell-command      # Generate external watcher command\n\nOptions:\n  -p, --path PATH          Paths to watch\n  --include PATTERN        Include patterns (e.g., *.py)\n  --exclude PATTERN        Exclude patterns\n  --debounce MS            Debounce delay in ms (default: 300)\n  --clear                  Clear terminal on reload";
+
+        return Ok(RenderDetail::with_json(
+            text,
+            json!({
+                "help": true,
+                "status": "awaiting_target",
+            }),
+        ));
+    }
+
+    // Would start watcher here (requires async/threading)
+    // For now, show what would be watched
+    let mut watcher = HotReloadWatcher::new(config.clone());
+    watcher.add_watch_path(std::env::current_dir()?);
+
+    let stats = watcher.stats();
+
+    let text = format!(
+        "Would watch {} paths for changes to run: {}\nPatterns: {} include, {} exclude\nDebounce: {}ms\n\nNote: Native file watching requires the 'notify' crate. Use --shell-command for external watcher.",
+        stats.watched_paths,
+        target.unwrap(),
+        stats.include_patterns,
+        stats.exclude_patterns,
+        stats.debounce_ms
+    );
+
+    collector.info(&text);
+
+    Ok(RenderDetail::with_json(
+        text,
+        json!({
+            "status": "preview",
+            "target": target,
+            "watch_paths": config.watch_paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+            "include_patterns": config.include_patterns,
+            "exclude_patterns": config.exclude_patterns,
+            "debounce_ms": config.debounce_ms,
+            "stats": {
+                "watched_paths": stats.watched_paths,
+                "include_patterns": stats.include_patterns,
+                "exclude_patterns": stats.exclude_patterns,
+            },
         }),
     ))
 }

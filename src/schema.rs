@@ -195,6 +195,11 @@ pub enum EventType {
     LazyImportStart,
     LazyImportComplete,
 
+    // Hot reload/watch events
+    WatchStart,
+    WatchStop,
+    FileChange,
+
     // Generic progress event
     Progress,
 

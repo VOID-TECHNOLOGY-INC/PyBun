@@ -2,6 +2,7 @@ pub mod cache;
 pub mod cli;
 pub mod commands;
 pub mod env;
+pub mod hot_reload;
 pub mod index;
 pub mod lazy_import;
 pub mod lockfile;
