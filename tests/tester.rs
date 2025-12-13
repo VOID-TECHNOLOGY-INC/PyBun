@@ -489,7 +489,7 @@ def test_parametrized(x):
     });
     assert!(skipped.is_some(), "Should find test_skipped");
     let skipped = skipped.unwrap();
-    assert_eq!(skipped.get("skipped").unwrap().as_bool().unwrap(), true);
+    assert!(skipped.get("skipped").unwrap().as_bool().unwrap());
     assert!(skipped.get("skip_reason").is_some());
 
     // Find xfail test
@@ -500,10 +500,7 @@ def test_parametrized(x):
             .unwrap_or(false)
     });
     assert!(xfail.is_some(), "Should find test_expected_fail");
-    assert_eq!(
-        xfail.unwrap().get("xfail").unwrap().as_bool().unwrap(),
-        true
-    );
+    assert!(xfail.unwrap().get("xfail").unwrap().as_bool().unwrap());
 
     // Find parametrized test
     let param = tests.iter().find(|t| {

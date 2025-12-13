@@ -305,11 +305,10 @@ impl TestDiscovery {
             let path = entry.path();
 
             if path.is_dir() {
-                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                    if !self.config.exclude_dirs.contains(name) {
+                if let Some(name) = path.file_name().and_then(|n| n.to_str())
+                    && !self.config.exclude_dirs.contains(name) {
                         self.collect_test_files_recursive(&path, files);
                     }
-                }
             } else if self.is_test_file(&path) {
                 files.push(path);
             }
@@ -503,11 +502,10 @@ impl TestDiscovery {
             }
 
             // Reset class context if we encounter a top-level definition
-            if !line.starts_with(' ') && !line.starts_with('\t') && !trimmed.is_empty() {
-                if !trimmed.starts_with('@') {
+            if !line.starts_with(' ') && !line.starts_with('\t') && !trimmed.is_empty()
+                && !trimmed.starts_with('@') {
                     current_class = None;
                 }
-            }
         }
 
         (tests, fixtures, warnings)
@@ -535,7 +533,7 @@ impl TestDiscovery {
         let line = line.trim_start_matches("class ");
         // Handle "class TestFoo:" or "class TestFoo(Base):"
         let name_end = line
-            .find(|c: char| c == '(' || c == ':')
+            .find(['(', ':'])
             .unwrap_or(line.len());
         let name = line[..name_end].trim();
         if !name.is_empty() {
@@ -637,8 +635,8 @@ impl TestDiscovery {
     /// Get skip reason if available
     fn get_skip_reason(&self, decorators: &[DecoratorInfo]) -> Option<String> {
         for dec in decorators {
-            if dec.name.contains("skip") {
-                if let Some(ref args) = dec.args {
+            if dec.name.contains("skip")
+                && let Some(ref args) = dec.args {
                     // Look for reason= argument
                     for part in split_args(args) {
                         let part = part.trim();
@@ -655,7 +653,6 @@ impl TestDiscovery {
                         }
                     }
                 }
-            }
         }
         None
     }
@@ -673,11 +670,10 @@ impl TestDiscovery {
     /// Get parametrize info if available
     fn get_parametrize(&self, decorators: &[DecoratorInfo]) -> Option<ParametrizeInfo> {
         for dec in decorators {
-            if dec.name.contains("parametrize") {
-                if let Some(ref args) = dec.args {
+            if dec.name.contains("parametrize")
+                && let Some(ref args) = dec.args {
                     return self.parse_parametrize_args(args);
                 }
-            }
         }
         None
     }
@@ -748,8 +744,8 @@ impl TestDiscovery {
 
         // Parse fixture decorator arguments
         for dec in decorators {
-            if dec.name == "fixture" || dec.name == "pytest.fixture" {
-                if let Some(ref args) = dec.args {
+            if (dec.name == "fixture" || dec.name == "pytest.fixture")
+                && let Some(ref args) = dec.args {
                     for part in split_args(args) {
                         let part = part.trim();
                         if part.starts_with("scope=") {
@@ -769,7 +765,6 @@ impl TestDiscovery {
                         }
                     }
                 }
-            }
         }
 
         let dependencies = self.extract_fixture_dependencies(func_line);
@@ -796,9 +791,9 @@ impl TestDiscovery {
 
         for dec in decorators {
             // Warn about complex fixtures that might need shim
-            if dec.name.contains("fixture") {
-                if let Some(ref args) = dec.args {
-                    if args.contains("session") || args.contains("package") {
+            if dec.name.contains("fixture")
+                && let Some(ref args) = dec.args
+                    && (args.contains("session") || args.contains("package")) {
                         warnings.push(CompatWarning {
                             code: "W001".to_string(),
                             message: format!(
@@ -810,8 +805,6 @@ impl TestDiscovery {
                             severity: WarningSeverity::Warning,
                         });
                     }
-                }
-            }
 
             // Warn about pytest plugins
             if dec.name.contains("usefixtures")
