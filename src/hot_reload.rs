@@ -8,12 +8,16 @@
 //! - Configurable watch patterns (include/exclude)
 //! - Debouncing to prevent rapid successive reloads
 //! - Dev profile toggle to enable/disable in production
+//! - Native file watching with `notify` crate (optional feature: `native-watch`)
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
+
+#[cfg(feature = "native-watch")]
+use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 
 /// Configuration for the hot reload watcher.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -121,6 +125,29 @@ pub struct WatcherHandle {
     pub watched_paths: usize,
     /// Receiver for change events.
     pub event_receiver: Option<mpsc::Receiver<FileChangeEvent>>,
+}
+
+/// Native watcher result (with the actual watcher object for lifetime management).
+#[cfg(feature = "native-watch")]
+pub struct NativeWatcherHandle {
+    /// Status of the watcher.
+    pub status: WatcherStatus,
+    /// Number of paths being watched.
+    pub watched_paths: usize,
+    /// Receiver for change events.
+    pub event_receiver: mpsc::Receiver<FileChangeEvent>,
+    /// The actual notify watcher (keep alive for watching to continue).
+    _watcher: RecommendedWatcher,
+}
+
+#[cfg(feature = "native-watch")]
+impl std::fmt::Debug for NativeWatcherHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NativeWatcherHandle")
+            .field("status", &self.status)
+            .field("watched_paths", &self.watched_paths)
+            .finish_non_exhaustive()
+    }
 }
 
 /// The hot reload watcher.
@@ -259,6 +286,93 @@ impl HotReloadWatcher {
         self.pending_events.clear();
     }
 
+    /// Start native file watching using the `notify` crate.
+    ///
+    /// This requires the `native-watch` feature to be enabled.
+    /// Returns a handle that must be kept alive for watching to continue.
+    #[cfg(feature = "native-watch")]
+    pub fn start_native(&mut self) -> Result<NativeWatcherHandle, String> {
+        if !self.config.enabled {
+            return Err("Watcher is not enabled".to_string());
+        }
+
+        if self.config.watch_paths.is_empty() {
+            return Err("No paths to watch".to_string());
+        }
+
+        // Create channel for events
+        let (tx, rx) = mpsc::channel();
+        let config_clone = self.config.clone();
+
+        // Create the watcher with event handler
+        let watcher_result = RecommendedWatcher::new(
+            move |res: Result<notify::Event, notify::Error>| {
+                match res {
+                    Ok(event) => {
+                        // Filter and convert events
+                        if let Some(change_event) = convert_notify_event(&event, &config_clone) {
+                            // Ignore send errors (receiver might be dropped)
+                            let _ = tx.send(change_event);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("watch error: {:?}", e);
+                    }
+                }
+            },
+            Config::default().with_poll_interval(Duration::from_millis(self.config.debounce_ms)),
+        );
+
+        let mut watcher = match watcher_result {
+            Ok(w) => w,
+            Err(e) => return Err(format!("Failed to create watcher: {}", e)),
+        };
+
+        // Watch all configured paths
+        let mut watched_count = 0;
+        for path in &self.config.watch_paths {
+            if !path.exists() {
+                eprintln!("warning: path does not exist: {}", path.display());
+                continue;
+            }
+
+            match watcher.watch(path, RecursiveMode::Recursive) {
+                Ok(()) => {
+                    watched_count += 1;
+                    eprintln!("info: watching {}", path.display());
+                }
+                Err(e) => {
+                    eprintln!("warning: failed to watch {}: {}", path.display(), e);
+                }
+            }
+        }
+
+        if watched_count == 0 {
+            return Err("No valid paths to watch".to_string());
+        }
+
+        self.status = WatcherStatus::Running;
+
+        Ok(NativeWatcherHandle {
+            status: WatcherStatus::Running,
+            watched_paths: watched_count,
+            event_receiver: rx,
+            _watcher: watcher,
+        })
+    }
+
+    /// Check if native watching is available.
+    #[cfg(feature = "native-watch")]
+    pub fn native_watch_available() -> bool {
+        true
+    }
+
+    /// Check if native watching is available (returns false when feature is disabled).
+    #[cfg(not(feature = "native-watch"))]
+    pub fn native_watch_available() -> bool {
+        false
+    }
+
     /// Process an event (with debouncing).
     pub fn process_event(&mut self, event: FileChangeEvent) -> Option<FileChangeEvent> {
         let now = Instant::now();
@@ -317,6 +431,65 @@ pub struct WatcherStats {
     pub pending_events: usize,
 }
 
+/// Convert a notify event to a FileChangeEvent.
+/// Returns None if the event should be filtered out.
+#[cfg(feature = "native-watch")]
+fn convert_notify_event(
+    event: &notify::Event,
+    config: &HotReloadConfig,
+) -> Option<FileChangeEvent> {
+    use notify::EventKind;
+
+    // Determine change type from notify event kind
+    let change_type = match event.kind {
+        EventKind::Create(_) => ChangeType::Created,
+        EventKind::Modify(_) => ChangeType::Modified,
+        EventKind::Remove(_) => ChangeType::Deleted,
+        EventKind::Other => return None, // Ignore other events
+        EventKind::Any => ChangeType::Modified, // Default to modified
+        EventKind::Access(_) => return None, // Ignore access events
+    };
+
+    // Get the first path from the event
+    let path = event.paths.first()?;
+
+    // Check if this path should be watched based on patterns
+    let path_str = path.to_string_lossy();
+
+    // Check exclude patterns
+    for pattern in &config.exclude_patterns {
+        if matches_pattern(&path_str, pattern) {
+            return None;
+        }
+    }
+
+    // Check include patterns
+    if !config.include_patterns.is_empty() {
+        let mut included = false;
+        for pattern in &config.include_patterns {
+            if matches_pattern(&path_str, pattern) {
+                included = true;
+                break;
+            }
+        }
+        if !included {
+            return None;
+        }
+    }
+
+    // Get current timestamp in milliseconds
+    let timestamp_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+
+    Some(FileChangeEvent::new(
+        path.clone(),
+        change_type,
+        timestamp_ms,
+    ))
+}
+
 /// Simple glob-style pattern matching.
 fn matches_pattern(path: &str, pattern: &str) -> bool {
     if pattern.starts_with('*') && pattern.len() > 1 {
@@ -363,6 +536,151 @@ impl HotReloadConfig {
             .map_err(|e| format!("failed to serialize config: {}", e))?;
         std::fs::write(path, content).map_err(|e| format!("failed to write config: {}", e))
     }
+}
+
+/// Callback type for file change events.
+#[cfg(feature = "native-watch")]
+pub type OnChangeCallback = Box<dyn Fn(&FileChangeEvent)>;
+
+/// Run a command when files change using native watching.
+///
+/// This function blocks and runs until interrupted (Ctrl+C).
+/// Requires the `native-watch` feature.
+#[cfg(feature = "native-watch")]
+pub fn run_native_watch_loop(
+    config: &HotReloadConfig,
+    command: &str,
+    on_change: Option<OnChangeCallback>,
+) -> Result<(), String> {
+    use std::process::Command;
+
+    let mut watcher = HotReloadWatcher::new(config.clone());
+    let handle = watcher.start_native()?;
+
+    eprintln!("info: native file watching started");
+    eprintln!("info: press Ctrl+C to stop");
+
+    // Debounce tracking
+    let mut last_run = Instant::now();
+    let debounce = Duration::from_millis(config.debounce_ms);
+
+    // Process events in a loop
+    loop {
+        match handle
+            .event_receiver
+            .recv_timeout(Duration::from_millis(100))
+        {
+            Ok(event) => {
+                // Debounce check
+                let now = Instant::now();
+                if now.duration_since(last_run) < debounce {
+                    continue;
+                }
+                last_run = now;
+
+                // Optional callback
+                if let Some(ref callback) = on_change {
+                    callback(&event);
+                }
+
+                eprintln!("info: {:?} {}", event.change_type, event.path.display());
+
+                // Clear terminal if configured
+                if config.clear_on_reload {
+                    // ANSI escape sequence to clear screen
+                    print!("\x1B[2J\x1B[1;1H");
+                }
+
+                // Run the command
+                eprintln!("info: running: {}", command);
+                let status = if cfg!(windows) {
+                    Command::new("cmd").args(["/C", command]).status()
+                } else {
+                    Command::new("sh").args(["-c", command]).status()
+                };
+
+                match status {
+                    Ok(s) => {
+                        if s.success() {
+                            eprintln!("info: command completed successfully");
+                        } else {
+                            eprintln!(
+                                "warning: command exited with code {}",
+                                s.code().unwrap_or(-1)
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("error: failed to run command: {}", e);
+                    }
+                }
+
+                eprintln!("info: watching for changes...");
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                // Normal timeout, continue watching
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                // Watcher was dropped
+                break;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Watch result containing collected events.
+#[cfg(feature = "native-watch")]
+pub struct WatchResult {
+    /// Events collected during watching.
+    pub events: Vec<FileChangeEvent>,
+    /// Duration of watching.
+    pub duration_ms: u64,
+}
+
+/// Watch for file changes and collect events for a specified duration.
+/// Useful for testing.
+#[cfg(feature = "native-watch")]
+pub fn watch_for_duration(
+    config: &HotReloadConfig,
+    timeout: Duration,
+) -> Result<WatchResult, String> {
+    let mut watcher = HotReloadWatcher::new(config.clone());
+    let handle = watcher.start_native()?;
+
+    let start = Instant::now();
+    let mut events = Vec::new();
+
+    // Collect events until timeout
+    loop {
+        let remaining = timeout.saturating_sub(start.elapsed());
+        if remaining.is_zero() {
+            break;
+        }
+
+        match handle
+            .event_receiver
+            .recv_timeout(remaining.min(Duration::from_millis(100)))
+        {
+            Ok(event) => {
+                events.push(event);
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if start.elapsed() >= timeout {
+                    break;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                break;
+            }
+        }
+    }
+
+    Ok(WatchResult {
+        events,
+        duration_ms: start.elapsed().as_millis() as u64,
+    })
 }
 
 /// Generate a shell command for a basic file watcher.
@@ -561,5 +879,140 @@ mod tests {
 
         assert_eq!(config.enabled, deserialized.enabled);
         assert_eq!(config.debounce_ms, deserialized.debounce_ms);
+    }
+
+    #[test]
+    fn test_native_watch_available() {
+        // Test that the function exists and returns the expected value
+        let available = HotReloadWatcher::native_watch_available();
+        // When compiled without the feature, this should be false
+        // When compiled with the feature, this should be true
+        #[cfg(feature = "native-watch")]
+        assert!(available);
+        #[cfg(not(feature = "native-watch"))]
+        assert!(!available);
+    }
+
+    #[cfg(feature = "native-watch")]
+    mod native_watch_tests {
+        use super::*;
+        use std::fs::File;
+        use std::io::Write;
+        use tempfile::TempDir;
+
+        #[test]
+        fn test_start_native_no_paths() {
+            let mut config = HotReloadConfig::dev();
+            config.watch_paths.clear();
+            let mut watcher = HotReloadWatcher::new(config);
+
+            let result = watcher.start_native();
+            assert!(result.is_err());
+            assert!(result.unwrap_err().contains("No paths to watch"));
+        }
+
+        #[test]
+        fn test_start_native_disabled() {
+            let mut config = HotReloadConfig::dev();
+            config.enabled = false;
+            let mut watcher = HotReloadWatcher::new(config);
+
+            let result = watcher.start_native();
+            assert!(result.is_err());
+            assert!(result.unwrap_err().contains("not enabled"));
+        }
+
+        #[test]
+        fn test_start_native_with_temp_dir() {
+            let temp = TempDir::new().unwrap();
+            let mut config = HotReloadConfig::dev();
+            config.watch_paths = vec![temp.path().to_path_buf()];
+
+            let mut watcher = HotReloadWatcher::new(config);
+            let result = watcher.start_native();
+
+            assert!(result.is_ok());
+            let handle = result.unwrap();
+            assert_eq!(handle.status, WatcherStatus::Running);
+            assert_eq!(handle.watched_paths, 1);
+        }
+
+        #[test]
+        fn test_native_event_detection() {
+            let temp = TempDir::new().unwrap();
+            let mut config = HotReloadConfig::dev();
+            config.watch_paths = vec![temp.path().to_path_buf()];
+            config.debounce_ms = 50;
+
+            let mut watcher = HotReloadWatcher::new(config);
+            let handle = watcher.start_native().unwrap();
+
+            // Give the watcher a moment to initialize
+            std::thread::sleep(Duration::from_millis(100));
+
+            // Create a Python file
+            let test_file = temp.path().join("test.py");
+            let mut file = File::create(&test_file).unwrap();
+            writeln!(file, "print('hello')").unwrap();
+            file.sync_all().unwrap();
+            drop(file);
+
+            // Wait for the event with timeout
+            let event = handle.event_receiver.recv_timeout(Duration::from_secs(2));
+
+            // We should receive at least one event
+            assert!(event.is_ok(), "Expected to receive file change event");
+            let event = event.unwrap();
+            assert!(event.path.ends_with("test.py"));
+        }
+
+        #[test]
+        fn test_event_filtering_excludes_pycache() {
+            let temp = TempDir::new().unwrap();
+
+            // Create __pycache__ directory
+            let pycache = temp.path().join("__pycache__");
+            std::fs::create_dir(&pycache).unwrap();
+
+            let mut config = HotReloadConfig::dev();
+            config.watch_paths = vec![temp.path().to_path_buf()];
+            config.debounce_ms = 50;
+
+            let mut watcher = HotReloadWatcher::new(config);
+            let handle = watcher.start_native().unwrap();
+
+            std::thread::sleep(Duration::from_millis(100));
+
+            // Create a .pyc file in __pycache__ (should be filtered)
+            let pyc_file = pycache.join("test.cpython-311.pyc");
+            File::create(&pyc_file).unwrap();
+
+            // Create a .py file (should be included)
+            let py_file = temp.path().join("main.py");
+            let mut file = File::create(&py_file).unwrap();
+            writeln!(file, "print('main')").unwrap();
+            file.sync_all().unwrap();
+
+            // Collect events
+            let mut events = Vec::new();
+            for _ in 0..10 {
+                match handle
+                    .event_receiver
+                    .recv_timeout(Duration::from_millis(200))
+                {
+                    Ok(e) => events.push(e),
+                    Err(_) => break,
+                }
+            }
+
+            // Should have received event for main.py but not for .pyc
+            assert!(events.iter().any(|e| e.path.ends_with("main.py")));
+            // .pyc file changes should be filtered out by exclude pattern
+            assert!(
+                !events
+                    .iter()
+                    .any(|e| e.path.to_string_lossy().contains(".pyc"))
+            );
+        }
     }
 }

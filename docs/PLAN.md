@@ -87,10 +87,11 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
   - Depends on: PR2.1.  
   - Current: `src/hot_reload.rs` implements file watcher configuration with include/exclude patterns, debouncing, and platform abstraction. `pybun watch` command with `--show-config`, `--shell-command` for external watcher generation, customizable include/exclude patterns, debounce timing. Dev profile configuration. Shell command generation for fswatch (macOS) and inotifywait (Linux).
   - Tests: 17 unit tests (config, pattern matching, debouncing, deduplication, watcher status); 12 E2E tests (help, config, target, paths, patterns, shell command generation).
-- PR2.3b: ネイティブファイル監視の実装（`notify` 等）を feature flag で追加  
+- [DONE] PR2.3b: ネイティブファイル監視の実装（`notify` 等）を feature flag で追加  
   - Goal: 現状の外部ウォッチャー生成に加えて、`pybun watch` が単体で監視→再実行できる。  
   - Risk: OS差分が出るので、まずは macOS/Linux のみ、Windows はスタブ維持。  
-  - Tests: unit（イベントフィルタ/デバウンス）＋ E2E（少数の変更検知）を短時間で。
+  - Current: `notify` v7.0 を optional dependency として追加（feature flag: `native-watch`）。`HotReloadWatcher::start_native()` でネイティブファイル監視を開始。`run_native_watch_loop()` でファイル変更時にコマンドを自動再実行。FSEvent (macOS) / inotify (Linux) を使用。デバウンス、include/exclude パターンフィルタ対応。`--dry-run` フラグでテスト時のブロッキング回避。
+  - Tests: 5 unit tests (native watcher start/stop, event detection, filtering); 16 E2E tests (CLI help, config, dry-run, native-watch feature detection).
 - [DONE] PR2.4: Launch profiles (`--profile=dev|prod|benchmark`), logging verbosity, tracing hooks.  
   - Depends on: PR2.2, PR2.3.  
   - Current: `src/profiles.rs` implements Profile enum (Dev, Prod, Benchmark) with ProfileConfig for each. ProfileManager for loading/selecting profiles. `pybun profile` command with `--list`, `--show`, `--compare`, `-o` (export) options. Dev: hot reload, verbose logging; Prod: lazy imports, optimizations; Benchmark: tracing, timing. Environment variable detection (PYBUN_PROFILE). Python optimization flags (-O, -OO).

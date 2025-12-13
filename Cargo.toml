@@ -3,6 +3,11 @@ name = "pybun"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = []
+# Enable native file watching using the `notify` crate (macOS/Linux)
+native-watch = ["notify"]
+
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
 color-eyre = "0.6"
@@ -15,6 +20,8 @@ dirs = "5.0"
 toml = "0.8"
 tempfile = "3.14"
 uuid = { version = "1.11", features = ["v4"] }
+# Native file system watcher (optional, for `pybun watch`)
+notify = { version = "7.0", optional = true }
 
 [dev-dependencies]
 assert_cmd = "2.0"

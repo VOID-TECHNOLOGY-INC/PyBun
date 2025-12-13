@@ -1659,6 +1659,8 @@ fn run_module_find(args: &ModuleFindArgs, collector: &mut EventCollector) -> Res
 // pybun lazy-import
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "native-watch")]
+use crate::hot_reload::run_native_watch_loop;
 use crate::hot_reload::{HotReloadConfig, HotReloadWatcher, generate_shell_watcher_command};
 use crate::lazy_import::{LazyImportConfig, LazyImportDecision, generate_lazy_import_python_code};
 
@@ -1866,51 +1868,170 @@ fn run_watch(args: &WatchArgs, collector: &mut EventCollector) -> Result<RenderD
     let target = args.target.as_ref();
 
     if target.is_none() {
-        let text = "Usage: pybun watch [TARGET] [OPTIONS]\n\nWatch for file changes and re-run a script.\n\nExamples:\n  pybun watch main.py              # Watch current dir, run main.py on changes\n  pybun watch main.py -p src       # Watch src directory\n  pybun watch --show-config        # Show configuration\n  pybun watch --shell-command      # Generate external watcher command\n\nOptions:\n  -p, --path PATH          Paths to watch\n  --include PATTERN        Include patterns (e.g., *.py)\n  --exclude PATTERN        Exclude patterns\n  --debounce MS            Debounce delay in ms (default: 300)\n  --clear                  Clear terminal on reload";
+        let native_available = HotReloadWatcher::native_watch_available();
+        let text = format!(
+            "Usage: pybun watch [TARGET] [OPTIONS]\n\n\
+            Watch for file changes and re-run a script.\n\n\
+            Examples:\n  \
+            pybun watch main.py              # Watch current dir, run main.py on changes\n  \
+            pybun watch main.py -p src       # Watch src directory\n  \
+            pybun watch --show-config        # Show configuration\n  \
+            pybun watch --shell-command      # Generate external watcher command\n\n\
+            Options:\n  \
+            -p, --path PATH          Paths to watch\n  \
+            --include PATTERN        Include patterns (e.g., *.py)\n  \
+            --exclude PATTERN        Exclude patterns\n  \
+            --debounce MS            Debounce delay in ms (default: 300)\n  \
+            --clear                  Clear terminal on reload\n\n\
+            Native file watching: {}",
+            if native_available {
+                "enabled"
+            } else {
+                "disabled (build with --features native-watch)"
+            }
+        );
 
         return Ok(RenderDetail::with_json(
             text,
             json!({
                 "help": true,
                 "status": "awaiting_target",
+                "native_watch_available": native_available,
             }),
         ));
     }
 
-    // Would start watcher here (requires async/threading)
-    // For now, show what would be watched
+    let target_script = target.unwrap();
     let mut watcher = HotReloadWatcher::new(config.clone());
-    watcher.add_watch_path(std::env::current_dir()?);
+
+    // Add watch paths
+    for path in &config.watch_paths {
+        watcher.add_watch_path(path.clone());
+    }
 
     let stats = watcher.stats();
 
-    let text = format!(
-        "Would watch {} paths for changes to run: {}\nPatterns: {} include, {} exclude\nDebounce: {}ms\n\nNote: Native file watching requires the 'notify' crate. Use --shell-command for external watcher.",
-        stats.watched_paths,
-        target.unwrap(),
-        stats.include_patterns,
-        stats.exclude_patterns,
-        stats.debounce_ms
-    );
+    // Check for dry-run mode (from CLI flag or environment variable for testing)
+    let dry_run = args.dry_run || std::env::var("PYBUN_WATCH_DRY_RUN").is_ok();
 
-    collector.info(&text);
+    // If dry-run, just show preview without starting watcher
+    if dry_run {
+        let native_available = HotReloadWatcher::native_watch_available();
+        let text = format!(
+            "Would watch {} paths for changes to run: {}\n\
+            Patterns: {} include, {} exclude\n\
+            Debounce: {}ms\n\
+            Native watching: {}",
+            stats.watched_paths,
+            target_script,
+            stats.include_patterns,
+            stats.exclude_patterns,
+            stats.debounce_ms,
+            if native_available {
+                "available"
+            } else {
+                "not available"
+            }
+        );
 
-    Ok(RenderDetail::with_json(
-        text,
-        json!({
-            "status": "preview",
-            "target": target,
-            "watch_paths": config.watch_paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
-            "include_patterns": config.include_patterns,
-            "exclude_patterns": config.exclude_patterns,
-            "debounce_ms": config.debounce_ms,
-            "stats": {
-                "watched_paths": stats.watched_paths,
-                "include_patterns": stats.include_patterns,
-                "exclude_patterns": stats.exclude_patterns,
-            },
-        }),
-    ))
+        return Ok(RenderDetail::with_json(
+            text,
+            json!({
+                "status": "dry_run",
+                "target": target_script,
+                "watch_paths": config.watch_paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+                "include_patterns": config.include_patterns,
+                "exclude_patterns": config.exclude_patterns,
+                "debounce_ms": config.debounce_ms,
+                "native_watch_available": native_available,
+                "dry_run": true,
+            }),
+        ));
+    }
+
+    // Check if native watching is available
+    #[cfg(feature = "native-watch")]
+    {
+        collector.info("Starting native file watcher");
+
+        // Build the command to run
+        let run_cmd = format!("pybun run {}", target_script);
+
+        // Run the watch loop (this blocks until Ctrl+C)
+        let text = format!(
+            "Watching {} paths for changes to run: {}\n\
+            Patterns: {} include, {} exclude\n\
+            Debounce: {}ms\n\
+            Native watching: enabled\n\
+            Press Ctrl+C to stop.",
+            stats.watched_paths,
+            target_script,
+            stats.include_patterns,
+            stats.exclude_patterns,
+            stats.debounce_ms
+        );
+
+        eprintln!("{}", text);
+
+        // Actually start the watch loop
+        match run_native_watch_loop(&config, &run_cmd, None) {
+            Ok(()) => Ok(RenderDetail::with_json(
+                "File watching stopped".to_string(),
+                json!({
+                    "status": "stopped",
+                    "target": target_script,
+                    "native_watch": true,
+                }),
+            )),
+            Err(e) => {
+                collector.error(&e);
+                Ok(RenderDetail::error(
+                    format!("Watch failed: {}", e),
+                    json!({
+                        "error": e,
+                        "status": "error",
+                    }),
+                ))
+            }
+        }
+    }
+
+    #[cfg(not(feature = "native-watch"))]
+    {
+        // Native watching not available - show preview
+        let text = format!(
+            "Would watch {} paths for changes to run: {}\n\
+            Patterns: {} include, {} exclude\n\
+            Debounce: {}ms\n\n\
+            Note: Native file watching requires building with --features native-watch.\n\
+            Use --shell-command for external watcher instead.",
+            stats.watched_paths,
+            target_script,
+            stats.include_patterns,
+            stats.exclude_patterns,
+            stats.debounce_ms
+        );
+
+        collector.info(&text);
+
+        Ok(RenderDetail::with_json(
+            text,
+            json!({
+                "status": "preview",
+                "target": target_script,
+                "watch_paths": config.watch_paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+                "include_patterns": config.include_patterns,
+                "exclude_patterns": config.exclude_patterns,
+                "debounce_ms": config.debounce_ms,
+                "native_watch_available": false,
+                "stats": {
+                    "watched_paths": stats.watched_paths,
+                    "include_patterns": stats.include_patterns,
+                    "exclude_patterns": stats.exclude_patterns,
+                },
+            }),
+        ))
+    }
 }
 
 // ---------------------------------------------------------------------------
