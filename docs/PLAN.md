@@ -98,9 +98,11 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
   - Tests: 15 unit tests (profile parsing, config values, serialization, manager); 16 E2E tests (list, show, compare, export, config values).
 
 ### M3: Tester (Phase 2 tail)
-- PR3.0 (bootstrap): `pybun test` を “まず動く” 状態へ（pytest/unittest の薄いラッパー + JSON出力）  
+- [DONE] PR3.0 (bootstrap): `pybun test` を "まず動く" 状態へ（pytest/unittest の薄いラッパー + JSON出力）  
   - Goal: SPECSの最終形（ASTネイティブ）へ行く前に、CLI/JSON/exit-code/`--shard`/`--fail-fast` の外形を固める。  
-  - Notes: “大きな設計変更を避けるための段階投入” として推奨。
+  - Notes: "大きな設計変更を避けるための段階投入" として推奨。
+  - Current: `pybun test` がpytest/unittestをバックエンドとして使用する薄いラッパーを実装。テストパス指定、`--fail-fast`(-x)、`--shard N/M`（分散テスト用）、`--pytest-compat`、`--backend pytest|unittest`、パススルー引数をサポート。`PYBUN_TEST_DRY_RUN=1` でテスト用ドライランモード対応。JSON出力に `backend`, `discovered_files`, `tests_found`, `exit_code`, `passed`, `shard` フィールドを含む。
+  - Tests: 14 E2Eテスト（help表示、基本実行、JSON出力構造、fail-fast、shard形式/無効形式、pytest-compat、test discovery、unittest対応、text出力）。
 - PR3.1: Test discovery engine (AST-based) + compatibility shim for pytest markers/fixtures.  
   - Depends on: M1 baseline runtime.  
   - Tests: unit on discovery; integration comparing discovered set vs pytest on sample repo.

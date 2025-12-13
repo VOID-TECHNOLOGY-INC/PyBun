@@ -157,15 +157,30 @@ pub struct ToolArgs {
 
 #[derive(Args, Debug)]
 pub struct TestArgs {
-    /// Shard identifier (N/M).
+    /// Test file(s) or directory to run. Defaults to current directory.
+    #[arg(value_name = "PATH")]
+    pub paths: Vec<std::path::PathBuf>,
+    /// Shard identifier (N/M) for distributed testing.
     #[arg(long)]
     pub shard: Option<String>,
-    /// Fail fast on first failure.
-    #[arg(long)]
+    /// Stop on first failure.
+    #[arg(long, short = 'x')]
     pub fail_fast: bool,
     /// Enable pytest compatibility layer.
     #[arg(long)]
     pub pytest_compat: bool,
+    /// Test runner backend (pytest or unittest). Auto-detected if not specified.
+    #[arg(long, value_enum)]
+    pub backend: Option<TestBackend>,
+    /// Additional arguments to pass to the test runner.
+    #[arg(last = true)]
+    pub passthrough: Vec<String>,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+pub enum TestBackend {
+    Pytest,
+    Unittest,
 }
 
 #[derive(Args, Debug)]

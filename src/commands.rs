@@ -201,20 +201,25 @@ pub fn execute(cli: Cli) -> Result<()> {
                 }
             }
         }
-        Commands::Test(args) => (
-            "test".to_string(),
-            stub_detail(
-                format!(
-                    "shard={:?} fail_fast={} pytest_compat={}",
-                    args.shard, args.fail_fast, args.pytest_compat
-                ),
-                json!({
-                    "shard": args.shard,
-                    "fail_fast": args.fail_fast,
-                    "pytest_compat": args.pytest_compat,
-                }),
-            ),
-        ),
+        Commands::Test(args) => {
+            collector.event(EventType::CommandStart);
+            let result = run_tests(args, &mut collector);
+            match result {
+                Ok(detail) => ("test".to_string(), detail),
+                Err(e) => {
+                    collector.error(e.to_string());
+                    (
+                        "test".to_string(),
+                        RenderDetail::error(
+                            e.to_string(),
+                            json!({
+                                "error": e.to_string(),
+                            }),
+                        ),
+                    )
+                }
+            }
+        }
         Commands::Build(args) => (
             "build".to_string(),
             stub_detail(format!("sbom={}", args.sbom), json!({"sbom": args.sbom})),
@@ -2187,9 +2192,323 @@ fn run_profile(args: &ProfileArgs, collector: &mut EventCollector) -> Result<Ren
     ))
 }
 
+// ---------------------------------------------------------------------------
+// pybun test (test runner)
+// ---------------------------------------------------------------------------
+
+use crate::cli::TestBackend;
+
+/// Parse shard specification (N/M format)
+fn parse_shard(shard: &str) -> Result<(u32, u32)> {
+    let parts: Vec<&str> = shard.split('/').collect();
+    if parts.len() != 2 {
+        return Err(eyre!(
+            "invalid shard format '{}': expected N/M (e.g., 1/4)",
+            shard
+        ));
+    }
+
+    let n: u32 = parts[0].parse().map_err(|_| {
+        eyre!(
+            "invalid shard number '{}': must be a positive integer",
+            parts[0]
+        )
+    })?;
+    let m: u32 = parts[1].parse().map_err(|_| {
+        eyre!(
+            "invalid shard total '{}': must be a positive integer",
+            parts[1]
+        )
+    })?;
+
+    if n == 0 || m == 0 {
+        return Err(eyre!("shard values must be greater than 0"));
+    }
+    if n > m {
+        return Err(eyre!("shard {} cannot be greater than total {}", n, m));
+    }
+
+    Ok((n, m))
+}
+
+/// Detect test backend based on test files
+fn detect_test_backend(_paths: &[PathBuf]) -> TestBackend {
+    // Default to pytest as it's more common
+    // Could be enhanced to detect based on imports in test files
+
+    // Check if pytest is available
+    if let Ok(output) = ProcessCommand::new("python3")
+        .args(["-c", "import pytest"])
+        .output()
+        && output.status.success()
+    {
+        return TestBackend::Pytest;
+    }
+
+    // Fall back to unittest
+    TestBackend::Unittest
+}
+
+/// Discover test files in given paths
+fn discover_test_files(paths: &[PathBuf]) -> Vec<PathBuf> {
+    let search_paths = if paths.is_empty() {
+        vec![std::env::current_dir().unwrap_or_default()]
+    } else {
+        paths.to_vec()
+    };
+
+    let mut test_files = Vec::new();
+
+    for path in search_paths {
+        if path.is_file() {
+            // Single file specified
+            if path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n.starts_with("test_") || n.ends_with("_test.py"))
+                .unwrap_or(false)
+            {
+                test_files.push(path);
+            } else if path.extension().map(|e| e == "py").unwrap_or(false) {
+                // Allow any .py file if explicitly specified
+                test_files.push(path);
+            }
+        } else if path.is_dir() {
+            // Recursively find test files
+            if let Ok(entries) = walkdir(path) {
+                for entry in entries {
+                    if let Some(name) = entry.file_name().and_then(|n| n.to_str())
+                        && (name.starts_with("test_") || name.ends_with("_test.py"))
+                        && name.ends_with(".py")
+                    {
+                        test_files.push(entry);
+                    }
+                }
+            }
+        }
+    }
+
+    test_files
+}
+
+/// Simple directory walker (no external dependency)
+fn walkdir(path: impl AsRef<std::path::Path>) -> Result<Vec<PathBuf>> {
+    let mut result = Vec::new();
+    walkdir_recursive(path.as_ref(), &mut result)?;
+    Ok(result)
+}
+
+fn walkdir_recursive(path: &std::path::Path, result: &mut Vec<PathBuf>) -> Result<()> {
+    if path.is_dir() {
+        for entry in std::fs::read_dir(path)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                // Skip hidden directories and common non-test directories
+                if let Some(name) = path.file_name().and_then(|n| n.to_str())
+                    && !name.starts_with('.')
+                    && name != "__pycache__"
+                    && name != "node_modules"
+                    && name != ".git"
+                    && name != "venv"
+                    && name != ".venv"
+                {
+                    walkdir_recursive(&path, result)?;
+                }
+            } else {
+                result.push(path);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn run_tests(args: &crate::cli::TestArgs, collector: &mut EventCollector) -> Result<RenderDetail> {
+    // Check for dry-run mode (for testing)
+    let dry_run = std::env::var("PYBUN_TEST_DRY_RUN").is_ok();
+
+    // Parse shard if provided
+    let shard_info = if let Some(ref shard_str) = args.shard {
+        Some(parse_shard(shard_str)?)
+    } else {
+        None
+    };
+
+    // Determine backend
+    let backend = args
+        .backend
+        .unwrap_or_else(|| detect_test_backend(&args.paths));
+
+    // Discover test files
+    let discovered_files = discover_test_files(&args.paths);
+
+    collector.info(format!(
+        "Discovered {} test file(s) using {:?} backend",
+        discovered_files.len(),
+        backend
+    ));
+
+    // Apply sharding if specified
+    let files_to_run: Vec<PathBuf> = if let Some((shard_n, shard_m)) = shard_info {
+        discovered_files
+            .into_iter()
+            .enumerate()
+            .filter(|(i, _)| (*i as u32 % shard_m) + 1 == shard_n)
+            .map(|(_, f)| f)
+            .collect()
+    } else {
+        discovered_files
+    };
+
+    // If dry-run, just return what would happen
+    if dry_run {
+        let summary = format!(
+            "Would run {} test file(s) with {:?}",
+            files_to_run.len(),
+            backend
+        );
+
+        return Ok(RenderDetail::with_json(
+            summary,
+            json!({
+                "dry_run": true,
+                "backend": format!("{:?}", backend).to_lowercase(),
+                "test_runner": format!("{:?}", backend).to_lowercase(),
+                "discovered_files": files_to_run.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+                "tests_found": files_to_run.len(),
+                "fail_fast": args.fail_fast,
+                "pytest_compat": args.pytest_compat,
+                "shard": shard_info.map(|(n, m)| format!("{}/{}", n, m)),
+            }),
+        ));
+    }
+
+    // Find Python interpreter
+    let (python, env_source) = find_python_interpreter()?;
+    eprintln!("info: using Python from {}", env_source);
+
+    // Build the command based on backend
+    let mut cmd = ProcessCommand::new(&python);
+
+    match backend {
+        TestBackend::Pytest => {
+            cmd.arg("-m").arg("pytest");
+
+            // Add fail-fast flag
+            if args.fail_fast {
+                cmd.arg("-x");
+            }
+
+            // Add verbose for better output
+            cmd.arg("-v");
+
+            // Add test paths
+            if !args.paths.is_empty() {
+                for path in &args.paths {
+                    cmd.arg(path);
+                }
+            }
+
+            // Add passthrough args
+            for arg in &args.passthrough {
+                cmd.arg(arg);
+            }
+        }
+        TestBackend::Unittest => {
+            cmd.arg("-m").arg("unittest");
+
+            if args.fail_fast {
+                cmd.arg("-f");
+            }
+
+            // Add verbose
+            cmd.arg("-v");
+
+            // For unittest, we need to specify discover or specific files
+            if args.paths.is_empty() {
+                cmd.arg("discover");
+            } else {
+                for path in &args.paths {
+                    cmd.arg(path);
+                }
+            }
+
+            // Add passthrough args
+            for arg in &args.passthrough {
+                cmd.arg(arg);
+            }
+        }
+    }
+
+    eprintln!("info: running tests with {:?}...", backend);
+
+    // Execute the tests
+    let output = cmd
+        .output()
+        .map_err(|e| eyre!("failed to execute test runner: {}", e))?;
+
+    let exit_code = output.status.code().unwrap_or(-1);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // Parse test results (simplified)
+    let tests_passed = stdout.contains("passed") || stdout.contains("OK");
+    let tests_failed = !output.status.success();
+
+    let summary = if tests_failed {
+        format!("Tests failed (exit code {})", exit_code)
+    } else {
+        "All tests passed".to_string()
+    };
+
+    // Print output
+    if !stdout.is_empty() {
+        eprintln!("{}", stdout);
+    }
+    if !stderr.is_empty() {
+        eprintln!("{}", stderr);
+    }
+
+    let detail = json!({
+        "backend": format!("{:?}", backend).to_lowercase(),
+        "test_runner": format!("{:?}", backend).to_lowercase(),
+        "exit_code": exit_code,
+        "passed": tests_passed && !tests_failed,
+        "fail_fast": args.fail_fast,
+        "pytest_compat": args.pytest_compat,
+        "shard": shard_info.map(|(n, m)| format!("{}/{}", n, m)),
+        "discovered_files": files_to_run.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+        "tests_found": files_to_run.len(),
+        "stdout": stdout.to_string(),
+        "stderr": stderr.to_string(),
+    });
+
+    if tests_failed {
+        Ok(RenderDetail::error(summary, detail))
+    } else {
+        Ok(RenderDetail::with_json(summary, detail))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_parse_shard_valid() {
+        assert_eq!(parse_shard("1/2").unwrap(), (1, 2));
+        assert_eq!(parse_shard("3/4").unwrap(), (3, 4));
+        assert_eq!(parse_shard("1/1").unwrap(), (1, 1));
+    }
+
+    #[test]
+    fn test_parse_shard_invalid() {
+        assert!(parse_shard("invalid").is_err());
+        assert!(parse_shard("1").is_err());
+        assert!(parse_shard("a/b").is_err());
+        assert!(parse_shard("0/2").is_err());
+        assert!(parse_shard("3/2").is_err());
+    }
 
     #[test]
     fn parse_package_spec_simple_name() {
