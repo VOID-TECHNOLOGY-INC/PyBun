@@ -4,7 +4,7 @@ use crate::index::load_index_from_path;
 use crate::lockfile::{Lockfile, Package, PackageSource};
 use crate::pep723;
 use crate::project::Project;
-use crate::resolver::{Requirement, ResolveError, resolve};
+use crate::resolver::{Requirement, resolve};
 use crate::schema::{Diagnostic, Event, EventCollector, EventType, JsonEnvelope, Status};
 use color_eyre::eyre::{Result, eyre};
 use serde_json::{Value, json};
@@ -40,18 +40,15 @@ pub fn execute(cli: Cli) -> Result<()> {
                         ),
                     )
                 }
-                Err(e) => {
-                    collector.error(e.to_string());
-                    (
-                        "install".to_string(),
-                        RenderDetail::error(
-                            e.to_string(),
-                            json!({
-                                "error": e.to_string(),
-                            }),
-                        ),
-                    )
-                }
+                Err(e) => (
+                    "install".to_string(),
+                    RenderDetail::error(
+                        e.to_string(),
+                        json!({
+                            "error": e.to_string(),
+                        }),
+                    ),
+                ),
             }
         }
         Commands::Add(args) => {
@@ -309,9 +306,7 @@ pub fn execute(cli: Cli) -> Result<()> {
     collector.event(EventType::CommandEnd);
 
     let duration = collector.elapsed();
-    let trace_id = collector.trace_id().map(String::from);
-    let events = collector.into_events();
-    let diagnostics = Vec::new(); // Diagnostics already handled inline
+    let (events, diagnostics, trace_id) = collector.into_parts();
 
     let is_error = detail.is_error;
     let rendered = render(
@@ -470,7 +465,7 @@ fn run_doctor(args: &crate::cli::DoctorArgs, collector: &mut EventCollector) -> 
 
 fn install(
     args: &crate::cli::InstallArgs,
-    _collector: &mut EventCollector,
+    collector: &mut EventCollector,
 ) -> Result<InstallOutcome> {
     if args.requirements.is_empty() {
         return Err(eyre!(
@@ -483,16 +478,15 @@ fn install(
         .ok_or_else(|| eyre!("index path is required for now (--index)"))?;
 
     let index = load_index_from_path(&index_path).map_err(|e| eyre!(e))?;
-    let resolution = resolve(args.requirements.clone(), &index).map_err(|e| match e {
-        ResolveError::Missing { name, constraint } => {
-            eyre!("missing package {name} matching {constraint}")
+    let resolution = match resolve(args.requirements.clone(), &index) {
+        Ok(r) => r,
+        Err(e) => {
+            for d in crate::self_heal::diagnostics_for_resolve_error(&args.requirements, &e) {
+                collector.diagnostic(d);
+            }
+            return Err(eyre!(e.to_string()));
         }
-        ResolveError::Conflict {
-            name,
-            existing,
-            requested,
-        } => eyre!("version conflict for {name}: {existing} vs {requested}"),
-    })?;
+    };
 
     let mut lock = Lockfile::new(vec!["3.11".into()], vec!["unknown".into()]);
     for pkg in resolution.packages.values() {

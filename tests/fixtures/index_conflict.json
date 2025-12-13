@@ -1,0 +1,28 @@
+[
+  {
+    "name": "root",
+    "version": "1.0.0",
+    "dependencies": ["a==1.0.0", "b==1.0.0"]
+  },
+  {
+    "name": "a",
+    "version": "1.0.0",
+    "dependencies": ["lib==1.0.0"]
+  },
+  {
+    "name": "b",
+    "version": "1.0.0",
+    "dependencies": ["lib==2.0.0"]
+  },
+  {
+    "name": "lib",
+    "version": "1.0.0",
+    "dependencies": []
+  },
+  {
+    "name": "lib",
+    "version": "2.0.0",
+    "dependencies": []
+  }
+]
+

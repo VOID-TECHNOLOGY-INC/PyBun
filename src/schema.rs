@@ -423,6 +423,14 @@ impl EventCollector {
     pub fn into_diagnostics(self) -> Vec<Diagnostic> {
         self.diagnostics
     }
+
+    /// Consume and get events, diagnostics, and trace_id together.
+    ///
+    /// This is convenient for command rendering where we need to include both
+    /// streams in the final JSON envelope.
+    pub fn into_parts(self) -> (Vec<Event>, Vec<Diagnostic>, Option<String>) {
+        (self.events, self.diagnostics, self.trace_id)
+    }
 }
 
 impl Default for EventCollector {
