@@ -63,9 +63,10 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
   - Depends on: PR2.1.  
   - Current: `src/lazy_import.rs` implements lazy import configuration with allowlist/denylist, default denylist for core modules (sys, os, importlib, etc.). Python code generation for `sys.meta_path` injection with LazyModule proxy, LazyFinder, LazyLoader classes. `pybun lazy-import` command with `--generate`, `--check`, `--show-config`, `--allow`, `--deny`, `--log-imports`, `--no-fallback` options. Config file support (TOML).
   - Tests: 17 unit tests (config, allowlist/denylist logic, stats, serialization); 12 E2E tests (help, config, check, generate, file output).
-- PR2.3: Hot reload watcher (fs notify abstraction per OS, reload strategy) with dev profile toggle.  
+- [DONE] PR2.3: Hot reload watcher (fs notify abstraction per OS, reload strategy) with dev profile toggle.  
   - Depends on: PR2.1.  
-  - Tests: integration touching files triggers reload; smoke E2E FastAPI sample reload.
+  - Current: `src/hot_reload.rs` implements file watcher configuration with include/exclude patterns, debouncing, and platform abstraction. `pybun watch` command with `--show-config`, `--shell-command` for external watcher generation, customizable include/exclude patterns, debounce timing. Dev profile configuration. Shell command generation for fswatch (macOS) and inotifywait (Linux).
+  - Tests: 17 unit tests (config, pattern matching, debouncing, deduplication, watcher status); 12 E2E tests (help, config, target, paths, patterns, shell command generation).
 - PR2.4: Launch profiles (`--profile=dev|prod|benchmark`), logging verbosity, tracing hooks.  
   - Depends on: PR2.2, PR2.3.  
   - Tests: unit for profile parsing; integration verifying profile toggles flags.

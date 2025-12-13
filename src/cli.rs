@@ -57,6 +57,8 @@ pub enum Commands {
     /// Configure and generate lazy import settings.
     #[command(name = "lazy-import")]
     LazyImport(LazyImportArgs),
+    /// Watch files and reload on changes (dev mode).
+    Watch(WatchArgs),
 }
 
 #[derive(Subcommand, Debug)]
@@ -265,4 +267,32 @@ pub struct LazyImportArgs {
     /// Output file for generated Python code.
     #[arg(long, short = 'o', value_name = "FILE")]
     pub output: Option<std::path::PathBuf>,
+}
+
+#[derive(Args, Debug)]
+pub struct WatchArgs {
+    /// Script or command to run on file changes.
+    #[arg(value_name = "TARGET")]
+    pub target: Option<String>,
+    /// Paths to watch (can be specified multiple times).
+    #[arg(long = "path", short = 'p', value_name = "PATH")]
+    pub paths: Vec<std::path::PathBuf>,
+    /// File patterns to include (e.g., "*.py").
+    #[arg(long = "include", value_name = "PATTERN")]
+    pub include: Vec<String>,
+    /// File patterns to exclude (e.g., "__pycache__").
+    #[arg(long = "exclude", value_name = "PATTERN")]
+    pub exclude: Vec<String>,
+    /// Debounce delay in milliseconds.
+    #[arg(long, default_value = "300")]
+    pub debounce: u64,
+    /// Clear terminal before each reload.
+    #[arg(long)]
+    pub clear: bool,
+    /// Show configuration without starting watcher.
+    #[arg(long)]
+    pub show_config: bool,
+    /// Generate shell command for external watcher.
+    #[arg(long)]
+    pub shell_command: bool,
 }
