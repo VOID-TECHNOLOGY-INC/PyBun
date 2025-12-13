@@ -1,71 +1,71 @@
 # PyBun (Python Bundle)
 
-Rust製のシングルバイナリPythonツールチェーン。高速な依存関係インストール、ランタイム/インポート最適化、テスト、ビルド機能と、AIエージェント向けJSON出力を統合。
+A Rust-based single-binary Python toolchain. Integrates fast dependency installation, runtime/import optimization, testing, build capabilities, and AI agent-friendly JSON output.
 
-## ステータス
-- 現在: M1（高速インストーラ）、M2（ランタイム最適化）、M4（MCP/JSON）を中心に実装が進行中（**stable/preview/stub が混在**）
-- プラットフォーム: macOS/Linux (arm64/amd64)
+## Status
+- Current: Implementation of M1 (Fast Installer), M2 (Runtime Optimization), and M4 (MCP/JSON) is in progress (**stable/preview/stub mixed**)
+- Platforms: macOS/Linux (arm64/amd64)
 
-※ 機能の成熟度（stub/preview/stable）と段階導入の方針は `docs/SPECS.md` を参照。
+※ For feature maturity (stub/preview/stable) and phased rollout policy, see `docs/SPECS.md`.
 
-## インストール
+## Installation
 
 ```bash
-# ソースからビルド
+# Build from source
 cargo build --release
 ```
 
-## クイックスタート
+## Quick Start
 
 ```bash
-# ヘルプ表示
+# Show help
 pybun --help
 
-# Pythonスクリプトを実行
+# Run a Python script
 pybun run script.py
 
-# インラインコードを実行
+# Run inline code
 pybun run -c -- "print('Hello, PyBun!')"
 
-# パッケージを一時的に実行（npxライク）
+# Run a package temporarily (npx-like)
 pybun x cowsay -- "Hello from PyBun"
 
-# JSON形式で出力（AIエージェント向け）
+# JSON output (for AI agents)
 pybun --format=json run script.py
 ```
 
-## コマンド一覧
+## Command Reference
 
-### パッケージ管理
+### Package Management
 
 ```bash
-# 依存関係をインストール（ロックファイル生成）
+# Install dependencies (generates lockfile)
 pybun install --require requests==2.31.0 --index fixtures/index.json
 
-# パッケージを追加（pyproject.tomlを更新）
+# Add a package (updates pyproject.toml)
 pybun add requests
 
-# パッケージを削除
+# Remove a package
 pybun remove requests
 ```
 
-### スクリプト実行
+### Script Execution
 
 ```bash
-# Pythonスクリプトを実行
+# Run a Python script
 pybun run script.py
 
-# 引数付きで実行
+# Run with arguments
 pybun run script.py -- arg1 arg2
 
-# インラインコードを実行
+# Run inline code
 pybun run -c -- "import sys; print(sys.version)"
 
-# プロファイル指定で実行
+# Run with profile
 pybun run --profile=prod script.py
 ```
 
-PEP 723のインラインメタデータにも対応:
+PEP 723 inline metadata is also supported:
 ```python
 # /// script
 # requires-python = ">=3.11"
@@ -73,148 +73,148 @@ PEP 723のインラインメタデータにも対応:
 # ///
 import requests
 ```
-※ 現状は **メタデータの解析・表示が中心（preview）** で、依存の自動インストール→隔離環境実行は段階導入予定です（詳細は `docs/PLAN.md`）。
+※ Currently, **metadata parsing and display are the main features (preview)**, with auto-install and isolated environment execution planned for phased rollout (see `docs/PLAN.md` for details).
 
-### アドホック実行 (`pybun x`)
+### Ad-hoc Execution (`pybun x`)
 
-パッケージを一時環境にインストールして実行（`npx`のPython版）:
+Install a package in a temporary environment and execute it (Python version of `npx`):
 
 ```bash
-# cowsayを一時インストールして実行
+# Temporarily install and run cowsay
 pybun x cowsay
 
-# バージョン指定
+# Specify version
 pybun x cowsay==6.1
 
-# 引数付き
+# With arguments
 pybun x black -- --check .
 ```
 
-### Python バージョン管理
+### Python Version Management
 
 ```bash
-# インストール済みバージョンを表示
+# Show installed versions
 pybun python list
 
-# 利用可能な全バージョンを表示
+# Show all available versions
 pybun python list --all
 
-# Pythonをインストール
+# Install Python
 pybun python install 3.12
 
-# Pythonを削除
+# Remove Python
 pybun python remove 3.12
 
-# Pythonパスを表示
+# Show Python path
 pybun python which
 pybun python which 3.11
 ```
 
-### ランタイム最適化
+### Runtime Optimization
 
-#### モジュールファインダー
+#### Module Finder
 
-Rustベースの高速モジュール検索:
+Rust-based high-speed module search:
 
 ```bash
-# モジュールを検索
+# Find a module
 pybun module-find os.path
 
-# ディレクトリをスキャンして全モジュールを列挙
+# Scan a directory for all modules
 pybun module-find --scan -p ./src
 
-# ベンチマーク付き
+# With benchmark
 pybun module-find --benchmark os.path
 ```
 
-#### 遅延インポート
+#### Lazy Import
 
 ```bash
-# 設定を表示
+# Show configuration
 pybun lazy-import --show-config
 
-# モジュールの判定を確認
+# Check module decision
 pybun lazy-import --check numpy
 
-# Pythonコードを生成
+# Generate Python code
 pybun lazy-import --generate -o lazy_setup.py
 
-# 許可/拒否リストを指定
+# Specify allow/deny lists
 pybun lazy-import --allow mymodule --deny debug_tools --generate
 ```
 
-#### ファイルウォッチ（開発モード）
+#### File Watch (Development Mode)
 
 ```bash
-# ファイル変更検知→再実行（現状はプレビュー）
-# ネイティブ監視は段階導入予定。今は --shell-command（外部ウォッチャー）利用を推奨。
+# Watch for file changes and re-run (currently preview)
+# Native watching is planned for phased rollout. For now, use --shell-command (external watcher).
 pybun watch main.py
 
-# 特定ディレクトリを監視
+# Watch a specific directory
 pybun watch main.py -p src
 
-# 設定を表示
+# Show configuration
 pybun watch --show-config
 
-# 外部ウォッチャー用のシェルコマンドを生成
+# Generate shell command for external watcher
 pybun watch --shell-command main.py
 ```
 
-### プロファイル管理
+### Profile Management
 
 ```bash
-# 利用可能なプロファイルを表示
+# Show available profiles
 pybun profile --list
 
-# プロファイル設定を表示
+# Show profile settings
 pybun profile dev --show
 
-# プロファイルを比較
+# Compare profiles
 pybun profile dev --compare prod
 
-# プロファイルをエクスポート
+# Export profile
 pybun profile prod -o prod-config.toml
 ```
 
-プロファイル:
-- `dev`: ホットリロード有効、詳細ログ
-- `prod`: 遅延インポート有効、最適化
-- `benchmark`: トレース・タイミング計測
+Profiles:
+- `dev`: Hot reload enabled, verbose logging
+- `prod`: Lazy imports enabled, optimizations
+- `benchmark`: Tracing and timing measurement
 
-### MCP サーバー
+### MCP Server
 
-AIエージェント向けのMCPサーバー:
+MCP server for AI agents:
 
 ```bash
-# stdioモードで起動
+# Start in stdio mode
 pybun mcp serve --stdio
 ```
 
-ツール: `pybun_resolve`, `pybun_install`, `pybun_run`, `pybun_gc`, `pybun_doctor`  
-リソース: `pybun://cache/info`, `pybun://env/info`
+Tools: `pybun_resolve`, `pybun_install`, `pybun_run`, `pybun_gc`, `pybun_doctor`  
+Resources: `pybun://cache/info`, `pybun://env/info`
 
-※ 現状は **`pybun_gc` と resources は実動**、`pybun_resolve/install/run/doctor` は “Would …” を返す段階（stub/preview）です。
+※ Currently **`pybun_gc`, `pybun_doctor`, `pybun_run`, `pybun_resolve`, and resources are operational**. `pybun_install` generates lockfiles via resolution. HTTP mode is not yet implemented.
 
-### 診断・メンテナンス
+### Diagnostics & Maintenance
 
 ```bash
-# 環境診断
+# Environment diagnostics
 pybun doctor
 pybun doctor --verbose
 
-# キャッシュのガベージコレクション
+# Cache garbage collection
 pybun gc
 pybun gc --max-size 1G
 pybun gc --dry-run
 
-# セルフアップデート確認
+# Self-update check
 pybun self update --dry-run
 pybun self update --channel nightly
 ```
 
-## JSON出力
+## JSON Output
 
-全コマンドで`--format=json`オプションが使用可能:
+All commands support the `--format=json` option:
 
 ```bash
 pybun --format=json run script.py
@@ -222,7 +222,7 @@ pybun --format=json doctor
 pybun --format=json python list
 ```
 
-出力形式:
+Output format:
 ```json
 {
   "version": "1",
@@ -236,69 +236,69 @@ pybun --format=json python list
 }
 ```
 
-トレースID有効化:
+Enable trace ID:
 ```bash
 PYBUN_TRACE=1 pybun --format=json run script.py
 ```
 
-## 環境変数
+## Environment Variables
 
-| 変数 | 説明 |
-|------|------|
-| `PYBUN_ENV` | 使用するvenvのパス |
-| `PYBUN_PYTHON` | Pythonバイナリのパス |
-| `PYBUN_PROFILE` | デフォルトプロファイル (dev/prod/benchmark) |
-| `PYBUN_TRACE` | `1`でトレースIDを有効化 |
-| `PYBUN_LOG` | ログレベル (debug/info/warn/error) |
+| Variable | Description |
+|----------|-------------|
+| `PYBUN_ENV` | Path to venv to use |
+| `PYBUN_PYTHON` | Path to Python binary |
+| `PYBUN_PROFILE` | Default profile (dev/prod/benchmark) |
+| `PYBUN_TRACE` | Set to `1` to enable trace ID |
+| `PYBUN_LOG` | Log level (debug/info/warn/error) |
 
-## 開発
+## Development
 
-### 必要環境
+### Requirements
 
 - Rust stable (`rustup`, `cargo`)
 
-### 基本コマンド
+### Basic Commands
 
 ```bash
-# フォーマット
+# Format
 cargo fmt
 
 # Lint
 cargo clippy --all-targets --all-features -- -D warnings
 
-# テスト
+# Test
 cargo test
 
-# 開発用スクリプト
+# Development scripts
 ./scripts/dev fmt
 ./scripts/dev lint
 ./scripts/dev test
 ```
 
-### テスト
+### Testing
 
 ```bash
-# 全テスト
+# All tests
 cargo test
 
-# 特定のテスト
+# Specific tests
 cargo test cli_smoke
 cargo test json_schema
 cargo test mcp
 ```
 
-## ロードマップ
+## Roadmap
 
-- [x] M0: リポジトリ・CIスキャフォールド
-- [x] M1: 高速インストーラ（ロックファイル、リゾルバ、PEP 723）
-- [x] M2: ランタイム最適化（モジュールファインダー、遅延インポート、ホットリロード）
-- [ ] M3: テストランナー（ディスカバリ、並列実行、スナップショット）
-- [x] M4: JSON/MCP・診断
-- [ ] M5: ビルダー・セキュリティ
-- [ ] M6: リモートキャッシュ、ワークスペース
+- [x] M0: Repository & CI scaffold
+- [x] M1: Fast installer (lockfile, resolver, PEP 723)
+- [x] M2: Runtime optimization (module finder, lazy import, hot reload)
+- [ ] M3: Test runner (discovery, parallel execution, snapshots)
+- [x] M4: JSON/MCP & diagnostics
+- [ ] M5: Builder & security
+- [ ] M6: Remote cache, workspaces
 
-詳細は `docs/PLAN.md` を参照。
+See `docs/PLAN.md` for details.
 
-## ライセンス
+## License
 
 MIT

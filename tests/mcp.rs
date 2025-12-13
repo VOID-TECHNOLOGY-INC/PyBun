@@ -159,3 +159,148 @@ fn mcp_json_output_format() {
     // Help should succeed
     assert!(output.status.success());
 }
+
+#[test]
+fn mcp_tools_call_doctor() {
+    let temp = tempdir().unwrap();
+
+    let mut child = pybun_bin()
+        .env("PYBUN_HOME", temp.path())
+        .args(["mcp", "serve", "--stdio"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to start MCP server");
+
+    if let Some(mut stdin) = child.stdin.take() {
+        // Initialize
+        let init_req = r#"{"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0.1.0"}}}"#;
+        writeln!(stdin, "{}", init_req).ok();
+
+        // Call pybun_doctor tool
+        let call_req = r#"{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_doctor","arguments":{"verbose":true}}}"#;
+        writeln!(stdin, "{}", call_req).ok();
+        stdin.flush().ok();
+    }
+
+    let output = child.wait_with_output().expect("failed to wait");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Should contain response with checks
+    assert!(
+        stdout.contains("checks") || stdout.contains("healthy") || stdout.contains("python"),
+        "pybun_doctor should return environment checks. Got: {}",
+        stdout
+    );
+}
+
+#[test]
+fn mcp_tools_call_run_inline_code() {
+    let temp = tempdir().unwrap();
+
+    let mut child = pybun_bin()
+        .env("PYBUN_HOME", temp.path())
+        .args(["mcp", "serve", "--stdio"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to start MCP server");
+
+    if let Some(mut stdin) = child.stdin.take() {
+        // Initialize
+        let init_req = r#"{"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0.1.0"}}}"#;
+        writeln!(stdin, "{}", init_req).ok();
+
+        // Call pybun_run with inline code
+        let call_req = r#"{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_run","arguments":{"code":"print('Hello from MCP')"}}}"#;
+        writeln!(stdin, "{}", call_req).ok();
+        stdin.flush().ok();
+    }
+
+    let output = child.wait_with_output().expect("failed to wait");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Should contain output from Python execution
+    assert!(
+        stdout.contains("Hello from MCP")
+            || stdout.contains("success")
+            || stdout.contains("exit_code"),
+        "pybun_run should execute Python code. Got: {}",
+        stdout
+    );
+}
+
+#[test]
+fn mcp_tools_call_gc() {
+    let temp = tempdir().unwrap();
+
+    let mut child = pybun_bin()
+        .env("PYBUN_HOME", temp.path())
+        .args(["mcp", "serve", "--stdio"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to start MCP server");
+
+    if let Some(mut stdin) = child.stdin.take() {
+        // Initialize
+        let init_req = r#"{"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0.1.0"}}}"#;
+        writeln!(stdin, "{}", init_req).ok();
+
+        // Call pybun_gc with dry_run
+        let call_req = r#"{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_gc","arguments":{"dry_run":true}}}"#;
+        writeln!(stdin, "{}", call_req).ok();
+        stdin.flush().ok();
+    }
+
+    let output = child.wait_with_output().expect("failed to wait");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Should contain gc result
+    assert!(
+        stdout.contains("gc_complete") || stdout.contains("freed") || stdout.contains("dry_run"),
+        "pybun_gc should return gc status. Got: {}",
+        stdout
+    );
+}
+
+#[test]
+fn mcp_tools_call_resolve_no_index() {
+    let temp = tempdir().unwrap();
+
+    let mut child = pybun_bin()
+        .env("PYBUN_HOME", temp.path())
+        .current_dir(temp.path())
+        .args(["mcp", "serve", "--stdio"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to start MCP server");
+
+    if let Some(mut stdin) = child.stdin.take() {
+        // Initialize
+        let init_req = r#"{"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0.1.0"}}}"#;
+        writeln!(stdin, "{}", init_req).ok();
+
+        // Call pybun_resolve without index
+        let call_req = r#"{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_resolve","arguments":{"requirements":["requests>=2.28"]}}}"#;
+        writeln!(stdin, "{}", call_req).ok();
+        stdin.flush().ok();
+    }
+
+    let output = child.wait_with_output().expect("failed to wait");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Should contain a response (either no_index status or parsed requirements)
+    assert!(
+        stdout.contains("no_index")
+            || stdout.contains("parsed_requirements")
+            || stdout.contains("requirements"),
+        "pybun_resolve should handle missing index gracefully. Got: {}",
+        stdout
+    );
+}
