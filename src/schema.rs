@@ -200,6 +200,14 @@ pub enum EventType {
     WatchStop,
     FileChange,
 
+    // Test runner events
+    TestStart,
+    TestDiscovery,
+    TestPass,
+    TestFail,
+    TestSkip,
+    TestComplete,
+
     // Generic progress event
     Progress,
 
