@@ -297,6 +297,9 @@ pub struct WatchArgs {
     /// Generate shell command for external watcher.
     #[arg(long)]
     pub shell_command: bool,
+    /// Preview what would be watched without actually starting (for testing).
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 #[derive(Args, Debug)]
