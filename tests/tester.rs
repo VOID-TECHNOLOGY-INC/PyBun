@@ -428,12 +428,18 @@ class TestExample:
 
     // Check discover mode output structure
     let detail = json.get("detail").expect("Should have detail");
-    assert!(detail.get("discover").is_some(), "Should have discover flag");
+    assert!(
+        detail.get("discover").is_some(),
+        "Should have discover flag"
+    );
     assert!(detail.get("tests").is_some(), "Should have tests array");
 
     // Check tests were discovered
     let tests = detail.get("tests").unwrap().as_array().unwrap();
-    assert!(tests.len() >= 2, "Should discover at least 2 test functions");
+    assert!(
+        tests.len() >= 2,
+        "Should discover at least 2 test functions"
+    );
 }
 
 #[test]
@@ -494,7 +500,10 @@ def test_parametrized(x):
             .unwrap_or(false)
     });
     assert!(xfail.is_some(), "Should find test_expected_fail");
-    assert_eq!(xfail.unwrap().get("xfail").unwrap().as_bool().unwrap(), true);
+    assert_eq!(
+        xfail.unwrap().get("xfail").unwrap().as_bool().unwrap(),
+        true
+    );
 
     // Find parametrized test
     let param = tests.iter().find(|t| {
@@ -562,7 +571,10 @@ def test_with_fixtures(simple_fixture, session_fixture):
         .unwrap()
         .as_array()
         .unwrap();
-    assert!(fixtures_used.len() >= 2, "Test should use at least 2 fixtures");
+    assert!(
+        fixtures_used.len() >= 2,
+        "Test should use at least 2 fixtures"
+    );
 }
 
 #[test]
@@ -794,7 +806,10 @@ fn test_discover_reports_duration() {
     let detail = json.get("detail").expect("Should have detail");
 
     // Check duration is reported
-    assert!(detail.get("duration_us").is_some(), "Should report discovery duration");
+    assert!(
+        detail.get("duration_us").is_some(),
+        "Should report discovery duration"
+    );
 }
 
 #[test]

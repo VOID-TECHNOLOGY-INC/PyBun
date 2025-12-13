@@ -2403,7 +2403,12 @@ fn run_tests(args: &crate::cli::TestArgs, collector: &mut EventCollector) -> Res
     // Apply sharding if specified
     if let Some((shard_n, shard_m)) = shard_info {
         tests = shard_tests(tests, shard_n, shard_m);
-        collector.info(format!("After shard {}/{}: {} tests", shard_n, shard_m, tests.len()));
+        collector.info(format!(
+            "After shard {}/{}: {} tests",
+            shard_n,
+            shard_m,
+            tests.len()
+        ));
     }
 
     // Filter out skipped tests for counting

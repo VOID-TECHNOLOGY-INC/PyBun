@@ -553,7 +553,7 @@ impl TestDiscovery {
             line.trim_start_matches("def ")
         };
 
-        // Handle "def test_foo(...):" 
+        // Handle "def test_foo(...):"
         let name_end = line.find('(').unwrap_or(line.len());
         let name = line[..name_end].trim();
         if !name.is_empty() {
@@ -765,8 +765,7 @@ impl TestDiscovery {
                                 _ => FixtureScope::Function,
                             };
                         } else if part.starts_with("autouse=") {
-                            autouse =
-                                part.trim_start_matches("autouse=").trim() == "True";
+                            autouse = part.trim_start_matches("autouse=").trim() == "True";
                         }
                     }
                 }
@@ -891,7 +890,9 @@ fn matches_pattern(name: &str, pattern: &str) -> bool {
             name.starts_with(prefix)
         } else {
             // Pattern like test_*.py
-            name.starts_with(prefix) && name.ends_with(suffix) && name.len() >= prefix.len() + suffix.len()
+            name.starts_with(prefix)
+                && name.ends_with(suffix)
+                && name.len() >= prefix.len() + suffix.len()
         }
     } else {
         // Exact match
@@ -992,15 +993,18 @@ class TestExample:
 "#;
 
         let (tests, _, _) = discovery.parse_file(Path::new("test_class.py"), content);
-        
+
         // Should find the class and two methods
         assert_eq!(tests.len(), 3);
-        
+
         let class_item = tests.iter().find(|t| t.item_type == TestItemType::Class);
         assert!(class_item.is_some());
         assert_eq!(class_item.unwrap().short_name, "TestExample");
 
-        let methods: Vec<_> = tests.iter().filter(|t| t.item_type == TestItemType::Method).collect();
+        let methods: Vec<_> = tests
+            .iter()
+            .filter(|t| t.item_type == TestItemType::Method)
+            .collect();
         assert_eq!(methods.len(), 2);
     }
 
@@ -1024,19 +1028,28 @@ def test_expected_fail():
 "#;
 
         let (tests, _, _) = discovery.parse_file(Path::new("test_markers.py"), content);
-        
+
         assert_eq!(tests.len(), 3);
 
-        let skipped = tests.iter().find(|t| t.short_name == "test_skipped").unwrap();
+        let skipped = tests
+            .iter()
+            .find(|t| t.short_name == "test_skipped")
+            .unwrap();
         assert!(skipped.skipped);
         assert_eq!(skipped.skip_reason, Some("not implemented".to_string()));
 
-        let parametrized = tests.iter().find(|t| t.short_name == "test_parametrized").unwrap();
+        let parametrized = tests
+            .iter()
+            .find(|t| t.short_name == "test_parametrized")
+            .unwrap();
         assert!(parametrized.parametrize.is_some());
         let param_info = parametrized.parametrize.as_ref().unwrap();
         assert_eq!(param_info.params, vec!["x", "y"]);
 
-        let xfail = tests.iter().find(|t| t.short_name == "test_expected_fail").unwrap();
+        let xfail = tests
+            .iter()
+            .find(|t| t.short_name == "test_expected_fail")
+            .unwrap();
         assert!(xfail.xfail);
     }
 
@@ -1059,14 +1072,20 @@ def test_with_fixture(simple_fixture):
 "#;
 
         let (tests, fixtures, _) = discovery.parse_file(Path::new("test_fixtures.py"), content);
-        
+
         assert_eq!(fixtures.len(), 2);
 
-        let simple = fixtures.iter().find(|f| f.name == "simple_fixture").unwrap();
+        let simple = fixtures
+            .iter()
+            .find(|f| f.name == "simple_fixture")
+            .unwrap();
         assert_eq!(simple.scope, FixtureScope::Function);
         assert!(!simple.autouse);
 
-        let session = fixtures.iter().find(|f| f.name == "session_fixture").unwrap();
+        let session = fixtures
+            .iter()
+            .find(|f| f.name == "session_fixture")
+            .unwrap();
         assert_eq!(session.scope, FixtureScope::Session);
         assert!(session.autouse);
 
@@ -1092,7 +1111,7 @@ async def test_async_func():
     #[test]
     fn test_is_test_file() {
         let discovery = TestDiscovery::new();
-        
+
         assert!(discovery.is_test_file(Path::new("test_example.py")));
         assert!(discovery.is_test_file(Path::new("example_test.py")));
         assert!(!discovery.is_test_file(Path::new("example.py")));
@@ -1110,13 +1129,13 @@ async def test_async_func():
     #[test]
     fn test_fixture_dependencies_extraction() {
         let discovery = TestDiscovery::new();
-        
+
         let deps = discovery.extract_fixture_dependencies("def test_foo(fixture1, fixture2):");
         assert_eq!(deps, vec!["fixture1", "fixture2"]);
-        
+
         let deps = discovery.extract_fixture_dependencies("def test_method(self, fixture):");
         assert_eq!(deps, vec!["fixture"]);
-        
+
         let deps = discovery.extract_fixture_dependencies("def test_typed(fixture: MyType):");
         assert_eq!(deps, vec!["fixture"]);
     }
@@ -1137,7 +1156,7 @@ def test_param(x):
 "#;
 
         let (_, _, warnings) = discovery.parse_file(Path::new("test_compat.py"), content);
-        
+
         // Should have warnings for session fixture and parametrize
         assert!(warnings.iter().any(|w| w.code == "W001"));
         assert!(warnings.iter().any(|w| w.code == "I001"));
@@ -1155,13 +1174,15 @@ class TestCase(unittest.TestCase):
 "#;
 
         let (tests, _, _) = discovery.parse_file(Path::new("test_unittest.py"), content);
-        
+
         // Note: TestCase doesn't match Test* pattern (ends with Case)
         // But test_method should be found
-        let methods: Vec<_> = tests.iter().filter(|t| t.item_type == TestItemType::Method).collect();
+        let methods: Vec<_> = tests
+            .iter()
+            .filter(|t| t.item_type == TestItemType::Method)
+            .collect();
         // This will be 0 because TestCase doesn't match Test* pattern
         // The class needs to match the pattern for methods to be discovered as test methods
         assert!(methods.is_empty() || !methods.is_empty()); // Either is valid based on implementation
     }
 }
-
