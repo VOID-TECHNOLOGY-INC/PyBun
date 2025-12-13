@@ -54,6 +54,9 @@ pub enum Commands {
     /// Find Python modules using Rust-based module finder.
     #[command(name = "module-find")]
     ModuleFind(ModuleFindArgs),
+    /// Configure and generate lazy import settings.
+    #[command(name = "lazy-import")]
+    LazyImport(LazyImportArgs),
 }
 
 #[derive(Subcommand, Debug)]
@@ -234,4 +237,32 @@ pub struct ModuleFindArgs {
     /// Number of threads for parallel scanning.
     #[arg(long, default_value = "4")]
     pub threads: usize,
+}
+
+#[derive(Args, Debug)]
+pub struct LazyImportArgs {
+    /// Generate Python code for lazy import injection.
+    #[arg(long)]
+    pub generate: bool,
+    /// Check if a module would be lazily imported.
+    #[arg(long, value_name = "MODULE")]
+    pub check: Option<String>,
+    /// Show current configuration.
+    #[arg(long)]
+    pub show_config: bool,
+    /// Add module to allowlist.
+    #[arg(long = "allow", value_name = "MODULE")]
+    pub allow: Vec<String>,
+    /// Add module to denylist.
+    #[arg(long = "deny", value_name = "MODULE")]
+    pub deny: Vec<String>,
+    /// Enable logging of lazy imports in generated code.
+    #[arg(long)]
+    pub log_imports: bool,
+    /// Disable fallback to CPython import.
+    #[arg(long)]
+    pub no_fallback: bool,
+    /// Output file for generated Python code.
+    #[arg(long, short = 'o', value_name = "FILE")]
+    pub output: Option<std::path::PathBuf>,
 }
