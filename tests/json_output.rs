@@ -105,7 +105,9 @@ fn install_error_outputs_diagnostics_in_json() {
 
     // Self-healing diagnostics should include a structured code for resolution failures.
     assert!(
-        diags.iter().any(|d| d.get("code") == Some(&Value::from("E_RESOLVE_MISSING"))),
+        diags
+            .iter()
+            .any(|d| d.get("code") == Some(&Value::from("E_RESOLVE_MISSING"))),
         "expected E_RESOLVE_MISSING diagnostic code"
     );
 }
@@ -140,7 +142,9 @@ fn install_conflict_outputs_conflict_tree_diagnostics_in_json() {
     assert_eq!(parsed["status"], "error");
     let diags = parsed["diagnostics"].as_array().expect("diagnostics array");
     assert!(
-        diags.iter().any(|d| d.get("code") == Some(&Value::from("E_RESOLVE_CONFLICT"))),
+        diags
+            .iter()
+            .any(|d| d.get("code") == Some(&Value::from("E_RESOLVE_CONFLICT"))),
         "expected E_RESOLVE_CONFLICT diagnostic code"
     );
 
@@ -155,7 +159,10 @@ fn install_conflict_outputs_conflict_tree_diagnostics_in_json() {
                 .and_then(|v| v.as_array())
                 .is_some()
     });
-    assert!(has_tree, "expected conflict diagnostics to include chains in context");
+    assert!(
+        has_tree,
+        "expected conflict diagnostics to include chains in context"
+    );
 }
 
 fn index_path() -> std::path::PathBuf {

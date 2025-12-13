@@ -2,7 +2,10 @@ use crate::resolver::{Requirement, ResolveError};
 use crate::schema::Diagnostic;
 use serde_json::json;
 
-pub fn diagnostics_for_resolve_error(requirements: &[Requirement], err: &ResolveError) -> Vec<Diagnostic> {
+pub fn diagnostics_for_resolve_error(
+    requirements: &[Requirement],
+    err: &ResolveError,
+) -> Vec<Diagnostic> {
     let root_reqs: Vec<String> = requirements.iter().map(|r| r.to_string()).collect();
 
     match err {
@@ -39,12 +42,9 @@ pub fn diagnostics_for_resolve_error(requirements: &[Requirement], err: &Resolve
                 // Keep the hint compact.
                 let sample: Vec<String> = available_versions.iter().take(5).cloned().collect();
                 diags.push(
-                    Diagnostic::hint(format!(
-                        "利用可能なバージョン例: {}",
-                        sample.join(", ")
-                    ))
-                    .with_code("H_RESOLVE_AVAILABLE_VERSIONS")
-                    .with_context(json!({ "sample": sample })),
+                    Diagnostic::hint(format!("利用可能なバージョン例: {}", sample.join(", ")))
+                        .with_code("H_RESOLVE_AVAILABLE_VERSIONS")
+                        .with_context(json!({ "sample": sample })),
                 );
             }
             diags
@@ -81,5 +81,3 @@ pub fn diagnostics_for_resolve_error(requirements: &[Requirement], err: &Resolve
         }
     }
 }
-
-

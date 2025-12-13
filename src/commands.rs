@@ -40,17 +40,15 @@ pub fn execute(cli: Cli) -> Result<()> {
                         ),
                     )
                 }
-                Err(e) => {
-                    (
-                        "install".to_string(),
-                        RenderDetail::error(
-                            e.to_string(),
-                            json!({
-                                "error": e.to_string(),
-                            }),
-                        ),
-                    )
-                }
+                Err(e) => (
+                    "install".to_string(),
+                    RenderDetail::error(
+                        e.to_string(),
+                        json!({
+                            "error": e.to_string(),
+                        }),
+                    ),
+                ),
             }
         }
         Commands::Add(args) => {
