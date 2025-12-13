@@ -2199,6 +2199,18 @@ fn run_profile(args: &ProfileArgs, collector: &mut EventCollector) -> Result<Ren
 use crate::cli::TestBackend;
 use crate::test_discovery::{DiscoveryResult, TestDiscovery, TestItem, TestItemType};
 
+/// Get a hint message for a pytest compatibility warning code
+fn get_pytest_compat_hint(code: &str) -> Option<&'static str> {
+    match code {
+        "W001" => Some("Consider using --backend pytest for session/package scoped fixtures"),
+        "W002" => Some("This decorator requires the pytest backend to function correctly"),
+        "I001" => Some("Parametrized tests will be expanded during discovery"),
+        "W003" => Some("This fixture pattern may require pytest plugins"),
+        "W004" => Some("Async fixtures require pytest-asyncio or similar"),
+        _ => None,
+    }
+}
+
 /// Parse shard specification (N/M format)
 fn parse_shard(shard: &str) -> Result<(u32, u32)> {
     let parts: Vec<&str> = shard.split('/').collect();
@@ -2386,6 +2398,56 @@ fn run_tests(args: &crate::cli::TestArgs, collector: &mut EventCollector) -> Res
         discovery_result.duration_us
     ));
 
+    // Process pytest-compat warnings and add as diagnostics
+    if args.pytest_compat && !discovery_result.compat_warnings.is_empty() {
+        use crate::schema::DiagnosticLevel;
+
+        for warning in &discovery_result.compat_warnings {
+            let level = match warning.severity {
+                crate::test_discovery::WarningSeverity::Error => DiagnosticLevel::Error,
+                crate::test_discovery::WarningSeverity::Warning => DiagnosticLevel::Warning,
+                crate::test_discovery::WarningSeverity::Info => DiagnosticLevel::Info,
+            };
+            let diag = Diagnostic {
+                level,
+                code: Some(warning.code.clone()),
+                message: warning.message.clone(),
+                file: Some(warning.path.display().to_string()),
+                line: Some(warning.line as u32),
+                suggestion: get_pytest_compat_hint(&warning.code).map(|s| s.to_string()),
+                context: None,
+            };
+            collector.diagnostic(diag);
+        }
+
+        // Print warnings in text mode
+        if args.verbose {
+            eprintln!(
+                "\npytest compatibility warnings ({}):",
+                discovery_result.compat_warnings.len()
+            );
+            for w in &discovery_result.compat_warnings {
+                let severity_prefix = match w.severity {
+                    crate::test_discovery::WarningSeverity::Error => "error",
+                    crate::test_discovery::WarningSeverity::Warning => "warning",
+                    crate::test_discovery::WarningSeverity::Info => "info",
+                };
+                eprintln!(
+                    "  [{}] {} {}:{}: {}",
+                    severity_prefix,
+                    w.code,
+                    w.path.display(),
+                    w.line,
+                    w.message
+                );
+                if let Some(hint) = get_pytest_compat_hint(&w.code) {
+                    eprintln!("         hint: {}", hint);
+                }
+            }
+            eprintln!();
+        }
+    }
+
     // Get only function/method tests (not class items for running)
     let mut tests: Vec<TestItem> = discovery_result
         .tests
@@ -2557,6 +2619,26 @@ fn run_tests(args: &crate::cli::TestArgs, collector: &mut EventCollector) -> Res
             backend
         );
 
+        // Build compat_warnings for JSON output
+        let compat_warnings_json: Vec<Value> = if args.pytest_compat {
+            discovery_result
+                .compat_warnings
+                .iter()
+                .map(|w| {
+                    json!({
+                        "code": w.code,
+                        "message": w.message,
+                        "path": w.path.display().to_string(),
+                        "line": w.line,
+                        "severity": format!("{:?}", w.severity).to_lowercase(),
+                        "hint": get_pytest_compat_hint(&w.code),
+                    })
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+
         return Ok(RenderDetail::with_json(
             summary,
             json!({
@@ -2575,7 +2657,9 @@ fn run_tests(args: &crate::cli::TestArgs, collector: &mut EventCollector) -> Res
                     "tests": tests.len(),
                     "fixtures": discovery_result.fixtures.len(),
                     "duration_us": discovery_result.duration_us,
+                    "compat_warnings": discovery_result.compat_warnings.len(),
                 },
+                "compat_warnings": compat_warnings_json,
             }),
         ));
     }
@@ -2680,6 +2764,26 @@ fn run_tests(args: &crate::cli::TestArgs, collector: &mut EventCollector) -> Res
         eprintln!("{}", stderr);
     }
 
+    // Build compat_warnings for JSON output
+    let run_compat_warnings_json: Vec<Value> = if args.pytest_compat {
+        discovery_result
+            .compat_warnings
+            .iter()
+            .map(|w| {
+                json!({
+                    "code": w.code,
+                    "message": w.message,
+                    "path": w.path.display().to_string(),
+                    "line": w.line,
+                    "severity": format!("{:?}", w.severity).to_lowercase(),
+                    "hint": get_pytest_compat_hint(&w.code),
+                })
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
     let detail = json!({
         "backend": format!("{:?}", backend).to_lowercase(),
         "test_runner": format!("{:?}", backend).to_lowercase(),
@@ -2698,6 +2802,7 @@ fn run_tests(args: &crate::cli::TestArgs, collector: &mut EventCollector) -> Res
             "duration_us": discovery_result.duration_us,
             "compat_warnings": discovery_result.compat_warnings.len(),
         },
+        "compat_warnings": run_compat_warnings_json,
         "stdout": stdout.to_string(),
         "stderr": stderr.to_string(),
     });

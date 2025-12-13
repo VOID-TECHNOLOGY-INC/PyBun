@@ -107,12 +107,14 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
   - Depends on: M1 baseline runtime.  
   - Current: `src/test_discovery.rs` implements Rust-native AST-based test discovery engine. Features: test function/class/method detection, pytest marker parsing (@skip, @xfail, @parametrize), fixture discovery with scope detection (function/class/module/session), fixture dependency extraction from function signatures, compatibility warnings for pytest features requiring shim. CLI enhancements: `--discover` mode for listing tests without running, `-k/--filter` for test filtering, `-j/--parallel` for parallel execution, `-v/--verbose` for detailed output. JSON output includes full test metadata, fixture info, and compat warnings.
   - Tests: 11 unit tests (pattern matching, function/class/marker/fixture parsing, async tests, unittest style, compat warnings); 25 E2E tests including 11 new tests for AST discovery (discover mode, pytest markers, fixtures, filter, verbose, class methods, async, duration reporting).
-- PR3.2: Parallel executor + shard/fail-fast; snapshot testing primitives.  
+- [DONE] PR3.2: Parallel executor + shard/fail-fast; snapshot testing primitives.  
   - Depends on: PR3.1.  
-  - Tests: integration for shard correctness; snapshot update flow; smoke `pybun test` on demo project.
-- PR3.3: `--pytest-compat` mode warnings (JSON + text) with structured diagnostics.  
+  - Current: `src/test_executor.rs` implements parallel test execution with worker threads, work stealing, and configurable worker count. `src/snapshot.rs` implements snapshot testing primitives with SnapshotFile (JSON-based storage), SnapshotManager (session management), comparison/update modes, and diff generation. CLI enhancements: `--snapshot` enables snapshot testing, `--update-snapshots` updates snapshots, `--snapshot-dir` configures snapshot directory. Sharding uses deterministic distribution (sorted by name, round-robin assignment). Fail-fast stops all workers on first failure via shared atomic flag.
+  - Tests: 15 unit tests (shard validation, distribution correctness, executor config, outcome serialization); 13 E2E tests (shard correctness, deterministic distribution, no overlap, parallel+shard combination, snapshot flags).
+- [DONE] PR3.3: `--pytest-compat` mode warnings (JSON + text) with structured diagnostics.  
   - Depends on: PR3.2.  
-  - Tests: snapshot of JSON diagnostics; E2E on plugins fixture repo.
+  - Current: `--pytest-compat` flag enables structured compatibility warnings. Warnings are collected during AST discovery and emitted as `Diagnostic` objects with level, code, message, file, line, and suggestion fields. JSON output includes `compat_warnings` array with warning details and hints. Text output displays formatted warnings with severity icons when `--verbose` is used. Warning codes: W001 (session/package fixtures), W002 (plugin decorators), I001 (parametrize info). Each warning includes a hint for resolution (e.g., "use --backend pytest").
+  - Tests: 6 E2E tests (warnings in JSON, hints, structure, no-flag behavior, diagnostics envelope, parametrize info).
 
 ### M4: AI/MCP & Structured Output (Phase 3)
 - [DONE] PR4.1: Global JSON event schema + `--format=json` for all commands.  

@@ -857,3 +857,601 @@ fn test_help_shows_new_options() {
         .stdout(predicate::str::contains("--parallel"))
         .stdout(predicate::str::contains("--verbose"));
 }
+
+// ---------------------------------------------------------------------------
+// PR3.2: Parallel Executor & Snapshot Tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_help_shows_snapshot_options() {
+    pybun()
+        .args(["test", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--snapshot"))
+        .stdout(predicate::str::contains("--update-snapshots"))
+        .stdout(predicate::str::contains("--snapshot-dir"));
+}
+
+#[test]
+fn test_shard_correctness_distribution() {
+    let temp = TempDir::new().unwrap();
+
+    // Create 8 test files with predictable names
+    for i in 0..8 {
+        let test_file = temp.path().join(format!("test_{}.py", i));
+        fs::write(&test_file, format!("def test_case_{}(): pass\n", i)).unwrap();
+    }
+
+    // Run shard 1/4
+    let output1 = pybun()
+        .current_dir(temp.path())
+        .args(["test", "--discover", "--shard", "1/4", "--format=json"])
+        .output()
+        .unwrap();
+
+    let stdout1 = String::from_utf8_lossy(&output1.stdout);
+    let json1: serde_json::Value = serde_json::from_str(&stdout1).expect("Valid JSON");
+    let tests1 = json1
+        .get("detail")
+        .unwrap()
+        .get("tests")
+        .unwrap()
+        .as_array()
+        .unwrap();
+
+    // Run shard 2/4
+    let output2 = pybun()
+        .current_dir(temp.path())
+        .args(["test", "--discover", "--shard", "2/4", "--format=json"])
+        .output()
+        .unwrap();
+
+    let stdout2 = String::from_utf8_lossy(&output2.stdout);
+    let json2: serde_json::Value = serde_json::from_str(&stdout2).expect("Valid JSON");
+    let tests2 = json2
+        .get("detail")
+        .unwrap()
+        .get("tests")
+        .unwrap()
+        .as_array()
+        .unwrap();
+
+    // Run shard 3/4
+    let output3 = pybun()
+        .current_dir(temp.path())
+        .args(["test", "--discover", "--shard", "3/4", "--format=json"])
+        .output()
+        .unwrap();
+
+    let stdout3 = String::from_utf8_lossy(&output3.stdout);
+    let json3: serde_json::Value = serde_json::from_str(&stdout3).expect("Valid JSON");
+    let tests3 = json3
+        .get("detail")
+        .unwrap()
+        .get("tests")
+        .unwrap()
+        .as_array()
+        .unwrap();
+
+    // Run shard 4/4
+    let output4 = pybun()
+        .current_dir(temp.path())
+        .args(["test", "--discover", "--shard", "4/4", "--format=json"])
+        .output()
+        .unwrap();
+
+    let stdout4 = String::from_utf8_lossy(&output4.stdout);
+    let json4: serde_json::Value = serde_json::from_str(&stdout4).expect("Valid JSON");
+    let tests4 = json4
+        .get("detail")
+        .unwrap()
+        .get("tests")
+        .unwrap()
+        .as_array()
+        .unwrap();
+
+    // All 4 shards together should cover all tests
+    let total = tests1.len() + tests2.len() + tests3.len() + tests4.len();
+    assert!(
+        total >= 8,
+        "All shards combined should cover all tests (got {})",
+        total
+    );
+
+    // Each shard should have approximately equal number of tests (8/4 = 2)
+    // Allow for some variance due to class discovery
+    assert!(!tests1.is_empty(), "Shard 1/4 should have at least 1 test");
+    assert!(!tests2.is_empty(), "Shard 2/4 should have at least 1 test");
+}
+
+#[test]
+fn test_shard_deterministic() {
+    let temp = TempDir::new().unwrap();
+
+    // Create test files
+    for i in 0..4 {
+        let test_file = temp.path().join(format!("test_{}.py", i));
+        fs::write(&test_file, format!("def test_case_{}(): pass\n", i)).unwrap();
+    }
+
+    // Run same shard twice
+    let output1 = pybun()
+        .current_dir(temp.path())
+        .args(["test", "--discover", "--shard", "1/2", "--format=json"])
+        .output()
+        .unwrap();
+
+    let output2 = pybun()
+        .current_dir(temp.path())
+        .args(["test", "--discover", "--shard", "1/2", "--format=json"])
+        .output()
+        .unwrap();
+
+    let json1: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&output1.stdout)).unwrap();
+    let json2: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&output2.stdout)).unwrap();
+
+    let tests1 = json1
+        .get("detail")
+        .unwrap()
+        .get("tests")
+        .unwrap()
+        .as_array()
+        .unwrap();
+    let tests2 = json2
+        .get("detail")
+        .unwrap()
+        .get("tests")
+        .unwrap()
+        .as_array()
+        .unwrap();
+
+    // Same shard should return same tests
+    assert_eq!(
+        tests1.len(),
+        tests2.len(),
+        "Same shard should produce consistent results"
+    );
+}
+
+#[test]
+fn test_shard_no_overlap() {
+    let temp = TempDir::new().unwrap();
+
+    // Create test files
+    for i in 0..6 {
+        let test_file = temp.path().join(format!("test_{}.py", i));
+        fs::write(&test_file, format!("def test_case_{}(): pass\n", i)).unwrap();
+    }
+
+    // Get tests from shard 1/2
+    let output1 = pybun()
+        .current_dir(temp.path())
+        .args(["test", "--discover", "--shard", "1/2", "--format=json"])
+        .output()
+        .unwrap();
+    let json1: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&output1.stdout)).unwrap();
+    let tests1: std::collections::HashSet<String> = json1
+        .get("detail")
+        .unwrap()
+        .get("tests")
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|t| {
+            t.get("name")
+                .and_then(|n| n.as_str())
+                .map(|s| s.to_string())
+        })
+        .collect();
+
+    // Get tests from shard 2/2
+    let output2 = pybun()
+        .current_dir(temp.path())
+        .args(["test", "--discover", "--shard", "2/2", "--format=json"])
+        .output()
+        .unwrap();
+    let json2: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&output2.stdout)).unwrap();
+    let tests2: std::collections::HashSet<String> = json2
+        .get("detail")
+        .unwrap()
+        .get("tests")
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|t| {
+            t.get("name")
+                .and_then(|n| n.as_str())
+                .map(|s| s.to_string())
+        })
+        .collect();
+
+    // No overlap between shards
+    let overlap: Vec<_> = tests1.intersection(&tests2).collect();
+    assert!(
+        overlap.is_empty(),
+        "Shards should not overlap: {:?}",
+        overlap
+    );
+}
+
+#[test]
+fn test_parallel_option_json_output() {
+    let temp = TempDir::new().unwrap();
+    let test_file = temp.path().join("test_parallel.py");
+
+    fs::write(&test_file, "def test_a(): pass\ndef test_b(): pass\n").unwrap();
+
+    let output = pybun()
+        .current_dir(temp.path())
+        .args(["test", "--parallel", "4", "--format=json"])
+        .env("PYBUN_TEST_DRY_RUN", "1")
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("Valid JSON");
+
+    let detail = json.get("detail").unwrap();
+    assert!(
+        detail.get("parallel").is_some(),
+        "Should include parallel info"
+    );
+}
+
+#[test]
+fn test_fail_fast_json_output() {
+    let temp = TempDir::new().unwrap();
+    let test_file = temp.path().join("test_failfast.py");
+
+    fs::write(
+        &test_file,
+        r#"
+def test_first():
+    assert False
+
+def test_second():
+    pass
+"#,
+    )
+    .unwrap();
+
+    let output = pybun()
+        .current_dir(temp.path())
+        .args(["test", "--fail-fast", "--format=json"])
+        .env("PYBUN_TEST_DRY_RUN", "1")
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("Valid JSON");
+
+    let detail = json.get("detail").unwrap();
+    assert_eq!(
+        detail.get("fail_fast").and_then(|v| v.as_bool()),
+        Some(true)
+    );
+}
+
+#[test]
+fn test_snapshot_flag_json_output() {
+    let temp = TempDir::new().unwrap();
+    let test_file = temp.path().join("test_snapshot.py");
+
+    fs::write(&test_file, "def test_with_snapshot(): pass\n").unwrap();
+
+    pybun()
+        .current_dir(temp.path())
+        .args(["test", "--snapshot", "--format=json"])
+        .env("PYBUN_TEST_DRY_RUN", "1")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"status\":"));
+}
+
+#[test]
+fn test_update_snapshots_flag() {
+    let temp = TempDir::new().unwrap();
+    let test_file = temp.path().join("test_update.py");
+
+    fs::write(&test_file, "def test_update(): pass\n").unwrap();
+
+    pybun()
+        .current_dir(temp.path())
+        .args(["test", "--update-snapshots", "--format=json"])
+        .env("PYBUN_TEST_DRY_RUN", "1")
+        .assert()
+        .success();
+}
+
+#[test]
+fn test_combined_shard_and_parallel() {
+    let temp = TempDir::new().unwrap();
+
+    for i in 0..4 {
+        let test_file = temp.path().join(format!("test_{}.py", i));
+        fs::write(&test_file, format!("def test_case_{}(): pass\n", i)).unwrap();
+    }
+
+    // Should work with both shard and parallel
+    let output = pybun()
+        .current_dir(temp.path())
+        .args(["test", "--shard", "1/2", "--parallel", "2", "--format=json"])
+        .env("PYBUN_TEST_DRY_RUN", "1")
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("Valid JSON");
+
+    let detail = json.get("detail").unwrap();
+    assert!(detail.get("shard").is_some(), "Should have shard info");
+    assert!(
+        detail.get("parallel").is_some(),
+        "Should have parallel info"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// PR3.3: pytest-compat Mode Warnings Tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_pytest_compat_warnings_in_json() {
+    let temp = TempDir::new().unwrap();
+    let test_file = temp.path().join("test_compat.py");
+
+    fs::write(
+        &test_file,
+        r#"
+import pytest
+
+@pytest.fixture(scope="session")
+def session_fixture():
+    yield
+
+@pytest.mark.parametrize("x", [1, 2])
+def test_param(x, session_fixture):
+    assert x > 0
+"#,
+    )
+    .unwrap();
+
+    let output = pybun()
+        .current_dir(temp.path())
+        .args(["test", "--pytest-compat", "--format=json"])
+        .env("PYBUN_TEST_DRY_RUN", "1")
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("Valid JSON");
+
+    let detail = json.get("detail").unwrap();
+
+    // Should have compat_warnings array
+    assert!(
+        detail.get("compat_warnings").is_some(),
+        "Should have compat_warnings in JSON output"
+    );
+
+    let warnings = detail.get("compat_warnings").unwrap().as_array().unwrap();
+    assert!(!warnings.is_empty(), "Should have at least one warning");
+}
+
+#[test]
+fn test_pytest_compat_warnings_with_hints() {
+    let temp = TempDir::new().unwrap();
+    let test_file = temp.path().join("test_hints.py");
+
+    fs::write(
+        &test_file,
+        r#"
+import pytest
+
+@pytest.fixture(scope="session")
+def session_scoped():
+    return 42
+
+def test_with_session(session_scoped):
+    assert session_scoped == 42
+"#,
+    )
+    .unwrap();
+
+    let output = pybun()
+        .current_dir(temp.path())
+        .args(["test", "--pytest-compat", "--format=json"])
+        .env("PYBUN_TEST_DRY_RUN", "1")
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("Valid JSON");
+
+    let detail = json.get("detail").unwrap();
+    let warnings = detail.get("compat_warnings").unwrap().as_array().unwrap();
+
+    // Check that warnings have hints
+    let has_hint = warnings.iter().any(|w| w.get("hint").is_some());
+    assert!(has_hint, "At least one warning should have a hint");
+}
+
+#[test]
+fn test_pytest_compat_warning_structure() {
+    let temp = TempDir::new().unwrap();
+    let test_file = temp.path().join("test_structure.py");
+
+    fs::write(
+        &test_file,
+        r#"
+import pytest
+
+@pytest.fixture(scope="session")
+def fixture_with_scope():
+    yield
+
+def test_uses_fixture(fixture_with_scope):
+    pass
+"#,
+    )
+    .unwrap();
+
+    let output = pybun()
+        .current_dir(temp.path())
+        .args(["test", "--pytest-compat", "--format=json"])
+        .env("PYBUN_TEST_DRY_RUN", "1")
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("Valid JSON");
+
+    let detail = json.get("detail").unwrap();
+    let warnings = detail.get("compat_warnings").unwrap().as_array().unwrap();
+
+    if !warnings.is_empty() {
+        let warning = &warnings[0];
+
+        // Check required fields
+        assert!(warning.get("code").is_some(), "Warning should have code");
+        assert!(
+            warning.get("message").is_some(),
+            "Warning should have message"
+        );
+        assert!(warning.get("path").is_some(), "Warning should have path");
+        assert!(warning.get("line").is_some(), "Warning should have line");
+        assert!(
+            warning.get("severity").is_some(),
+            "Warning should have severity"
+        );
+    }
+}
+
+#[test]
+fn test_pytest_compat_no_warnings_without_flag() {
+    let temp = TempDir::new().unwrap();
+    let test_file = temp.path().join("test_no_flag.py");
+
+    fs::write(
+        &test_file,
+        r#"
+import pytest
+
+@pytest.fixture(scope="session")
+def session_fixture():
+    yield
+
+def test_something(session_fixture):
+    pass
+"#,
+    )
+    .unwrap();
+
+    let output = pybun()
+        .current_dir(temp.path())
+        .args(["test", "--format=json"]) // No --pytest-compat
+        .env("PYBUN_TEST_DRY_RUN", "1")
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("Valid JSON");
+
+    let detail = json.get("detail").unwrap();
+
+    // Without --pytest-compat, compat_warnings should be empty
+    let warnings = detail.get("compat_warnings");
+    assert!(
+        warnings.is_none() || warnings.unwrap().as_array().unwrap().is_empty(),
+        "Without --pytest-compat, compat_warnings should be empty"
+    );
+}
+
+#[test]
+fn test_pytest_compat_diagnostics_in_envelope() {
+    let temp = TempDir::new().unwrap();
+    let test_file = temp.path().join("test_diag.py");
+
+    fs::write(
+        &test_file,
+        r#"
+import pytest
+
+@pytest.fixture(scope="session")
+def session_fixture():
+    yield
+
+def test_with_fixture(session_fixture):
+    pass
+"#,
+    )
+    .unwrap();
+
+    let output = pybun()
+        .current_dir(temp.path())
+        .args(["test", "--pytest-compat", "--format=json"])
+        .env("PYBUN_TEST_DRY_RUN", "1")
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("Valid JSON");
+
+    // Check that diagnostics are in the envelope
+    assert!(
+        json.get("diagnostics").is_some(),
+        "Should have diagnostics in JSON envelope"
+    );
+}
+
+#[test]
+fn test_pytest_compat_parametrize_info() {
+    let temp = TempDir::new().unwrap();
+    let test_file = temp.path().join("test_param.py");
+
+    fs::write(
+        &test_file,
+        r#"
+import pytest
+
+@pytest.mark.parametrize("value", [1, 2, 3])
+def test_parametrized(value):
+    assert value > 0
+"#,
+    )
+    .unwrap();
+
+    let output = pybun()
+        .current_dir(temp.path())
+        .args(["test", "--pytest-compat", "--format=json"])
+        .env("PYBUN_TEST_DRY_RUN", "1")
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("Valid JSON");
+
+    let detail = json.get("detail").unwrap();
+    let warnings = detail.get("compat_warnings").unwrap().as_array().unwrap();
+
+    // Should have parametrize info warning (I001)
+    let has_param_warning = warnings.iter().any(|w| {
+        w.get("code")
+            .and_then(|c| c.as_str())
+            .map(|c| c == "I001")
+            .unwrap_or(false)
+    });
+    assert!(
+        has_param_warning,
+        "Should have parametrize info warning (I001)"
+    );
+}

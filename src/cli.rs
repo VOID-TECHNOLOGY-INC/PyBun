@@ -184,6 +184,15 @@ pub struct TestArgs {
     /// Show verbose output including fixture information.
     #[arg(long, short = 'v')]
     pub verbose: bool,
+    /// Enable snapshot testing.
+    #[arg(long)]
+    pub snapshot: bool,
+    /// Update snapshots instead of comparing them.
+    #[arg(long)]
+    pub update_snapshots: bool,
+    /// Directory for snapshot files (default: __snapshots__).
+    #[arg(long, value_name = "DIR")]
+    pub snapshot_dir: Option<std::path::PathBuf>,
     /// Additional arguments to pass to the test runner.
     #[arg(last = true)]
     pub passthrough: Vec<String>,
