@@ -193,8 +193,8 @@ impl SnapshotManager {
             .unwrap_or("unknown");
 
         // Replace .py extension with .snap.json
-        let snap_name = if file_name.ends_with(".py") {
-            format!("{}.snap.json", &file_name[..file_name.len() - 3])
+        let snap_name = if let Some(stripped) = file_name.strip_suffix(".py") {
+            format!("{}.snap.json", stripped)
         } else {
             format!("{}.snap.json", file_name)
         };

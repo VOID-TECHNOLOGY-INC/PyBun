@@ -146,6 +146,8 @@ impl ExecutionSummary {
 
 /// Message types for worker communication
 #[derive(Debug)]
+#[allow(dead_code)]
+#[allow(clippy::large_enum_variant)]
 enum WorkerMessage {
     /// A test to execute
     Test(TestItem),
@@ -157,11 +159,12 @@ enum WorkerMessage {
 
 /// Result message from worker
 #[derive(Debug)]
+#[allow(dead_code)]
 enum ResultMessage {
     /// Test result
     Result(TestResult),
     /// Worker is idle
-    Idle(usize),
+    Idle(()),
     /// Worker encountered an error
     Error(usize, String),
 }
@@ -305,7 +308,7 @@ impl TestExecutor {
                         }
                     }
                 }
-                let _ = tx.send(ResultMessage::Idle(worker_id));
+                let _ = tx.send(ResultMessage::Idle(()));
             });
 
             handles.push(handle);
