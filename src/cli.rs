@@ -59,6 +59,8 @@ pub enum Commands {
     LazyImport(LazyImportArgs),
     /// Watch files and reload on changes (dev mode).
     Watch(WatchArgs),
+    /// Show or configure launch profiles.
+    Profile(ProfileArgs),
 }
 
 #[derive(Subcommand, Debug)]
@@ -295,4 +297,23 @@ pub struct WatchArgs {
     /// Generate shell command for external watcher.
     #[arg(long)]
     pub shell_command: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct ProfileArgs {
+    /// Profile to show or set (dev, prod, benchmark).
+    #[arg(value_name = "PROFILE")]
+    pub profile: Option<String>,
+    /// List all available profiles.
+    #[arg(long)]
+    pub list: bool,
+    /// Show detailed profile configuration.
+    #[arg(long)]
+    pub show: bool,
+    /// Compare two profiles.
+    #[arg(long, value_name = "PROFILE")]
+    pub compare: Option<String>,
+    /// Export profile to a file.
+    #[arg(long, short = 'o', value_name = "FILE")]
+    pub output: Option<std::path::PathBuf>,
 }

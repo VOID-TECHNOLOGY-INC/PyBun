@@ -67,9 +67,10 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
   - Depends on: PR2.1.  
   - Current: `src/hot_reload.rs` implements file watcher configuration with include/exclude patterns, debouncing, and platform abstraction. `pybun watch` command with `--show-config`, `--shell-command` for external watcher generation, customizable include/exclude patterns, debounce timing. Dev profile configuration. Shell command generation for fswatch (macOS) and inotifywait (Linux).
   - Tests: 17 unit tests (config, pattern matching, debouncing, deduplication, watcher status); 12 E2E tests (help, config, target, paths, patterns, shell command generation).
-- PR2.4: Launch profiles (`--profile=dev|prod|benchmark`), logging verbosity, tracing hooks.  
+- [DONE] PR2.4: Launch profiles (`--profile=dev|prod|benchmark`), logging verbosity, tracing hooks.  
   - Depends on: PR2.2, PR2.3.  
-  - Tests: unit for profile parsing; integration verifying profile toggles flags.
+  - Current: `src/profiles.rs` implements Profile enum (Dev, Prod, Benchmark) with ProfileConfig for each. ProfileManager for loading/selecting profiles. `pybun profile` command with `--list`, `--show`, `--compare`, `-o` (export) options. Dev: hot reload, verbose logging; Prod: lazy imports, optimizations; Benchmark: tracing, timing. Environment variable detection (PYBUN_PROFILE). Python optimization flags (-O, -OO).
+  - Tests: 15 unit tests (profile parsing, config values, serialization, manager); 16 E2E tests (list, show, compare, export, config values).
 
 ### M3: Tester (Phase 2 tail)
 - PR3.1: Test discovery engine (AST-based) + compatibility shim for pytest markers/fixtures.  

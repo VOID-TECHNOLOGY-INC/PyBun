@@ -10,6 +10,7 @@ pub mod mcp;
 pub mod module_finder;
 pub mod paths;
 pub mod pep723;
+pub mod profiles;
 pub mod project;
 pub mod resolver;
 pub mod runtime;
