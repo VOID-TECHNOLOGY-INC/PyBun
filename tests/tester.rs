@@ -1199,3 +1199,250 @@ fn test_combined_shard_and_parallel() {
         "Should have parallel info"
     );
 }
+
+// ---------------------------------------------------------------------------
+// PR3.3: pytest-compat Mode Warnings Tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_pytest_compat_warnings_in_json() {
+    let temp = TempDir::new().unwrap();
+    let test_file = temp.path().join("test_compat.py");
+
+    fs::write(
+        &test_file,
+        r#"
+import pytest
+
+@pytest.fixture(scope="session")
+def session_fixture():
+    yield
+
+@pytest.mark.parametrize("x", [1, 2])
+def test_param(x, session_fixture):
+    assert x > 0
+"#,
+    )
+    .unwrap();
+
+    let output = pybun()
+        .current_dir(temp.path())
+        .args(["test", "--pytest-compat", "--format=json"])
+        .env("PYBUN_TEST_DRY_RUN", "1")
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("Valid JSON");
+
+    let detail = json.get("detail").unwrap();
+    
+    // Should have compat_warnings array
+    assert!(
+        detail.get("compat_warnings").is_some(),
+        "Should have compat_warnings in JSON output"
+    );
+
+    let warnings = detail.get("compat_warnings").unwrap().as_array().unwrap();
+    assert!(!warnings.is_empty(), "Should have at least one warning");
+}
+
+#[test]
+fn test_pytest_compat_warnings_with_hints() {
+    let temp = TempDir::new().unwrap();
+    let test_file = temp.path().join("test_hints.py");
+
+    fs::write(
+        &test_file,
+        r#"
+import pytest
+
+@pytest.fixture(scope="session")
+def session_scoped():
+    return 42
+
+def test_with_session(session_scoped):
+    assert session_scoped == 42
+"#,
+    )
+    .unwrap();
+
+    let output = pybun()
+        .current_dir(temp.path())
+        .args(["test", "--pytest-compat", "--format=json"])
+        .env("PYBUN_TEST_DRY_RUN", "1")
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("Valid JSON");
+
+    let detail = json.get("detail").unwrap();
+    let warnings = detail.get("compat_warnings").unwrap().as_array().unwrap();
+
+    // Check that warnings have hints
+    let has_hint = warnings.iter().any(|w| w.get("hint").is_some());
+    assert!(has_hint, "At least one warning should have a hint");
+}
+
+#[test]
+fn test_pytest_compat_warning_structure() {
+    let temp = TempDir::new().unwrap();
+    let test_file = temp.path().join("test_structure.py");
+
+    fs::write(
+        &test_file,
+        r#"
+import pytest
+
+@pytest.fixture(scope="session")
+def fixture_with_scope():
+    yield
+
+def test_uses_fixture(fixture_with_scope):
+    pass
+"#,
+    )
+    .unwrap();
+
+    let output = pybun()
+        .current_dir(temp.path())
+        .args(["test", "--pytest-compat", "--format=json"])
+        .env("PYBUN_TEST_DRY_RUN", "1")
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("Valid JSON");
+
+    let detail = json.get("detail").unwrap();
+    let warnings = detail.get("compat_warnings").unwrap().as_array().unwrap();
+
+    if !warnings.is_empty() {
+        let warning = &warnings[0];
+        
+        // Check required fields
+        assert!(warning.get("code").is_some(), "Warning should have code");
+        assert!(warning.get("message").is_some(), "Warning should have message");
+        assert!(warning.get("path").is_some(), "Warning should have path");
+        assert!(warning.get("line").is_some(), "Warning should have line");
+        assert!(warning.get("severity").is_some(), "Warning should have severity");
+    }
+}
+
+#[test]
+fn test_pytest_compat_no_warnings_without_flag() {
+    let temp = TempDir::new().unwrap();
+    let test_file = temp.path().join("test_no_flag.py");
+
+    fs::write(
+        &test_file,
+        r#"
+import pytest
+
+@pytest.fixture(scope="session")
+def session_fixture():
+    yield
+
+def test_something(session_fixture):
+    pass
+"#,
+    )
+    .unwrap();
+
+    let output = pybun()
+        .current_dir(temp.path())
+        .args(["test", "--format=json"])  // No --pytest-compat
+        .env("PYBUN_TEST_DRY_RUN", "1")
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("Valid JSON");
+
+    let detail = json.get("detail").unwrap();
+    
+    // Without --pytest-compat, compat_warnings should be empty
+    let warnings = detail.get("compat_warnings");
+    assert!(
+        warnings.is_none() || warnings.unwrap().as_array().unwrap().is_empty(),
+        "Without --pytest-compat, compat_warnings should be empty"
+    );
+}
+
+#[test]
+fn test_pytest_compat_diagnostics_in_envelope() {
+    let temp = TempDir::new().unwrap();
+    let test_file = temp.path().join("test_diag.py");
+
+    fs::write(
+        &test_file,
+        r#"
+import pytest
+
+@pytest.fixture(scope="session")
+def session_fixture():
+    yield
+
+def test_with_fixture(session_fixture):
+    pass
+"#,
+    )
+    .unwrap();
+
+    let output = pybun()
+        .current_dir(temp.path())
+        .args(["test", "--pytest-compat", "--format=json"])
+        .env("PYBUN_TEST_DRY_RUN", "1")
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("Valid JSON");
+
+    // Check that diagnostics are in the envelope
+    assert!(
+        json.get("diagnostics").is_some(),
+        "Should have diagnostics in JSON envelope"
+    );
+}
+
+#[test]
+fn test_pytest_compat_parametrize_info() {
+    let temp = TempDir::new().unwrap();
+    let test_file = temp.path().join("test_param.py");
+
+    fs::write(
+        &test_file,
+        r#"
+import pytest
+
+@pytest.mark.parametrize("value", [1, 2, 3])
+def test_parametrized(value):
+    assert value > 0
+"#,
+    )
+    .unwrap();
+
+    let output = pybun()
+        .current_dir(temp.path())
+        .args(["test", "--pytest-compat", "--format=json"])
+        .env("PYBUN_TEST_DRY_RUN", "1")
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("Valid JSON");
+
+    let detail = json.get("detail").unwrap();
+    let warnings = detail.get("compat_warnings").unwrap().as_array().unwrap();
+
+    // Should have parametrize info warning (I001)
+    let has_param_warning = warnings.iter().any(|w| {
+        w.get("code")
+            .and_then(|c| c.as_str())
+            .map(|c| c == "I001")
+            .unwrap_or(false)
+    });
+    assert!(has_param_warning, "Should have parametrize info warning (I001)");
+}
