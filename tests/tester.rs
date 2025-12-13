@@ -1236,7 +1236,7 @@ def test_param(x, session_fixture):
     let json: serde_json::Value = serde_json::from_str(&stdout).expect("Valid JSON");
 
     let detail = json.get("detail").unwrap();
-    
+
     // Should have compat_warnings array
     assert!(
         detail.get("compat_warnings").is_some(),
@@ -1320,13 +1320,19 @@ def test_uses_fixture(fixture_with_scope):
 
     if !warnings.is_empty() {
         let warning = &warnings[0];
-        
+
         // Check required fields
         assert!(warning.get("code").is_some(), "Warning should have code");
-        assert!(warning.get("message").is_some(), "Warning should have message");
+        assert!(
+            warning.get("message").is_some(),
+            "Warning should have message"
+        );
         assert!(warning.get("path").is_some(), "Warning should have path");
         assert!(warning.get("line").is_some(), "Warning should have line");
-        assert!(warning.get("severity").is_some(), "Warning should have severity");
+        assert!(
+            warning.get("severity").is_some(),
+            "Warning should have severity"
+        );
     }
 }
 
@@ -1352,7 +1358,7 @@ def test_something(session_fixture):
 
     let output = pybun()
         .current_dir(temp.path())
-        .args(["test", "--format=json"])  // No --pytest-compat
+        .args(["test", "--format=json"]) // No --pytest-compat
         .env("PYBUN_TEST_DRY_RUN", "1")
         .output()
         .unwrap();
@@ -1361,7 +1367,7 @@ def test_something(session_fixture):
     let json: serde_json::Value = serde_json::from_str(&stdout).expect("Valid JSON");
 
     let detail = json.get("detail").unwrap();
-    
+
     // Without --pytest-compat, compat_warnings should be empty
     let warnings = detail.get("compat_warnings");
     assert!(
@@ -1444,5 +1450,8 @@ def test_parametrized(value):
             .map(|c| c == "I001")
             .unwrap_or(false)
     });
-    assert!(has_param_warning, "Should have parametrize info warning (I001)");
+    assert!(
+        has_param_warning,
+        "Should have parametrize info warning (I001)"
+    );
 }

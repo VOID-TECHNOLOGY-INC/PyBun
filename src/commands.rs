@@ -2401,7 +2401,7 @@ fn run_tests(args: &crate::cli::TestArgs, collector: &mut EventCollector) -> Res
     // Process pytest-compat warnings and add as diagnostics
     if args.pytest_compat && !discovery_result.compat_warnings.is_empty() {
         use crate::schema::DiagnosticLevel;
-        
+
         for warning in &discovery_result.compat_warnings {
             let level = match warning.severity {
                 crate::test_discovery::WarningSeverity::Error => DiagnosticLevel::Error,
@@ -2422,14 +2422,18 @@ fn run_tests(args: &crate::cli::TestArgs, collector: &mut EventCollector) -> Res
 
         // Print warnings in text mode
         if args.verbose {
-            eprintln!("\npytest compatibility warnings ({}):", discovery_result.compat_warnings.len());
+            eprintln!(
+                "\npytest compatibility warnings ({}):",
+                discovery_result.compat_warnings.len()
+            );
             for w in &discovery_result.compat_warnings {
                 let severity_prefix = match w.severity {
                     crate::test_discovery::WarningSeverity::Error => "error",
                     crate::test_discovery::WarningSeverity::Warning => "warning",
                     crate::test_discovery::WarningSeverity::Info => "info",
                 };
-                eprintln!("  [{}] {} {}:{}: {}",
+                eprintln!(
+                    "  [{}] {} {}:{}: {}",
                     severity_prefix,
                     w.code,
                     w.path.display(),
@@ -2617,16 +2621,20 @@ fn run_tests(args: &crate::cli::TestArgs, collector: &mut EventCollector) -> Res
 
         // Build compat_warnings for JSON output
         let compat_warnings_json: Vec<Value> = if args.pytest_compat {
-            discovery_result.compat_warnings.iter().map(|w| {
-                json!({
-                    "code": w.code,
-                    "message": w.message,
-                    "path": w.path.display().to_string(),
-                    "line": w.line,
-                    "severity": format!("{:?}", w.severity).to_lowercase(),
-                    "hint": get_pytest_compat_hint(&w.code),
+            discovery_result
+                .compat_warnings
+                .iter()
+                .map(|w| {
+                    json!({
+                        "code": w.code,
+                        "message": w.message,
+                        "path": w.path.display().to_string(),
+                        "line": w.line,
+                        "severity": format!("{:?}", w.severity).to_lowercase(),
+                        "hint": get_pytest_compat_hint(&w.code),
+                    })
                 })
-            }).collect()
+                .collect()
         } else {
             Vec::new()
         };
@@ -2758,16 +2766,20 @@ fn run_tests(args: &crate::cli::TestArgs, collector: &mut EventCollector) -> Res
 
     // Build compat_warnings for JSON output
     let run_compat_warnings_json: Vec<Value> = if args.pytest_compat {
-        discovery_result.compat_warnings.iter().map(|w| {
-            json!({
-                "code": w.code,
-                "message": w.message,
-                "path": w.path.display().to_string(),
-                "line": w.line,
-                "severity": format!("{:?}", w.severity).to_lowercase(),
-                "hint": get_pytest_compat_hint(&w.code),
+        discovery_result
+            .compat_warnings
+            .iter()
+            .map(|w| {
+                json!({
+                    "code": w.code,
+                    "message": w.message,
+                    "path": w.path.display().to_string(),
+                    "line": w.line,
+                    "severity": format!("{:?}", w.severity).to_lowercase(),
+                    "hint": get_pytest_compat_hint(&w.code),
+                })
             })
-        }).collect()
+            .collect()
     } else {
         Vec::new()
     };
