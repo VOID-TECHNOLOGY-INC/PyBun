@@ -129,9 +129,11 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
   - Depends on: PR4.1.  
   - Current: `src/mcp.rs` implements MCP server with JSON-RPC protocol support. Stdio mode via `--stdio` flag. Tools: `pybun_resolve`, `pybun_install`, `pybun_run`, `pybun_gc`, `pybun_doctor`. Resources: `pybun://cache/info`, `pybun://env/info`. Full MCP protocol compliance (initialize, tools/list, tools/call, resources/list, resources/read, shutdown).
   - Tests: 5 MCP E2E tests (help, stdio mode, initialize response, tools list, JSON format); 5 unit tests in mcp module.
-- PR4.3b: MCP tool 実装を “Would …” から実動へ（内部コマンド呼び出し）  
+- [DONE] PR4.3b: MCP tool 実装を "Would …" から実動へ（内部コマンド呼び出し）  
   - Goal: `pybun_install/pybun_run/pybun_resolve` が CLI と同等の実処理を呼ぶ（少なくとも install/run/gc/doctor）。  
   - Notes: まず stdio のみでOK。HTTP mode は別PRで。
+  - Current: `pybun_resolve` はパッケージインデックスからの依存解決を実行。`pybun_install` は依存解決→lockfile生成を実行。`pybun_run` はPythonスクリプト/インラインコードを実行し、stdout/stderr/exit_codeを返却。`pybun_doctor` は環境診断（Python, cache, project, lockfile）を実行。`pybun_gc` は既に実動。
+  - Tests: 4つのE2Eテスト追加（tools/call doctor, run inline code, gc dry-run, resolve no-index）。
 - PR4.3c: MCP HTTP mode（任意）  
   - Goal: `pybun mcp serve --port` を実装（現状は未実装の明示あり）。  
   - Risk: 運用/セキュリティ（bind addr, auth）を詰める必要があるので、後回しでもよい。
