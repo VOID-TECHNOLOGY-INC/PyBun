@@ -306,9 +306,10 @@ impl TestDiscovery {
 
             if path.is_dir() {
                 if let Some(name) = path.file_name().and_then(|n| n.to_str())
-                    && !self.config.exclude_dirs.contains(name) {
-                        self.collect_test_files_recursive(&path, files);
-                    }
+                    && !self.config.exclude_dirs.contains(name)
+                {
+                    self.collect_test_files_recursive(&path, files);
+                }
             } else if self.is_test_file(&path) {
                 files.push(path);
             }
@@ -502,10 +503,13 @@ impl TestDiscovery {
             }
 
             // Reset class context if we encounter a top-level definition
-            if !line.starts_with(' ') && !line.starts_with('\t') && !trimmed.is_empty()
-                && !trimmed.starts_with('@') {
-                    current_class = None;
-                }
+            if !line.starts_with(' ')
+                && !line.starts_with('\t')
+                && !trimmed.is_empty()
+                && !trimmed.starts_with('@')
+            {
+                current_class = None;
+            }
         }
 
         (tests, fixtures, warnings)
@@ -532,9 +536,7 @@ impl TestDiscovery {
     fn parse_class_name(&self, line: &str) -> Option<String> {
         let line = line.trim_start_matches("class ");
         // Handle "class TestFoo:" or "class TestFoo(Base):"
-        let name_end = line
-            .find(['(', ':'])
-            .unwrap_or(line.len());
+        let name_end = line.find(['(', ':']).unwrap_or(line.len());
         let name = line[..name_end].trim();
         if !name.is_empty() {
             Some(name.to_string())
@@ -636,23 +638,24 @@ impl TestDiscovery {
     fn get_skip_reason(&self, decorators: &[DecoratorInfo]) -> Option<String> {
         for dec in decorators {
             if dec.name.contains("skip")
-                && let Some(ref args) = dec.args {
-                    // Look for reason= argument
-                    for part in split_args(args) {
-                        let part = part.trim();
-                        if part.starts_with("reason=") {
-                            return Some(
-                                part.trim_start_matches("reason=")
-                                    .trim_matches('"')
-                                    .to_string(),
-                            );
-                        }
-                        // First positional arg for @skip("reason")
-                        if !part.contains('=') && !part.is_empty() {
-                            return Some(part.trim_matches('"').to_string());
-                        }
+                && let Some(ref args) = dec.args
+            {
+                // Look for reason= argument
+                for part in split_args(args) {
+                    let part = part.trim();
+                    if part.starts_with("reason=") {
+                        return Some(
+                            part.trim_start_matches("reason=")
+                                .trim_matches('"')
+                                .to_string(),
+                        );
+                    }
+                    // First positional arg for @skip("reason")
+                    if !part.contains('=') && !part.is_empty() {
+                        return Some(part.trim_matches('"').to_string());
                     }
                 }
+            }
         }
         None
     }
@@ -671,9 +674,10 @@ impl TestDiscovery {
     fn get_parametrize(&self, decorators: &[DecoratorInfo]) -> Option<ParametrizeInfo> {
         for dec in decorators {
             if dec.name.contains("parametrize")
-                && let Some(ref args) = dec.args {
-                    return self.parse_parametrize_args(args);
-                }
+                && let Some(ref args) = dec.args
+            {
+                return self.parse_parametrize_args(args);
+            }
         }
         None
     }
@@ -745,26 +749,27 @@ impl TestDiscovery {
         // Parse fixture decorator arguments
         for dec in decorators {
             if (dec.name == "fixture" || dec.name == "pytest.fixture")
-                && let Some(ref args) = dec.args {
-                    for part in split_args(args) {
-                        let part = part.trim();
-                        if part.starts_with("scope=") {
-                            let scope_str = part
-                                .trim_start_matches("scope=")
-                                .trim_matches('"')
-                                .trim_matches('\'');
-                            scope = match scope_str {
-                                "class" => FixtureScope::Class,
-                                "module" => FixtureScope::Module,
-                                "package" => FixtureScope::Package,
-                                "session" => FixtureScope::Session,
-                                _ => FixtureScope::Function,
-                            };
-                        } else if part.starts_with("autouse=") {
-                            autouse = part.trim_start_matches("autouse=").trim() == "True";
-                        }
+                && let Some(ref args) = dec.args
+            {
+                for part in split_args(args) {
+                    let part = part.trim();
+                    if part.starts_with("scope=") {
+                        let scope_str = part
+                            .trim_start_matches("scope=")
+                            .trim_matches('"')
+                            .trim_matches('\'');
+                        scope = match scope_str {
+                            "class" => FixtureScope::Class,
+                            "module" => FixtureScope::Module,
+                            "package" => FixtureScope::Package,
+                            "session" => FixtureScope::Session,
+                            _ => FixtureScope::Function,
+                        };
+                    } else if part.starts_with("autouse=") {
+                        autouse = part.trim_start_matches("autouse=").trim() == "True";
                     }
                 }
+            }
         }
 
         let dependencies = self.extract_fixture_dependencies(func_line);
@@ -793,18 +798,19 @@ impl TestDiscovery {
             // Warn about complex fixtures that might need shim
             if dec.name.contains("fixture")
                 && let Some(ref args) = dec.args
-                    && (args.contains("session") || args.contains("package")) {
-                        warnings.push(CompatWarning {
-                            code: "W001".to_string(),
-                            message: format!(
-                                "Session/package scoped fixture may need pytest backend: {}",
-                                dec.name
-                            ),
-                            path: path.to_path_buf(),
-                            line,
-                            severity: WarningSeverity::Warning,
-                        });
-                    }
+                && (args.contains("session") || args.contains("package"))
+            {
+                warnings.push(CompatWarning {
+                    code: "W001".to_string(),
+                    message: format!(
+                        "Session/package scoped fixture may need pytest backend: {}",
+                        dec.name
+                    ),
+                    path: path.to_path_buf(),
+                    line,
+                    severity: WarningSeverity::Warning,
+                });
+            }
 
             // Warn about pytest plugins
             if dec.name.contains("usefixtures")
