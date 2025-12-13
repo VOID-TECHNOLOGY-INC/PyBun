@@ -55,9 +55,10 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
   - Tests: 10 E2E tests for x command (package argument required, JSON output, temp environment, cleanup, version spec, passthrough args); 6 unit tests for parse_package_spec.
 
 ### M2: Runtime & Import Optimizer (Phase 2)
-- PR2.1: Rust-based module finder (replace `sys.meta_path` entry, parallel fs scan) guarded by flag.  
+- [DONE] PR2.1: Rust-based module finder (replace `sys.meta_path` entry, parallel fs scan) guarded by flag.  
   - Depends on: M1.  
-  - Tests: unit for path resolution; integration timing benchmark harness (CI optional).
+  - Current: `src/module_finder.rs` implements high-performance module finder with parallel fs scanning, LRU cache, namespace package support (PEP 420). `pybun module-find` command for CLI access. Supports `--scan` for directory scanning, `--benchmark` for timing info. JSON output with module type, path, search paths. Python code generation for sys.meta_path injection.
+  - Tests: 14 unit tests (cache hit/miss, package/module/namespace discovery, parallel scan, config); 9 E2E tests (CLI help, find simple/nested/package, not found, scan, JSON output, benchmark).
 - PR2.2: Lazy import injection MVP (config driven, allowlist/denylist, fallback to CPython).  
   - Depends on: PR2.1.  
   - Tests: integration measuring reduced import time on synthetic heavy modules; JSON diagnostics.

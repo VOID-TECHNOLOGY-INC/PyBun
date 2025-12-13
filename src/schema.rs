@@ -187,6 +187,10 @@ pub enum EventType {
     PythonRemoveStart,
     PythonRemoveComplete,
 
+    // Module finder events
+    ModuleFindStart,
+    ModuleFindComplete,
+
     // Generic progress event
     Progress,
 
