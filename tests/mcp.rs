@@ -224,7 +224,9 @@ fn mcp_tools_call_run_inline_code() {
 
     // Should contain output from Python execution
     assert!(
-        stdout.contains("Hello from MCP") || stdout.contains("success") || stdout.contains("exit_code"),
+        stdout.contains("Hello from MCP")
+            || stdout.contains("success")
+            || stdout.contains("exit_code"),
         "pybun_run should execute Python code. Got: {}",
         stdout
     );
@@ -295,9 +297,10 @@ fn mcp_tools_call_resolve_no_index() {
 
     // Should contain a response (either no_index status or parsed requirements)
     assert!(
-        stdout.contains("no_index") || stdout.contains("parsed_requirements") || stdout.contains("requirements"),
+        stdout.contains("no_index")
+            || stdout.contains("parsed_requirements")
+            || stdout.contains("requirements"),
         "pybun_resolve should handle missing index gracefully. Got: {}",
         stdout
     );
 }
-

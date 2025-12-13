@@ -462,9 +462,7 @@ impl McpServer {
                         .collect()
                 }
                 Err(_) => {
-                    return Err(
-                        "No requirements provided and no pyproject.toml found".to_string()
-                    );
+                    return Err("No requirements provided and no pyproject.toml found".to_string());
                 }
             }
         };
@@ -578,7 +576,9 @@ impl McpServer {
                     cmd.arg(arg);
                 }
 
-                let output = cmd.output().map_err(|e| format!("Failed to execute: {}", e))?;
+                let output = cmd
+                    .output()
+                    .map_err(|e| format!("Failed to execute: {}", e))?;
 
                 let exit_code = output.status.code().unwrap_or(-1);
                 let stdout = String::from_utf8_lossy(&output.stdout).to_string();
@@ -602,7 +602,9 @@ impl McpServer {
                     cmd.arg(arg);
                 }
 
-                let output = cmd.output().map_err(|e| format!("Failed to execute: {}", e))?;
+                let output = cmd
+                    .output()
+                    .map_err(|e| format!("Failed to execute: {}", e))?;
 
                 let exit_code = output.status.code().unwrap_or(-1);
                 let stdout = String::from_utf8_lossy(&output.stdout).to_string();
@@ -694,8 +696,7 @@ impl McpServer {
 
                 if verbose && let Ok(size) = cache.total_size() {
                     cache_check["total_size"] = json!(size);
-                    cache_check["total_size_human"] =
-                        json!(crate::cache::format_size(size));
+                    cache_check["total_size_human"] = json!(crate::cache::format_size(size));
                 }
                 checks.push(cache_check);
             }
@@ -954,4 +955,3 @@ mod tests {
         assert!(response.result.is_some());
     }
 }
-
