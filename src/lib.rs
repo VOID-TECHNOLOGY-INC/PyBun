@@ -16,4 +16,6 @@ pub mod resolver;
 pub mod runtime;
 pub mod schema;
 pub mod self_heal;
+pub mod snapshot;
 pub mod test_discovery;
+pub mod test_executor;
