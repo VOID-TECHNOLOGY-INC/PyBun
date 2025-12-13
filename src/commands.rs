@@ -127,6 +127,8 @@ pub fn execute(cli: Cli) -> Result<()> {
                     target,
                     exit_code,
                     pep723_deps,
+                    temp_env,
+                    cleanup,
                 }) => {
                     collector.event(EventType::ScriptEnd);
                     (
@@ -137,6 +139,8 @@ pub fn execute(cli: Cli) -> Result<()> {
                                 "target": target,
                                 "exit_code": exit_code,
                                 "pep723_dependencies": pep723_deps,
+                                "temp_env": temp_env,
+                                "cleanup": cleanup,
                             }),
                         ),
                     )
@@ -547,21 +551,65 @@ fn install(
     args: &crate::cli::InstallArgs,
     collector: &mut EventCollector,
 ) -> Result<InstallOutcome> {
-    if args.requirements.is_empty() {
-        return Err(eyre!(
-            "no requirements provided (temporary flag --require needed)"
-        ));
+    // Gather requirements: either from --require flags or from pyproject.toml
+    let requirements = if !args.requirements.is_empty() {
+        // CLI --require flags take precedence
+        args.requirements.clone()
+    } else {
+        // Try to load from pyproject.toml
+        let working_dir = std::env::current_dir()?;
+        match Project::discover(&working_dir) {
+            Ok(project) => {
+                let deps = project.dependencies();
+                if deps.is_empty() {
+                    // Project found but no dependencies - this is valid
+                    collector.info("No dependencies found in pyproject.toml");
+                    vec![]
+                } else {
+                    collector.info(format!(
+                        "Found {} dependencies in {}",
+                        deps.len(),
+                        project.path().display()
+                    ));
+                    // Parse each dependency string into a Requirement
+                    deps.iter()
+                        .map(|d| {
+                            d.parse::<Requirement>()
+                                .unwrap_or_else(|_| Requirement::any(d.trim()))
+                        })
+                        .collect()
+                }
+            }
+            Err(_) => {
+                return Err(eyre!(
+                    "no requirements provided and no pyproject.toml found. \
+                     Use --require or create a pyproject.toml with [project.dependencies]"
+                ));
+            }
+        }
+    };
+
+    // If no requirements (empty pyproject dependencies), create empty lockfile
+    if requirements.is_empty() {
+        let lock = Lockfile::new(vec!["3.11".into()], vec!["unknown".into()]);
+        lock.save_to_path(&args.lock)?;
+        return Ok(InstallOutcome {
+            summary: format!("no dependencies to install -> {}", args.lock.display()),
+            packages: vec![],
+            lockfile: args.lock.clone(),
+        });
     }
+
     let index_path = args
         .index
         .clone()
         .ok_or_else(|| eyre!("index path is required for now (--index)"))?;
 
     let index = load_index_from_path(&index_path).map_err(|e| eyre!(e))?;
-    let resolution = match resolve(args.requirements.clone(), &index) {
+    let resolution = match resolve(requirements.clone(), &index) {
         Ok(r) => r,
         Err(e) => {
-            for d in crate::self_heal::diagnostics_for_resolve_error(&args.requirements, &e) {
+            for d in crate::self_heal::diagnostics_for_resolve_error(&requirements, &e) {
                 collector.diagnostic(d);
             }
             return Err(eyre!(e.to_string()));
@@ -743,6 +791,10 @@ struct RunOutcome {
     target: Option<String>,
     exit_code: i32,
     pep723_deps: Vec<String>,
+    /// Temporary environment path if one was created for PEP 723 dependencies
+    temp_env: Option<String>,
+    /// Whether the temp environment was cleaned up
+    cleanup: bool,
 }
 
 fn run_script(args: &crate::cli::RunArgs, collector: &mut EventCollector) -> Result<RunOutcome> {
@@ -765,30 +817,108 @@ fn run_script(args: &crate::cli::RunArgs, collector: &mut EventCollector) -> Res
     }
 
     // Check for PEP 723 metadata
-    let pep723_deps = match pep723::parse_script_metadata(&script_path) {
-        Ok(Some(metadata)) => {
-            if !metadata.dependencies.is_empty() {
-                // TODO: In future, install dependencies to a temporary env
-                // For now, just report them
-                metadata.dependencies
-            } else {
-                Vec::new()
-            }
-        }
-        Ok(None) => Vec::new(),
+    let pep723_metadata = match pep723::parse_script_metadata(&script_path) {
+        Ok(metadata) => metadata,
         Err(e) => {
             // Log warning but continue
             eprintln!("warning: failed to parse PEP 723 metadata: {}", e);
-            Vec::new()
+            None
         }
     };
 
-    // Find Python interpreter
-    let (python, env_source) = find_python_interpreter()?;
-    eprintln!("info: using Python from {}", env_source);
+    let pep723_deps = pep723_metadata
+        .as_ref()
+        .map(|m| m.dependencies.clone())
+        .unwrap_or_default();
+
+    // Check for dry-run mode (for testing)
+    let dry_run = std::env::var("PYBUN_PEP723_DRY_RUN").is_ok();
+
+    // If there are PEP 723 dependencies, create a temporary environment
+    let (python_to_use, temp_env_path, _temp_dir_handle) = if !pep723_deps.is_empty() {
+        collector.info(format!(
+            "PEP 723 script with {} dependencies",
+            pep723_deps.len()
+        ));
+
+        // Create temporary environment
+        let temp_dir =
+            tempfile::tempdir().map_err(|e| eyre!("failed to create temp directory: {}", e))?;
+        let temp_env_str = temp_dir.path().to_string_lossy().to_string();
+
+        if dry_run {
+            // In dry-run mode, just report what would happen
+            collector.info(format!(
+                "Would create temp env at {} and install: {:?}",
+                temp_env_str, pep723_deps
+            ));
+            // Use system Python for the actual run in dry-run mode
+            let (python, env_source) = find_python_interpreter()?;
+            eprintln!("info: using Python from {} (dry-run)", env_source);
+            (python, Some(temp_env_str), Some(temp_dir))
+        } else {
+            // Find Python interpreter for creating venv
+            let (base_python, env_source) = find_python_interpreter()?;
+            eprintln!("info: using Python from {} for temp env", env_source);
+
+            // Create virtual environment
+            let venv_path = temp_dir.path().join("venv");
+            eprintln!(
+                "info: creating isolated environment at {}",
+                venv_path.display()
+            );
+
+            let venv_status = ProcessCommand::new(&base_python)
+                .args(["-m", "venv"])
+                .arg(&venv_path)
+                .status()
+                .map_err(|e| eyre!("failed to create virtual environment: {}", e))?;
+
+            if !venv_status.success() {
+                return Err(eyre!("failed to create virtual environment"));
+            }
+
+            // Get pip and python paths in venv
+            let pip_path = if cfg!(windows) {
+                venv_path.join("Scripts").join("pip.exe")
+            } else {
+                venv_path.join("bin").join("pip")
+            };
+            let venv_python = if cfg!(windows) {
+                venv_path.join("Scripts").join("python.exe")
+            } else {
+                venv_path.join("bin").join("python")
+            };
+
+            // Install dependencies
+            for dep in &pep723_deps {
+                eprintln!("info: installing {}...", dep);
+                let install_status = ProcessCommand::new(&pip_path)
+                    .args(["install", "--quiet", dep])
+                    .status()
+                    .map_err(|e| eyre!("failed to install {}: {}", dep, e))?;
+
+                if !install_status.success() {
+                    collector.warning(format!("failed to install {}", dep));
+                    return Err(eyre!("failed to install PEP 723 dependency: {}", dep));
+                }
+            }
+
+            (
+                venv_python.to_string_lossy().to_string(),
+                Some(temp_env_str),
+                Some(temp_dir),
+            )
+        }
+    } else {
+        // No PEP 723 dependencies, use system/project Python
+        let (python, env_source) = find_python_interpreter()?;
+        eprintln!("info: using Python from {}", env_source);
+        (python, None, None)
+    };
 
     // Build command
-    let mut cmd = ProcessCommand::new(&python);
+    let mut cmd = ProcessCommand::new(&python_to_use);
     cmd.arg(&script_path);
 
     // Add passthrough arguments
@@ -813,11 +943,16 @@ fn run_script(args: &crate::cli::RunArgs, collector: &mut EventCollector) -> Res
         )
     };
 
+    // temp_dir is dropped here, cleaning up the temporary environment
+    let cleanup = temp_env_path.is_some();
+
     Ok(RunOutcome {
         summary,
         target: Some(target.clone()),
         exit_code,
         pep723_deps,
+        temp_env: temp_env_path,
+        cleanup,
     })
 }
 
@@ -859,6 +994,8 @@ fn run_python_code(
         target: Some("-c".to_string()),
         exit_code,
         pep723_deps: Vec::new(),
+        temp_env: None,
+        cleanup: false,
     })
 }
 

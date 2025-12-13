@@ -2,6 +2,7 @@ use assert_cmd::Command;
 use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::PredicateBooleanExt;
 use pybun::lockfile::Lockfile;
+use std::fs;
 use tempfile::tempdir;
 
 fn bin() -> Command {
@@ -228,4 +229,220 @@ fn install_with_compatible_release_specifier() {
     let lock = Lockfile::load_from_path(&lock_path).expect("lock loads");
     let lib = lock.packages.get("lib").expect("lib entry");
     assert_eq!(lib.version, "1.4.5", "~=1.4.0 should select 1.4.5");
+}
+
+// =============================================================================
+// PR1.8: Install from pyproject.toml (normal flow)
+// =============================================================================
+
+#[test]
+fn install_from_pyproject_toml() {
+    let temp = tempdir().unwrap();
+    let pyproject_path = temp.path().join("pyproject.toml");
+    let lock_path = temp.path().join("pybun.lockb");
+    let index = index_path();
+
+    // Create a pyproject.toml with dependencies
+    let pyproject_content = r#"[project]
+name = "test-project"
+version = "0.1.0"
+dependencies = [
+    "app==1.0.0",
+]
+"#;
+    fs::write(&pyproject_path, pyproject_content).unwrap();
+
+    bin()
+        .current_dir(temp.path())
+        .args([
+            "install",
+            "--index",
+            index.to_str().unwrap(),
+            "--lock",
+            lock_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let lock = Lockfile::load_from_path(&lock_path).expect("lock loads");
+    let names: Vec<_> = lock.packages.keys().cloned().collect();
+    assert_eq!(names, vec!["app", "lib-a", "lib-b", "lib-c"]);
+}
+
+#[test]
+fn install_from_pyproject_with_multiple_deps() {
+    let temp = tempdir().unwrap();
+    let pyproject_path = temp.path().join("pyproject.toml");
+    let lock_path = temp.path().join("pybun.lockb");
+    let index = index_path();
+
+    // Create a pyproject.toml with multiple dependencies
+    let pyproject_content = r#"[project]
+name = "multi-dep-project"
+version = "0.1.0"
+dependencies = [
+    "lib-a==1.0.0",
+    "lib-c==1.0.0",
+]
+"#;
+    fs::write(&pyproject_path, pyproject_content).unwrap();
+
+    bin()
+        .current_dir(temp.path())
+        .args([
+            "install",
+            "--index",
+            index.to_str().unwrap(),
+            "--lock",
+            lock_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let lock = Lockfile::load_from_path(&lock_path).expect("lock loads");
+    assert!(lock.packages.contains_key("lib-a"));
+    assert!(lock.packages.contains_key("lib-c"));
+}
+
+#[test]
+fn install_from_pyproject_no_project_section_succeeds_empty() {
+    let temp = tempdir().unwrap();
+    let pyproject_path = temp.path().join("pyproject.toml");
+    let lock_path = temp.path().join("pybun.lockb");
+    let index = index_path();
+
+    // Create a pyproject.toml without [project] section
+    // This is valid - means no dependencies, should create empty lockfile
+    let pyproject_content = r#"[tool.pybun]
+python = "3.11"
+"#;
+    fs::write(&pyproject_path, pyproject_content).unwrap();
+
+    bin()
+        .current_dir(temp.path())
+        .args([
+            "install",
+            "--index",
+            index.to_str().unwrap(),
+            "--lock",
+            lock_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("no dependencies to install"));
+
+    let lock = Lockfile::load_from_path(&lock_path).expect("lock loads");
+    assert!(lock.packages.is_empty());
+}
+
+#[test]
+fn install_from_pyproject_empty_deps_succeeds() {
+    let temp = tempdir().unwrap();
+    let pyproject_path = temp.path().join("pyproject.toml");
+    let lock_path = temp.path().join("pybun.lockb");
+    let index = index_path();
+
+    // Create a pyproject.toml with empty dependencies
+    let pyproject_content = r#"[project]
+name = "empty-project"
+version = "0.1.0"
+dependencies = []
+"#;
+    fs::write(&pyproject_path, pyproject_content).unwrap();
+
+    bin()
+        .current_dir(temp.path())
+        .args([
+            "install",
+            "--index",
+            index.to_str().unwrap(),
+            "--lock",
+            lock_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let lock = Lockfile::load_from_path(&lock_path).expect("lock loads");
+    assert!(lock.packages.is_empty());
+}
+
+#[test]
+fn install_cli_require_overrides_pyproject() {
+    // When --require is provided, it should be used instead of pyproject.toml
+    let temp = tempdir().unwrap();
+    let pyproject_path = temp.path().join("pyproject.toml");
+    let lock_path = temp.path().join("pybun.lockb");
+    let index = index_path();
+
+    // Create pyproject.toml with lib-a
+    let pyproject_content = r#"[project]
+name = "override-test"
+version = "0.1.0"
+dependencies = ["lib-a==1.0.0"]
+"#;
+    fs::write(&pyproject_path, pyproject_content).unwrap();
+
+    // But install lib-c via --require
+    bin()
+        .current_dir(temp.path())
+        .args([
+            "install",
+            "--index",
+            index.to_str().unwrap(),
+            "--require",
+            "lib-c==1.0.0",
+            "--lock",
+            lock_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let lock = Lockfile::load_from_path(&lock_path).expect("lock loads");
+    // Should only have lib-c (from --require), not lib-a (from pyproject)
+    assert!(lock.packages.contains_key("lib-c"));
+    assert!(!lock.packages.contains_key("lib-a"));
+}
+
+#[test]
+fn install_no_pyproject_and_no_require_error() {
+    let temp = tempdir().unwrap();
+    // No pyproject.toml exists in temp dir
+    // No --require flag
+
+    bin()
+        .current_dir(temp.path())
+        .args(["install"])
+        .assert()
+        .failure()
+        .stdout(predicates::str::contains("no requirements provided"));
+}
+
+#[test]
+fn install_json_output_from_pyproject() {
+    let temp = tempdir().unwrap();
+    let pyproject_path = temp.path().join("pyproject.toml");
+    let lock_path = temp.path().join("pybun.lockb");
+    let index = index_path();
+
+    let pyproject_content = r#"[project]
+name = "json-test"
+version = "0.1.0"
+dependencies = ["lib-c==1.0.0"]
+"#;
+    fs::write(&pyproject_path, pyproject_content).unwrap();
+
+    bin()
+        .current_dir(temp.path())
+        .args([
+            "--format=json",
+            "install",
+            "--index",
+            index.to_str().unwrap(),
+            "--lock",
+            lock_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("\"status\":\"ok\""))
+        .stdout(predicates::str::contains("\"packages\""));
 }

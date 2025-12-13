@@ -7,11 +7,11 @@
 - Target macOS/Linux first; keep Windows stubs/tests runnable in CI via matrix for API stability; unblock arm64 cross-build early.
 
 ## Status Note (重要)
-このPLANは「実装計画」中心で、各PRの項目が **“MVPの土台（stub/preview）まで含めて[DONE]”** になっている箇所があります。  
-直近の実装状況（`src/commands.rs`, `src/hot_reload.rs`, `src/mcp.rs`）に照らすと、次のフォローアップが必要です（= **大きな設計変更は不要だが、実装を“本物”にする段階**）。
+このPLANは「実装計画」中心で、各PRの項目が **"MVPの土台（stub/preview）まで含めて[DONE]"** になっている箇所があります。  
+直近の実装状況（`src/commands.rs`, `src/hot_reload.rs`, `src/mcp.rs`）に照らすと、次のフォローアップが必要です（= **大きな設計変更は不要だが、実装を"本物"にする段階**）。
 
-- **Installer/Lock**: `pybun install` は現状 `--require` と `--index` に依存した暫定フロー。`pyproject.toml`/lock を読んだ通常フローが必要。lockfileの `wheel/hash` は placeholder が残っており、将来の `--verify`/再現性の前提が未整備。
-- **Runner (PEP 723)**: dependencies は解析・表示できるが、**自動インストール→隔離環境実行**は未実装（TODOあり）。
+- **Installer/Lock**: ✅ `pybun install` は `pyproject.toml` から依存関係を読み込む通常フローに対応。`--require` と `--index` も引き続き使用可能（`--require` 指定時はpyprojectより優先）。lockfileの `wheel/hash` は placeholder が残っており、将来の `--verify`/再現性の前提が未整備。
+- **Runner (PEP 723)**: ✅ dependencies を解析し、**自動インストール→隔離環境実行**を実装済み。一時venv作成→pip install→スクリプト実行→自動クリーンアップの流れ。
 - **Hot Reload**: 設定・外部ウォッチャーコマンド生成はあるが、**ネイティブ監視（notify等）**は stub。
 - **Tester / Builder**: `pybun test` と `pybun build` は CLI はあるが、実装は stub（not implemented yet）。
 - **MCP**: `mcp serve --stdio` は動作するが、`tools/call` の tool 実行は “Would ...” のスタブ実装。HTTP mode は未実装（CLI側で明示）。
@@ -51,13 +51,16 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
   - Current: `pybun run` executes Python scripts; PEP 723 metadata parsed and reported in JSON output; `-c` inline code support.  
   - Depends on: PR1.3.  
   - Tests: integration E2E executing sample script; JSON output snapshot.
-- PR1.8: `pybun install` の通常フロー化（暫定 `--require/--index` からの卒業）  
+- [DONE] PR1.8: `pybun install` の通常フロー化（暫定 `--require/--index` からの卒業）  
   - Goal: `pyproject.toml` の dependencies / optional-deps / lock を入力にできるようにする（`--index` は実運用の設定へ）。  
   - Notes: 大きなアーキ変更は避け、まずは「pyproject→resolve→lock更新」まで。実際のwheel取得/展開は段階的に。  
-  - Tests: 既存fixtureを活かしつつ、`pyproject.toml` からの install E2E を追加。
-- PR1.9: PEP 723 dependencies の自動インストール（隔離環境で実行）  
+  - Current: `pybun install` が `--require` なしでも `pyproject.toml` から依存関係を読み込むように実装。空の依存リストも正しく処理。`--require` 指定時はそちらを優先。
+  - Tests: 7つのE2Eテスト追加（pyproject.tomlからのinstall、複数依存、空依存、pyproject未発見エラー、--require優先、JSON出力）。
+- [DONE] PR1.9: PEP 723 dependencies の自動インストール（隔離環境で実行）  
   - Goal: `pybun run` が PEP723 を検出したら一時envを作り依存を入れてから実行（`--offline`/キャッシュも考慮）。  
   - Depends on: PR1.8（解決/取得の基盤がある程度必要）。
+  - Current: `pybun run` がPEP 723スクリプトを検出すると、自動的に一時仮想環境を作成し、依存関係をpipでインストール後にスクリプトを実行。実行後は自動クリーンアップ。`PYBUN_PEP723_DRY_RUN=1` でテスト用ドライランモード対応。JSON出力に `temp_env` と `cleanup` フィールドを追加。
+  - Tests: 4つのE2Eテスト追加（自動インストール、JSON情報表示、空依存時のenv作成スキップ、PEP723なしスクリプト）。
 - [DONE] PR1.5: Auto env selection (`PYBUN_ENV`, `.python-version`, global env fallback).  
   - Depends on: PR1.3.  
   - Current: `src/env.rs` module implements full priority-based Python environment selection (PYBUN_ENV, PYBUN_PYTHON, .pybun/venv, .python-version, system PATH). Integrated with `pybun run`.
