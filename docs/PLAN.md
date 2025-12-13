@@ -6,6 +6,16 @@
 - Add fast smoke/E2E checks in every milestone to guard regressions early.
 - Target macOS/Linux first; keep Windows stubs/tests runnable in CI via matrix for API stability; unblock arm64 cross-build early.
 
+## Status Note (重要)
+このPLANは「実装計画」中心で、各PRの項目が **“MVPの土台（stub/preview）まで含めて[DONE]”** になっている箇所があります。  
+直近の実装状況（`src/commands.rs`, `src/hot_reload.rs`, `src/mcp.rs`）に照らすと、次のフォローアップが必要です（= **大きな設計変更は不要だが、実装を“本物”にする段階**）。
+
+- **Installer/Lock**: `pybun install` は現状 `--require` と `--index` に依存した暫定フロー。`pyproject.toml`/lock を読んだ通常フローが必要。lockfileの `wheel/hash` は placeholder が残っており、将来の `--verify`/再現性の前提が未整備。
+- **Runner (PEP 723)**: dependencies は解析・表示できるが、**自動インストール→隔離環境実行**は未実装（TODOあり）。
+- **Hot Reload**: 設定・外部ウォッチャーコマンド生成はあるが、**ネイティブ監視（notify等）**は stub。
+- **Tester / Builder**: `pybun test` と `pybun build` は CLI はあるが、実装は stub（not implemented yet）。
+- **MCP**: `mcp serve --stdio` は動作するが、`tools/call` の tool 実行は “Would ...” のスタブ実装。HTTP mode は未実装（CLI側で明示）。
+
 ## Milestones & PR Tracks
 Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; parallelizable items marked (||).
 
@@ -41,6 +51,13 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
   - Current: `pybun run` executes Python scripts; PEP 723 metadata parsed and reported in JSON output; `-c` inline code support.  
   - Depends on: PR1.3.  
   - Tests: integration E2E executing sample script; JSON output snapshot.
+- PR1.8: `pybun install` の通常フロー化（暫定 `--require/--index` からの卒業）  
+  - Goal: `pyproject.toml` の dependencies / optional-deps / lock を入力にできるようにする（`--index` は実運用の設定へ）。  
+  - Notes: 大きなアーキ変更は避け、まずは「pyproject→resolve→lock更新」まで。実際のwheel取得/展開は段階的に。  
+  - Tests: 既存fixtureを活かしつつ、`pyproject.toml` からの install E2E を追加。
+- PR1.9: PEP 723 dependencies の自動インストール（隔離環境で実行）  
+  - Goal: `pybun run` が PEP723 を検出したら一時envを作り依存を入れてから実行（`--offline`/キャッシュも考慮）。  
+  - Depends on: PR1.8（解決/取得の基盤がある程度必要）。
 - [DONE] PR1.5: Auto env selection (`PYBUN_ENV`, `.python-version`, global env fallback).  
   - Depends on: PR1.3.  
   - Current: `src/env.rs` module implements full priority-based Python environment selection (PYBUN_ENV, PYBUN_PYTHON, .pybun/venv, .python-version, system PATH). Integrated with `pybun run`.
@@ -67,12 +84,19 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
   - Depends on: PR2.1.  
   - Current: `src/hot_reload.rs` implements file watcher configuration with include/exclude patterns, debouncing, and platform abstraction. `pybun watch` command with `--show-config`, `--shell-command` for external watcher generation, customizable include/exclude patterns, debounce timing. Dev profile configuration. Shell command generation for fswatch (macOS) and inotifywait (Linux).
   - Tests: 17 unit tests (config, pattern matching, debouncing, deduplication, watcher status); 12 E2E tests (help, config, target, paths, patterns, shell command generation).
+- PR2.3b: ネイティブファイル監視の実装（`notify` 等）を feature flag で追加  
+  - Goal: 現状の外部ウォッチャー生成に加えて、`pybun watch` が単体で監視→再実行できる。  
+  - Risk: OS差分が出るので、まずは macOS/Linux のみ、Windows はスタブ維持。  
+  - Tests: unit（イベントフィルタ/デバウンス）＋ E2E（少数の変更検知）を短時間で。
 - [DONE] PR2.4: Launch profiles (`--profile=dev|prod|benchmark`), logging verbosity, tracing hooks.  
   - Depends on: PR2.2, PR2.3.  
   - Current: `src/profiles.rs` implements Profile enum (Dev, Prod, Benchmark) with ProfileConfig for each. ProfileManager for loading/selecting profiles. `pybun profile` command with `--list`, `--show`, `--compare`, `-o` (export) options. Dev: hot reload, verbose logging; Prod: lazy imports, optimizations; Benchmark: tracing, timing. Environment variable detection (PYBUN_PROFILE). Python optimization flags (-O, -OO).
   - Tests: 15 unit tests (profile parsing, config values, serialization, manager); 16 E2E tests (list, show, compare, export, config values).
 
 ### M3: Tester (Phase 2 tail)
+- PR3.0 (bootstrap): `pybun test` を “まず動く” 状態へ（pytest/unittest の薄いラッパー + JSON出力）  
+  - Goal: SPECSの最終形（ASTネイティブ）へ行く前に、CLI/JSON/exit-code/`--shard`/`--fail-fast` の外形を固める。  
+  - Notes: “大きな設計変更を避けるための段階投入” として推奨。
 - PR3.1: Test discovery engine (AST-based) + compatibility shim for pytest markers/fixtures.  
   - Depends on: M1 baseline runtime.  
   - Tests: unit on discovery; integration comparing discovered set vs pytest on sample repo.
@@ -96,12 +120,21 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
   - Depends on: PR4.1.  
   - Current: `src/mcp.rs` implements MCP server with JSON-RPC protocol support. Stdio mode via `--stdio` flag. Tools: `pybun_resolve`, `pybun_install`, `pybun_run`, `pybun_gc`, `pybun_doctor`. Resources: `pybun://cache/info`, `pybun://env/info`. Full MCP protocol compliance (initialize, tools/list, tools/call, resources/list, resources/read, shutdown).
   - Tests: 5 MCP E2E tests (help, stdio mode, initialize response, tools list, JSON format); 5 unit tests in mcp module.
+- PR4.3b: MCP tool 実装を “Would …” から実動へ（内部コマンド呼び出し）  
+  - Goal: `pybun_install/pybun_run/pybun_resolve` が CLI と同等の実処理を呼ぶ（少なくとも install/run/gc/doctor）。  
+  - Notes: まず stdio のみでOK。HTTP mode は別PRで。
+- PR4.3c: MCP HTTP mode（任意）  
+  - Goal: `pybun mcp serve --port` を実装（現状は未実装の明示あり）。  
+  - Risk: 運用/セキュリティ（bind addr, auth）を詰める必要があるので、後回しでもよい。
 - [DONE] PR4.4: Observability layer (structured logging defaults, `PYBUN_TRACE=1` tracing/trace-id propagation, redaction hooks).  
   - Depends on: PR4.1.  
   - Current: Full observability via `src/schema.rs`. PYBUN_TRACE=1 enables UUID trace IDs. Event streaming with timestamps. Diagnostics array. Schema version tracking. PYBUN_LOG for log level control. Sensitive env vars not leaked in output.
   - Tests: 9 observability E2E tests (trace_id presence/absence, event timestamps, duration_ms, schema version, diagnostics, env var redaction, log level, event types).
 
 ### M5: Builder & Security (Phase 3/4)
+- PR5.0 (bootstrap): `pybun build` の “まず動く” 実装（`python -m build` の薄いラッパー + `--sbom` はスタブ出力）  
+  - Goal: CLI/JSON/成果物ディレクトリの外形を固める。  
+  - Notes: SBOMの本実装は PR5.3 で良いが、`--sbom` が何かを出すこと自体は早めに整えるとUXが良い。
 - PR5.1: C/C++ build wrapper (setuptools/maturin/scikit-build isolation) + build cache.  
   - Depends on: M1 installer infra.  
   - Tests: integration building sample C extension; cache hit/miss assertions.

@@ -14,6 +14,25 @@
 
 ---
 
+## 0.1 実装成熟度と段階導入 (Maturity & Staging)
+
+本ドキュメント（SPECS）は最終的な到達点（製品仕様）を定義する。一方で実装は段階的に投入されるため、機能には成熟度を設ける。
+実装計画と現状は `docs/PLAN.md` を正とし、本仕様と矛盾しない範囲で段階導入を許容する。
+
+### 成熟度レベル
+
+- **stub**: CLI/スキーマ/外形のみ。内部処理は未実装（例: “Would …” のダミー応答）。
+- **preview**: 実用の入口として動くが、互換性/性能/OS対応が限定的。feature flag や制約を伴う。
+- **stable**: 既定で利用可能。互換性/再現性/エラー診断が揃い、CI で回帰を防げる。
+
+### 段階導入の方針（大規模修正を避ける）
+
+- **Tester/Builder は bootstrap → ネイティブ実装へ**: まず薄いラッパーで CLI/JSON/exit-code 等の外形を固め、後から内部エンジンを差し替える。
+- **MCP は stdio を先行**: まず `--stdio` で安定化し、HTTP mode（`--port`）は運用・セキュリティ要件を詰めてから追加する。
+- **Hot Reload は外部ウォッチャー生成を維持**: ネイティブ監視（notify 等）は段階投入し、OS差分は feature flag で吸収する。
+
+---
+
 ## 1. プロダクト概要 (Executive Summary)
 
 **PyBun** は、Rustで記述された Python のための「オールインワン・ツールチェーン」である。
@@ -69,7 +88,7 @@ graph TD
 - **決定性:** 同一 lock + 同一プラットフォームで **完全再現性**（ハッシュ一致する wheel セット）を保証。
 - **ディスク効率:** グローバルキャッシュ + ハードリンクで、典型的 ML プロジェクト（3GB wheel）を **70% 以上節約**。
 - **並列度:** デフォルトで論理CPU数を検出し、I/O/CPU別スレッドプールを分離。環境変数で上書き可能。
-- **信頼性:** すべての CLI コマンドに `--json` 出力と `--verbose` を用意し、AI/人間どちらにも故障解析しやすい形を提供。
+- **信頼性:** すべての CLI コマンドに `--format=json` 出力と `--verbose` を用意し、AI/人間どちらにも故障解析しやすい形を提供。
 
 -----
 
@@ -97,19 +116,19 @@ graph TD
 
   * **Lazy Import Injection:** ユーザーコードを変更することなく、設定ベースで重量級ライブラリ（Pandas, Torch, Terraform-cdkなど）を遅延読み込み（Lazy Loading）し、CLI起動速度を10〜100倍高速化する。
   * **Rust-based Module Finder:** `sys.meta_path` を Rust 実装に置き換え、ファイルシステム探索を並列化・最適化。
-  * **Runtime Hot Reloading:** ファイル変更を検知し、プロセスを落とさずにモジュールをリロード（FastAPI/Django等の開発効率向上）。
-  * **PEP 723 (Script Support):** 依存関係が記述された単一の `.py` ファイルを、事前の install なしで即座に仮想環境構築・実行する。
+  * **Runtime Hot Reloading:** ファイル変更を検知し、プロセスを落とさずにモジュールをリロード（FastAPI/Django等の開発効率向上）。段階導入として、外部ウォッチャー生成 → ネイティブ監視（notify 等）を許容。
+  * **PEP 723 (Script Support):** 依存関係が記述された単一の `.py` ファイルを、事前の install なしで即座に仮想環境構築・実行する（段階導入として、まず依存解析/診断 → 自動インストール→実行へ）。
   * **Launch Profiles:** `pybun run --profile=dev|prod|benchmark` で import 最適化/ホットリロード/ログ閾値を切替。
 
 ### 4.3 C拡張ビルド最適化 (The Builder)
 
-  * **Isolation Build:** `setuptools`, `maturin`, `scikit-build` をラップし、ビルド環境をサンドボックス化。
+  * **Isolation Build:** `setuptools`, `maturin`, `scikit-build` をラップし、ビルド環境をサンドボックス化（段階導入として `python -m build` ラッパー→本格隔離へ）。
   * **Build Cache:** コンパイル成果物（`.o`, `.so`）をハッシュ管理し、再ビルド時間を短縮。
   * **Pre-build Wheel Discovery:** OS/Arch に合致する最適な wheel を優先的に探索し、ローカルビルドを回避。
 
 ### 4.4 高速テストランナー (The Tester)
 
-`pytest` 互換かつ、高速なテスト実行エンジン。
+`pytest` 互換かつ、高速なテスト実行エンジン。段階導入として、まず `pytest/unittest` の薄いラッパーで CLI/JSON/exit-code/`--shard`/`--fail-fast` の外形を固め、後からネイティブ実装へ移行する。
 
   * **Native Discovery:** Python コードをパースせず、AST 解析レベルでテストケースを高速探索。
   * **Parallel Execution:** Rust の非同期ランタイムを用いたプロセス/スレッド並列実行。
@@ -153,7 +172,7 @@ CLI の出力を構造化データとして提供するモード。
     }
     ```
   * **Schema:** 成功/失敗を問わず `version`, `command`, `duration_ms`, `events[]`, `diagnostics[]` を含む。`events` はビルド/ダウンロード/テスト結果などを時系列で提供。
-  * **MCP サーバー:** `pybun mcp serve --port 9999` で長時間待機し、依存解決・ファイル探索・テスト実行を RPC 経由で実行。
+  * **MCP サーバー:** 段階導入として `pybun mcp serve --stdio` を先行し、依存解決・インストール・実行・診断などを RPC 経由で実行できるようにする。HTTP mode（`pybun mcp serve --port 9999`）は運用/セキュリティ要件を満たした後に追加する。
 
 ### 5.2 Self-Healing Context
 
@@ -180,7 +199,7 @@ Bun の UX を踏襲し、短く直感的なコマンド体系とする。
 | `pybun x <pkg>` | ツールの一時実行（PEP 723対応） | `pipx run` / `uvx` |
 | `pybun doctor` | 環境・依存関係の診断（AI向け出力対応） | - |
 | `pybun self update` | バイナリアップデート（署名検証付） | - |
-| `pybun mcp serve` | MCP サーバーとして待受 | - |
+| `pybun mcp serve` | MCP サーバーとして待受（stdio先行、HTTPは段階導入） | - |
 
 **共通フラグ例:** `--format=json|text`, `--profile`, `--python 3.11`, `--cache-dir`, `--offline`, `--no-lock`, `--verbose`, `--quiet`.
 
