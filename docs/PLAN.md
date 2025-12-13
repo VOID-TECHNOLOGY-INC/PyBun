@@ -103,9 +103,10 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
   - Notes: "大きな設計変更を避けるための段階投入" として推奨。
   - Current: `pybun test` がpytest/unittestをバックエンドとして使用する薄いラッパーを実装。テストパス指定、`--fail-fast`(-x)、`--shard N/M`（分散テスト用）、`--pytest-compat`、`--backend pytest|unittest`、パススルー引数をサポート。`PYBUN_TEST_DRY_RUN=1` でテスト用ドライランモード対応。JSON出力に `backend`, `discovered_files`, `tests_found`, `exit_code`, `passed`, `shard` フィールドを含む。
   - Tests: 14 E2Eテスト（help表示、基本実行、JSON出力構造、fail-fast、shard形式/無効形式、pytest-compat、test discovery、unittest対応、text出力）。
-- PR3.1: Test discovery engine (AST-based) + compatibility shim for pytest markers/fixtures.  
+- [DONE] PR3.1: Test discovery engine (AST-based) + compatibility shim for pytest markers/fixtures.  
   - Depends on: M1 baseline runtime.  
-  - Tests: unit on discovery; integration comparing discovered set vs pytest on sample repo.
+  - Current: `src/test_discovery.rs` implements Rust-native AST-based test discovery engine. Features: test function/class/method detection, pytest marker parsing (@skip, @xfail, @parametrize), fixture discovery with scope detection (function/class/module/session), fixture dependency extraction from function signatures, compatibility warnings for pytest features requiring shim. CLI enhancements: `--discover` mode for listing tests without running, `-k/--filter` for test filtering, `-j/--parallel` for parallel execution, `-v/--verbose` for detailed output. JSON output includes full test metadata, fixture info, and compat warnings.
+  - Tests: 11 unit tests (pattern matching, function/class/marker/fixture parsing, async tests, unittest style, compat warnings); 25 E2E tests including 11 new tests for AST discovery (discover mode, pytest markers, fixtures, filter, verbose, class methods, async, duration reporting).
 - PR3.2: Parallel executor + shard/fail-fast; snapshot testing primitives.  
   - Depends on: PR3.1.  
   - Tests: integration for shard correctness; snapshot update flow; smoke `pybun test` on demo project.
