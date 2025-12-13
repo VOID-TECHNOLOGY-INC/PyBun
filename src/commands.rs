@@ -2197,6 +2197,7 @@ fn run_profile(args: &ProfileArgs, collector: &mut EventCollector) -> Result<Ren
 // ---------------------------------------------------------------------------
 
 use crate::cli::TestBackend;
+use crate::test_discovery::{DiscoveryResult, TestDiscovery, TestItem, TestItemType};
 
 /// Parse shard specification (N/M format)
 fn parse_shard(shard: &str) -> Result<(u32, u32)> {
@@ -2249,7 +2250,7 @@ fn detect_test_backend(_paths: &[PathBuf]) -> TestBackend {
     TestBackend::Unittest
 }
 
-/// Discover test files in given paths
+/// Discover test files in given paths (legacy method, kept for backward compatibility)
 fn discover_test_files(paths: &[PathBuf]) -> Vec<PathBuf> {
     let search_paths = if paths.is_empty() {
         vec![std::env::current_dir().unwrap_or_default()]
@@ -2323,6 +2324,42 @@ fn walkdir_recursive(path: &std::path::Path, result: &mut Vec<PathBuf>) -> Resul
     Ok(())
 }
 
+/// Use AST-based discovery to find all tests
+fn discover_tests_ast(paths: &[PathBuf]) -> DiscoveryResult {
+    let discovery = TestDiscovery::new();
+    let search_paths = if paths.is_empty() {
+        vec![std::env::current_dir().unwrap_or_default()]
+    } else {
+        paths.to_vec()
+    };
+    discovery.discover(&search_paths)
+}
+
+/// Filter tests by name pattern
+fn filter_tests(tests: Vec<TestItem>, pattern: &str) -> Vec<TestItem> {
+    tests
+        .into_iter()
+        .filter(|t| {
+            t.name.contains(pattern)
+                || t.short_name.contains(pattern)
+                || t.class_name
+                    .as_ref()
+                    .map(|c| c.contains(pattern))
+                    .unwrap_or(false)
+        })
+        .collect()
+}
+
+/// Apply sharding to tests
+fn shard_tests(tests: Vec<TestItem>, shard_n: u32, shard_m: u32) -> Vec<TestItem> {
+    tests
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| (*i as u32 % shard_m) + 1 == shard_n)
+        .map(|(_, t)| t)
+        .collect()
+}
+
 fn run_tests(args: &crate::cli::TestArgs, collector: &mut EventCollector) -> Result<RenderDetail> {
     // Check for dry-run mode (for testing)
     let dry_run = std::env::var("PYBUN_TEST_DRY_RUN").is_ok();
@@ -2339,32 +2376,179 @@ fn run_tests(args: &crate::cli::TestArgs, collector: &mut EventCollector) -> Res
         .backend
         .unwrap_or_else(|| detect_test_backend(&args.paths));
 
-    // Discover test files
-    let discovered_files = discover_test_files(&args.paths);
+    // Use AST-based discovery
+    let discovery_result = discover_tests_ast(&args.paths);
 
     collector.info(format!(
-        "Discovered {} test file(s) using {:?} backend",
-        discovered_files.len(),
-        backend
+        "AST discovery: found {} tests in {} files ({}µs)",
+        discovery_result.tests.len(),
+        discovery_result.scanned_files.len(),
+        discovery_result.duration_us
     ));
 
+    // Get only function/method tests (not class items for running)
+    let mut tests: Vec<TestItem> = discovery_result
+        .tests
+        .iter()
+        .filter(|t| t.item_type != TestItemType::Class)
+        .cloned()
+        .collect();
+
+    // Apply filter if specified
+    if let Some(ref pattern) = args.filter {
+        tests = filter_tests(tests, pattern);
+        collector.info(format!("After filter '{}': {} tests", pattern, tests.len()));
+    }
+
     // Apply sharding if specified
-    let files_to_run: Vec<PathBuf> = if let Some((shard_n, shard_m)) = shard_info {
-        discovered_files
-            .into_iter()
-            .enumerate()
-            .filter(|(i, _)| (*i as u32 % shard_m) + 1 == shard_n)
-            .map(|(_, f)| f)
-            .collect()
-    } else {
-        discovered_files
-    };
+    if let Some((shard_n, shard_m)) = shard_info {
+        tests = shard_tests(tests, shard_n, shard_m);
+        collector.info(format!("After shard {}/{}: {} tests", shard_n, shard_m, tests.len()));
+    }
+
+    // Filter out skipped tests for counting
+    let runnable_tests: Vec<&TestItem> = tests.iter().filter(|t| !t.skipped).collect();
+
+    // Legacy file discovery for backward compatibility
+    let discovered_files = discover_test_files(&args.paths);
+
+    // Handle --discover mode (just show discovered tests without running)
+    if args.discover {
+        let summary = format!(
+            "Discovered {} tests ({} skipped) in {} files",
+            tests.len(),
+            tests.iter().filter(|t| t.skipped).count(),
+            discovery_result.scanned_files.len()
+        );
+
+        let tests_json: Vec<Value> = tests
+            .iter()
+            .map(|t| {
+                json!({
+                    "name": t.name,
+                    "short_name": t.short_name,
+                    "path": t.path.display().to_string(),
+                    "line": t.line,
+                    "type": format!("{:?}", t.item_type).to_lowercase(),
+                    "class": t.class_name,
+                    "skipped": t.skipped,
+                    "skip_reason": t.skip_reason,
+                    "xfail": t.xfail,
+                    "markers": t.markers.iter().map(|m| &m.name).collect::<Vec<_>>(),
+                    "fixtures": t.fixtures,
+                    "parametrize": t.parametrize.as_ref().map(|p| json!({
+                        "params": p.params,
+                        "case_count": p.case_count,
+                    })),
+                })
+            })
+            .collect();
+
+        let fixtures_json: Vec<Value> = discovery_result
+            .fixtures
+            .iter()
+            .map(|f| {
+                json!({
+                    "name": f.name,
+                    "path": f.path.display().to_string(),
+                    "line": f.line,
+                    "scope": format!("{:?}", f.scope).to_lowercase(),
+                    "autouse": f.autouse,
+                    "dependencies": f.dependencies,
+                })
+            })
+            .collect();
+
+        let warnings_json: Vec<Value> = discovery_result
+            .compat_warnings
+            .iter()
+            .map(|w| {
+                json!({
+                    "code": w.code,
+                    "message": w.message,
+                    "path": w.path.display().to_string(),
+                    "line": w.line,
+                    "severity": format!("{:?}", w.severity).to_lowercase(),
+                })
+            })
+            .collect();
+
+        // Text output for verbose mode
+        let text_output = if args.verbose {
+            let mut lines = vec![summary.clone()];
+            lines.push("".to_string());
+            lines.push("Tests:".to_string());
+            for t in &tests {
+                let status = if t.skipped {
+                    " [SKIP]"
+                } else if t.xfail {
+                    " [XFAIL]"
+                } else {
+                    ""
+                };
+                lines.push(format!(
+                    "  {}:{} {}{}",
+                    t.path.display(),
+                    t.line,
+                    t.name,
+                    status
+                ));
+                if !t.fixtures.is_empty() {
+                    lines.push(format!("    fixtures: {}", t.fixtures.join(", ")));
+                }
+            }
+            if !discovery_result.fixtures.is_empty() {
+                lines.push("".to_string());
+                lines.push("Fixtures:".to_string());
+                for f in &discovery_result.fixtures {
+                    lines.push(format!(
+                        "  {}:{} {} (scope: {:?})",
+                        f.path.display(),
+                        f.line,
+                        f.name,
+                        f.scope
+                    ));
+                }
+            }
+            if !discovery_result.compat_warnings.is_empty() {
+                lines.push("".to_string());
+                lines.push("Compatibility warnings:".to_string());
+                for w in &discovery_result.compat_warnings {
+                    lines.push(format!("  [{:?}] {}: {}", w.severity, w.code, w.message));
+                }
+            }
+            lines.join("\n")
+        } else {
+            summary.clone()
+        };
+
+        return Ok(RenderDetail::with_json(
+            text_output,
+            json!({
+                "discover": true,
+                "tests": tests_json,
+                "fixtures": fixtures_json,
+                "compat_warnings": warnings_json,
+                "scanned_files": discovery_result.scanned_files.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+                "error_files": discovery_result.error_files.iter().map(|(p, e)| json!({
+                    "path": p.display().to_string(),
+                    "error": e,
+                })).collect::<Vec<_>>(),
+                "duration_us": discovery_result.duration_us,
+                "total_tests": tests.len(),
+                "runnable_tests": runnable_tests.len(),
+                "skipped_tests": tests.iter().filter(|t| t.skipped).count(),
+                "xfail_tests": tests.iter().filter(|t| t.xfail).count(),
+            }),
+        ));
+    }
 
     // If dry-run, just return what would happen
     if dry_run {
         let summary = format!(
-            "Would run {} test file(s) with {:?}",
-            files_to_run.len(),
+            "Would run {} tests ({} skipped) with {:?}",
+            runnable_tests.len(),
+            tests.iter().filter(|t| t.skipped).count(),
             backend
         );
 
@@ -2374,11 +2558,19 @@ fn run_tests(args: &crate::cli::TestArgs, collector: &mut EventCollector) -> Res
                 "dry_run": true,
                 "backend": format!("{:?}", backend).to_lowercase(),
                 "test_runner": format!("{:?}", backend).to_lowercase(),
-                "discovered_files": files_to_run.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
-                "tests_found": files_to_run.len(),
+                "discovered_files": discovered_files.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+                "tests_found": tests.len(),
+                "runnable_tests": runnable_tests.len(),
                 "fail_fast": args.fail_fast,
                 "pytest_compat": args.pytest_compat,
                 "shard": shard_info.map(|(n, m)| format!("{}/{}", n, m)),
+                "filter": args.filter,
+                "parallel": args.parallel,
+                "ast_discovery": {
+                    "tests": tests.len(),
+                    "fixtures": discovery_result.fixtures.len(),
+                    "duration_us": discovery_result.duration_us,
+                },
             }),
         ));
     }
@@ -2400,7 +2592,19 @@ fn run_tests(args: &crate::cli::TestArgs, collector: &mut EventCollector) -> Res
             }
 
             // Add verbose for better output
-            cmd.arg("-v");
+            if args.verbose {
+                cmd.arg("-v");
+            }
+
+            // Add filter (-k option)
+            if let Some(ref pattern) = args.filter {
+                cmd.arg("-k").arg(pattern);
+            }
+
+            // Add parallel option
+            if let Some(workers) = args.parallel {
+                cmd.arg("-n").arg(workers.to_string());
+            }
 
             // Add test paths
             if !args.paths.is_empty() {
@@ -2422,7 +2626,9 @@ fn run_tests(args: &crate::cli::TestArgs, collector: &mut EventCollector) -> Res
             }
 
             // Add verbose
-            cmd.arg("-v");
+            if args.verbose {
+                cmd.arg("-v");
+            }
 
             // For unittest, we need to specify discover or specific files
             if args.paths.is_empty() {
@@ -2477,8 +2683,16 @@ fn run_tests(args: &crate::cli::TestArgs, collector: &mut EventCollector) -> Res
         "fail_fast": args.fail_fast,
         "pytest_compat": args.pytest_compat,
         "shard": shard_info.map(|(n, m)| format!("{}/{}", n, m)),
-        "discovered_files": files_to_run.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
-        "tests_found": files_to_run.len(),
+        "filter": args.filter,
+        "parallel": args.parallel,
+        "discovered_files": discovered_files.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+        "tests_found": tests.len(),
+        "ast_discovery": {
+            "tests": tests.len(),
+            "fixtures": discovery_result.fixtures.len(),
+            "duration_us": discovery_result.duration_us,
+            "compat_warnings": discovery_result.compat_warnings.len(),
+        },
         "stdout": stdout.to_string(),
         "stderr": stderr.to_string(),
     });

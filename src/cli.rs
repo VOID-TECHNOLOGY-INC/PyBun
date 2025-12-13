@@ -172,6 +172,18 @@ pub struct TestArgs {
     /// Test runner backend (pytest or unittest). Auto-detected if not specified.
     #[arg(long, value_enum)]
     pub backend: Option<TestBackend>,
+    /// Only discover tests without running them.
+    #[arg(long)]
+    pub discover: bool,
+    /// Run tests in parallel (number of workers).
+    #[arg(long, short = 'j')]
+    pub parallel: Option<usize>,
+    /// Filter tests by name pattern.
+    #[arg(long, short = 'k')]
+    pub filter: Option<String>,
+    /// Show verbose output including fixture information.
+    #[arg(long, short = 'v')]
+    pub verbose: bool,
     /// Additional arguments to pass to the test runner.
     #[arg(last = true)]
     pub passthrough: Vec<String>,

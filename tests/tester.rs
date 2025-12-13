@@ -390,3 +390,458 @@ fn test_text_output_format() {
         .success()
         .stdout(predicate::str::contains("pybun test:"));
 }
+
+// ---------------------------------------------------------------------------
+// AST-based Discovery Tests (PR3.1)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_discover_mode() {
+    let temp = TempDir::new().unwrap();
+    let test_file = temp.path().join("test_discover.py");
+
+    fs::write(
+        &test_file,
+        r#"
+def test_one():
+    assert True
+
+def test_two():
+    assert 1 + 1 == 2
+
+class TestExample:
+    def test_method(self):
+        assert True
+"#,
+    )
+    .unwrap();
+
+    let output = pybun()
+        .current_dir(temp.path())
+        .args(["test", "--discover", "--format=json"])
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value =
+        serde_json::from_str(&stdout).expect("Output should be valid JSON");
+
+    // Check discover mode output structure
+    let detail = json.get("detail").expect("Should have detail");
+    assert!(detail.get("discover").is_some(), "Should have discover flag");
+    assert!(detail.get("tests").is_some(), "Should have tests array");
+
+    // Check tests were discovered
+    let tests = detail.get("tests").unwrap().as_array().unwrap();
+    assert!(tests.len() >= 2, "Should discover at least 2 test functions");
+}
+
+#[test]
+fn test_discover_pytest_markers() {
+    let temp = TempDir::new().unwrap();
+    let test_file = temp.path().join("test_markers.py");
+
+    fs::write(
+        &test_file,
+        r#"
+import pytest
+
+@pytest.mark.skip(reason="not ready")
+def test_skipped():
+    pass
+
+@pytest.mark.xfail
+def test_expected_fail():
+    assert False
+
+@pytest.mark.parametrize("x", [1, 2, 3])
+def test_parametrized(x):
+    assert x > 0
+"#,
+    )
+    .unwrap();
+
+    let output = pybun()
+        .current_dir(temp.path())
+        .args(["test", "--discover", "--format=json"])
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value =
+        serde_json::from_str(&stdout).expect("Output should be valid JSON");
+
+    let detail = json.get("detail").expect("Should have detail");
+    let tests = detail.get("tests").unwrap().as_array().unwrap();
+
+    // Find skipped test
+    let skipped = tests.iter().find(|t| {
+        t.get("short_name")
+            .and_then(|n| n.as_str())
+            .map(|n| n == "test_skipped")
+            .unwrap_or(false)
+    });
+    assert!(skipped.is_some(), "Should find test_skipped");
+    let skipped = skipped.unwrap();
+    assert_eq!(skipped.get("skipped").unwrap().as_bool().unwrap(), true);
+    assert!(skipped.get("skip_reason").is_some());
+
+    // Find xfail test
+    let xfail = tests.iter().find(|t| {
+        t.get("short_name")
+            .and_then(|n| n.as_str())
+            .map(|n| n == "test_expected_fail")
+            .unwrap_or(false)
+    });
+    assert!(xfail.is_some(), "Should find test_expected_fail");
+    assert_eq!(xfail.unwrap().get("xfail").unwrap().as_bool().unwrap(), true);
+
+    // Find parametrized test
+    let param = tests.iter().find(|t| {
+        t.get("short_name")
+            .and_then(|n| n.as_str())
+            .map(|n| n == "test_parametrized")
+            .unwrap_or(false)
+    });
+    assert!(param.is_some(), "Should find test_parametrized");
+    assert!(param.unwrap().get("parametrize").is_some());
+}
+
+#[test]
+fn test_discover_fixtures() {
+    let temp = TempDir::new().unwrap();
+    let test_file = temp.path().join("test_fixtures.py");
+
+    fs::write(
+        &test_file,
+        r#"
+import pytest
+
+@pytest.fixture
+def simple_fixture():
+    return 42
+
+@pytest.fixture(scope="session")
+def session_fixture():
+    yield "session"
+
+def test_with_fixtures(simple_fixture, session_fixture):
+    assert simple_fixture == 42
+"#,
+    )
+    .unwrap();
+
+    let output = pybun()
+        .current_dir(temp.path())
+        .args(["test", "--discover", "--format=json"])
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value =
+        serde_json::from_str(&stdout).expect("Output should be valid JSON");
+
+    let detail = json.get("detail").expect("Should have detail");
+
+    // Check fixtures were discovered
+    let fixtures = detail.get("fixtures").unwrap().as_array().unwrap();
+    assert!(fixtures.len() >= 2, "Should discover at least 2 fixtures");
+
+    // Check fixture dependencies in test
+    let tests = detail.get("tests").unwrap().as_array().unwrap();
+    let test_with_fixtures = tests.iter().find(|t| {
+        t.get("short_name")
+            .and_then(|n| n.as_str())
+            .map(|n| n == "test_with_fixtures")
+            .unwrap_or(false)
+    });
+    assert!(test_with_fixtures.is_some());
+    let fixtures_used = test_with_fixtures
+        .unwrap()
+        .get("fixtures")
+        .unwrap()
+        .as_array()
+        .unwrap();
+    assert!(fixtures_used.len() >= 2, "Test should use at least 2 fixtures");
+}
+
+#[test]
+fn test_discover_with_filter() {
+    let temp = TempDir::new().unwrap();
+    let test_file = temp.path().join("test_filter.py");
+
+    fs::write(
+        &test_file,
+        r#"
+def test_foo_one():
+    pass
+
+def test_foo_two():
+    pass
+
+def test_bar_one():
+    pass
+"#,
+    )
+    .unwrap();
+
+    // Filter with -k foo
+    let output = pybun()
+        .current_dir(temp.path())
+        .args(["test", "--format=json", "-k", "foo"])
+        .env("PYBUN_TEST_DRY_RUN", "1")
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value =
+        serde_json::from_str(&stdout).expect("Output should be valid JSON");
+
+    let detail = json.get("detail").expect("Should have detail");
+    // Filter should be recorded
+    assert!(detail.get("filter").is_some());
+}
+
+#[test]
+fn test_discover_verbose_output() {
+    let temp = TempDir::new().unwrap();
+    let test_file = temp.path().join("test_verbose.py");
+
+    fs::write(
+        &test_file,
+        r#"
+import pytest
+
+@pytest.fixture
+def my_fixture():
+    return 1
+
+def test_with_info(my_fixture):
+    assert my_fixture == 1
+"#,
+    )
+    .unwrap();
+
+    // Verbose discover mode
+    pybun()
+        .current_dir(temp.path())
+        .args(["test", "--discover", "-v"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Tests:"))
+        .stdout(predicate::str::contains("Fixtures:"));
+}
+
+#[test]
+fn test_discover_compat_warnings() {
+    let temp = TempDir::new().unwrap();
+    let test_file = temp.path().join("test_compat_warn.py");
+
+    fs::write(
+        &test_file,
+        r#"
+import pytest
+
+@pytest.fixture(scope="session")
+def session_fixture():
+    yield
+
+@pytest.mark.parametrize("x", [1, 2])
+def test_param(x, session_fixture):
+    assert x > 0
+"#,
+    )
+    .unwrap();
+
+    let output = pybun()
+        .current_dir(temp.path())
+        .args(["test", "--discover", "--format=json"])
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value =
+        serde_json::from_str(&stdout).expect("Output should be valid JSON");
+
+    let detail = json.get("detail").expect("Should have detail");
+
+    // Check compat warnings were generated
+    let warnings = detail.get("compat_warnings").unwrap().as_array().unwrap();
+    assert!(!warnings.is_empty(), "Should have compatibility warnings");
+
+    // Check warning structure
+    let warning = &warnings[0];
+    assert!(warning.get("code").is_some());
+    assert!(warning.get("message").is_some());
+    assert!(warning.get("severity").is_some());
+}
+
+#[test]
+fn test_discover_async_tests() {
+    let temp = TempDir::new().unwrap();
+    let test_file = temp.path().join("test_async.py");
+
+    fs::write(
+        &test_file,
+        r#"
+async def test_async_function():
+    assert True
+
+def test_sync_function():
+    assert True
+"#,
+    )
+    .unwrap();
+
+    let output = pybun()
+        .current_dir(temp.path())
+        .args(["test", "--discover", "--format=json"])
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value =
+        serde_json::from_str(&stdout).expect("Output should be valid JSON");
+
+    let detail = json.get("detail").expect("Should have detail");
+    let tests = detail.get("tests").unwrap().as_array().unwrap();
+
+    // Should discover both async and sync tests
+    assert!(tests.len() >= 2, "Should discover at least 2 tests");
+
+    let async_test = tests.iter().find(|t| {
+        t.get("short_name")
+            .and_then(|n| n.as_str())
+            .map(|n| n == "test_async_function")
+            .unwrap_or(false)
+    });
+    assert!(async_test.is_some(), "Should discover async test");
+}
+
+#[test]
+fn test_discover_test_class_methods() {
+    let temp = TempDir::new().unwrap();
+    let test_file = temp.path().join("test_class.py");
+
+    fs::write(
+        &test_file,
+        r#"
+class TestMyClass:
+    def test_method_one(self):
+        assert True
+
+    def test_method_two(self):
+        assert True
+
+    def helper_method(self):
+        pass  # Not a test
+"#,
+    )
+    .unwrap();
+
+    let output = pybun()
+        .current_dir(temp.path())
+        .args(["test", "--discover", "--format=json"])
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value =
+        serde_json::from_str(&stdout).expect("Output should be valid JSON");
+
+    let detail = json.get("detail").expect("Should have detail");
+    let tests = detail.get("tests").unwrap().as_array().unwrap();
+
+    // Find test methods
+    let methods: Vec<_> = tests
+        .iter()
+        .filter(|t| {
+            t.get("type")
+                .and_then(|t| t.as_str())
+                .map(|t| t == "method")
+                .unwrap_or(false)
+        })
+        .collect();
+
+    assert_eq!(methods.len(), 2, "Should discover 2 test methods");
+
+    // Check class name is recorded
+    for method in methods {
+        assert_eq!(
+            method.get("class").and_then(|c| c.as_str()),
+            Some("TestMyClass")
+        );
+    }
+}
+
+#[test]
+fn test_discover_reports_duration() {
+    let temp = TempDir::new().unwrap();
+    let test_file = temp.path().join("test_duration.py");
+
+    fs::write(&test_file, "def test_one(): pass\ndef test_two(): pass").unwrap();
+
+    let output = pybun()
+        .current_dir(temp.path())
+        .args(["test", "--discover", "--format=json"])
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value =
+        serde_json::from_str(&stdout).expect("Output should be valid JSON");
+
+    let detail = json.get("detail").expect("Should have detail");
+
+    // Check duration is reported
+    assert!(detail.get("duration_us").is_some(), "Should report discovery duration");
+}
+
+#[test]
+fn test_ast_discovery_in_dry_run() {
+    let temp = TempDir::new().unwrap();
+    let test_file = temp.path().join("test_ast.py");
+
+    fs::write(
+        &test_file,
+        r#"
+def test_one():
+    pass
+
+def test_two():
+    pass
+"#,
+    )
+    .unwrap();
+
+    let output = pybun()
+        .current_dir(temp.path())
+        .args(["test", "--format=json"])
+        .env("PYBUN_TEST_DRY_RUN", "1")
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value =
+        serde_json::from_str(&stdout).expect("Output should be valid JSON");
+
+    let detail = json.get("detail").expect("Should have detail");
+
+    // Check AST discovery info is included
+    assert!(
+        detail.get("ast_discovery").is_some(),
+        "Should include ast_discovery info in dry-run"
+    );
+}
+
+#[test]
+fn test_help_shows_new_options() {
+    pybun()
+        .args(["test", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--discover"))
+        .stdout(predicate::str::contains("--filter"))
+        .stdout(predicate::str::contains("--parallel"))
+        .stdout(predicate::str::contains("--verbose"));
+}
