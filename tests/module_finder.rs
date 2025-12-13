@@ -1,12 +1,13 @@
 //! E2E tests for the module finder functionality.
 
 use assert_cmd::Command;
+use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
 use std::fs;
 use tempfile::TempDir;
 
 fn pybun() -> Command {
-    Command::cargo_bin("pybun").unwrap()
+    cargo_bin_cmd!("pybun")
 }
 
 /// Helper to create a Python package structure for testing.
