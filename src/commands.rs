@@ -1,6 +1,6 @@
 use crate::cli::{
-    Cli, Commands, LazyImportArgs, McpCommands, ModuleFindArgs, OutputFormat, PythonCommands,
-    SelfCommands, WatchArgs,
+    Cli, Commands, LazyImportArgs, McpCommands, ModuleFindArgs, OutputFormat, ProfileArgs,
+    PythonCommands, SelfCommands, WatchArgs,
 };
 use crate::env::{EnvSource, find_python_env};
 use crate::index::load_index_from_path;
@@ -352,6 +352,24 @@ pub fn execute(cli: Cli) -> Result<()> {
                     collector.error(e.to_string());
                     (
                         "watch".to_string(),
+                        RenderDetail::error(
+                            e.to_string(),
+                            json!({
+                                "error": e.to_string(),
+                            }),
+                        ),
+                    )
+                }
+            }
+        }
+        Commands::Profile(args) => {
+            let result = run_profile(args, &mut collector);
+            match result {
+                Ok(detail) => ("profile".to_string(), detail),
+                Err(e) => {
+                    collector.error(e.to_string());
+                    (
+                        "profile".to_string(),
                         RenderDetail::error(
                             e.to_string(),
                             json!({
@@ -1753,6 +1771,159 @@ fn run_watch(args: &WatchArgs, collector: &mut EventCollector) -> Result<RenderD
                 "watched_paths": stats.watched_paths,
                 "include_patterns": stats.include_patterns,
                 "exclude_patterns": stats.exclude_patterns,
+            },
+        }),
+    ))
+}
+
+// ---------------------------------------------------------------------------
+// pybun profile (launch profiles)
+// ---------------------------------------------------------------------------
+
+use crate::profiles::{Profile, ProfileConfig, ProfileManager};
+
+fn run_profile(args: &ProfileArgs, collector: &mut EventCollector) -> Result<RenderDetail> {
+    let manager = ProfileManager::new();
+
+    // Handle --list mode
+    if args.list {
+        collector.info("Listing available profiles");
+
+        let profiles = manager.available_profiles();
+        let text = format!(
+            "Available profiles:\n{}",
+            profiles
+                .iter()
+                .map(|p| format!("  - {}", p))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+
+        return Ok(RenderDetail::with_json(
+            text,
+            json!({
+                "profiles": profiles.iter().map(|p| p.to_string()).collect::<Vec<_>>(),
+            }),
+        ));
+    }
+
+    // Handle --compare mode
+    if let Some(compare_profile) = &args.compare {
+        let base_profile: Profile = args
+            .profile
+            .as_ref()
+            .ok_or_else(|| eyre!("base profile required for comparison"))?
+            .parse()
+            .map_err(|e: String| eyre!(e))?;
+
+        let other_profile: Profile = compare_profile.parse().map_err(|e: String| eyre!(e))?;
+
+        let base_config = ProfileConfig::for_profile(base_profile);
+        let other_config = ProfileConfig::for_profile(other_profile);
+
+        let text = format!(
+            "Profile comparison: {} vs {}\n\n{}\n\n{}\n\n{}",
+            base_profile,
+            other_profile,
+            base_config.summary(),
+            "--- vs ---",
+            other_config.summary()
+        );
+
+        return Ok(RenderDetail::with_json(
+            text,
+            json!({
+                "base_profile": base_profile.to_string(),
+                "compare_profile": other_profile.to_string(),
+                "base": {
+                    "hot_reload": base_config.hot_reload,
+                    "lazy_imports": base_config.lazy_imports,
+                    "log_level": base_config.log_level,
+                    "tracing": base_config.tracing,
+                    "optimization_level": base_config.optimization_level,
+                },
+                "compare": {
+                    "hot_reload": other_config.hot_reload,
+                    "lazy_imports": other_config.lazy_imports,
+                    "log_level": other_config.log_level,
+                    "tracing": other_config.tracing,
+                    "optimization_level": other_config.optimization_level,
+                },
+            }),
+        ));
+    }
+
+    // Handle specific profile
+    if let Some(profile_name) = &args.profile {
+        let profile: Profile = profile_name.parse().map_err(|e: String| eyre!(e))?;
+        let config = ProfileConfig::for_profile(profile);
+
+        // Handle --output mode
+        if let Some(output_path) = &args.output {
+            config
+                .to_file(output_path)
+                .map_err(|e| eyre!("failed to export profile: {}", e))?;
+
+            let text = format!("Exported {} profile to {}", profile, output_path.display());
+            collector.info(&text);
+
+            return Ok(RenderDetail::with_json(
+                text,
+                json!({
+                    "profile": profile.to_string(),
+                    "output_file": output_path.display().to_string(),
+                }),
+            ));
+        }
+
+        // Handle --show mode or default
+        let text = if args.show {
+            config.summary()
+        } else {
+            format!(
+                "Profile: {}\n\nUse --show for detailed configuration.",
+                profile
+            )
+        };
+
+        return Ok(RenderDetail::with_json(
+            text,
+            json!({
+                "profile": profile.to_string(),
+                "config": {
+                    "hot_reload": config.hot_reload,
+                    "lazy_imports": config.lazy_imports,
+                    "module_cache": config.module_cache,
+                    "log_level": config.log_level,
+                    "log_level_str": config.log_level_str(),
+                    "tracing": config.tracing,
+                    "timing": config.timing,
+                    "debug_checks": config.debug_checks,
+                    "optimization_level": config.optimization_level,
+                    "python_opt_flags": config.python_opt_flags(),
+                },
+            }),
+        ));
+    }
+
+    // Default: show current/detected profile
+    let detected = ProfileManager::detect_profile();
+    let config = ProfileConfig::for_profile(detected);
+
+    let text = format!(
+        "Current profile: {}\n\nUse 'pybun profile <PROFILE>' to view a specific profile.\nUse 'pybun profile --list' to see all available profiles.",
+        detected
+    );
+
+    Ok(RenderDetail::with_json(
+        text,
+        json!({
+            "current_profile": detected.to_string(),
+            "available_profiles": ["dev", "prod", "benchmark"],
+            "config": {
+                "hot_reload": config.hot_reload,
+                "lazy_imports": config.lazy_imports,
+                "log_level": config.log_level,
             },
         }),
     ))
