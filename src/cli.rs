@@ -51,6 +51,9 @@ pub enum Commands {
     /// Manage Python versions (install, list, remove).
     #[command(subcommand)]
     Python(PythonCommands),
+    /// Find Python modules using Rust-based module finder.
+    #[command(name = "module-find")]
+    ModuleFind(ModuleFindArgs),
 }
 
 #[derive(Subcommand, Debug)]
@@ -212,4 +215,23 @@ pub struct GcArgs {
     /// Preview what would be deleted without actually deleting.
     #[arg(long)]
     pub dry_run: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct ModuleFindArgs {
+    /// Module name to find (e.g., "os.path", "numpy.core").
+    #[arg(value_name = "MODULE")]
+    pub module: Option<String>,
+    /// Search path(s) for modules. Can be specified multiple times.
+    #[arg(long = "path", short = 'p', value_name = "PATH")]
+    pub paths: Vec<std::path::PathBuf>,
+    /// Scan directory and list all modules instead of finding a specific one.
+    #[arg(long)]
+    pub scan: bool,
+    /// Show timing information for benchmarking.
+    #[arg(long)]
+    pub benchmark: bool,
+    /// Number of threads for parallel scanning.
+    #[arg(long, default_value = "4")]
+    pub threads: usize,
 }

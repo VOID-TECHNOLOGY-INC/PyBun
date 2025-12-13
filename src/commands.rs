@@ -1,4 +1,6 @@
-use crate::cli::{Cli, Commands, McpCommands, OutputFormat, PythonCommands, SelfCommands};
+use crate::cli::{
+    Cli, Commands, McpCommands, ModuleFindArgs, OutputFormat, PythonCommands, SelfCommands,
+};
 use crate::env::{EnvSource, find_python_env};
 use crate::index::load_index_from_path;
 use crate::lockfile::{Lockfile, Package, PackageSource};
@@ -290,6 +292,26 @@ pub fn execute(cli: Cli) -> Result<()> {
                     };
                     (
                         format!("python {}", subcmd),
+                        RenderDetail::error(
+                            e.to_string(),
+                            json!({
+                                "error": e.to_string(),
+                            }),
+                        ),
+                    )
+                }
+            }
+        }
+        Commands::ModuleFind(args) => {
+            collector.event(EventType::ModuleFindStart);
+            let result = run_module_find(args, &mut collector);
+            collector.event(EventType::ModuleFindComplete);
+            match result {
+                Ok(detail) => ("module-find".to_string(), detail),
+                Err(e) => {
+                    collector.error(e.to_string());
+                    (
+                        "module-find".to_string(),
                         RenderDetail::error(
                             e.to_string(),
                             json!({
@@ -1296,6 +1318,146 @@ fn python_which(args: &crate::cli::PythonWhichArgs) -> Result<(String, RenderDet
     });
 
     Ok(("which".to_string(), RenderDetail::with_json(summary, json)))
+}
+
+// ---------------------------------------------------------------------------
+// pybun module-find (Rust-based module finder)
+// ---------------------------------------------------------------------------
+
+use crate::module_finder::{ModuleFinder, ModuleFinderConfig};
+
+fn run_module_find(args: &ModuleFindArgs, collector: &mut EventCollector) -> Result<RenderDetail> {
+    // Build configuration
+    let config = ModuleFinderConfig {
+        enabled: true,
+        search_paths: if args.paths.is_empty() {
+            // Default to current directory if no paths specified
+            vec![std::env::current_dir()?]
+        } else {
+            args.paths.clone()
+        },
+        threads: args.threads,
+        cache_enabled: true,
+        ..Default::default()
+    };
+
+    let finder = ModuleFinder::new(config);
+
+    if args.scan {
+        // Scan mode: list all modules in the search paths
+        collector.info("Scanning for modules...");
+
+        let modules = finder.parallel_scan(&finder.config().search_paths.clone());
+
+        let summary = format!("Found {} modules", modules.len());
+
+        let modules_json: Vec<Value> = modules
+            .iter()
+            .map(|m| {
+                json!({
+                    "name": m.name,
+                    "path": m.path.display().to_string(),
+                    "module_type": format!("{:?}", m.module_type),
+                    "search_path": m.search_path.display().to_string(),
+                })
+            })
+            .collect();
+
+        let text_output = if modules.is_empty() {
+            "No modules found".to_string()
+        } else {
+            modules
+                .iter()
+                .map(|m| format!("  {} ({:?}): {}", m.name, m.module_type, m.path.display()))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        return Ok(RenderDetail::with_json(
+            if args.benchmark {
+                format!("{}\n{}", summary, text_output)
+            } else {
+                text_output
+            },
+            json!({
+                "modules": modules_json,
+                "count": modules.len(),
+                "search_paths": finder.config().search_paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+            }),
+        ));
+    }
+
+    // Find mode: find a specific module
+    let module_name = args
+        .module
+        .as_ref()
+        .ok_or_else(|| eyre!("module name is required (or use --scan to list all modules)"))?;
+
+    collector.info(format!("Finding module: {}", module_name));
+
+    let result = finder.find_module(module_name);
+
+    match result.module {
+        Some(module_info) => {
+            let summary = format!(
+                "Found {} at {}",
+                module_info.name,
+                module_info.path.display()
+            );
+
+            let text_output = if args.benchmark {
+                format!(
+                    "{}\n  Type: {:?}\n  Search path: {}\n  Duration: {}µs",
+                    summary,
+                    module_info.module_type,
+                    module_info.search_path.display(),
+                    result.duration_us
+                )
+            } else {
+                format!(
+                    "{}\n  Type: {:?}\n  Search path: {}",
+                    summary,
+                    module_info.module_type,
+                    module_info.search_path.display()
+                )
+            };
+
+            Ok(RenderDetail::with_json(
+                text_output,
+                json!({
+                    "found": true,
+                    "name": module_info.name,
+                    "path": module_info.path.display().to_string(),
+                    "module_type": format!("{:?}", module_info.module_type),
+                    "search_path": module_info.search_path.display().to_string(),
+                    "searched_paths": result.searched_paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+                    "duration_us": result.duration_us,
+                }),
+            ))
+        }
+        None => {
+            let text_output = format!(
+                "Module '{}' not found\nSearched paths:\n{}",
+                module_name,
+                result
+                    .searched_paths
+                    .iter()
+                    .map(|p| format!("  {}", p.display()))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
+
+            Ok(RenderDetail::with_json(
+                text_output,
+                json!({
+                    "found": false,
+                    "name": module_name,
+                    "searched_paths": result.searched_paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+                    "duration_us": result.duration_us,
+                }),
+            ))
+        }
+    }
 }
 
 #[cfg(test)]
