@@ -1,5 +1,6 @@
 use crate::cli::{
-    Cli, Commands, McpCommands, ModuleFindArgs, OutputFormat, PythonCommands, SelfCommands,
+    Cli, Commands, LazyImportArgs, McpCommands, ModuleFindArgs, OutputFormat, PythonCommands,
+    SelfCommands,
 };
 use crate::env::{EnvSource, find_python_env};
 use crate::index::load_index_from_path;
@@ -312,6 +313,26 @@ pub fn execute(cli: Cli) -> Result<()> {
                     collector.error(e.to_string());
                     (
                         "module-find".to_string(),
+                        RenderDetail::error(
+                            e.to_string(),
+                            json!({
+                                "error": e.to_string(),
+                            }),
+                        ),
+                    )
+                }
+            }
+        }
+        Commands::LazyImport(args) => {
+            collector.event(EventType::LazyImportStart);
+            let result = run_lazy_import(args, &mut collector);
+            collector.event(EventType::LazyImportComplete);
+            match result {
+                Ok(detail) => ("lazy-import".to_string(), detail),
+                Err(e) => {
+                    collector.error(e.to_string());
+                    (
+                        "lazy-import".to_string(),
                         RenderDetail::error(
                             e.to_string(),
                             json!({
@@ -1458,6 +1479,127 @@ fn run_module_find(args: &ModuleFindArgs, collector: &mut EventCollector) -> Res
             ))
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// pybun lazy-import
+// ---------------------------------------------------------------------------
+
+use crate::lazy_import::{LazyImportConfig, LazyImportDecision, generate_lazy_import_python_code};
+
+fn run_lazy_import(args: &LazyImportArgs, collector: &mut EventCollector) -> Result<RenderDetail> {
+    // Build configuration
+    let mut config = LazyImportConfig::with_defaults();
+    config.log_imports = args.log_imports;
+    config.fallback_to_cpython = !args.no_fallback;
+
+    // Apply allowlist
+    for module in &args.allow {
+        config.allow(module);
+    }
+
+    // Apply denylist
+    for module in &args.deny {
+        config.deny(module);
+    }
+
+    // Handle --check mode
+    if let Some(module_name) = &args.check {
+        let decision = config.should_lazy_import(module_name);
+        let decision_str = match decision {
+            LazyImportDecision::Lazy => "lazy",
+            LazyImportDecision::Eager => "eager",
+            LazyImportDecision::Denied => "denied",
+        };
+
+        let text = format!(
+            "Module '{}' would be imported: {}",
+            module_name, decision_str
+        );
+
+        return Ok(RenderDetail::with_json(
+            text,
+            json!({
+                "module": module_name,
+                "decision": decision_str,
+                "is_denied": config.is_denied(module_name),
+                "is_allowed": config.is_allowed(module_name),
+            }),
+        ));
+    }
+
+    // Handle --show-config mode
+    if args.show_config {
+        collector.info("Showing lazy import configuration");
+
+        let denylist: Vec<_> = config.denylist.iter().cloned().collect();
+        let allowlist: Vec<_> = config.allowlist.iter().cloned().collect();
+
+        let text = format!(
+            "Lazy Import Configuration:\n  Enabled: {}\n  Fallback: {}\n  Log imports: {}\n  Denylist: {} modules\n  Allowlist: {} modules",
+            config.enabled,
+            config.fallback_to_cpython,
+            config.log_imports,
+            denylist.len(),
+            allowlist.len()
+        );
+
+        return Ok(RenderDetail::with_json(
+            text,
+            json!({
+                "enabled": config.enabled,
+                "fallback_to_cpython": config.fallback_to_cpython,
+                "log_imports": config.log_imports,
+                "denylist": denylist,
+                "allowlist": allowlist,
+            }),
+        ));
+    }
+
+    // Handle --generate mode
+    if args.generate {
+        let code = generate_lazy_import_python_code(&config);
+
+        if let Some(output_path) = &args.output {
+            std::fs::write(output_path, &code)
+                .map_err(|e| eyre!("failed to write output file: {}", e))?;
+
+            let text = format!("Generated lazy import code to {}", output_path.display());
+            collector.info(&text);
+
+            return Ok(RenderDetail::with_json(
+                text,
+                json!({
+                    "output_file": output_path.display().to_string(),
+                    "code_length": code.len(),
+                    "denylist_count": config.denylist.len(),
+                    "allowlist_count": config.allowlist.len(),
+                }),
+            ));
+        }
+
+        // Print to stdout
+        return Ok(RenderDetail::with_json(
+            code.clone(),
+            json!({
+                "code": code,
+                "code_length": code.len(),
+                "denylist_count": config.denylist.len(),
+                "allowlist_count": config.allowlist.len(),
+            }),
+        ));
+    }
+
+    // Default: show help
+    let text = "Usage: pybun lazy-import [OPTIONS]\n\nOptions:\n  --generate      Generate Python code for lazy import injection\n  --check MODULE  Check if a module would be lazily imported\n  --show-config   Show current configuration\n  --allow MODULE  Add module to allowlist\n  --deny MODULE   Add module to denylist\n  --log-imports   Enable logging in generated code\n  --no-fallback   Disable fallback to CPython import\n  -o, --output    Output file for generated Python code";
+
+    Ok(RenderDetail::with_json(
+        text,
+        json!({
+            "help": true,
+            "available_options": ["--generate", "--check", "--show-config", "--allow", "--deny", "--log-imports", "--no-fallback", "-o"],
+        }),
+    ))
 }
 
 #[cfg(test)]

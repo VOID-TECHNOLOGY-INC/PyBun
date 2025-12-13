@@ -191,6 +191,10 @@ pub enum EventType {
     ModuleFindStart,
     ModuleFindComplete,
 
+    // Lazy import events
+    LazyImportStart,
+    LazyImportComplete,
+
     // Generic progress event
     Progress,
 

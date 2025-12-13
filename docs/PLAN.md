@@ -59,9 +59,10 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
   - Depends on: M1.  
   - Current: `src/module_finder.rs` implements high-performance module finder with parallel fs scanning, LRU cache, namespace package support (PEP 420). `pybun module-find` command for CLI access. Supports `--scan` for directory scanning, `--benchmark` for timing info. JSON output with module type, path, search paths. Python code generation for sys.meta_path injection.
   - Tests: 14 unit tests (cache hit/miss, package/module/namespace discovery, parallel scan, config); 9 E2E tests (CLI help, find simple/nested/package, not found, scan, JSON output, benchmark).
-- PR2.2: Lazy import injection MVP (config driven, allowlist/denylist, fallback to CPython).  
+- [DONE] PR2.2: Lazy import injection MVP (config driven, allowlist/denylist, fallback to CPython).  
   - Depends on: PR2.1.  
-  - Tests: integration measuring reduced import time on synthetic heavy modules; JSON diagnostics.
+  - Current: `src/lazy_import.rs` implements lazy import configuration with allowlist/denylist, default denylist for core modules (sys, os, importlib, etc.). Python code generation for `sys.meta_path` injection with LazyModule proxy, LazyFinder, LazyLoader classes. `pybun lazy-import` command with `--generate`, `--check`, `--show-config`, `--allow`, `--deny`, `--log-imports`, `--no-fallback` options. Config file support (TOML).
+  - Tests: 17 unit tests (config, allowlist/denylist logic, stats, serialization); 12 E2E tests (help, config, check, generate, file output).
 - PR2.3: Hot reload watcher (fs notify abstraction per OS, reload strategy) with dev profile toggle.  
   - Depends on: PR2.1.  
   - Tests: integration touching files triggers reload; smoke E2E FastAPI sample reload.

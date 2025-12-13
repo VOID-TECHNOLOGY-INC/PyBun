@@ -3,6 +3,7 @@ pub mod cli;
 pub mod commands;
 pub mod env;
 pub mod index;
+pub mod lazy_import;
 pub mod lockfile;
 pub mod mcp;
 pub mod module_finder;
