@@ -1,0 +1,64 @@
+# PyBun Benchmark Configuration
+
+[general]
+iterations = 5           # Number of iterations per benchmark
+warmup = 1               # Warmup runs (not counted)
+timeout_seconds = 300    # Maximum time per scenario
+hyperfine_path = ""      # Optional: path to hyperfine binary for more accurate timing
+
+[tools]
+pybun = true
+uv = true
+pip = true
+poetry = false           # Disabled by default (slow)
+pipx = true
+python = true            # Python standard as baseline
+
+[paths]
+# Override paths if not in PATH
+# pybun = "/path/to/pybun"
+# uv = "/path/to/uv"
+# pip = "/path/to/pip"
+# pipx = "/path/to/pipx"
+
+[scenarios.resolution]
+enabled = true
+fixtures = ["small", "medium", "large"]
+
+[scenarios.install]
+enabled = true
+cold_cache = true
+warm_cache = true
+
+[scenarios.run]
+enabled = true
+pep723 = true
+profiles = ["dev", "prod"]
+
+[scenarios.adhoc]
+enabled = true
+packages = ["cowsay", "black", "ruff", "httpie"]
+
+[scenarios.module_find]
+enabled = true
+benchmark_parallel = true
+modules = ["os", "json", "requests", "numpy", "pandas"]
+
+[scenarios.lazy_import]
+enabled = true
+heavy_modules = ["numpy", "pandas", "matplotlib"]
+
+[scenarios.test]
+enabled = true
+parallel_workers = [1, 2, 4, 8]
+
+[scenarios.mcp]
+enabled = true
+tools = ["doctor", "run", "resolve", "gc"]
+
+[output]
+format = "json"                     # json, markdown, csv
+include_system_info = true
+save_raw_results = true
+results_dir = "results"
+
