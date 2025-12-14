@@ -198,3 +198,74 @@ fn run_without_pep723_uses_system_env() {
         // Should have empty pep723_dependencies
         .stdout(predicate::str::contains("\"pep723_dependencies\":[]"));
 }
+
+// =============================================================================
+// PR-OPT1: PEP 723 venv cache tests
+// =============================================================================
+
+#[test]
+fn run_pep723_cache_hit_json_output() {
+    // Test that cache_hit field is present in JSON output
+    let temp = tempdir().unwrap();
+    let script = temp.path().join("pep723_cache.py");
+
+    let content = r#"# /// script
+# dependencies = ["cowsay"]
+# ///
+print("test cache")
+"#;
+    fs::write(&script, content).unwrap();
+
+    // Dry-run mode to check JSON structure
+    bin()
+        .env("PYBUN_PEP723_DRY_RUN", "1")
+        .args(["--format=json", "run", script.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"cache_hit\""));
+}
+
+#[test]
+fn run_pep723_no_cache_mode() {
+    // Test PYBUN_PEP723_NO_CACHE environment variable
+    let temp = tempdir().unwrap();
+    let script = temp.path().join("pep723_no_cache.py");
+
+    let content = r#"# /// script
+# dependencies = ["cowsay"]
+# ///
+print("test no cache")
+"#;
+    fs::write(&script, content).unwrap();
+
+    // With NO_CACHE mode, should still work (in dry-run)
+    bin()
+        .env("PYBUN_PEP723_DRY_RUN", "1")
+        .env("PYBUN_PEP723_NO_CACHE", "1")
+        .args(["--format=json", "run", script.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("pep723_dependencies"));
+}
+
+#[test]
+fn run_pep723_cache_shows_cleanup_false_when_cached() {
+    // When cached, cleanup should be false (venv is reused)
+    let temp = tempdir().unwrap();
+    let script = temp.path().join("pep723_cleanup.py");
+
+    let content = r#"# /// script
+# dependencies = ["cowsay"]
+# ///
+print("test cleanup field")
+"#;
+    fs::write(&script, content).unwrap();
+
+    bin()
+        .env("PYBUN_PEP723_DRY_RUN", "1")
+        .args(["--format=json", "run", script.to_str().unwrap()])
+        .assert()
+        .success()
+        // cleanup should be false with caching (venv not cleaned up)
+        .stdout(predicate::str::contains("\"cleanup\":false"));
+}

@@ -1,10 +1,11 @@
 //! Global cache management for PyBun.
 //!
 //! Layout:
-//! - ~/.cache/pybun/packages/  (wheels)
-//! - ~/.cache/pybun/envs/      (virtual environments)
-//! - ~/.cache/pybun/build/     (build object cache)
-//! - ~/.cache/pybun/logs/      (structured event logs)
+//! - ~/.cache/pybun/packages/    (wheels)
+//! - ~/.cache/pybun/envs/        (virtual environments)
+//! - ~/.cache/pybun/build/       (build object cache)
+//! - ~/.cache/pybun/logs/        (structured event logs)
+//! - ~/.cache/pybun/pep723-envs/ (PEP 723 script venvs)
 //!
 //! ## GC (Garbage Collection)
 //! The cache supports LRU-based garbage collection with configurable size limits.
@@ -21,6 +22,7 @@ const PACKAGES_DIR: &str = "packages";
 const ENVS_DIR: &str = "envs";
 const BUILD_DIR: &str = "build";
 const LOGS_DIR: &str = "logs";
+const PEP723_ENVS_DIR: &str = "pep723-envs";
 
 #[derive(Debug, Error)]
 pub enum CacheError {
@@ -89,6 +91,11 @@ impl Cache {
         self.root.join(LOGS_DIR)
     }
 
+    /// Directory for PEP 723 script venv cache.
+    pub fn pep723_envs_dir(&self) -> PathBuf {
+        self.root.join(PEP723_ENVS_DIR)
+    }
+
     /// Ensure all cache directories exist.
     pub fn ensure_dirs(&self) -> Result<()> {
         for dir in [
@@ -96,6 +103,7 @@ impl Cache {
             self.envs_dir(),
             self.build_dir(),
             self.logs_dir(),
+            self.pep723_envs_dir(),
         ] {
             if !dir.exists() {
                 fs::create_dir_all(&dir).map_err(|source| CacheError::CreateDir {
