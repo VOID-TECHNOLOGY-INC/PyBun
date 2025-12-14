@@ -443,7 +443,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let bin_dir = temp.path().join("bin");
         fs::create_dir_all(&bin_dir).unwrap();
-        
+
         let uv_exe = bin_dir.join("uv");
         #[cfg(unix)]
         {
@@ -465,9 +465,9 @@ mod tests {
         // or accepting that this test might be flaky in parallel context.
         // For PyBun unit tests, we usually accept environment mutation if necessary.
         unsafe { std::env::set_var("PATH", new_path) };
-        
+
         let found = find_uv_executable();
-        
+
         // Restore PATH (best effort)
         unsafe { std::env::set_var("PATH", path_var) };
 

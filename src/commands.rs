@@ -940,7 +940,7 @@ fn run_script(
                 // Install dependencies
                 if !pep723_deps.is_empty() {
                     eprintln!("info: installing {} dependencies...", pep723_deps.len());
-                    
+
                     // Check for uv
                     if let Some(uv_path) = crate::env::find_uv_executable() {
                         eprintln!("info: using uv for fast installation");
@@ -959,7 +959,9 @@ fn run_script(
                             collector.warning("failed to install dependencies with uv".to_string());
                             // Fallback to pip? Or just fail? Let's fail for now to be explicit, logic could be refined.
                             let _ = cache.remove_env(&prepared.hash);
-                            return Err(eyre!("failed to install PEP 723 dependencies (uv backend)"));
+                            return Err(eyre!(
+                                "failed to install PEP 723 dependencies (uv backend)"
+                            ));
                         }
                     } else {
                         // Fallback to standard pip
@@ -1036,7 +1038,7 @@ fn run_script(
 
             if !pep723_deps.is_empty() {
                 eprintln!("info: installing {} dependencies...", pep723_deps.len());
-                
+
                 if let Some(uv_path) = crate::env::find_uv_executable() {
                     eprintln!("info: using uv for fast installation (no-cache mode)");
                     let mut install_cmd = ProcessCommand::new(uv_path);
