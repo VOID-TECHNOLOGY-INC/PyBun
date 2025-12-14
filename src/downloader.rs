@@ -24,6 +24,12 @@ pub struct Downloader {
     client: Client,
 }
 
+impl Default for Downloader {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Downloader {
     pub fn new() -> Self {
         Self {
@@ -51,15 +57,15 @@ impl Downloader {
             match self.download_attempt(url, destination).await {
                 Ok(_) => {
                     // Checksum verification
-                    if let Some(expected) = checksum {
-                        if !self.verify_checksum(destination, expected).await? {
-                            // If verification fails, delete the file
-                            let _ = fs::remove_file(destination).await;
-                            return Err(DownloadError::ChecksumMismatch {
-                                expected: expected.to_string(),
-                                actual: "verification_failed".to_string(), // Simplified for now, verify_checksum could return actual
-                            });
-                        }
+                    if let Some(expected) = checksum
+                        && !self.verify_checksum(destination, expected).await?
+                    {
+                        // If verification fails, delete the file
+                        let _ = fs::remove_file(destination).await;
+                        return Err(DownloadError::ChecksumMismatch {
+                            expected: expected.to_string(),
+                            actual: "verification_failed".to_string(),
+                        });
                     }
                     return Ok(destination.to_path_buf());
                 }

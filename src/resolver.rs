@@ -360,16 +360,9 @@ fn select_package_from_candidates(
     }
 }
 
+#[derive(Default)]
 pub struct InMemoryIndex {
     pkgs: BTreeMap<(String, String), ResolvedPackage>,
-}
-
-impl Default for InMemoryIndex {
-    fn default() -> Self {
-        Self {
-            pkgs: BTreeMap::new(),
-        }
-    }
 }
 
 impl InMemoryIndex {
@@ -429,16 +422,6 @@ fn parse_req(input: &str) -> Requirement {
 
 fn version_cmp(a: &str, b: &str) -> Ordering {
     compare_versions(a, b)
-}
-
-fn available_versions(index: &impl PackageIndex, name: &str) -> Vec<String> {
-    // Note: With async index, this helper is hard to keep synchronous or simple.
-    // It's mainly used for error reporting in legacy paths.
-    // For now, we return empty or remove usages.
-    // The usage in `select_package` (old) is gone.
-    // The usage in `ResolveError` construction might need the list.
-    // Given we fetch all candidates in `resolve` function, we can pass candidates directly.
-    vec![]
 }
 
 fn build_chain(parents: &BTreeMap<String, Option<String>>, start: &str) -> Vec<String> {

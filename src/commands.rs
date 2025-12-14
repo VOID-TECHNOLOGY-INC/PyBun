@@ -652,26 +652,15 @@ async fn install(
 
     let mut download_items = Vec::new();
     for pkg in resolution.packages.values() {
-        if let Some(source) = &pkg.source {
-            if let Some(url) = source.url() {
-                // Construct filename from URL or package info
-                let filename = PathBuf::from(url.rsplit('/').next().unwrap_or("unknown.whl"));
-                let dest = cache_dir.join(filename);
-                // Hash verification is optional for now if not provided in resolution
-                // Ideally resolution result should contain hash, but for now we might skip or use what we have
-                // The resolution struct needs to expose hash if available.
-                // Assuming resolved package has hash? Let's check resolved package struct.
-                // It seems ResolvedPackage doesn't expose hash directly in the snippet above,
-                // but Lockfile Package does. Let's use the match logic from lockfile construction or similar.
-                // Actually ResolvedPackage in resolver.rs likely has it or we need to fetch it.
-                // Wait, `resolver::ResolvedPackage` (impl PackageIndex) probably has it.
-                // Let's assume for this MVP we download without strict hash check if not readily available,
-                // OR we rely on what's put in lockfile.
-
-                // For now, let's use None for hash to unblock implementation,
-                // as hash is currently hardcoded or heuristic in some places.
-                download_items.push((url.to_string(), dest, None));
-            }
+        if let Some(source) = &pkg.source
+            && let Some(url) = source.url()
+        {
+            // Construct filename from URL or package info
+            let filename = PathBuf::from(url.rsplit('/').next().unwrap_or("unknown.whl"));
+            let dest = cache_dir.join(filename);
+            // For now, let's use None for hash to unblock implementation,
+            // as hash is currently hardcoded or heuristic in some places.
+            download_items.push((url.to_string(), dest, None));
         }
     }
 
