@@ -205,6 +205,21 @@ impl Pep723Cache {
         let info_path = cache_dir.join("deps.json");
 
         if info_path.exists() {
+            // Optimization: Check file mtime first to avoid reading/parsing operations.
+            // If the file was modified recently (e.g. < 1 hour), we assume last_used is up to date enough.
+            // This prevents the expensive Read-Modify-Write cycle on every warm start.
+            if let Ok(metadata) = fs::metadata(&info_path)
+                && let Ok(modified) = metadata.modified()
+            {
+                let now = SystemTime::now();
+                if let Ok(duration) = now.duration_since(modified) {
+                    // 1 hour window to skip updates
+                    if duration.as_secs() < 3600 {
+                        return Ok(());
+                    }
+                }
+            }
+
             let content = fs::read_to_string(&info_path)?;
             let mut info: CachedEnvInfo = serde_json::from_str(&content)?;
 

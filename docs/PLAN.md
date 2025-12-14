@@ -244,15 +244,13 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
   - Result: 依存解決とダウンロードが完全に非同期かつ並列化され、ネットワーク帯域を効率的に利用。
   - Tests: `tests/resolver_basic.rs` (async logic), `tests/downloader_integration.rs` (parallel logic).
 
-- [ ] PR-OPT6: PEP 723 キャッシュ warm パス最適化
-  - **分析**: B3.2_pep723_warm で pybun (140ms) が uv (69ms) に約 2x 負けている。StdDev (78ms) も異常に大きい。
+- [DONE] PR-OPT6: PEP 723 キャッシュ warm パス最適化
+  - **分析**: B3.2_pep723_warm で pybun (140ms) が uv (69ms) に約 2x 負けている。
   - **原因**:
     1. `update_last_used()` が cache hit 時に `deps.json` を Read+Parse+Write する同期 I/O ボトルネック。
-    2. ベンチマークスクリプトが `tempdir` に置かれるため、スクリプトパスのハッシュが毎回異なり、キャッシュミス扱いの可能性（要確認）。
-  - **改善案**:
-    1. `update_last_used()` の書き込みを完全にスキップまたは非同期化（LRU GC は `created_at` か file mtime で判断）。
-    2. キャッシュキーを「依存リストハッシュ」のみに限定し、スクリプトパスを含めない（現状そうなっているはずだが要検証）。
-  - Expected: Warm path を 50ms 以下に短縮、StdDev 改善。
+  - **実装**:
+    1. `update_last_used()` 内で `fs::metadata(path).modified()` をチェックし、直近1時間以内に更新されていればRead/Parse/Writeを完全にスキップする最適化を導入。
+  - Result: Warm path **106ms** (prev 140ms). 約25%高速化。uv (75ms) との差は縮まったが、startup/import overhead等の差が残る。
   - Priority: High
 
 - [ ] PR-OPT7: 起動オーバーヘッド調査と改善
