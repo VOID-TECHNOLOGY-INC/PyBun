@@ -194,9 +194,19 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
 2. ~~**venv作成が毎回発生**~~ → ✅ 依存関係ハッシュベースのキャッシュで再利用
 3. **PEP 723 Cold** → ✅ 125msに改善（3529ms → 125ms, **約28倍高速化**、キャッシュが効いている）
 
-**残る課題**:
-1. **起動オーバーヘッド**: 単純なスクリプトでも約4ms余分にかかる。
-2. **PEP 723 Warm**: uvより44%遅いが、改善前の45倍遅い状態から大幅改善。
+**残る課題 (2025-12-14 Analysis)**:
+1. **起動オーバーヘッド (Startup Overhead)**:
+   - `pybun` (25.6ms) vs `uv` (20.7ms) → +5ms の差。
+   - `src/main.rs` は軽量だが、`EventCollector` やログ初期化、`clap` のパースが影響か。
+   - `PR-OPT3` で環境検出キャッシュなどを導入して短縮を狙う。
+2. **PEP 723 Warm Overhead**:
+   - `pybun` (101.6ms) vs `uv` (70.5ms) → +31ms の差。
+   - Codebase analysis findings:
+     - **Redundant I/O**: `get_cached_env` 時に毎回 `deps.json` の `last_used` を更新（書き込み）している。
+     - **Process Overhead**: `pybun` プロセスの子プロセスとして Python を起動している（`wait` 待ち発生）。Unix系では `exec` でプロセス置換すべき。
+3. **PEP 723 Cold Overhead (Optimization)**:
+   - 現状でも高速化されたが、`pip install` を依存関係ごとにループで回している（`run_script`）。
+   - これを `pip install dep1 dep2 ...` の1回呼び出しにまとめればさらに高速化可能。
 
 - [DONE] PR-OPT1: PEP 723 venv キャッシュの実装  
   - Goal: 依存関係ハッシュに基づいてvenvをキャッシュし、再利用。warmで100ms以下を目標。
@@ -206,13 +216,20 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
   - Tests: 3つのE2Eテスト追加（cache_hit JSON出力、no-cacheモード、cleanup動作）。12のユニットテスト（ハッシュ計算、キャッシュ操作、GC）。
   - Priority: **High** (45x slowdown は致命的) → 解決済み
 
-- PR-OPT2: uv バックエンド統合  
+- PR-OPT2: PEP 723 実行フロー最適化 (New Implementation Track)
+  - Goal: Warm start を 101ms -> 75ms まで短縮し、uv に肉薄する。
+  - Actions:
+    1. **Process Replacement**: Unix系 os (`cfg!(unix)`) では `std::os::unix::process::CommandExt::exec()` を使用してプロセスを置換し、親プロセスのオーバーヘッドを排除。
+    2. **Lazy Cache Update**: `last_used` の更新頻度を下げる（例: 1時間に1回、または非同期化スキップ）ことで、Read時のWrite I/Oを削減。
+    3. **Batch Install**: Cold start 時に `pip install` を1回にまとめる。
+
+- PR-OPT3: uv バックエンド統合 (旧 OPT2)
   - Goal: pip の代わりに uv を使用してインストールを高速化。
   - Approach: `uv pip install` を subprocess で呼び出し、または uv をライブラリとして統合。
   - Notes: uv が利用可能な場合は自動検出して使用。fallback は pip。
   - Expected: PEP 723 Cold を 602ms 程度まで短縮。
 
-- PR-OPT3: 起動時間の最適化  
+- PR-OPT4: 起動時間の最適化 (旧 OPT3)
   - Goal: 単純スクリプトの起動時間を python と同等（20ms以下）にする。
   - Approach: 
     - 環境検出結果のキャッシュ（`.pybun/env-cache.json`）
@@ -220,7 +237,7 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
     - 不要な処理のスキップ（--fast モード）
   - Priority: Medium
 
-- PR-OPT4: 並列依存解決とダウンロード  
+- PR-OPT5: 並列依存解決とダウンロード (旧 OPT4)
   - Goal: 複数パッケージの解決・ダウンロードを並列化。
   - Approach: tokio/rayon で並列 HTTP リクエスト。
   - Expected: 大規模プロジェクトで 2-4x 高速化。
