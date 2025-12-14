@@ -1,5 +1,4 @@
-use pybun::downloader::{DownloadError, Downloader};
-use std::collections::HashSet;
+use pybun::downloader::Downloader;
 use tempfile::tempdir;
 use tokio::fs;
 
@@ -61,7 +60,7 @@ async fn parallel_download_test() {
     // If network works, files should exist
     let success_count = results.iter().filter(|r| r.is_ok()).count();
     if success_count > 0 {
-        let files = fs::read_dir(temp.path()).await.unwrap();
+        let _files = fs::read_dir(temp.path()).await.unwrap();
         // Count files
     }
 }
