@@ -222,6 +222,7 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
     1. **Process Replacement**: Unix系 os (`cfg!(unix)`) では `std::os::unix::process::CommandExt::exec()` を使用してプロセスを置換し、親プロセスのオーバーヘッドを排除。
     2. **Lazy Cache Update**: `last_used` の更新頻度を下げる（例: 1時間に1回、または非同期化スキップ）ことで、Read時のWrite I/Oを削減。
     3. **Batch Install**: Cold start 時に `pip install` を1回にまとめる。
+  - Status: **Done**. Investigation into remaining 46ms gap revealed it's due to Python interpreter performance (PyBun uses system Python 3.14 vs uv's managed Python 3.10), not PyBun overhead (<0.2ms). Further optimization requires managing Python versions (PR-OPT3/5).
 
 - PR-OPT3: uv バックエンド統合 (旧 OPT2)
   - Goal: pip の代わりに uv を使用してインストールを高速化。
