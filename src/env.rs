@@ -341,6 +341,11 @@ pub fn global_packages_dir() -> PathBuf {
     pybun_home().join("packages")
 }
 
+/// Find the `uv` executable in PATH.
+pub fn find_uv_executable() -> Option<PathBuf> {
+    which_executable("uv")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -429,5 +434,44 @@ mod tests {
 
         let result = find_project_venv(temp.path());
         assert_eq!(result, Some(pybun_dir));
+    }
+
+    #[test]
+    fn test_find_uv_executable_looks_in_path() {
+        // We can't guarantee 'uv' is installed, but we can verify it calls which_executable logic
+        // by temporarily modifying PATH to include a fake uv
+        let temp = TempDir::new().unwrap();
+        let bin_dir = temp.path().join("bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+
+        let uv_exe = bin_dir.join("uv");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::write(&uv_exe, "fake uv").unwrap();
+            let mut perms = fs::metadata(&uv_exe).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&uv_exe, perms).unwrap();
+        }
+        #[cfg(windows)]
+        fs::write(bin_dir.join("uv.exe"), "fake uv").unwrap();
+
+        let path_var = std::env::var_os("PATH").unwrap_or_default();
+        let mut paths = std::env::split_paths(&path_var).collect::<Vec<_>>();
+        paths.insert(0, bin_dir.clone());
+        let new_path = std::env::join_paths(paths).unwrap();
+
+        // Safety: running in single-threaded test context (with --test-threads=1 if needed)
+        // or accepting that this test might be flaky in parallel context.
+        // For PyBun unit tests, we usually accept environment mutation if necessary.
+        unsafe { std::env::set_var("PATH", new_path) };
+
+        let found = find_uv_executable();
+
+        // Restore PATH (best effort)
+        unsafe { std::env::set_var("PATH", path_var) };
+
+        assert!(found.is_some());
+        assert_eq!(found.unwrap(), uv_exe);
     }
 }
