@@ -10,7 +10,9 @@ async fn resolves_simple_dependency_tree() {
     index.add("lib-b", "2.0.0", Vec::<&str>::new());
     index.add("lib-c", "1.0.0", Vec::<&str>::new());
 
-    let resolution = resolve(vec![Requirement::exact("app", "1.0.0")], &index).await.unwrap();
+    let resolution = resolve(vec![Requirement::exact("app", "1.0.0")], &index)
+        .await
+        .unwrap();
     let expect: HashMap<&str, &str> = HashMap::from([
         ("app", "1.0.0"),
         ("lib-a", "1.0.0"),
@@ -30,7 +32,9 @@ async fn resolves_simple_dependency_tree() {
 #[tokio::test]
 async fn fails_on_missing_package() {
     let index = InMemoryIndex::default();
-    let err = resolve(vec![Requirement::exact("missing", "1.0.0")], &index).await.unwrap_err();
+    let err = resolve(vec![Requirement::exact("missing", "1.0.0")], &index)
+        .await
+        .unwrap_err();
     assert!(matches!(err, ResolveError::Missing { name, .. } if name == "missing"));
 }
 
@@ -41,7 +45,9 @@ async fn detects_version_conflict() {
     index.add("lib", "1.0.0", Vec::<&str>::new());
     index.add("lib", "2.0.0", Vec::<&str>::new());
 
-    let err = resolve(vec![Requirement::exact("root", "1.0.0")], &index).await.unwrap_err();
+    let err = resolve(vec![Requirement::exact("root", "1.0.0")], &index)
+        .await
+        .unwrap_err();
     assert!(matches!(err, ResolveError::Conflict { name, .. } if name == "lib"));
 }
 
@@ -53,7 +59,9 @@ async fn selects_highest_version_for_minimum_requirement() {
     index.add("lib", "1.5.0", Vec::<&str>::new());
     index.add("lib", "2.0.0", Vec::<&str>::new());
 
-    let resolution = resolve(vec![Requirement::exact("app", "1.0.0")], &index).await.unwrap();
+    let resolution = resolve(vec![Requirement::exact("app", "1.0.0")], &index)
+        .await
+        .unwrap();
     let lib = resolution.packages.get("lib").expect("lib resolved");
     assert_eq!(lib.version, "2.0.0");
 }
@@ -64,7 +72,9 @@ async fn errors_when_no_version_meets_minimum() {
     index.add("app", "1.0.0", ["lib>=2.0.0"]);
     index.add("lib", "1.5.0", Vec::<&str>::new());
 
-    let err = resolve(vec![Requirement::exact("app", "1.0.0")], &index).await.unwrap_err();
+    let err = resolve(vec![Requirement::exact("app", "1.0.0")], &index)
+        .await
+        .unwrap_err();
     assert!(matches!(err, ResolveError::Missing { name, .. } if name == "lib"));
 }
 
@@ -81,7 +91,9 @@ async fn selects_highest_version_for_maximum_inclusive() {
     index.add("lib", "2.0.0", Vec::<&str>::new());
     index.add("lib", "2.1.0", Vec::<&str>::new());
 
-    let resolution = resolve(vec![Requirement::exact("app", "1.0.0")], &index).await.unwrap();
+    let resolution = resolve(vec![Requirement::exact("app", "1.0.0")], &index)
+        .await
+        .unwrap();
     let lib = resolution.packages.get("lib").expect("lib resolved");
     assert_eq!(lib.version, "2.0.0");
 }
@@ -95,7 +107,9 @@ async fn selects_highest_version_for_maximum_exclusive() {
     index.add("lib", "1.9.0", Vec::<&str>::new());
     index.add("lib", "2.0.0", Vec::<&str>::new());
 
-    let resolution = resolve(vec![Requirement::exact("app", "1.0.0")], &index).await.unwrap();
+    let resolution = resolve(vec![Requirement::exact("app", "1.0.0")], &index)
+        .await
+        .unwrap();
     let lib = resolution.packages.get("lib").expect("lib resolved");
     assert_eq!(lib.version, "1.9.0");
 }
@@ -109,7 +123,9 @@ async fn selects_highest_version_for_minimum_exclusive() {
     index.add("lib", "1.5.0", Vec::<&str>::new());
     index.add("lib", "2.0.0", Vec::<&str>::new());
 
-    let resolution = resolve(vec![Requirement::exact("app", "1.0.0")], &index).await.unwrap();
+    let resolution = resolve(vec![Requirement::exact("app", "1.0.0")], &index)
+        .await
+        .unwrap();
     let lib = resolution.packages.get("lib").expect("lib resolved");
     assert_eq!(lib.version, "2.0.0");
 }
@@ -123,7 +139,9 @@ async fn excludes_version_with_not_equal() {
     index.add("lib", "1.5.0", Vec::<&str>::new());
     index.add("lib", "2.0.0", Vec::<&str>::new());
 
-    let resolution = resolve(vec![Requirement::exact("app", "1.0.0")], &index).await.unwrap();
+    let resolution = resolve(vec![Requirement::exact("app", "1.0.0")], &index)
+        .await
+        .unwrap();
     let lib = resolution.packages.get("lib").expect("lib resolved");
     assert_eq!(lib.version, "2.0.0");
 }
@@ -139,7 +157,9 @@ async fn compatible_release_selects_within_major_minor() {
     index.add("lib", "1.5.0", Vec::<&str>::new());
     index.add("lib", "2.0.0", Vec::<&str>::new());
 
-    let resolution = resolve(vec![Requirement::exact("app", "1.0.0")], &index).await.unwrap();
+    let resolution = resolve(vec![Requirement::exact("app", "1.0.0")], &index)
+        .await
+        .unwrap();
     let lib = resolution.packages.get("lib").expect("lib resolved");
     assert_eq!(lib.version, "1.4.5");
 }
@@ -154,7 +174,9 @@ async fn compatible_release_major_minor_only() {
     index.add("lib", "1.9.0", Vec::<&str>::new());
     index.add("lib", "2.0.0", Vec::<&str>::new());
 
-    let resolution = resolve(vec![Requirement::exact("app", "1.0.0")], &index).await.unwrap();
+    let resolution = resolve(vec![Requirement::exact("app", "1.0.0")], &index)
+        .await
+        .unwrap();
     let lib = resolution.packages.get("lib").expect("lib resolved");
     assert_eq!(lib.version, "1.9.0");
 }
@@ -166,7 +188,9 @@ async fn errors_when_no_version_meets_maximum() {
     index.add("lib", "1.0.0", Vec::<&str>::new());
     index.add("lib", "2.0.0", Vec::<&str>::new());
 
-    let err = resolve(vec![Requirement::exact("app", "1.0.0")], &index).await.unwrap_err();
+    let err = resolve(vec![Requirement::exact("app", "1.0.0")], &index)
+        .await
+        .unwrap_err();
     assert!(matches!(err, ResolveError::Missing { name, .. } if name == "lib"));
 }
 

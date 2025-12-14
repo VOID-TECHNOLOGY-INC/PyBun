@@ -66,7 +66,9 @@ impl Downloader {
                 Err(e) => {
                     attempt += 1;
                     if attempt >= max_retries {
-                        return Err(DownloadError::MaxRetriesExceeded { url: url.to_string() });
+                        return Err(DownloadError::MaxRetriesExceeded {
+                            url: url.to_string(),
+                        });
                     }
                     // Simple exponential backoff: 1s, 2s, 4s
                     tokio::time::sleep(Duration::from_secs(1 << (attempt - 1))).await;
@@ -142,9 +144,7 @@ impl Downloader {
     ) -> Vec<Result<PathBuf, DownloadError>> {
         let stream = futures::stream::iter(items.into_iter().map(|(url, dest, checksum)| {
             let client = &self;
-            async move {
-                client.download_file(&url, &dest, checksum.as_deref()).await
-            }
+            async move { client.download_file(&url, &dest, checksum.as_deref()).await }
         }));
 
         stream.buffer_unordered(concurrency).collect().await

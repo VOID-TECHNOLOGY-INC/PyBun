@@ -204,7 +204,11 @@ mod tests {
             version: "1.0.0".into(),
             dependencies: vec!["dep==2.0.0".into()],
         }]);
-        let pkg = index.get("app", "1.0.0").await.expect("no error").expect("package");
+        let pkg = index
+            .get("app", "1.0.0")
+            .await
+            .expect("no error")
+            .expect("package");
         assert_eq!(pkg.dependencies.len(), 1);
         assert_eq!(pkg.dependencies[0].to_string(), "dep==2.0.0");
     }
@@ -256,7 +260,11 @@ mod tests {
         cache.save("my-index", &packages).unwrap();
 
         let index = cache.load_index("my-index").unwrap();
-        let pkg = index.get("my-pkg", "2.0.0").await.expect("no error").expect("package should exist");
+        let pkg = index
+            .get("my-pkg", "2.0.0")
+            .await
+            .expect("no error")
+            .expect("package should exist");
         assert_eq!(pkg.name, "my-pkg");
         assert_eq!(pkg.version, "2.0.0");
     }
@@ -308,7 +316,11 @@ mod tests {
 
         // Load (should cache)
         let index = loader.load_from_path("test", &index_file).unwrap();
-        let pkg = index.get("cached-pkg", "1.0.0").await.expect("no error").expect("package");
+        let pkg = index
+            .get("cached-pkg", "1.0.0")
+            .await
+            .expect("no error")
+            .expect("package");
         assert_eq!(pkg.name, "cached-pkg");
 
         // Verify it was cached
@@ -316,7 +328,11 @@ mod tests {
 
         // Load from cache should work
         let cached_index = loader.load_from_cache("test").unwrap();
-        let cached_pkg = cached_index.get("cached-pkg", "1.0.0").await.expect("no error").expect("package");
+        let cached_pkg = cached_index
+            .get("cached-pkg", "1.0.0")
+            .await
+            .expect("no error")
+            .expect("package");
         assert_eq!(cached_pkg.name, "cached-pkg");
     }
 
@@ -346,7 +362,11 @@ mod tests {
         let index = offline_loader
             .load_from_path("offline-test", &index_file)
             .unwrap();
-        let pkg = index.get("offline-pkg", "1.0.0").await.expect("no error").expect("package");
+        let pkg = index
+            .get("offline-pkg", "1.0.0")
+            .await
+            .expect("no error")
+            .expect("package");
         assert_eq!(pkg.name, "offline-pkg");
     }
 

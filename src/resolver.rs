@@ -1,9 +1,9 @@
+use crate::lockfile::PackageSource;
 use semver::Version;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::str::FromStr;
-use crate::lockfile::PackageSource;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VersionSpec {
@@ -216,8 +216,15 @@ pub enum ResolveError {
 }
 
 pub trait PackageIndex {
-    fn get(&self, name: &str, version: &str) -> impl std::future::Future<Output = Result<Option<ResolvedPackage>, ResolveError>> + Send;
-    fn all(&self, name: &str) -> impl std::future::Future<Output = Result<Vec<ResolvedPackage>, ResolveError>> + Send;
+    fn get(
+        &self,
+        name: &str,
+        version: &str,
+    ) -> impl std::future::Future<Output = Result<Option<ResolvedPackage>, ResolveError>> + Send;
+    fn all(
+        &self,
+        name: &str,
+    ) -> impl std::future::Future<Output = Result<Vec<ResolvedPackage>, ResolveError>> + Send;
 }
 
 /// Deterministic resolver that works with exact-version or minimum requirements in parallel.
@@ -226,11 +233,11 @@ pub async fn resolve(
     index: &impl PackageIndex,
 ) -> Result<Resolution, ResolveError> {
     let mut resolved: BTreeMap<String, ResolvedPackage> = BTreeMap::new();
-    
+
     // Requirements to process: (Requirement, RequestedBy)
     let mut pending: Vec<(Requirement, Option<String>)> =
         requirements.into_iter().map(|r| (r, None)).collect();
-    
+
     // Track parent relationships for conflict error messages
     let mut parents: BTreeMap<String, Option<String>> = BTreeMap::new();
     // Cache available versions to avoid fetching same package multiple times in one run
@@ -265,7 +272,7 @@ pub async fn resolve(
                     Ok::<(String, Vec<ResolvedPackage>), ResolveError>((name, pkgs))
                 }
             });
-            
+
             let results = futures::future::try_join_all(futures).await?;
             for (name, pkgs) in results {
                 version_cache.insert(name, pkgs);
@@ -291,12 +298,14 @@ pub async fn resolve(
             }
 
             // Select best version
-            let candidates = version_cache.get(&req.name).ok_or_else(|| ResolveError::Missing {
-                name: req.name.clone(),
-                constraint: req.constraint_display(),
-                requested_by: requested_by.clone(),
-                available_versions: vec![],
-            })?;
+            let candidates = version_cache
+                .get(&req.name)
+                .ok_or_else(|| ResolveError::Missing {
+                    name: req.name.clone(),
+                    constraint: req.constraint_display(),
+                    requested_by: requested_by.clone(),
+                    available_versions: vec![],
+                })?;
 
             let pkg = select_package_from_candidates(&req, candidates, requested_by.as_deref())?;
 
@@ -308,7 +317,7 @@ pub async fn resolve(
             resolved.insert(req.name.clone(), pkg);
             parents.insert(req.name.clone(), requested_by);
         }
-        
+
         pending = next_batch;
     }
 
@@ -321,23 +330,22 @@ fn select_package_from_candidates(
     requested_by: Option<&str>,
 ) -> Result<ResolvedPackage, ResolveError> {
     match &req.spec {
-        VersionSpec::Exact(version) => {
-            candidates.iter()
-                .find(|p| p.version == *version)
-                .cloned()
-                .ok_or_else(|| ResolveError::Missing {
-                    name: req.name.clone(),
-                    constraint: req.constraint_display(),
-                    requested_by: requested_by.map(ToString::to_string),
-                    available_versions: candidates.iter().map(|p| p.version.clone()).collect(),
-                })
-        }
+        VersionSpec::Exact(version) => candidates
+            .iter()
+            .find(|p| p.version == *version)
+            .cloned()
+            .ok_or_else(|| ResolveError::Missing {
+                name: req.name.clone(),
+                constraint: req.constraint_display(),
+                requested_by: requested_by.map(ToString::to_string),
+                available_versions: candidates.iter().map(|p| p.version.clone()).collect(),
+            }),
         _ => {
             let candidate = candidates
                 .iter()
                 .filter(|pkg| req.is_satisfied_by(&pkg.version))
                 .max_by(|a, b| version_cmp(&a.version, &b.version));
-            
+
             if let Some(pkg) = candidate {
                 Ok(pkg.clone())
             } else {
@@ -358,7 +366,9 @@ pub struct InMemoryIndex {
 
 impl Default for InMemoryIndex {
     fn default() -> Self {
-        Self { pkgs: BTreeMap::new() }
+        Self {
+            pkgs: BTreeMap::new(),
+        }
     }
 }
 
@@ -386,15 +396,25 @@ impl InMemoryIndex {
 }
 
 impl PackageIndex for InMemoryIndex {
-    fn get(&self, name: &str, version: &str) -> impl std::future::Future<Output = Result<Option<ResolvedPackage>, ResolveError>> + Send {
-        let result = self.pkgs
+    fn get(
+        &self,
+        name: &str,
+        version: &str,
+    ) -> impl std::future::Future<Output = Result<Option<ResolvedPackage>, ResolveError>> + Send
+    {
+        let result = self
+            .pkgs
             .get(&(name.to_string(), version.to_string()))
             .cloned();
         async move { Ok(result) }
     }
 
-    fn all(&self, name: &str) -> impl std::future::Future<Output = Result<Vec<ResolvedPackage>, ResolveError>> + Send {
-        let result = self.pkgs
+    fn all(
+        &self,
+        name: &str,
+    ) -> impl std::future::Future<Output = Result<Vec<ResolvedPackage>, ResolveError>> + Send {
+        let result = self
+            .pkgs
             .iter()
             .filter(|((n, _), _)| n == name)
             .map(|(_, pkg)| pkg.clone())
@@ -412,7 +432,7 @@ fn version_cmp(a: &str, b: &str) -> Ordering {
 }
 
 fn available_versions(index: &impl PackageIndex, name: &str) -> Vec<String> {
-    // Note: With async index, this helper is hard to keep synchronous or simple. 
+    // Note: With async index, this helper is hard to keep synchronous or simple.
     // It's mainly used for error reporting in legacy paths.
     // For now, we return empty or remove usages.
     // The usage in `select_package` (old) is gone.

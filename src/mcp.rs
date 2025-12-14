@@ -22,9 +22,9 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use std::path::PathBuf;
 use std::process::Command as ProcessCommand;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 /// MCP Protocol version we support
 pub const PROTOCOL_VERSION: &str = "2024-11-05";
@@ -504,7 +504,9 @@ impl McpServer {
         let index = index_result.map_err(|e| format!("Could not load index: {}", e))?;
 
         // Resolve dependencies
-        let resolution = resolve(parsed_reqs.clone(), &index).await.map_err(|e| e.to_string())?;
+        let resolution = resolve(parsed_reqs.clone(), &index)
+            .await
+            .map_err(|e| e.to_string())?;
 
         // Create lockfile
         let lock_path = args
@@ -828,7 +830,9 @@ pub async fn run_stdio_server() -> Result<(), Box<dyn std::error::Error>> {
             Err(e) => {
                 eprintln!("Invalid JSON-RPC request: {}", e);
                 let error_response = JsonRpcResponse::error(Value::Null, -32700, "Parse error");
-                let _ = stdout.write_all(serde_json::to_string(&error_response)?.as_bytes()).await;
+                let _ = stdout
+                    .write_all(serde_json::to_string(&error_response)?.as_bytes())
+                    .await;
                 let _ = stdout.write_all(b"\n").await;
                 let _ = stdout.flush().await;
                 continue;

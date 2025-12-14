@@ -661,16 +661,16 @@ async fn install(
                 // Ideally resolution result should contain hash, but for now we might skip or use what we have
                 // The resolution struct needs to expose hash if available.
                 // Assuming resolved package has hash? Let's check resolved package struct.
-                // It seems ResolvedPackage doesn't expose hash directly in the snippet above, 
+                // It seems ResolvedPackage doesn't expose hash directly in the snippet above,
                 // but Lockfile Package does. Let's use the match logic from lockfile construction or similar.
                 // Actually ResolvedPackage in resolver.rs likely has it or we need to fetch it.
                 // Wait, `resolver::ResolvedPackage` (impl PackageIndex) probably has it.
-                // Let's assume for this MVP we download without strict hash check if not readily available, 
+                // Let's assume for this MVP we download without strict hash check if not readily available,
                 // OR we rely on what's put in lockfile.
-                
-                // For now, let's use None for hash to unblock implementation, 
+
+                // For now, let's use None for hash to unblock implementation,
                 // as hash is currently hardcoded or heuristic in some places.
-                download_items.push((url.to_string(), dest, None)); 
+                download_items.push((url.to_string(), dest, None));
             }
         }
     }
@@ -679,10 +679,15 @@ async fn install(
         use crate::downloader::Downloader;
         let downloader = Downloader::new();
         let concurrency = 10; // Default concurrency
-        collector.info(format!("Starting parallel download of {} artifacts...", download_items.len()));
-        
-        let results = downloader.download_parallel(download_items, concurrency).await;
-        
+        collector.info(format!(
+            "Starting parallel download of {} artifacts...",
+            download_items.len()
+        ));
+
+        let results = downloader
+            .download_parallel(download_items, concurrency)
+            .await;
+
         // Check for failures
         let mut failures = 0;
         for res in results {
@@ -691,11 +696,11 @@ async fn install(
                 failures += 1;
             }
         }
-        
+
         if failures > 0 {
-             collector.warning(format!("{} downloads failed", failures));
-             // We don't hard fail install for now, similar to pip's "best effort" or we could fail.
-             // Let's warn.
+            collector.warning(format!("{} downloads failed", failures));
+            // We don't hard fail install for now, similar to pip's "best effort" or we could fail.
+            // Let's warn.
         }
     }
 
