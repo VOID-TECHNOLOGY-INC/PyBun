@@ -174,6 +174,49 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
 - PR6.3: Telemetry (opt-in metrics) + privacy controls; enterprise-ready configs.  
   - Depends on: PR4.1 schema.  
   - Tests: unit for redaction; integration ensuring opt-out disables emission.
+- [DONE] PR6.4: Benchmark suite (`scripts/benchmark/`)
+  - Depends on: M1 core CLI.
+  - Current: Full benchmark suite implemented with 8 scenarios (B1-B8). Measures dependency resolution, package installation, script execution, ad-hoc execution, module finding, lazy import, test execution, and MCP response time. Compares PyBun vs uv, pip, pipx, pytest. Supports JSON/Markdown/CSV output, dry-run mode, and report generation with baseline comparison.
+  - Tests: Benchmark scripts tested with dry-run and actual execution. Results output to `scripts/benchmark/results/`.
+
+### Benchmark Analysis & Optimization Roadmap
+
+**ベンチマーク結果サマリー (2025-12-14)**:
+| シナリオ | pybun | uv | python | 差分 |
+|---------|-------|-----|--------|------|
+| Simple Startup | 27.5ms | 20.1ms | 20.9ms | +32% vs python |
+| PEP 723 Cold | 3529ms | 602ms | - | **5.9x slower** |
+| PEP 723 Warm | 3104ms | 68ms | - | **45x slower** ⚠️ |
+| Heavy Import | 58ms | 45ms | 54ms | +7% vs python |
+
+**主な課題**:
+1. **PEP 723 Warm が遅すぎる**: キャッシュが効いていない。uvは68msなのにpybunは3104ms。
+2. **起動オーバーヘッド**: 単純なスクリプトでも約7ms余分にかかる。
+3. **venv作成が毎回発生**: 依存関係が同じでも再作成している。
+
+- PR-OPT1: PEP 723 venv キャッシュの実装  
+  - Goal: 依存関係ハッシュに基づいてvenvをキャッシュし、再利用。warmで100ms以下を目標。
+  - Approach: `hash(sorted(dependencies))` → `~/.pybun/pep723-cache/{hash}/` に永続化。
+  - Priority: **High** (45x slowdown は致命的)
+
+- PR-OPT2: uv バックエンド統合  
+  - Goal: pip の代わりに uv を使用してインストールを高速化。
+  - Approach: `uv pip install` を subprocess で呼び出し、または uv をライブラリとして統合。
+  - Notes: uv が利用可能な場合は自動検出して使用。fallback は pip。
+  - Expected: PEP 723 Cold を 602ms 程度まで短縮。
+
+- PR-OPT3: 起動時間の最適化  
+  - Goal: 単純スクリプトの起動時間を python と同等（20ms以下）にする。
+  - Approach: 
+    - 環境検出結果のキャッシュ（`.pybun/env-cache.json`）
+    - Rust初期化の遅延実行
+    - 不要な処理のスキップ（--fast モード）
+  - Priority: Medium
+
+- PR-OPT4: 並列依存解決とダウンロード  
+  - Goal: 複数パッケージの解決・ダウンロードを並列化。
+  - Approach: tokio/rayon で並列 HTTP リクエスト。
+  - Expected: 大規模プロジェクトで 2-4x 高速化。
 
 ## Testing & CI Strategy
 - **Unit tests:** Rust crates for resolver, lockfile, module loader, test discovery; run on every PR.
