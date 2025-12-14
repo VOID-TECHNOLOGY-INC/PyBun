@@ -12,6 +12,8 @@ use crate::resolver::{Requirement, resolve};
 use crate::schema::{Diagnostic, Event, EventCollector, EventType, JsonEnvelope, Status};
 use color_eyre::eyre::{Result, eyre};
 use serde_json::{Value, json};
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Command as ProcessCommand;
 use std::time::Duration;
@@ -121,7 +123,7 @@ pub fn execute(cli: Cli) -> Result<()> {
         }
         Commands::Run(args) => {
             collector.event(EventType::ScriptStart);
-            let result = run_script(args, &mut collector);
+            let result = run_script(args, &mut collector, cli.format);
             match result {
                 Ok(RunOutcome {
                     summary,
@@ -807,7 +809,11 @@ struct RunOutcome {
     cache_hit: bool,
 }
 
-fn run_script(args: &crate::cli::RunArgs, collector: &mut EventCollector) -> Result<RunOutcome> {
+fn run_script(
+    args: &crate::cli::RunArgs,
+    collector: &mut EventCollector,
+    format: OutputFormat,
+) -> Result<RunOutcome> {
     let target = args
         .target
         .as_ref()
@@ -818,7 +824,7 @@ fn run_script(args: &crate::cli::RunArgs, collector: &mut EventCollector) -> Res
 
     // Check for -c flag style execution
     if target == "-c" {
-        return run_python_code(args, collector);
+        return run_python_code(args, collector, format);
     }
 
     // Ensure the script exists
@@ -932,18 +938,21 @@ fn run_script(args: &crate::cli::RunArgs, collector: &mut EventCollector) -> Res
                 };
 
                 // Install dependencies
-                for dep in &pep723_deps {
-                    eprintln!("info: installing {}...", dep);
-                    let install_status = ProcessCommand::new(&pip_path)
-                        .args(["install", "--quiet", dep])
+                if !pep723_deps.is_empty() {
+                    eprintln!("info: installing {} dependencies...", pep723_deps.len());
+                    let mut install_cmd = ProcessCommand::new(&pip_path);
+                    install_cmd.args(["install", "--quiet"]);
+                    install_cmd.args(&pep723_deps);
+
+                    let install_status = install_cmd
                         .status()
-                        .map_err(|e| eyre!("failed to install {}: {}", dep, e))?;
+                        .map_err(|e| eyre!("failed to install dependencies: {}", e))?;
 
                     if !install_status.success() {
-                        collector.warning(format!("failed to install {}", dep));
+                        collector.warning("failed to install dependencies".to_string());
                         // Clean up failed cache entry
                         let _ = cache.remove_env(&prepared.hash);
-                        return Err(eyre!("failed to install PEP 723 dependency: {}", dep));
+                        return Err(eyre!("failed to install PEP 723 dependencies"));
                     }
                 }
 
@@ -1002,16 +1011,19 @@ fn run_script(args: &crate::cli::RunArgs, collector: &mut EventCollector) -> Res
                 venv_path.join("bin").join("python")
             };
 
-            for dep in &pep723_deps {
-                eprintln!("info: installing {}...", dep);
-                let install_status = ProcessCommand::new(&pip_path)
-                    .args(["install", "--quiet", dep])
+            if !pep723_deps.is_empty() {
+                eprintln!("info: installing {} dependencies...", pep723_deps.len());
+                let mut install_cmd = ProcessCommand::new(&pip_path);
+                install_cmd.args(["install", "--quiet"]);
+                install_cmd.args(&pep723_deps);
+
+                let install_status = install_cmd
                     .status()
-                    .map_err(|e| eyre!("failed to install {}: {}", dep, e))?;
+                    .map_err(|e| eyre!("failed to install dependencies: {}", e))?;
 
                 if !install_status.success() {
-                    collector.warning(format!("failed to install {}", dep));
-                    return Err(eyre!("failed to install PEP 723 dependency: {}", dep));
+                    collector.warning("failed to install dependencies".to_string());
+                    return Err(eyre!("failed to install PEP 723 dependencies"));
                 }
             }
 
@@ -1039,7 +1051,20 @@ fn run_script(args: &crate::cli::RunArgs, collector: &mut EventCollector) -> Res
         cmd.arg(arg);
     }
 
+    // Note: with caching, we don't cleanup (venv is reused)
+    // cleanup is only true for no-cache mode
+    let cleanup =
+        cached_env_path.is_some() && !cache_hit && std::env::var("PYBUN_PEP723_NO_CACHE").is_ok();
+
     // Execute
+    // On Unix, use exec to replace the process if cleanup is not needed AND not in JSON mode
+    // (JSON mode requires wrapping to emit final summary)
+    #[cfg(unix)]
+    if !cleanup && format != OutputFormat::Json {
+        let err = cmd.exec();
+        return Err(eyre!("failed to exec Python: {}", err));
+    }
+
     let status = cmd
         .status()
         .map_err(|e| eyre!("failed to execute Python: {}", e))?;
@@ -1055,11 +1080,6 @@ fn run_script(args: &crate::cli::RunArgs, collector: &mut EventCollector) -> Res
             exit_code
         )
     };
-
-    // Note: with caching, we don't cleanup (venv is reused)
-    // cleanup is only true for no-cache mode
-    let cleanup =
-        cached_env_path.is_some() && !cache_hit && std::env::var("PYBUN_PEP723_NO_CACHE").is_ok();
 
     Ok(RunOutcome {
         summary,
@@ -1092,6 +1112,7 @@ fn get_python_version(python_path: &std::path::Path) -> Result<String> {
 fn run_python_code(
     args: &crate::cli::RunArgs,
     _collector: &mut EventCollector,
+    _format: OutputFormat,
 ) -> Result<RunOutcome> {
     // pybun run -c "print('hello')" -- equivalent to python -c "..."
     let code = args
