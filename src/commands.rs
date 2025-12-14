@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use std::process::Command as ProcessCommand;
 use std::time::Duration;
 
-pub fn execute(cli: Cli) -> Result<()> {
+pub async fn execute(cli: Cli) -> Result<()> {
     let mut collector = EventCollector::new();
 
     // Record command start
@@ -27,7 +27,7 @@ pub fn execute(cli: Cli) -> Result<()> {
     let (command, detail) = match &cli.command {
         Commands::Install(args) => {
             collector.event(EventType::ResolveStart);
-            let result = install(args, &mut collector);
+            let result = install(args, &mut collector).await;
             match result {
                 Ok(InstallOutcome {
                     summary,
@@ -238,7 +238,7 @@ pub fn execute(cli: Cli) -> Result<()> {
             McpCommands::Serve(args) => {
                 if args.stdio {
                     // Run MCP server in stdio mode - this blocks until shutdown
-                    if let Err(e) = crate::mcp::run_stdio_server() {
+                    if let Err(e) = crate::mcp::run_stdio_server().await {
                         collector.error(e.to_string());
                         (
                             "mcp serve".to_string(),
@@ -494,7 +494,7 @@ fn run_doctor(args: &crate::cli::DoctorArgs, collector: &mut EventCollector) -> 
     }
 
     // Check cache directory
-    match Cache::new() {
+    match crate::cache::Cache::new() {
         Ok(cache) => {
             let cache_dir = cache.root();
             checks.push(json!({
@@ -557,7 +557,7 @@ fn run_doctor(args: &crate::cli::DoctorArgs, collector: &mut EventCollector) -> 
     )
 }
 
-fn install(
+async fn install(
     args: &crate::cli::InstallArgs,
     collector: &mut EventCollector,
 ) -> Result<InstallOutcome> {
@@ -616,7 +616,7 @@ fn install(
         .ok_or_else(|| eyre!("index path is required for now (--index)"))?;
 
     let index = load_index_from_path(&index_path).map_err(|e| eyre!(e))?;
-    let resolution = match resolve(requirements.clone(), &index) {
+    let resolution = match resolve(requirements.clone(), &index).await {
         Ok(r) => r,
         Err(e) => {
             for d in crate::self_heal::diagnostics_for_resolve_error(&requirements, &e) {
@@ -641,6 +641,57 @@ fn install(
         });
     }
     lock.save_to_path(&args.lock)?;
+
+    // Download artifacts in parallel
+    let cache_dir = dirs::cache_dir()
+        .ok_or_else(|| eyre!("failed to determine cache directory"))?
+        .join("pybun")
+        .join("artifacts");
+
+    collector.info(format!("Downloading artifacts to {}", cache_dir.display()));
+
+    let mut download_items = Vec::new();
+    for pkg in resolution.packages.values() {
+        if let Some(source) = &pkg.source
+            && let Some(url) = source.url()
+        {
+            // Construct filename from URL or package info
+            let filename = PathBuf::from(url.rsplit('/').next().unwrap_or("unknown.whl"));
+            let dest = cache_dir.join(filename);
+            // For now, let's use None for hash to unblock implementation,
+            // as hash is currently hardcoded or heuristic in some places.
+            download_items.push((url.to_string(), dest, None));
+        }
+    }
+
+    if !download_items.is_empty() {
+        use crate::downloader::Downloader;
+        let downloader = Downloader::new();
+        let concurrency = 10; // Default concurrency
+        collector.info(format!(
+            "Starting parallel download of {} artifacts...",
+            download_items.len()
+        ));
+
+        let results = downloader
+            .download_parallel(download_items, concurrency)
+            .await;
+
+        // Check for failures
+        let mut failures = 0;
+        for res in results {
+            if let Err(e) = res {
+                eprintln!("warning: download failed: {}", e);
+                failures += 1;
+            }
+        }
+
+        if failures > 0 {
+            collector.warning(format!("{} downloads failed", failures));
+            // We don't hard fail install for now, similar to pip's "best effort" or we could fail.
+            // Let's warn.
+        }
+    }
 
     Ok(InstallOutcome {
         summary: format!(

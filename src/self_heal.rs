@@ -79,5 +79,18 @@ pub fn diagnostics_for_resolve_error(
             );
             diags
         }
+        ResolveError::Io(msg) => {
+            vec![
+                Diagnostic::error(format!(
+                    "パッケージ情報の取得中にIOエラーが発生しました: {}",
+                    msg
+                ))
+                .with_code("E_RESOLVE_IO")
+                .with_suggestion(
+                    "インターネット接続やインデックスファイルのパス/権限を確認してください。",
+                )
+                .with_context(json!({ "error": msg })),
+            ]
+        }
     }
 }

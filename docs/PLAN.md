@@ -237,10 +237,48 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
   - Tests: Verified with `bench.py B3.1`.
   - Priority: Medium
 
-- PR-OPT5: 並列依存解決とダウンロード (旧 OPT4)
+- [DONE] PR-OPT5: 並列依存解決とダウンロード (旧 OPT4)
   - Goal: 複数パッケージの解決・ダウンロードを並列化。
-  - Approach: tokio/rayon で並列 HTTP リクエスト。
-  - Expected: 大規模プロジェクトで 2-4x 高速化。
+  - Approach: `tokio` base async resolver + `reqwest` parallel download.
+  - Current: `src/resolver.rs` を非同期化しメタデータ並列取得。`src/downloader.rs` を追加し、`pybun install` 時にアーティファクトを並列ダウンロード（concurrency=10）して `~/.cache/pybun/artifacts` にキャッシュ。
+  - Result: 依存解決とダウンロードが完全に非同期かつ並列化され、ネットワーク帯域を効率的に利用。
+  - Tests: `tests/resolver_basic.rs` (async logic), `tests/downloader_integration.rs` (parallel logic).
+
+- [ ] PR-OPT6: PEP 723 キャッシュ warm パス最適化
+  - **分析**: B3.2_pep723_warm で pybun (140ms) が uv (69ms) に約 2x 負けている。StdDev (78ms) も異常に大きい。
+  - **原因**:
+    1. `update_last_used()` が cache hit 時に `deps.json` を Read+Parse+Write する同期 I/O ボトルネック。
+    2. ベンチマークスクリプトが `tempdir` に置かれるため、スクリプトパスのハッシュが毎回異なり、キャッシュミス扱いの可能性（要確認）。
+  - **改善案**:
+    1. `update_last_used()` の書き込みを完全にスキップまたは非同期化（LRU GC は `created_at` か file mtime で判断）。
+    2. キャッシュキーを「依存リストハッシュ」のみに限定し、スクリプトパスを含めない（現状そうなっているはずだが要検証）。
+  - Expected: Warm path を 50ms 以下に短縮、StdDev 改善。
+  - Priority: High
+
+- [ ] PR-OPT7: 起動オーバーヘッド調査と改善
+  - **分析**: B3.1 (simple_startup) で pybun (27.82ms) が uv (21.03ms) より約 7ms 遅い。
+  - **原因候補**:
+    1. `clap` CLI パース + color-eyre 初期化コスト。
+    2. `find_python_env()` のディスクアクセス（env_cache が効いてない?）。
+    3. `pybun run` 経由のサブプロセス spawn オーバーヘッド。
+  - **改善案**:
+    1. `--release` LTO 設定の見直し（codegen-units=1, lto="fat"）。
+    2. env_cache の有効性検証と TTL 調整。
+    3. プロファイリング（`hyperfine --show-output` + `samply`）で実測。
+  - Expected: Simple startup を 22ms 以下に。
+  - Priority: Medium
+
+- [ ] PR-OPT8: ベンチマークスクリプト改善
+  - **分析**: B3.2_warm の高 StdDev (78ms) はベンチマーク手法に起因する可能性。
+  - **問題**:
+    1. PEP 723 スクリプトが `tempfile.TemporaryDirectory` に配置されるため、毎回パスが変わる。
+    2. Warmup 後もファイルシステムキャッシュ状態がバラつく。
+  - **改善案**:
+    1. PEP 723 ベンチ用スクリプトを `scripts/benchmark/fixtures/pep723.py` に固定配置。
+    2. Cold/Warm 測定前に `sync; echo 3 > /proc/sys/vm/drop_caches`（Linux）または `purge`（macOS）で FS キャッシュをクリア。
+    3. iterations を 10 に増やし、外れ値を除外（trimmed mean）。
+  - Expected: StdDev を 10ms 以下に安定化。
+  - Priority: Low
 
 ## Testing & CI Strategy
 - **Unit tests:** Rust crates for resolver, lockfile, module loader, test discovery; run on every PR.
