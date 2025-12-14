@@ -940,19 +940,42 @@ fn run_script(
                 // Install dependencies
                 if !pep723_deps.is_empty() {
                     eprintln!("info: installing {} dependencies...", pep723_deps.len());
-                    let mut install_cmd = ProcessCommand::new(&pip_path);
-                    install_cmd.args(["install", "--quiet"]);
-                    install_cmd.args(&pep723_deps);
+                    
+                    // Check for uv
+                    if let Some(uv_path) = crate::env::find_uv_executable() {
+                        eprintln!("info: using uv for fast installation");
+                        let mut install_cmd = ProcessCommand::new(uv_path);
+                        install_cmd.args(["pip", "install", "--quiet"]);
+                        // uv requires specifying python environment
+                        install_cmd.arg("--python");
+                        install_cmd.arg(&prepared.venv_path);
+                        install_cmd.args(&pep723_deps);
 
-                    let install_status = install_cmd
-                        .status()
-                        .map_err(|e| eyre!("failed to install dependencies: {}", e))?;
+                        let install_status = install_cmd
+                            .status()
+                            .map_err(|e| eyre!("failed to install dependencies with uv: {}", e))?;
 
-                    if !install_status.success() {
-                        collector.warning("failed to install dependencies".to_string());
-                        // Clean up failed cache entry
-                        let _ = cache.remove_env(&prepared.hash);
-                        return Err(eyre!("failed to install PEP 723 dependencies"));
+                        if !install_status.success() {
+                            collector.warning("failed to install dependencies with uv".to_string());
+                            // Fallback to pip? Or just fail? Let's fail for now to be explicit, logic could be refined.
+                            let _ = cache.remove_env(&prepared.hash);
+                            return Err(eyre!("failed to install PEP 723 dependencies (uv backend)"));
+                        }
+                    } else {
+                        // Fallback to standard pip
+                        let mut install_cmd = ProcessCommand::new(&pip_path);
+                        install_cmd.args(["install", "--quiet"]);
+                        install_cmd.args(&pep723_deps);
+
+                        let install_status = install_cmd
+                            .status()
+                            .map_err(|e| eyre!("failed to install dependencies: {}", e))?;
+
+                        if !install_status.success() {
+                            collector.warning("failed to install dependencies".to_string());
+                            let _ = cache.remove_env(&prepared.hash);
+                            return Err(eyre!("failed to install PEP 723 dependencies"));
+                        }
                     }
                 }
 
@@ -1013,17 +1036,36 @@ fn run_script(
 
             if !pep723_deps.is_empty() {
                 eprintln!("info: installing {} dependencies...", pep723_deps.len());
-                let mut install_cmd = ProcessCommand::new(&pip_path);
-                install_cmd.args(["install", "--quiet"]);
-                install_cmd.args(&pep723_deps);
+                
+                if let Some(uv_path) = crate::env::find_uv_executable() {
+                    eprintln!("info: using uv for fast installation (no-cache mode)");
+                    let mut install_cmd = ProcessCommand::new(uv_path);
+                    install_cmd.args(["pip", "install", "--quiet"]);
+                    install_cmd.arg("--python");
+                    install_cmd.arg(&venv_path);
+                    install_cmd.args(&pep723_deps);
 
-                let install_status = install_cmd
-                    .status()
-                    .map_err(|e| eyre!("failed to install dependencies: {}", e))?;
+                    let install_status = install_cmd
+                        .status()
+                        .map_err(|e| eyre!("failed to install dependencies with uv: {}", e))?;
 
-                if !install_status.success() {
-                    collector.warning("failed to install dependencies".to_string());
-                    return Err(eyre!("failed to install PEP 723 dependencies"));
+                    if !install_status.success() {
+                        collector.warning("failed to install dependencies with uv".to_string());
+                        return Err(eyre!("failed to install PEP 723 dependencies (uv)"));
+                    }
+                } else {
+                    let mut install_cmd = ProcessCommand::new(&pip_path);
+                    install_cmd.args(["install", "--quiet"]);
+                    install_cmd.args(&pep723_deps);
+
+                    let install_status = install_cmd
+                        .status()
+                        .map_err(|e| eyre!("failed to install dependencies: {}", e))?;
+
+                    if !install_status.success() {
+                        collector.warning("failed to install dependencies".to_string());
+                        return Err(eyre!("failed to install PEP 723 dependencies"));
+                    }
                 }
             }
 

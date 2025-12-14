@@ -224,11 +224,11 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
     3. **Batch Install**: Cold start 時に `pip install` を1回にまとめる。
   - Status: **Done**. Investigation into remaining 46ms gap revealed it's due to Python interpreter performance (PyBun uses system Python 3.14 vs uv's managed Python 3.10), not PyBun overhead (<0.2ms). Further optimization requires managing Python versions (PR-OPT3/5).
 
-- PR-OPT3: uv バックエンド統合 (旧 OPT2)
+- [DONE] PR-OPT3: uv バックエンド統合 (旧 OPT2)
   - Goal: pip の代わりに uv を使用してインストールを高速化。
-  - Approach: `uv pip install` を subprocess で呼び出し、または uv をライブラリとして統合。
-  - Notes: uv が利用可能な場合は自動検出して使用。fallback は pip。
-  - Expected: PEP 723 Cold を 602ms 程度まで短縮。
+  - Approach: `uv pip install` を subprocess で呼び出し。`uv` が利用可能な場合は自動検出して使用。fallback は pip。
+  - Result: Cold start **243ms** (prev ~289ms). `pip install` に比べてインストール時間を短縮。Python 3.14 の高速性も寄与。
+  - Tests: `env::find_uv_executable` unit test. Manual E2E benchmark.
 
 - PR-OPT4: 起動時間の最適化 (旧 OPT3)
   - Goal: 単純スクリプトの起動時間を python と同等（20ms以下）にする。
