@@ -208,14 +208,14 @@ impl Pep723Cache {
             // Optimization: Check file mtime first to avoid reading/parsing operations.
             // If the file was modified recently (e.g. < 1 hour), we assume last_used is up to date enough.
             // This prevents the expensive Read-Modify-Write cycle on every warm start.
-            if let Ok(metadata) = fs::metadata(&info_path) {
-                if let Ok(modified) = metadata.modified() {
-                    let now = SystemTime::now();
-                    if let Ok(duration) = now.duration_since(modified) {
-                        // 1 hour window to skip updates
-                        if duration.as_secs() < 3600 {
-                            return Ok(());
-                        }
+            if let Ok(metadata) = fs::metadata(&info_path)
+                && let Ok(modified) = metadata.modified()
+            {
+                let now = SystemTime::now();
+                if let Ok(duration) = now.duration_since(modified) {
+                    // 1 hour window to skip updates
+                    if duration.as_secs() < 3600 {
+                        return Ok(());
                     }
                 }
             }
