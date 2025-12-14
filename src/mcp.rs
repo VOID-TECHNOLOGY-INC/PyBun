@@ -22,7 +22,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::io::{BufRead, BufReader, Write};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use std::path::PathBuf;
 use std::process::Command as ProcessCommand;
 
@@ -118,7 +118,7 @@ impl McpServer {
     }
 
     /// Handle a JSON-RPC request
-    pub fn handle_request(&mut self, request: JsonRpcRequest) -> Option<JsonRpcResponse> {
+    pub async fn handle_request(&mut self, request: JsonRpcRequest) -> Option<JsonRpcResponse> {
         let id = request.id.clone().unwrap_or(Value::Null);
 
         match request.method.as_str() {
@@ -128,7 +128,7 @@ impl McpServer {
                 None
             }
             "tools/list" => Some(self.handle_tools_list(id)),
-            "tools/call" => Some(self.handle_tools_call(id, request.params)),
+            "tools/call" => Some(self.handle_tools_call(id, request.params).await),
             "resources/list" => Some(self.handle_resources_list(id)),
             "resources/read" => Some(self.handle_resources_read(id, request.params)),
             "shutdown" => {
@@ -255,13 +255,13 @@ impl McpServer {
         JsonRpcResponse::success(id, json!({ "tools": tools }))
     }
 
-    fn handle_tools_call(&self, id: Value, params: Value) -> JsonRpcResponse {
+    async fn handle_tools_call(&self, id: Value, params: Value) -> JsonRpcResponse {
         let tool_name = params.get("name").and_then(|n| n.as_str()).unwrap_or("");
         let tool_args = params.get("arguments").cloned().unwrap_or(json!({}));
 
         let result = match tool_name {
-            "pybun_resolve" => self.call_resolve(tool_args),
-            "pybun_install" => self.call_install(tool_args),
+            "pybun_resolve" => self.call_resolve(tool_args).await,
+            "pybun_install" => self.call_install(tool_args).await,
             "pybun_run" => self.call_run(tool_args),
             "pybun_gc" => self.call_gc(tool_args),
             "pybun_doctor" => self.call_doctor(tool_args),
@@ -335,7 +335,7 @@ impl McpServer {
     }
 
     // Tool implementations
-    fn call_resolve(&self, args: Value) -> Result<String, String> {
+    async fn call_resolve(&self, args: Value) -> Result<String, String> {
         use crate::index::load_index_from_path;
         use crate::resolver::{Requirement, resolve};
 
@@ -387,7 +387,7 @@ impl McpServer {
         };
 
         match index_result {
-            Ok(index) => match resolve(parsed_reqs.clone(), &index) {
+            Ok(index) => match resolve(parsed_reqs.clone(), &index).await {
                 Ok(resolution) => {
                     let packages: Vec<Value> = resolution
                         .packages
@@ -424,7 +424,7 @@ impl McpServer {
         }
     }
 
-    fn call_install(&self, args: Value) -> Result<String, String> {
+    async fn call_install(&self, args: Value) -> Result<String, String> {
         use crate::index::load_index_from_path;
         use crate::lockfile::{Lockfile, Package, PackageSource};
         use crate::project::Project;
@@ -504,7 +504,7 @@ impl McpServer {
         let index = index_result.map_err(|e| format!("Could not load index: {}", e))?;
 
         // Resolve dependencies
-        let resolution = resolve(parsed_reqs.clone(), &index).map_err(|e| e.to_string())?;
+        let resolution = resolve(parsed_reqs.clone(), &index).await.map_err(|e| e.to_string())?;
 
         // Create lockfile
         let lock_path = args
@@ -808,24 +808,17 @@ impl Default for McpServer {
 }
 
 /// Run the MCP server in stdio mode
-pub fn run_stdio_server() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run_stdio_server() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("PyBun MCP server starting (stdio mode)...");
 
-    let stdin = std::io::stdin();
-    let mut stdout = std::io::stdout();
-    let reader = BufReader::new(stdin.lock());
+    let stdin = tokio::io::stdin();
+    let mut stdout = tokio::io::stdout();
+    let reader = BufReader::new(stdin);
+    let mut lines = reader.lines();
 
     let mut server = McpServer::new();
 
-    for line in reader.lines() {
-        let line = match line {
-            Ok(l) => l,
-            Err(e) => {
-                eprintln!("Error reading input: {}", e);
-                break;
-            }
-        };
-
+    while let Ok(Some(line)) = lines.next_line().await {
         if line.trim().is_empty() {
             continue;
         }
@@ -835,16 +828,18 @@ pub fn run_stdio_server() -> Result<(), Box<dyn std::error::Error>> {
             Err(e) => {
                 eprintln!("Invalid JSON-RPC request: {}", e);
                 let error_response = JsonRpcResponse::error(Value::Null, -32700, "Parse error");
-                let _ = writeln!(stdout, "{}", serde_json::to_string(&error_response)?);
-                let _ = stdout.flush();
+                let _ = stdout.write_all(serde_json::to_string(&error_response)?.as_bytes()).await;
+                let _ = stdout.write_all(b"\n").await;
+                let _ = stdout.flush().await;
                 continue;
             }
         };
 
-        if let Some(response) = server.handle_request(request) {
+        if let Some(response) = server.handle_request(request).await {
             let response_json = serde_json::to_string(&response)?;
-            writeln!(stdout, "{}", response_json)?;
-            stdout.flush()?;
+            stdout.write_all(response_json.as_bytes()).await?;
+            stdout.write_all(b"\n").await?;
+            stdout.flush().await?;
         }
     }
 
@@ -856,8 +851,8 @@ pub fn run_stdio_server() -> Result<(), Box<dyn std::error::Error>> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_initialize() {
+    #[tokio::test]
+    async fn test_initialize() {
         let mut server = McpServer::new();
         let request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
@@ -870,15 +865,15 @@ mod tests {
             id: Some(json!(1)),
         };
 
-        let response = server.handle_request(request).unwrap();
+        let response = server.handle_request(request).await.unwrap();
         assert!(response.result.is_some());
         let result = response.result.unwrap();
         assert!(result.get("protocolVersion").is_some());
         assert!(result.get("serverInfo").is_some());
     }
 
-    #[test]
-    fn test_tools_list() {
+    #[tokio::test]
+    async fn test_tools_list() {
         let mut server = McpServer::new();
         let request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
@@ -887,7 +882,7 @@ mod tests {
             id: Some(json!(2)),
         };
 
-        let response = server.handle_request(request).unwrap();
+        let response = server.handle_request(request).await.unwrap();
         assert!(response.result.is_some());
         let result = response.result.unwrap();
         let tools = result.get("tools").unwrap().as_array().unwrap();
@@ -904,8 +899,8 @@ mod tests {
         assert!(tool_names.contains(&"pybun_gc"));
     }
 
-    #[test]
-    fn test_resources_list() {
+    #[tokio::test]
+    async fn test_resources_list() {
         let mut server = McpServer::new();
         let request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
@@ -914,15 +909,15 @@ mod tests {
             id: Some(json!(3)),
         };
 
-        let response = server.handle_request(request).unwrap();
+        let response = server.handle_request(request).await.unwrap();
         assert!(response.result.is_some());
         let result = response.result.unwrap();
         let resources = result.get("resources").unwrap().as_array().unwrap();
         assert!(!resources.is_empty());
     }
 
-    #[test]
-    fn test_unknown_method() {
+    #[tokio::test]
+    async fn test_unknown_method() {
         let mut server = McpServer::new();
         let request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
@@ -931,13 +926,13 @@ mod tests {
             id: Some(json!(4)),
         };
 
-        let response = server.handle_request(request).unwrap();
+        let response = server.handle_request(request).await.unwrap();
         assert!(response.error.is_some());
         assert_eq!(response.error.unwrap().code, -32601);
     }
 
-    #[test]
-    fn test_tools_call_gc() {
+    #[tokio::test]
+    async fn test_tools_call_gc() {
         let mut server = McpServer::new();
         let request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
@@ -951,7 +946,7 @@ mod tests {
             id: Some(json!(5)),
         };
 
-        let response = server.handle_request(request).unwrap();
+        let response = server.handle_request(request).await.unwrap();
         assert!(response.result.is_some());
     }
 }

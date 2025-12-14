@@ -2,15 +2,15 @@ use std::collections::HashMap;
 
 use pybun::resolver::{InMemoryIndex, Requirement, ResolveError, resolve};
 
-#[test]
-fn resolves_simple_dependency_tree() {
+#[tokio::test]
+async fn resolves_simple_dependency_tree() {
     let mut index = InMemoryIndex::default();
     index.add("app", "1.0.0", ["lib-a==1.0.0", "lib-b==2.0.0"]);
     index.add("lib-a", "1.0.0", ["lib-c==1.0.0"]);
     index.add("lib-b", "2.0.0", Vec::<&str>::new());
     index.add("lib-c", "1.0.0", Vec::<&str>::new());
 
-    let resolution = resolve(vec![Requirement::exact("app", "1.0.0")], &index).unwrap();
+    let resolution = resolve(vec![Requirement::exact("app", "1.0.0")], &index).await.unwrap();
     let expect: HashMap<&str, &str> = HashMap::from([
         ("app", "1.0.0"),
         ("lib-a", "1.0.0"),
@@ -27,44 +27,44 @@ fn resolves_simple_dependency_tree() {
     }
 }
 
-#[test]
-fn fails_on_missing_package() {
+#[tokio::test]
+async fn fails_on_missing_package() {
     let index = InMemoryIndex::default();
-    let err = resolve(vec![Requirement::exact("missing", "1.0.0")], &index).unwrap_err();
+    let err = resolve(vec![Requirement::exact("missing", "1.0.0")], &index).await.unwrap_err();
     assert!(matches!(err, ResolveError::Missing { name, .. } if name == "missing"));
 }
 
-#[test]
-fn detects_version_conflict() {
+#[tokio::test]
+async fn detects_version_conflict() {
     let mut index = InMemoryIndex::default();
     index.add("root", "1.0.0", ["lib==1.0.0", "lib==2.0.0"]);
     index.add("lib", "1.0.0", Vec::<&str>::new());
     index.add("lib", "2.0.0", Vec::<&str>::new());
 
-    let err = resolve(vec![Requirement::exact("root", "1.0.0")], &index).unwrap_err();
+    let err = resolve(vec![Requirement::exact("root", "1.0.0")], &index).await.unwrap_err();
     assert!(matches!(err, ResolveError::Conflict { name, .. } if name == "lib"));
 }
 
-#[test]
-fn selects_highest_version_for_minimum_requirement() {
+#[tokio::test]
+async fn selects_highest_version_for_minimum_requirement() {
     let mut index = InMemoryIndex::default();
     index.add("app", "1.0.0", ["lib>=1.0.0"]);
     index.add("lib", "1.0.0", Vec::<&str>::new());
     index.add("lib", "1.5.0", Vec::<&str>::new());
     index.add("lib", "2.0.0", Vec::<&str>::new());
 
-    let resolution = resolve(vec![Requirement::exact("app", "1.0.0")], &index).unwrap();
+    let resolution = resolve(vec![Requirement::exact("app", "1.0.0")], &index).await.unwrap();
     let lib = resolution.packages.get("lib").expect("lib resolved");
     assert_eq!(lib.version, "2.0.0");
 }
 
-#[test]
-fn errors_when_no_version_meets_minimum() {
+#[tokio::test]
+async fn errors_when_no_version_meets_minimum() {
     let mut index = InMemoryIndex::default();
     index.add("app", "1.0.0", ["lib>=2.0.0"]);
     index.add("lib", "1.5.0", Vec::<&str>::new());
 
-    let err = resolve(vec![Requirement::exact("app", "1.0.0")], &index).unwrap_err();
+    let err = resolve(vec![Requirement::exact("app", "1.0.0")], &index).await.unwrap_err();
     assert!(matches!(err, ResolveError::Missing { name, .. } if name == "lib"));
 }
 
@@ -72,8 +72,8 @@ fn errors_when_no_version_meets_minimum() {
 // Additional version specifier tests (PR1.2 completion)
 // =============================================================================
 
-#[test]
-fn selects_highest_version_for_maximum_inclusive() {
+#[tokio::test]
+async fn selects_highest_version_for_maximum_inclusive() {
     // <=2.0.0 should select 2.0.0 (not 2.1.0)
     let mut index = InMemoryIndex::default();
     index.add("app", "1.0.0", ["lib<=2.0.0"]);
@@ -81,13 +81,13 @@ fn selects_highest_version_for_maximum_inclusive() {
     index.add("lib", "2.0.0", Vec::<&str>::new());
     index.add("lib", "2.1.0", Vec::<&str>::new());
 
-    let resolution = resolve(vec![Requirement::exact("app", "1.0.0")], &index).unwrap();
+    let resolution = resolve(vec![Requirement::exact("app", "1.0.0")], &index).await.unwrap();
     let lib = resolution.packages.get("lib").expect("lib resolved");
     assert_eq!(lib.version, "2.0.0");
 }
 
-#[test]
-fn selects_highest_version_for_maximum_exclusive() {
+#[tokio::test]
+async fn selects_highest_version_for_maximum_exclusive() {
     // <2.0.0 should select 1.9.0 (not 2.0.0)
     let mut index = InMemoryIndex::default();
     index.add("app", "1.0.0", ["lib<2.0.0"]);
@@ -95,13 +95,13 @@ fn selects_highest_version_for_maximum_exclusive() {
     index.add("lib", "1.9.0", Vec::<&str>::new());
     index.add("lib", "2.0.0", Vec::<&str>::new());
 
-    let resolution = resolve(vec![Requirement::exact("app", "1.0.0")], &index).unwrap();
+    let resolution = resolve(vec![Requirement::exact("app", "1.0.0")], &index).await.unwrap();
     let lib = resolution.packages.get("lib").expect("lib resolved");
     assert_eq!(lib.version, "1.9.0");
 }
 
-#[test]
-fn selects_highest_version_for_minimum_exclusive() {
+#[tokio::test]
+async fn selects_highest_version_for_minimum_exclusive() {
     // >1.0.0 should select 2.0.0 (not 1.0.0)
     let mut index = InMemoryIndex::default();
     index.add("app", "1.0.0", ["lib>1.0.0"]);
@@ -109,13 +109,13 @@ fn selects_highest_version_for_minimum_exclusive() {
     index.add("lib", "1.5.0", Vec::<&str>::new());
     index.add("lib", "2.0.0", Vec::<&str>::new());
 
-    let resolution = resolve(vec![Requirement::exact("app", "1.0.0")], &index).unwrap();
+    let resolution = resolve(vec![Requirement::exact("app", "1.0.0")], &index).await.unwrap();
     let lib = resolution.packages.get("lib").expect("lib resolved");
     assert_eq!(lib.version, "2.0.0");
 }
 
-#[test]
-fn excludes_version_with_not_equal() {
+#[tokio::test]
+async fn excludes_version_with_not_equal() {
     // !=1.5.0 should exclude 1.5.0 but allow 2.0.0
     let mut index = InMemoryIndex::default();
     index.add("app", "1.0.0", ["lib!=1.5.0"]);
@@ -123,13 +123,13 @@ fn excludes_version_with_not_equal() {
     index.add("lib", "1.5.0", Vec::<&str>::new());
     index.add("lib", "2.0.0", Vec::<&str>::new());
 
-    let resolution = resolve(vec![Requirement::exact("app", "1.0.0")], &index).unwrap();
+    let resolution = resolve(vec![Requirement::exact("app", "1.0.0")], &index).await.unwrap();
     let lib = resolution.packages.get("lib").expect("lib resolved");
     assert_eq!(lib.version, "2.0.0");
 }
 
-#[test]
-fn compatible_release_selects_within_major_minor() {
+#[tokio::test]
+async fn compatible_release_selects_within_major_minor() {
     // ~=1.4.0 is equivalent to >=1.4.0,<1.5.0
     let mut index = InMemoryIndex::default();
     index.add("app", "1.0.0", ["lib~=1.4.0"]);
@@ -139,13 +139,13 @@ fn compatible_release_selects_within_major_minor() {
     index.add("lib", "1.5.0", Vec::<&str>::new());
     index.add("lib", "2.0.0", Vec::<&str>::new());
 
-    let resolution = resolve(vec![Requirement::exact("app", "1.0.0")], &index).unwrap();
+    let resolution = resolve(vec![Requirement::exact("app", "1.0.0")], &index).await.unwrap();
     let lib = resolution.packages.get("lib").expect("lib resolved");
     assert_eq!(lib.version, "1.4.5");
 }
 
-#[test]
-fn compatible_release_major_minor_only() {
+#[tokio::test]
+async fn compatible_release_major_minor_only() {
     // ~=1.4 is equivalent to >=1.4,<2.0
     let mut index = InMemoryIndex::default();
     index.add("app", "1.0.0", ["lib~=1.4"]);
@@ -154,19 +154,19 @@ fn compatible_release_major_minor_only() {
     index.add("lib", "1.9.0", Vec::<&str>::new());
     index.add("lib", "2.0.0", Vec::<&str>::new());
 
-    let resolution = resolve(vec![Requirement::exact("app", "1.0.0")], &index).unwrap();
+    let resolution = resolve(vec![Requirement::exact("app", "1.0.0")], &index).await.unwrap();
     let lib = resolution.packages.get("lib").expect("lib resolved");
     assert_eq!(lib.version, "1.9.0");
 }
 
-#[test]
-fn errors_when_no_version_meets_maximum() {
+#[tokio::test]
+async fn errors_when_no_version_meets_maximum() {
     let mut index = InMemoryIndex::default();
     index.add("app", "1.0.0", ["lib<1.0.0"]);
     index.add("lib", "1.0.0", Vec::<&str>::new());
     index.add("lib", "2.0.0", Vec::<&str>::new());
 
-    let err = resolve(vec![Requirement::exact("app", "1.0.0")], &index).unwrap_err();
+    let err = resolve(vec![Requirement::exact("app", "1.0.0")], &index).await.unwrap_err();
     assert!(matches!(err, ResolveError::Missing { name, .. } if name == "lib"));
 }
 

@@ -3,6 +3,7 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::str::FromStr;
+use crate::lockfile::PackageSource;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VersionSpec {
@@ -181,6 +182,7 @@ pub struct ResolvedPackage {
     pub name: String,
     pub version: String,
     pub dependencies: Vec<Requirement>,
+    pub source: Option<PackageSource>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -209,101 +211,155 @@ pub enum ResolveError {
         #[allow(dead_code)]
         requested_chain: Vec<String>,
     },
+    #[error("io error: {0}")]
+    Io(String),
 }
 
 pub trait PackageIndex {
-    fn get(&self, name: &str, version: &str) -> Option<ResolvedPackage>;
-    fn all(&self, name: &str) -> Vec<ResolvedPackage>;
+    fn get(&self, name: &str, version: &str) -> impl std::future::Future<Output = Result<Option<ResolvedPackage>, ResolveError>> + Send;
+    fn all(&self, name: &str) -> impl std::future::Future<Output = Result<Vec<ResolvedPackage>, ResolveError>> + Send;
 }
 
-/// Deterministic resolver that works with exact-version or minimum requirements.
-pub fn resolve(
+/// Deterministic resolver that works with exact-version or minimum requirements in parallel.
+pub async fn resolve(
     requirements: Vec<Requirement>,
     index: &impl PackageIndex,
 ) -> Result<Resolution, ResolveError> {
     let mut resolved: BTreeMap<String, ResolvedPackage> = BTreeMap::new();
-    // Track where each requirement came from (None = direct/user requirement).
-    let mut stack: Vec<(Requirement, Option<String>)> =
+    
+    // Requirements to process: (Requirement, RequestedBy)
+    let mut pending: Vec<(Requirement, Option<String>)> =
         requirements.into_iter().map(|r| (r, None)).collect();
-    // Track which package introduced (required) a given resolved package.
+    
+    // Track parent relationships for conflict error messages
     let mut parents: BTreeMap<String, Option<String>> = BTreeMap::new();
+    // Cache available versions to avoid fetching same package multiple times in one run
+    // (Though the Index implementation might also cache)
+    let mut version_cache: BTreeMap<String, Vec<ResolvedPackage>> = BTreeMap::new();
 
-    while let Some((req, requested_by)) = stack.pop() {
-        if let Some(existing) = resolved.get(&req.name) {
-            if !req.is_satisfied_by(&existing.version) {
-                let existing_chain = build_chain(&parents, &req.name);
-                let requested_chain = build_requested_chain(&parents, &req.name, requested_by);
-                return Err(ResolveError::Conflict {
-                    name: req.name.clone(),
-                    existing: existing.version.clone(),
-                    requested: req.constraint_display(),
-                    existing_chain,
-                    requested_chain,
-                });
+    while !pending.is_empty() {
+        let current_batch = std::mem::take(&mut pending);
+        let mut next_batch = Vec::new();
+
+        // 1. Identify unique package names we need to fetch info for (that we don't have yet)
+        let mut names_to_fetch = Vec::new();
+        for (req, _) in &current_batch {
+            // If already resolved, we might skip fetching if we don't need to re-verify
+            // But we should check if the existing resolution satisfies the new req
+            if resolved.contains_key(&req.name) {
+                continue;
             }
-            continue;
+            if !version_cache.contains_key(&req.name) {
+                names_to_fetch.push(req.name.clone());
+            }
+        }
+        names_to_fetch.sort();
+        names_to_fetch.dedup();
+
+        // 2. Fetch metadata in parallel
+        if !names_to_fetch.is_empty() {
+            let futures = names_to_fetch.iter().map(|name| {
+                let name = name.clone();
+                async move {
+                    let pkgs = index.all(&name).await?;
+                    Ok::<(String, Vec<ResolvedPackage>), ResolveError>((name, pkgs))
+                }
+            });
+            
+            let results = futures::future::try_join_all(futures).await?;
+            for (name, pkgs) in results {
+                version_cache.insert(name, pkgs);
+            }
         }
 
-        let pkg = select_package(&req, index, requested_by.as_deref())?;
+        // 3. Process resolution logic (Synchronous part)
+        for (req, requested_by) in current_batch {
+            // Check if already resolved
+            if let Some(existing) = resolved.get(&req.name) {
+                if !req.is_satisfied_by(&existing.version) {
+                    let existing_chain = build_chain(&parents, &req.name);
+                    let requested_chain = build_requested_chain(&parents, &req.name, requested_by);
+                    return Err(ResolveError::Conflict {
+                        name: req.name.clone(),
+                        existing: existing.version.clone(),
+                        requested: req.constraint_display(),
+                        existing_chain,
+                        requested_chain,
+                    });
+                }
+                continue;
+            }
 
-        // queue dependencies before inserting to keep deterministic traversal order
-        for dep in pkg.dependencies.iter().rev() {
-            stack.push((dep.clone(), Some(pkg.name.clone())));
+            // Select best version
+            let candidates = version_cache.get(&req.name).ok_or_else(|| ResolveError::Missing {
+                name: req.name.clone(),
+                constraint: req.constraint_display(),
+                requested_by: requested_by.clone(),
+                available_versions: vec![],
+            })?;
+
+            let pkg = select_package_from_candidates(&req, candidates, requested_by.as_deref())?;
+
+            // Add dependencies to next batch
+            for dep in &pkg.dependencies {
+                next_batch.push((dep.clone(), Some(pkg.name.clone())));
+            }
+
+            resolved.insert(req.name.clone(), pkg);
+            parents.insert(req.name.clone(), requested_by);
         }
-
-        resolved.insert(req.name.clone(), pkg);
-        parents.insert(req.name.clone(), requested_by);
+        
+        pending = next_batch;
     }
 
     Ok(Resolution { packages: resolved })
 }
 
-fn select_package(
+fn select_package_from_candidates(
     req: &Requirement,
-    index: &impl PackageIndex,
+    candidates: &[ResolvedPackage],
     requested_by: Option<&str>,
 ) -> Result<ResolvedPackage, ResolveError> {
     match &req.spec {
         VersionSpec::Exact(version) => {
-            index
-                .get(&req.name, version)
+            candidates.iter()
+                .find(|p| p.version == *version)
+                .cloned()
                 .ok_or_else(|| ResolveError::Missing {
                     name: req.name.clone(),
                     constraint: req.constraint_display(),
                     requested_by: requested_by.map(ToString::to_string),
-                    available_versions: available_versions(index, &req.name),
+                    available_versions: candidates.iter().map(|p| p.version.clone()).collect(),
                 })
         }
-        // All other specifiers: filter candidates and pick the highest matching version
-        VersionSpec::Minimum(_)
-        | VersionSpec::MinimumExclusive(_)
-        | VersionSpec::MaximumInclusive(_)
-        | VersionSpec::Maximum(_)
-        | VersionSpec::NotEqual(_)
-        | VersionSpec::Compatible(_)
-        | VersionSpec::Any => {
-            let candidates = index.all(&req.name);
+        _ => {
             let candidate = candidates
-                .into_iter()
+                .iter()
                 .filter(|pkg| req.is_satisfied_by(&pkg.version))
                 .max_by(|a, b| version_cmp(&a.version, &b.version));
+            
             if let Some(pkg) = candidate {
-                Ok(pkg)
+                Ok(pkg.clone())
             } else {
                 Err(ResolveError::Missing {
                     name: req.name.clone(),
                     constraint: req.constraint_display(),
                     requested_by: requested_by.map(ToString::to_string),
-                    available_versions: available_versions(index, &req.name),
+                    available_versions: candidates.iter().map(|p| p.version.clone()).collect(),
                 })
             }
         }
     }
 }
 
-#[derive(Default)]
 pub struct InMemoryIndex {
     pkgs: BTreeMap<(String, String), ResolvedPackage>,
+}
+
+impl Default for InMemoryIndex {
+    fn default() -> Self {
+        Self { pkgs: BTreeMap::new() }
+    }
 }
 
 impl InMemoryIndex {
@@ -323,24 +379,27 @@ impl InMemoryIndex {
             name: name.clone(),
             version: version.clone(),
             dependencies: deps,
+            source: None,
         };
         self.pkgs.insert((name, version), pkg);
     }
 }
 
 impl PackageIndex for InMemoryIndex {
-    fn get(&self, name: &str, version: &str) -> Option<ResolvedPackage> {
-        self.pkgs
+    fn get(&self, name: &str, version: &str) -> impl std::future::Future<Output = Result<Option<ResolvedPackage>, ResolveError>> + Send {
+        let result = self.pkgs
             .get(&(name.to_string(), version.to_string()))
-            .cloned()
+            .cloned();
+        async move { Ok(result) }
     }
 
-    fn all(&self, name: &str) -> Vec<ResolvedPackage> {
-        self.pkgs
+    fn all(&self, name: &str) -> impl std::future::Future<Output = Result<Vec<ResolvedPackage>, ResolveError>> + Send {
+        let result = self.pkgs
             .iter()
             .filter(|((n, _), _)| n == name)
             .map(|(_, pkg)| pkg.clone())
-            .collect()
+            .collect::<Vec<_>>();
+        async move { Ok(result) }
     }
 }
 
@@ -353,10 +412,13 @@ fn version_cmp(a: &str, b: &str) -> Ordering {
 }
 
 fn available_versions(index: &impl PackageIndex, name: &str) -> Vec<String> {
-    let mut versions: Vec<String> = index.all(name).into_iter().map(|p| p.version).collect();
-    versions.sort_by(|a, b| version_cmp(b, a));
-    versions.dedup();
-    versions
+    // Note: With async index, this helper is hard to keep synchronous or simple. 
+    // It's mainly used for error reporting in legacy paths.
+    // For now, we return empty or remove usages.
+    // The usage in `select_package` (old) is gone.
+    // The usage in `ResolveError` construction might need the list.
+    // Given we fetch all candidates in `resolve` function, we can pass candidates directly.
+    vec![]
 }
 
 fn build_chain(parents: &BTreeMap<String, Option<String>>, start: &str) -> Vec<String> {
@@ -394,9 +456,6 @@ fn compare_versions(a: &str, b: &str) -> Ordering {
 }
 
 /// Check if a version satisfies the compatible release constraint (~=).
-/// PEP 440 compatible release:
-/// - ~=X.Y.Z is equivalent to >=X.Y.Z, <X.(Y+1).0
-/// - ~=X.Y is equivalent to >=X.Y, <(X+1).0
 fn is_compatible_release(version: &str, base: &str) -> bool {
     // First check if version meets the minimum
     if compare_versions(version, base) == Ordering::Less {

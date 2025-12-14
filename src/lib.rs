@@ -1,6 +1,7 @@
 pub mod cache;
 pub mod cli;
 pub mod commands;
+pub mod downloader;
 pub mod env;
 pub mod env_cache;
 pub mod hot_reload;

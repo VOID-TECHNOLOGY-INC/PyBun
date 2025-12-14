@@ -197,14 +197,14 @@ mod tests {
     use crate::resolver::PackageIndex;
     use tempfile::tempdir;
 
-    #[test]
-    fn builds_inmemory_index() {
+    #[tokio::test]
+    async fn builds_inmemory_index() {
         let index = build_index(vec![IndexPackage {
             name: "app".into(),
             version: "1.0.0".into(),
             dependencies: vec!["dep==2.0.0".into()],
         }]);
-        let pkg = index.get("app", "1.0.0").expect("package");
+        let pkg = index.get("app", "1.0.0").await.expect("no error").expect("package");
         assert_eq!(pkg.dependencies.len(), 1);
         assert_eq!(pkg.dependencies[0].to_string(), "dep==2.0.0");
     }
@@ -242,8 +242,8 @@ mod tests {
         assert_eq!(loaded[1].name, "pkg-b");
     }
 
-    #[test]
-    fn index_cache_load_index() {
+    #[tokio::test]
+    async fn index_cache_load_index() {
         let temp = tempdir().unwrap();
         let cache = IndexCache::new(temp.path().join("cache"));
 
@@ -256,7 +256,7 @@ mod tests {
         cache.save("my-index", &packages).unwrap();
 
         let index = cache.load_index("my-index").unwrap();
-        let pkg = index.get("my-pkg", "2.0.0").expect("package should exist");
+        let pkg = index.get("my-pkg", "2.0.0").await.expect("no error").expect("package should exist");
         assert_eq!(pkg.name, "my-pkg");
         assert_eq!(pkg.version, "2.0.0");
     }
@@ -291,8 +291,8 @@ mod tests {
     // Cached index loader tests
     // ==========================================================================
 
-    #[test]
-    fn cached_loader_loads_and_caches() {
+    #[tokio::test]
+    async fn cached_loader_loads_and_caches() {
         let temp = tempdir().unwrap();
         let cache_dir = temp.path().join("cache");
         let loader = CachedIndexLoader::new(&cache_dir);
@@ -304,11 +304,11 @@ mod tests {
             version: "1.0.0".into(),
             dependencies: vec![],
         }];
-        fs::write(&index_file, serde_json::to_string(&packages).unwrap()).unwrap();
+        std::fs::write(&index_file, serde_json::to_string(&packages).unwrap()).unwrap();
 
         // Load (should cache)
         let index = loader.load_from_path("test", &index_file).unwrap();
-        let pkg = index.get("cached-pkg", "1.0.0").expect("package");
+        let pkg = index.get("cached-pkg", "1.0.0").await.expect("no error").expect("package");
         assert_eq!(pkg.name, "cached-pkg");
 
         // Verify it was cached
@@ -316,12 +316,12 @@ mod tests {
 
         // Load from cache should work
         let cached_index = loader.load_from_cache("test").unwrap();
-        let cached_pkg = cached_index.get("cached-pkg", "1.0.0").expect("package");
+        let cached_pkg = cached_index.get("cached-pkg", "1.0.0").await.expect("no error").expect("package");
         assert_eq!(cached_pkg.name, "cached-pkg");
     }
 
-    #[test]
-    fn cached_loader_offline_mode_uses_cache() {
+    #[tokio::test]
+    async fn cached_loader_offline_mode_uses_cache() {
         let temp = tempdir().unwrap();
         let cache_dir = temp.path().join("cache");
 
@@ -333,11 +333,11 @@ mod tests {
             version: "1.0.0".into(),
             dependencies: vec![],
         }];
-        fs::write(&index_file, serde_json::to_string(&packages).unwrap()).unwrap();
+        std::fs::write(&index_file, serde_json::to_string(&packages).unwrap()).unwrap();
         loader.load_from_path("offline-test", &index_file).unwrap();
 
         // Now delete the source file
-        fs::remove_file(&index_file).unwrap();
+        std::fs::remove_file(&index_file).unwrap();
 
         // Offline mode should still work from cache
         let offline_loader = CachedIndexLoader::new(&cache_dir).offline();
@@ -346,7 +346,7 @@ mod tests {
         let index = offline_loader
             .load_from_path("offline-test", &index_file)
             .unwrap();
-        let pkg = index.get("offline-pkg", "1.0.0").expect("package");
+        let pkg = index.get("offline-pkg", "1.0.0").await.expect("no error").expect("package");
         assert_eq!(pkg.name, "offline-pkg");
     }
 

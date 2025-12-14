@@ -44,6 +44,15 @@ pub enum PackageSource {
     Url { url: String },
 }
 
+impl PackageSource {
+    pub fn url(&self) -> Option<&str> {
+        match self {
+            PackageSource::Registry { url, .. } => Some(url), // This is index URL, NOT file URL!
+            PackageSource::Url { url } => Some(url),
+        }
+    }
+}
+
 impl Lockfile {
     pub fn new(python_versions: Vec<String>, platforms: Vec<String>) -> Self {
         Self {
