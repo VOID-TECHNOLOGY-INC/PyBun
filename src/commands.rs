@@ -12,10 +12,10 @@ use crate::resolver::{Requirement, resolve};
 use crate::schema::{Diagnostic, Event, EventCollector, EventType, JsonEnvelope, Status};
 use color_eyre::eyre::{Result, eyre};
 use serde_json::{Value, json};
-use std::path::PathBuf;
-use std::process::Command as ProcessCommand;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
+use std::path::PathBuf;
+use std::process::Command as ProcessCommand;
 use std::time::Duration;
 
 pub fn execute(cli: Cli) -> Result<()> {
