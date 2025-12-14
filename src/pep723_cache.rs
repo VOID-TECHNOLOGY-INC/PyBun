@@ -212,6 +212,13 @@ impl Pep723Cache {
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs();
+
+            // Optimization: Only update if older than 1 hour (3600 seconds)
+            // This avoids writing to disk on every run (Read-Modify-Write cycle)
+            if now.saturating_sub(info.last_used) < 3600 {
+                return Ok(());
+            }
+
             info.last_used = now;
 
             let json = serde_json::to_string_pretty(&info)?;

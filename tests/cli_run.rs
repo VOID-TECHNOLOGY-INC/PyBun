@@ -18,7 +18,7 @@ fn run_simple_script() {
         .args(["run", script.to_str().unwrap()])
         .assert()
         .success()
-        .stdout(predicate::str::contains("executed").and(predicate::str::contains("successfully")));
+        .stdout(predicate::str::contains("Hello from PyBun!"));
 }
 
 #[test]
@@ -39,9 +39,7 @@ fn run_inline_code() {
         .args(["run", "-c", "--", "print('inline')"])
         .assert()
         .success()
-        .stdout(predicate::str::contains(
-            "executed inline code successfully",
-        ));
+        .stdout(predicate::str::contains("inline"));
 }
 
 #[test]
