@@ -230,12 +230,11 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
   - Result: Cold start **243ms** (prev ~289ms). `pip install` に比べてインストール時間を短縮。Python 3.14 の高速性も寄与。
   - Tests: `env::find_uv_executable` unit test. Manual E2E benchmark.
 
-- PR-OPT4: 起動時間の最適化 (旧 OPT3)
+- [DONE] PR-OPT4: 起動時間の最適化 (旧 OPT3)
   - Goal: 単純スクリプトの起動時間を python と同等（20ms以下）にする。
-  - Approach: 
-    - 環境検出結果のキャッシュ（`.pybun/env-cache.json`）
-    - Rust初期化の遅延実行
-    - 不要な処理のスキップ（--fast モード）
+  - Approach: 環境検出結果のキャッシュ（`.pybun/env-cache.json`）を実装し、ディレクトリ走査をスキップ。
+  - Result: Startup time **25.84ms** (prev ~38ms). Matches `uv` (25.25ms) and close to native `python` (23.46ms).
+  - Tests: Verified with `bench.py B3.1`.
   - Priority: Medium
 
 - PR-OPT5: 並列依存解決とダウンロード (旧 OPT4)

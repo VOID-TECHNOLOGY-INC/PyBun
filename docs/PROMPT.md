@@ -22,6 +22,9 @@ just test-e2e  # または cargo test --test '*'
 - 既存のE2Eテストが壊れていないことを確認
 - 新機能のE2Eテストを追加
 - ベンチマークスクリプトで性能を確認
+  - **Note**: 正確な計測のため、`cargo build --release` を完了させてから実行すること。
+  - **Cold Start計測**: キャッシュ (`~/.cache/pybun/pep723-envs`) をクリアして実行すること。
+  - **コマンド**: `PATH=$(pwd)/target/release:$PATH python3 scripts/benchmark/bench.py -s run --format markdown`
 
 ### 4. コード品質の確認
 ```bash
