@@ -10,8 +10,10 @@
 use color_eyre::eyre::{Result, eyre};
 use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
+
 /// Represents a discovered Python environment.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PythonEnv {
     /// Path to the Python interpreter binary.
     pub python_path: PathBuf,
@@ -22,7 +24,7 @@ pub struct PythonEnv {
 }
 
 /// Describes how the environment was selected.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EnvSource {
     /// PYBUN_ENV environment variable pointing to a venv.
     PybunEnv,
@@ -91,40 +93,52 @@ pub fn find_python_env(working_dir: &Path) -> Result<PythonEnv> {
         eprintln!("warning: PYBUN_PYTHON={} not found, ignoring", python_path);
     }
 
+    // Check cache
+    let mut cache = crate::env_cache::EnvCache::load();
+    if let Some(env) = cache.get(working_dir) {
+        return Ok(env);
+    }
+
     // 3. Check project-local .pybun/venv
-    if let Some(project_venv) = find_project_venv(working_dir)
+    let discovered = if let Some(project_venv) = find_project_venv(working_dir)
         && let Some(python) = find_venv_python(&project_venv)
     {
-        return Ok(PythonEnv {
+        Some(PythonEnv {
             python_path: python,
             version: get_python_version_from_venv(&project_venv),
             source: EnvSource::ProjectLocal,
-        });
+        })
     }
-
     // 4. Check .python-version file
-    if let Some((version_file, version)) = find_python_version_file(working_dir) {
+    else if let Some((version_file, version)) = find_python_version_file(working_dir) {
         if let Some(python) = find_python_for_version(&version) {
-            return Ok(PythonEnv {
+            Some(PythonEnv {
                 python_path: python,
                 version: Some(version),
                 source: EnvSource::PythonVersionFile(version_file),
-            });
+            })
+        } else {
+            // Version file exists but no matching Python found
+            eprintln!(
+                "warning: .python-version requests {} but it's not installed",
+                version
+            );
+            None
         }
-        // Version file exists but no matching Python found
-        eprintln!(
-            "warning: .python-version requests {} but it's not installed",
-            version
-        );
     }
-
     // 5. Fall back to system Python
-    if let Some(python) = find_system_python() {
-        return Ok(PythonEnv {
+    else {
+        find_system_python().map(|python| PythonEnv {
             python_path: python,
             version: None,
             source: EnvSource::System,
-        });
+        })
+    };
+
+    if let Some(env) = discovered {
+        cache.put(working_dir, &env);
+        let _ = cache.save();
+        return Ok(env);
     }
 
     Err(eyre!(
