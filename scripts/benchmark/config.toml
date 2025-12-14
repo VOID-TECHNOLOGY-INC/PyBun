@@ -16,7 +16,7 @@ python = true            # Python standard as baseline
 
 [paths]
 # Override paths if not in PATH
-# pybun = "/path/to/pybun"
+pybun = "../../target/release/pybun"
 # uv = "/path/to/uv"
 # pip = "/path/to/pip"
 # pipx = "/path/to/pipx"

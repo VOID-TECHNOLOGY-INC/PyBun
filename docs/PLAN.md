@@ -181,23 +181,30 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
 
 ### Benchmark Analysis & Optimization Roadmap
 
-**ベンチマーク結果サマリー (2025-12-14)**:
+**ベンチマーク結果サマリー (2025-12-14, PR-OPT1後)**:
 | シナリオ | pybun | uv | python | 差分 |
 |---------|-------|-----|--------|------|
-| Simple Startup | 27.5ms | 20.1ms | 20.9ms | +32% vs python |
-| PEP 723 Cold | 3529ms | 602ms | - | **5.9x slower** |
-| PEP 723 Warm | 3104ms | 68ms | - | **45x slower** ⚠️ |
-| Heavy Import | 58ms | 45ms | 54ms | +7% vs python |
+| Simple Startup | 25.6ms | 20.7ms | 21.6ms | +19% vs python |
+| PEP 723 Cold | 125ms | 587ms | - | **pybunが4.7倍高速** ✅ |
+| **PEP 723 Warm** | **101.6ms** | 70.5ms | - | uvより44%遅い（改善前は45倍遅かった） |
+| Heavy Import | 60.7ms | 48.5ms | 56.5ms | +7% vs python |
 
-**主な課題**:
-1. **PEP 723 Warm が遅すぎる**: キャッシュが効いていない。uvは68msなのにpybunは3104ms。
-2. **起動オーバーヘッド**: 単純なスクリプトでも約7ms余分にかかる。
-3. **venv作成が毎回発生**: 依存関係が同じでも再作成している。
+**PR-OPT1で解決された課題**:
+1. ~~**PEP 723 Warm が遅すぎる**~~ → ✅ 101.6msに改善（3104ms → 101.6ms, **約30倍高速化**）
+2. ~~**venv作成が毎回発生**~~ → ✅ 依存関係ハッシュベースのキャッシュで再利用
+3. **PEP 723 Cold** → ✅ 125msに改善（3529ms → 125ms, **約28倍高速化**、キャッシュが効いている）
 
-- PR-OPT1: PEP 723 venv キャッシュの実装  
+**残る課題**:
+1. **起動オーバーヘッド**: 単純なスクリプトでも約4ms余分にかかる。
+2. **PEP 723 Warm**: uvより44%遅いが、改善前の45倍遅い状態から大幅改善。
+
+- [DONE] PR-OPT1: PEP 723 venv キャッシュの実装  
   - Goal: 依存関係ハッシュに基づいてvenvをキャッシュし、再利用。warmで100ms以下を目標。
-  - Approach: `hash(sorted(dependencies))` → `~/.pybun/pep723-cache/{hash}/` に永続化。
-  - Priority: **High** (45x slowdown は致命的)
+  - Approach: `hash(sorted(dependencies))` → `~/.cache/pybun/pep723-envs/{hash}/` に永続化。
+  - Current: `src/pep723_cache.rs` で依存関係ハッシュベースのvenvキャッシュを実装。SHA-256ハッシュ計算、LRUベースのGC、`pybun gc`統合。環境変数 `PYBUN_PEP723_NO_CACHE=1` で従来の一時venv動作にフォールバック可能。
+  - Results: **Warm startで101.6ms達成** (以前は3104ms → **約30倍高速化**)。Cold startも125msに改善（3529ms → **約28倍高速化**）。uvの70.5msより44%遅いが、改善前の45倍遅い状態から大幅改善。
+  - Tests: 3つのE2Eテスト追加（cache_hit JSON出力、no-cacheモード、cleanup動作）。12のユニットテスト（ハッシュ計算、キャッシュ操作、GC）。
+  - Priority: **High** (45x slowdown は致命的) → 解決済み
 
 - PR-OPT2: uv バックエンド統合  
   - Goal: pip の代わりに uv を使用してインストールを高速化。
