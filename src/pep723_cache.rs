@@ -311,11 +311,7 @@ impl Pep723Cache {
                 result.would_remove.push(env.hash.clone());
             } else {
                 if let Err(e) = fs::remove_dir_all(&cache_dir) {
-                    eprintln!(
-                        "warning: failed to remove {}: {}",
-                        cache_dir.display(),
-                        e
-                    );
+                    eprintln!("warning: failed to remove {}: {}", cache_dir.display(), e);
                     continue;
                 }
                 result.envs_removed += 1;
@@ -516,7 +512,9 @@ mod tests {
         fs::create_dir_all(&p1.venv_path).unwrap();
         // Create a file to give it some size
         fs::write(p1.venv_path.join("test.txt"), vec![0u8; 1024]).unwrap();
-        cache.record_cache_entry(&p1.hash, &deps1, "3.11.0").unwrap();
+        cache
+            .record_cache_entry(&p1.hash, &deps1, "3.11.0")
+            .unwrap();
 
         // Small delay to ensure different timestamps
         std::thread::sleep(std::time::Duration::from_millis(50));
@@ -524,7 +522,9 @@ mod tests {
         let p2 = cache.prepare_cache_dir(&deps2).unwrap();
         fs::create_dir_all(&p2.venv_path).unwrap();
         fs::write(p2.venv_path.join("test.txt"), vec![0u8; 1024]).unwrap();
-        cache.record_cache_entry(&p2.hash, &deps2, "3.11.0").unwrap();
+        cache
+            .record_cache_entry(&p2.hash, &deps2, "3.11.0")
+            .unwrap();
 
         // GC with very small limit should remove oldest
         let result = cache.gc(Some(1024), false).unwrap();
@@ -554,4 +554,3 @@ mod tests {
         assert_eq!(envs.len(), 1);
     }
 }
-

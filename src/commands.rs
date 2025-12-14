@@ -866,7 +866,16 @@ fn run_script(args: &crate::cli::RunArgs, collector: &mut EventCollector) -> Res
             ));
             let (python, env_source) = find_python_interpreter()?;
             eprintln!("info: using Python from {} (dry-run)", env_source);
-            (python, Some(cache.venv_path_for_hash(&hash).to_string_lossy().to_string()), false)
+            (
+                python,
+                Some(
+                    cache
+                        .venv_path_for_hash(&hash)
+                        .to_string_lossy()
+                        .to_string(),
+                ),
+                false,
+            )
         } else if !no_cache {
             // Check cache first
             if let Some(cached) = cache.get_cached_env(&pep723_deps) {
@@ -895,7 +904,8 @@ fn run_script(args: &crate::cli::RunArgs, collector: &mut EventCollector) -> Res
                 let (base_python, env_source) = find_python_interpreter()?;
                 eprintln!(
                     "info: using Python from {} for new cached env (hash: {})",
-                    env_source, &prepared.hash[..8]
+                    env_source,
+                    &prepared.hash[..8]
                 );
 
                 // Create virtual environment
@@ -960,7 +970,10 @@ fn run_script(args: &crate::cli::RunArgs, collector: &mut EventCollector) -> Res
             let temp_env_str = temp_dir.path().to_string_lossy().to_string();
 
             let (base_python, env_source) = find_python_interpreter()?;
-            eprintln!("info: using Python from {} for temp env (no-cache mode)", env_source);
+            eprintln!(
+                "info: using Python from {} for temp env (no-cache mode)",
+                env_source
+            );
 
             let venv_path = temp_dir.path().join("venv");
             eprintln!(
@@ -1045,7 +1058,8 @@ fn run_script(args: &crate::cli::RunArgs, collector: &mut EventCollector) -> Res
 
     // Note: with caching, we don't cleanup (venv is reused)
     // cleanup is only true for no-cache mode
-    let cleanup = cached_env_path.is_some() && !cache_hit && std::env::var("PYBUN_PEP723_NO_CACHE").is_ok();
+    let cleanup =
+        cached_env_path.is_some() && !cache_hit && std::env::var("PYBUN_PEP723_NO_CACHE").is_ok();
 
     Ok(RunOutcome {
         summary,
@@ -1537,7 +1551,8 @@ fn run_gc(args: &crate::cli::GcArgs, collector: &mut EventCollector) -> Result<R
         .map_err(|e| eyre!("GC failed: {}", e))?;
 
     // Also run GC on PEP 723 venv cache
-    let pep723_cache = Pep723Cache::new().map_err(|e| eyre!("failed to initialize pep723 cache: {}", e))?;
+    let pep723_cache =
+        Pep723Cache::new().map_err(|e| eyre!("failed to initialize pep723 cache: {}", e))?;
     let pep723_gc_result = pep723_cache
         .gc(max_bytes, args.dry_run)
         .map_err(|e| eyre!("PEP 723 GC failed: {}", e))?;
