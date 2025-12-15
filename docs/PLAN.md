@@ -252,12 +252,13 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
     1. `update_last_used()` 内で `fs::metadata(path).modified()` をチェックし、直近1時間以内に更新されていればRead/Parse/Writeを完全にスキップする最適化を導入。
   - Result: Warm path **106ms** (prev 140ms). 約25%高速化。uv (75ms) との差は縮まったが、startup/import overhead等の差が残る。
   - Priority: High
-- [ ] PR-OPT6a: PEP 723 cold パスの wheel キャッシュ最適化
-  - **分析**: B3.2_pep723_cold が uv より大幅に遅い。`pybun run` は毎回 venv 作成＋依存ダウンロードを行う一方、uv は wheel キャッシュを活用し 1 プロセス内で完結する。
-  - **対策案**:
-    1. PEP 723 でもグローバル wheel キャッシュを共有し、pip/uv のダウンロードを抑止。
-    2. venv 作成は残しつつも、wheel キャッシュがある場合は “downloadless install” になることを確認するテストを追加。
-  - **期待効果**: B3.2_cold を「ネットワーク無し・wheel キャッシュ有り」条件で uv 同等に近づける。
+- [ ] PR-OPT6a: PEP 723 cold パス高速化（uv run デフォルト化）
+  - **分析**: cold で最大ボトルネックは venv 作成（~1.8s）。`uv run` に委譲すると venv 作成＋インストールをスキップでき、実測で B3.2_cold が ~3.7s → ~0.63s まで短縮（warm は ~70-100ms で横ばい）。
+  - **対策**:
+    1. uv が存在する環境では、PEP 723 実行をデフォルトで `uv run` に委譲（単一プロセス）。uv 不在時は従来フローにフォールバック。
+    2. ベンチ (B3.2) を uv run モードでも測定し、デフォルト化による回帰が無いことを確認。
+    3. ログ/JSON で実行モード（uv run / pybun-run）を明示。
+  - **期待効果**: cold のオーバーヘッドを <1s に圧縮し、uv との差をサブ秒レンジに抑える。
 
 - [ ] PR-OPT7: 起動オーバーヘッド調査と改善
   - **分析**: B3.1 (simple_startup) で pybun (27.82ms) が uv (21.03ms) より約 7ms 遅い。
