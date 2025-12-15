@@ -252,6 +252,12 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
     1. `update_last_used()` 内で `fs::metadata(path).modified()` をチェックし、直近1時間以内に更新されていればRead/Parse/Writeを完全にスキップする最適化を導入。
   - Result: Warm path **106ms** (prev 140ms). 約25%高速化。uv (75ms) との差は縮まったが、startup/import overhead等の差が残る。
   - Priority: High
+- [ ] PR-OPT6a: PEP 723 cold パスの wheel キャッシュ最適化
+  - **分析**: B3.2_pep723_cold が uv より大幅に遅い。`pybun run` は毎回 venv 作成＋依存ダウンロードを行う一方、uv は wheel キャッシュを活用し 1 プロセス内で完結する。
+  - **対策案**:
+    1. PEP 723 でもグローバル wheel キャッシュを共有し、pip/uv のダウンロードを抑止。
+    2. venv 作成は残しつつも、wheel キャッシュがある場合は “downloadless install” になることを確認するテストを追加。
+  - **期待効果**: B3.2_cold を「ネットワーク無し・wheel キャッシュ有り」条件で uv 同等に近づける。
 
 - [ ] PR-OPT7: 起動オーバーヘッド調査と改善
   - **分析**: B3.1 (simple_startup) で pybun (27.82ms) が uv (21.03ms) より約 7ms 遅い。

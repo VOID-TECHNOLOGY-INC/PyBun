@@ -898,6 +898,17 @@ fn run_script(
         .map(|m| m.dependencies.clone())
         .unwrap_or_default();
 
+    // Shared wheel cache directory for PEP 723 installs (align with uv cache use).
+    let wheel_cache_dir = if pep723_deps.is_empty() {
+        None
+    } else {
+        let cache = Cache::new().map_err(|e| eyre!("failed to initialize cache: {}", e))?;
+        let dir = cache.packages_dir();
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| eyre!("failed to create wheel cache dir {}: {}", dir.display(), e))?;
+        Some(dir)
+    };
+
     // Check for dry-run mode (for testing)
     let dry_run = std::env::var("PYBUN_PEP723_DRY_RUN").is_ok();
     // Check for no-cache mode (force fresh venv)
@@ -911,14 +922,15 @@ fn run_script(
         ));
 
         // Initialize PEP 723 cache
-        let cache = Pep723Cache::new().map_err(|e| eyre!("failed to initialize cache: {}", e))?;
+        let pep_cache =
+            Pep723Cache::new().map_err(|e| eyre!("failed to initialize cache: {}", e))?;
 
         if dry_run {
             // In dry-run mode, just report what would happen
             let hash = Pep723Cache::compute_deps_hash(&pep723_deps);
             collector.info(format!(
                 "Would use cached env at {} or create new one: {:?}",
-                cache.venv_path_for_hash(&hash).display(),
+                pep_cache.venv_path_for_hash(&hash).display(),
                 pep723_deps
             ));
             let (python, env_source) = find_python_interpreter()?;
@@ -926,7 +938,7 @@ fn run_script(
             (
                 python,
                 Some(
-                    cache
+                    pep_cache
                         .venv_path_for_hash(&hash)
                         .to_string_lossy()
                         .to_string(),
@@ -935,7 +947,7 @@ fn run_script(
             )
         } else if !no_cache {
             // Check cache first
-            if let Some(cached) = cache.get_cached_env(&pep723_deps) {
+            if let Some(cached) = pep_cache.get_cached_env(&pep723_deps) {
                 // Cache hit! Reuse existing venv
                 collector.info(format!(
                     "Cache hit: reusing venv at {} (hash: {})",
@@ -954,7 +966,7 @@ fn run_script(
                 )
             } else {
                 // Cache miss - create new venv and cache it
-                let prepared = cache
+                let prepared = pep_cache
                     .prepare_cache_dir(&pep723_deps)
                     .map_err(|e| eyre!("failed to prepare cache dir: {}", e))?;
 
@@ -1000,6 +1012,10 @@ fn run_script(
                         // uv requires specifying python environment
                         install_cmd.arg("--python");
                         install_cmd.arg(&prepared.venv_path);
+                        if let Some(dir) = &wheel_cache_dir {
+                            install_cmd.env("UV_CACHE_DIR", dir);
+                            install_cmd.env("PIP_CACHE_DIR", dir);
+                        }
                         install_cmd.args(&pep723_deps);
 
                         let install_status = install_cmd
@@ -1009,7 +1025,7 @@ fn run_script(
                         if !install_status.success() {
                             collector.warning("failed to install dependencies with uv".to_string());
                             // Fallback to pip? Or just fail? Let's fail for now to be explicit, logic could be refined.
-                            let _ = cache.remove_env(&prepared.hash);
+                            let _ = pep_cache.remove_env(&prepared.hash);
                             return Err(eyre!(
                                 "failed to install PEP 723 dependencies (uv backend)"
                             ));
@@ -1018,6 +1034,10 @@ fn run_script(
                         // Fallback to standard pip
                         let mut install_cmd = ProcessCommand::new(&pip_path);
                         install_cmd.args(["install", "--quiet"]);
+                        if let Some(dir) = &wheel_cache_dir {
+                            install_cmd.arg("--cache-dir");
+                            install_cmd.arg(dir);
+                        }
                         install_cmd.args(&pep723_deps);
 
                         let install_status = install_cmd
@@ -1026,7 +1046,7 @@ fn run_script(
 
                         if !install_status.success() {
                             collector.warning("failed to install dependencies".to_string());
-                            let _ = cache.remove_env(&prepared.hash);
+                            let _ = pep_cache.remove_env(&prepared.hash);
                             return Err(eyre!("failed to install PEP 723 dependencies"));
                         }
                     }
@@ -1036,7 +1056,7 @@ fn run_script(
                 let python_version = get_python_version(&prepared.python_path)?;
 
                 // Record cache entry
-                cache
+                pep_cache
                     .record_cache_entry(&prepared.hash, &pep723_deps, &python_version)
                     .map_err(|e| eyre!("failed to record cache entry: {}", e))?;
 
@@ -1096,6 +1116,10 @@ fn run_script(
                     install_cmd.args(["pip", "install", "--quiet"]);
                     install_cmd.arg("--python");
                     install_cmd.arg(&venv_path);
+                    if let Some(dir) = &wheel_cache_dir {
+                        install_cmd.env("UV_CACHE_DIR", dir);
+                        install_cmd.env("PIP_CACHE_DIR", dir);
+                    }
                     install_cmd.args(&pep723_deps);
 
                     let install_status = install_cmd
@@ -1109,6 +1133,10 @@ fn run_script(
                 } else {
                     let mut install_cmd = ProcessCommand::new(&pip_path);
                     install_cmd.args(["install", "--quiet"]);
+                    if let Some(dir) = &wheel_cache_dir {
+                        install_cmd.arg("--cache-dir");
+                        install_cmd.arg(dir);
+                    }
                     install_cmd.args(&pep723_deps);
 
                     let install_status = install_cmd
