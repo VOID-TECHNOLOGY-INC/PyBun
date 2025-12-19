@@ -243,6 +243,53 @@ fn json_trace_id_format_when_present() {
 /// All subcommands produce valid JSON when --format=json is specified
 mod all_commands {
     use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+    use tempfile::tempdir;
+
+    fn setup_build_schema_fixture() -> (tempfile::TempDir, PathBuf, std::ffi::OsString) {
+        let temp = tempdir().unwrap();
+        let project_dir = temp.path().join("project");
+        fs::create_dir_all(&project_dir).unwrap();
+        fs::write(
+            project_dir.join("pyproject.toml"),
+            r#"[project]
+name = "demo-build"
+version = "0.1.0"
+"#,
+        )
+        .unwrap();
+
+        let fake_build_root = temp.path().join("fake_build");
+        let build_pkg = fake_build_root.join("build");
+        fs::create_dir_all(&build_pkg).unwrap();
+        fs::write(build_pkg.join("__init__.py"), "").unwrap();
+        fs::write(
+            build_pkg.join("__main__.py"),
+            r#"
+import pathlib
+
+def main():
+    root = pathlib.Path.cwd()
+    dist = root / "dist"
+    dist.mkdir(exist_ok=True)
+    (dist / "demo-build-0.1.0.tar.gz").write_text("sdist")
+    (dist / "demo-build-0.1.0-py3-none-any.whl").write_text("wheel")
+
+if __name__ == "__main__":
+    main()
+"#,
+        )
+        .unwrap();
+
+        let mut pythonpath = vec![fake_build_root.into_os_string()];
+        if let Some(existing) = std::env::var_os("PYTHONPATH") {
+            pythonpath.push(existing);
+        }
+        let pythonpath = std::env::join_paths(pythonpath).unwrap();
+
+        (temp, project_dir, pythonpath)
+    }
 
     #[test]
     fn python_list_json() {
@@ -281,8 +328,11 @@ mod all_commands {
     }
 
     #[test]
-    fn build_stub_json() {
+    fn build_json_envelope() {
+        let (_temp, project_dir, pythonpath) = setup_build_schema_fixture();
         let output = Command::new(env!("CARGO_BIN_EXE_pybun"))
+            .current_dir(&project_dir)
+            .env("PYTHONPATH", pythonpath)
             .args(["--format=json", "build"])
             .output()
             .expect("failed to execute pybun");
@@ -290,6 +340,17 @@ mod all_commands {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
         assert_eq!(json["command"], "pybun build");
+        assert_eq!(json["status"], "ok");
+        assert!(json["detail"]["artifacts"].is_array());
+        let artifacts = json["detail"]["artifacts"]
+            .as_array()
+            .expect("artifacts array");
+        assert!(
+            artifacts
+                .iter()
+                .any(|a| a.as_str().unwrap_or("").ends_with(".whl")),
+            "wheel artifact should be reported"
+        );
     }
 
     #[test]
