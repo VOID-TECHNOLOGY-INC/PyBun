@@ -97,9 +97,16 @@ fn build_json_reports_artifacts_and_cyclonedx_sbom() {
         .output()
         .expect("failed to run pybun build");
 
-    assert!(output.status.success());
-
     let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "pybun build failed (status {:?})\nstdout:\n{}\nstderr:\n{}",
+        output.status.code(),
+        stdout,
+        stderr
+    );
+
     let json: serde_json::Value =
         serde_json::from_str(&stdout).expect("output should be valid JSON");
 
