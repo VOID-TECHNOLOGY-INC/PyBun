@@ -156,9 +156,10 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
   - Depends on: PR5.1, PR1.2 resolver.  
   - Current: Installer consumes wheel metadata from the index, prefers platform-matched wheels, records selected artifacts in the lock with host platform tags, and emits warnings/diagnostics when falling back to sdist builds.
   - Tests: `tests/cli_install.rs` platform wheel selection + source fallback warning (JSON diagnostics); `cargo test`; `cargo clippy`.
-- PR5.3: Security features (sig verification for downloads, SBOM emission in `pybun build`).  
+- [DONE] PR5.3: Security features (sig verification for downloads, SBOM emission in `pybun build`).  
   - Depends on: PR5.1.  
-  - Tests: unit for signature verification; integration producing CycloneDX stub; smoke verifying tamper detection.
+  - Current: Downloader now enforces SHA-256 plus ed25519 signature verification (tampered artifacts are removed). `pybun build --sbom` emits real CycloneDX SBOMs with tool metadata and per-artifact SHA-256 hashes instead of stubs. Shared security helpers for hash/signature validation.  
+  - Tests: `cargo test` (all), `cargo clippy --all-targets --all-features -D warnings`; new SBOM integration + signature verification/tamper detection tests.
 - [DONE] PR5.4: Self-update mechanism (download, signature check, atomic swap) + `pybun doctor` bundle.  
   - Depends on: M0 CI signing hooks.  
   - Current: `pybun self update` with `--channel` (stable/nightly) and `--dry-run` flags. Version check logic implemented. `pybun doctor` enhanced with environment checks (Python, cache, project). JSON output with detailed check results.

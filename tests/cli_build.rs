@@ -1,6 +1,7 @@
 use assert_cmd::Command;
 use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
@@ -86,7 +87,7 @@ fn build_invokes_python_module_and_collects_artifacts() {
 }
 
 #[test]
-fn build_json_reports_artifacts_and_sbom_stub() {
+fn build_json_reports_artifacts_and_cyclonedx_sbom() {
     let (_temp, project_dir, pythonpath) = setup_fake_build_project();
 
     let output = bin()
@@ -126,12 +127,43 @@ fn build_json_reports_artifacts_and_sbom_stub() {
     );
 
     assert_eq!(detail["builder"], "python -m build");
-    assert_eq!(detail["sbom"]["status"], "stub");
+    assert_eq!(detail["sbom"]["format"], "CycloneDX");
     let sbom_path = detail["sbom"]["path"].as_str().expect("sbom path missing");
-    assert!(
-        Path::new(sbom_path).exists(),
-        "sbom stub file should exist on disk"
-    );
+    let sbom_contents = fs::read_to_string(sbom_path).expect("sbom file readable");
+    let sbom: serde_json::Value = serde_json::from_str(&sbom_contents).expect("sbom json is valid");
+
+    assert_eq!(sbom["bomFormat"], "CycloneDX");
+    let components = sbom["components"]
+        .as_array()
+        .cloned()
+        .unwrap_or_else(|| panic!("components missing: {sbom}"));
+    assert!(!components.is_empty(), "sbom should list artifacts");
+
+    // Ensure artifacts in SBOM include hashes
+    let dist_dir = project_dir.join("dist");
+    let hash_for = |path: &Path| {
+        let mut hasher = Sha256::new();
+        hasher.update(fs::read(path).expect("artifact readable"));
+        format!("{:x}", hasher.finalize())
+    };
+
+    for artifact in [
+        "demo-build-0.1.0.tar.gz",
+        "demo-build-0.1.0-py3-none-any.whl",
+    ] {
+        let artifact_path = dist_dir.join(artifact);
+        let expected = hash_for(&artifact_path);
+        let component = components
+            .iter()
+            .find(|c| c["name"] == artifact)
+            .unwrap_or_else(|| panic!("component for {} missing", artifact));
+        let hashes = component["hashes"].as_array().expect("hashes should exist");
+        let sha256 = hashes
+            .iter()
+            .find(|h| h["alg"] == "SHA-256")
+            .expect("sha256 entry");
+        assert_eq!(sha256["content"], expected);
+    }
 }
 
 #[test]
