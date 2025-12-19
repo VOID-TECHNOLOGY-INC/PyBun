@@ -2,6 +2,7 @@ use assert_cmd::Command;
 use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::PredicateBooleanExt;
 use pybun::lockfile::Lockfile;
+use serde_json::Value;
 use std::fs;
 use tempfile::tempdir;
 
@@ -100,6 +101,30 @@ fn index_specifiers_path() -> std::path::PathBuf {
         .join("tests")
         .join("fixtures")
         .join("index_specifiers.json")
+}
+
+fn index_wheels_path() -> std::path::PathBuf {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("manifest dir");
+    std::path::Path::new(&manifest_dir)
+        .join("tests")
+        .join("fixtures")
+        .join("index_wheels.json")
+}
+
+fn expected_native_wheel() -> String {
+    if cfg!(target_os = "macos") && cfg!(target_arch = "aarch64") {
+        "native-wheels-1.0.0-cp311-cp311-macosx_11_0_arm64.whl".into()
+    } else if cfg!(target_os = "macos") && cfg!(target_arch = "x86_64") {
+        "native-wheels-1.0.0-cp311-cp311-macosx_11_0_x86_64.whl".into()
+    } else if cfg!(target_os = "linux") && cfg!(target_arch = "x86_64") {
+        "native-wheels-1.0.0-cp311-cp311-manylinux_x86_64.whl".into()
+    } else if cfg!(target_os = "linux") && cfg!(target_arch = "aarch64") {
+        "native-wheels-1.0.0-cp311-cp311-manylinux_aarch64.whl".into()
+    } else if cfg!(target_os = "windows") && cfg!(target_arch = "x86_64") {
+        "native-wheels-1.0.0-cp311-cp311-win_amd64.whl".into()
+    } else {
+        "native-wheels-1.0.0-py3-none-any.whl".into()
+    }
 }
 
 // =============================================================================
@@ -445,4 +470,79 @@ dependencies = ["lib-c==1.0.0"]
         .success()
         .stdout(predicates::str::contains("\"status\":\"ok\""))
         .stdout(predicates::str::contains("\"packages\""));
+}
+
+// =============================================================================
+// PR5.2: Pre-built wheel discovery & preference
+// =============================================================================
+
+#[test]
+fn install_prefers_prebuilt_wheel_for_platform() {
+    let temp = tempdir().unwrap();
+    let lock_path = temp.path().join("pybun.lockb");
+    let index = index_wheels_path();
+
+    bin()
+        .args([
+            "install",
+            "--index",
+            index.to_str().unwrap(),
+            "--require",
+            "native-wheels==1.0.0",
+            "--lock",
+            lock_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let lock = Lockfile::load_from_path(&lock_path).expect("lock loads");
+    let pkg = lock.packages.get("native-wheels").expect("entry exists");
+    assert_eq!(pkg.wheel, expected_native_wheel());
+}
+
+#[test]
+fn install_warns_and_falls_back_to_source_when_no_wheel_matches() {
+    let temp = tempdir().unwrap();
+    let lock_path = temp.path().join("pybun.lockb");
+    let index = index_wheels_path();
+
+    let output = bin()
+        .args([
+            "--format=json",
+            "install",
+            "--index",
+            index.to_str().unwrap(),
+            "--require",
+            "source-only==0.5.0",
+            "--lock",
+            lock_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("command runs");
+
+    assert!(
+        output.status.success(),
+        "install should succeed even when building from source"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: Value = serde_json::from_str(&stdout).expect("valid json output");
+    let diagnostics = json["diagnostics"].as_array().cloned().unwrap_or_default();
+    assert!(
+        diagnostics.iter().any(|d| {
+            d["level"] == "warning"
+                && d["message"]
+                    .as_str()
+                    .map(|m| m.contains("source-only") && m.contains("source build"))
+                    .unwrap_or(false)
+        }),
+        "should emit warning diagnostic about source build fallback: {stdout}"
+    );
+
+    let lock = Lockfile::load_from_path(&lock_path).expect("lock loads");
+    let pkg = lock.packages.get("source-only").expect("entry exists");
+    assert!(
+        pkg.wheel.ends_with(".tar.gz"),
+        "fallback should lock to source artifact"
+    );
 }

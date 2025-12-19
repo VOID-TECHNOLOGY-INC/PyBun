@@ -1,15 +1,26 @@
-use crate::resolver::InMemoryIndex;
+use crate::resolver::{InMemoryIndex, PackageArtifacts, Wheel};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 /// Package record as stored in the simple JSON index fixture.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct IndexPackage {
     pub name: String,
     pub version: String,
     pub dependencies: Vec<String>,
+    #[serde(default)]
+    pub wheels: Vec<IndexWheel>,
+    #[serde(default)]
+    pub sdist: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct IndexWheel {
+    pub file: String,
+    #[serde(default)]
+    pub platforms: Vec<String>,
 }
 
 #[derive(Debug, Error)]
@@ -41,7 +52,27 @@ pub fn load_index_from_path(path: impl AsRef<Path>) -> Result<InMemoryIndex> {
 fn build_index(packages: Vec<IndexPackage>) -> InMemoryIndex {
     let mut index = InMemoryIndex::default();
     for pkg in packages {
-        index.add(pkg.name, pkg.version, pkg.dependencies);
+        let artifacts = if pkg.wheels.is_empty() && pkg.sdist.is_none() {
+            PackageArtifacts::universal(&pkg.name, &pkg.version)
+        } else {
+            let wheels = pkg
+                .wheels
+                .iter()
+                .map(|w| Wheel {
+                    file: w.file.clone(),
+                    platforms: if w.platforms.is_empty() {
+                        vec!["any".into()]
+                    } else {
+                        w.platforms.clone()
+                    },
+                })
+                .collect();
+            PackageArtifacts {
+                wheels,
+                sdist: pkg.sdist.clone(),
+            }
+        };
+        index.add_with_artifacts(pkg.name, pkg.version, pkg.dependencies, artifacts);
     }
     index
 }
@@ -203,6 +234,7 @@ mod tests {
             name: "app".into(),
             version: "1.0.0".into(),
             dependencies: vec!["dep==2.0.0".into()],
+            ..Default::default()
         }]);
         let pkg = index
             .get("app", "1.0.0")
@@ -227,11 +259,13 @@ mod tests {
                 name: "pkg-a".into(),
                 version: "1.0.0".into(),
                 dependencies: vec!["pkg-b>=1.0.0".into()],
+                ..Default::default()
             },
             IndexPackage {
                 name: "pkg-b".into(),
                 version: "1.0.0".into(),
                 dependencies: vec![],
+                ..Default::default()
             },
         ];
 
@@ -255,6 +289,7 @@ mod tests {
             name: "my-pkg".into(),
             version: "2.0.0".into(),
             dependencies: vec![],
+            ..Default::default()
         }];
 
         cache.save("my-index", &packages).unwrap();
@@ -278,6 +313,7 @@ mod tests {
             name: "to-remove".into(),
             version: "1.0.0".into(),
             dependencies: vec![],
+            ..Default::default()
         }];
 
         cache.save("remove-test", &packages).unwrap();
@@ -311,6 +347,7 @@ mod tests {
             name: "cached-pkg".into(),
             version: "1.0.0".into(),
             dependencies: vec![],
+            ..Default::default()
         }];
         std::fs::write(&index_file, serde_json::to_string(&packages).unwrap()).unwrap();
 
@@ -348,6 +385,7 @@ mod tests {
             name: "offline-pkg".into(),
             version: "1.0.0".into(),
             dependencies: vec![],
+            ..Default::default()
         }];
         std::fs::write(&index_file, serde_json::to_string(&packages).unwrap()).unwrap();
         loader.load_from_path("offline-test", &index_file).unwrap();
