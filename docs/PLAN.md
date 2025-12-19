@@ -152,9 +152,10 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
   - Depends on: M1 installer infra.  
   - Current: Build backend detection from `pyproject.toml` with isolation env wrapper; build cache hashes project inputs and restores/stores dist artifacts. JSON output now includes backend and cache metadata for `pybun build`.
   - Tests: `tests/cli_build.rs` cache hit/miss integration; `src/build.rs` unit tests for cache key change and dist restore.
-- PR5.2: Pre-built wheel discovery & preference; fallback to source with warnings.  
+- [DONE] PR5.2: Pre-built wheel discovery & preference; fallback to source with warnings.  
   - Depends on: PR5.1, PR1.2 resolver.  
-  - Tests: integration selecting correct wheel per platform; JSON diagnostics.
+  - Current: Installer consumes wheel metadata from the index, prefers platform-matched wheels, records selected artifacts in the lock with host platform tags, and emits warnings/diagnostics when falling back to sdist builds.
+  - Tests: `tests/cli_install.rs` platform wheel selection + source fallback warning (JSON diagnostics); `cargo test`; `cargo clippy`.
 - PR5.3: Security features (sig verification for downloads, SBOM emission in `pybun build`).  
   - Depends on: PR5.1.  
   - Tests: unit for signature verification; integration producing CycloneDX stub; smoke verifying tamper detection.

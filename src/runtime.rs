@@ -92,6 +92,39 @@ impl Platform {
             Platform::WindowsX64 => "windows_x64",
         }
     }
+
+    /// Platform tags suitable for wheel selection preference (most specific first).
+    pub fn wheel_tags(&self) -> Vec<&'static str> {
+        match self {
+            Platform::MacOSArm64 => vec!["macos_arm64", "macos"],
+            Platform::MacOSX64 => vec!["macos_x64", "macos"],
+            Platform::LinuxX64Gnu => vec!["linux_x86_64", "manylinux_x86_64", "linux"],
+            Platform::LinuxArm64Gnu => vec!["linux_aarch64", "manylinux_aarch64", "linux"],
+            Platform::LinuxX64Musl => vec![
+                "linux_x86_64_musl",
+                "linux_x86_64",
+                "manylinux_x86_64",
+                "linux",
+            ],
+            Platform::WindowsX64 => vec!["windows_x86_64", "win_amd64", "windows"],
+        }
+    }
+}
+
+/// Wheel tags for the current platform.
+pub fn current_wheel_tags() -> Vec<String> {
+    let mut tags = Platform::current()
+        .map(|p| {
+            p.wheel_tags()
+                .into_iter()
+                .map(ToString::to_string)
+                .collect::<Vec<String>>()
+        })
+        .unwrap_or_default();
+    if !tags.iter().any(|t| t == "any") {
+        tags.push("any".into());
+    }
+    tags
 }
 
 impl std::fmt::Display for Platform {

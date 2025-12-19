@@ -9,7 +9,7 @@ use crate::lockfile::{Lockfile, Package, PackageSource};
 use crate::pep723;
 use crate::pep723_cache::Pep723Cache;
 use crate::project::Project;
-use crate::resolver::{Requirement, resolve};
+use crate::resolver::{Requirement, current_platform_tags, resolve, select_artifact_for_platform};
 use crate::schema::{Diagnostic, Event, EventCollector, EventType, JsonEnvelope, Status};
 use color_eyre::eyre::{Result, eyre};
 use serde_json::{Value, json};
@@ -666,8 +666,28 @@ async fn install(
         }
     };
 
-    let mut lock = Lockfile::new(vec!["3.11".into()], vec!["unknown".into()]);
+    let platform_tags = current_platform_tags();
+    let mut lock = Lockfile::new(
+        vec!["3.11".into()],
+        vec![
+            platform_tags
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "unknown".to_string()),
+        ],
+    );
     for pkg in resolution.packages.values() {
+        let selection = select_artifact_for_platform(pkg, &platform_tags);
+        if selection.from_source {
+            let message = format!(
+                "no compatible pre-built wheel for {} {} on {}; falling back to source build",
+                pkg.name,
+                pkg.version,
+                platform_tags.join(",")
+            );
+            eprintln!("warning: {}", message);
+            collector.warning(message);
+        }
         lock.add_package(Package {
             name: pkg.name.clone(),
             version: pkg.version.clone(),
@@ -675,7 +695,7 @@ async fn install(
                 index: "pypi".into(),
                 url: "https://pypi.org/simple".into(),
             },
-            wheel: format!("{}-{}-py3-none-any.whl", pkg.name, pkg.version),
+            wheel: selection.filename,
             hash: "sha256:placeholder".into(),
             dependencies: pkg.dependencies.iter().map(ToString::to_string).collect(),
         });

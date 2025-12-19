@@ -183,11 +183,108 @@ pub struct ResolvedPackage {
     pub version: String,
     pub dependencies: Vec<Requirement>,
     pub source: Option<PackageSource>,
+    pub artifacts: PackageArtifacts,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PackageArtifacts {
+    pub wheels: Vec<Wheel>,
+    pub sdist: Option<String>,
+}
+
+impl PackageArtifacts {
+    pub fn universal(name: &str, version: &str) -> Self {
+        Self {
+            wheels: vec![Wheel {
+                file: format!("{name}-{version}-py3-none-any.whl"),
+                platforms: vec!["any".into()],
+            }],
+            sdist: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Wheel {
+    pub file: String,
+    pub platforms: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Resolution {
     pub packages: BTreeMap<String, ResolvedPackage>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtifactSelection {
+    pub filename: String,
+    pub matched_platform: Option<String>,
+    pub from_source: bool,
+    pub available_wheels: usize,
+}
+
+/// Determine platform preference list for wheel selection.
+pub fn current_platform_tags() -> Vec<String> {
+    let mut tags = crate::runtime::current_wheel_tags();
+    if !tags.iter().any(|t| t == "any") {
+        tags.push("any".into());
+    }
+    tags
+}
+
+/// Select the best artifact for the current platform.
+pub fn select_artifact_for_platform(
+    pkg: &ResolvedPackage,
+    platform_tags: &[String],
+) -> ArtifactSelection {
+    let mut tags = platform_tags.to_vec();
+    if !tags.iter().any(|t| t == "any") {
+        tags.push("any".into());
+    }
+
+    for tag in &tags {
+        if let Some(wheel) = pkg
+            .artifacts
+            .wheels
+            .iter()
+            .find(|w| w.platforms.is_empty() || w.platforms.iter().any(|p| p == tag))
+        {
+            let matched_platform = if wheel.platforms.is_empty() {
+                None
+            } else {
+                Some(tag.clone())
+            };
+            return ArtifactSelection {
+                filename: wheel.file.clone(),
+                matched_platform,
+                from_source: false,
+                available_wheels: pkg.artifacts.wheels.len(),
+            };
+        }
+    }
+
+    if let Some(sdist) = &pkg.artifacts.sdist {
+        return ArtifactSelection {
+            filename: sdist.clone(),
+            matched_platform: None,
+            from_source: true,
+            available_wheels: pkg.artifacts.wheels.len(),
+        };
+    }
+
+    let fallback = pkg
+        .artifacts
+        .wheels
+        .first()
+        .map(|w| w.file.clone())
+        .unwrap_or_else(|| format!("{}-{}-py3-none-any.whl", pkg.name, pkg.version));
+
+    ArtifactSelection {
+        filename: fallback,
+        matched_platform: None,
+        from_source: pkg.artifacts.wheels.is_empty(),
+        available_wheels: pkg.artifacts.wheels.len(),
+    }
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -374,6 +471,19 @@ impl InMemoryIndex {
     ) {
         let name = name.into();
         let version = version.into();
+        let artifacts = PackageArtifacts::universal(&name, &version);
+        self.add_with_artifacts(name, version, deps, artifacts);
+    }
+
+    pub fn add_with_artifacts(
+        &mut self,
+        name: impl Into<String>,
+        version: impl Into<String>,
+        deps: impl IntoIterator<Item = impl AsRef<str>>,
+        artifacts: PackageArtifacts,
+    ) {
+        let name = name.into();
+        let version = version.into();
         let deps = deps
             .into_iter()
             .map(|d| parse_req(d.as_ref()))
@@ -383,6 +493,7 @@ impl InMemoryIndex {
             version: version.clone(),
             dependencies: deps,
             source: None,
+            artifacts,
         };
         self.pkgs.insert((name, version), pkg);
     }
