@@ -1,3 +1,4 @@
+use crate::build::{BuildBackend, BuildCache};
 use crate::cli::{
     Cli, Commands, LazyImportArgs, McpCommands, ModuleFindArgs, OutputFormat, ProfileArgs,
     PythonCommands, SelfCommands, WatchArgs,
@@ -229,23 +230,34 @@ pub async fn execute(cli: Cli) -> Result<()> {
         Commands::Build(args) => (
             "build".to_string(),
             match run_build(args, &mut collector, cli.format) {
-                Ok(outcome) => RenderDetail::with_json(
-                    outcome.summary,
+                Ok(outcome) => RenderDetail::with_json(outcome.summary, {
+                    let backend = &outcome.backend;
                     json!({
-                        "builder": outcome.builder,
-                        "python": outcome.python.display().to_string(),
-                        "dist_dir": outcome.dist_dir.display().to_string(),
-                        "artifacts": outcome.artifacts.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
-                        "sbom": {
-                            "requested": args.sbom,
-                            "path": outcome.sbom.as_ref().map(|p| p.display().to_string()),
-                            "status": if args.sbom { "stub" } else { "not_requested" },
-                        },
-                        "stdout": outcome.stdout,
-                        "stderr": outcome.stderr,
-                        "exit_code": outcome.exit_code,
-                    }),
-                ),
+                    "builder": outcome.builder,
+                    "python": outcome.python.display().to_string(),
+                    "dist_dir": outcome.dist_dir.display().to_string(),
+                    "artifacts": outcome.artifacts.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+                    "backend": {
+                        "name": backend.name.clone(),
+                        "kind": backend.kind.as_str(),
+                        "isolated": backend.isolated,
+                        "requires": backend.requires.clone(),
+                    },
+                    "cache": {
+                        "hit": outcome.cache_hit,
+                        "key": outcome.cache_key,
+                        "dir": outcome.cache_dir.display().to_string(),
+                    },
+                    "sbom": {
+                        "requested": args.sbom,
+                        "path": outcome.sbom.as_ref().map(|p| p.display().to_string()),
+                        "status": if args.sbom { "stub" } else { "not_requested" },
+                    },
+                    "stdout": outcome.stdout,
+                    "stderr": outcome.stderr,
+                    "exit_code": outcome.exit_code,
+                    })
+                }),
                 Err(e) => {
                     collector.error(e.to_string());
                     RenderDetail::error(
@@ -779,6 +791,10 @@ struct BuildOutcome {
     exit_code: i32,
     builder: String,
     python: PathBuf,
+    backend: BuildBackend,
+    cache_hit: bool,
+    cache_key: String,
+    cache_dir: PathBuf,
 }
 
 fn run_build(
@@ -800,40 +816,85 @@ fn run_build(
         python_env.source
     ));
 
-    let builder = "python -m build".to_string();
-    let progress_event = collector.event(EventType::Progress);
-    progress_event.message = Some("invoking python -m build".to_string());
+    let backend = BuildBackend::from_build_system(project.build_system());
+    let build_cache =
+        BuildCache::new().map_err(|e| eyre!("failed to initialize build cache: {}", e))?;
+    let cache_key = build_cache
+        .compute_cache_key(&project_root, &python_env.python_path, &backend)
+        .map_err(|e| eyre!("failed to compute build cache key: {}", e))?;
+    let cache_dir = build_cache.cache_dir_for_key(&cache_key);
+    let no_cache = std::env::var("PYBUN_BUILD_NO_CACHE").is_ok();
 
-    let mut cmd = ProcessCommand::new(&python_env.python_path);
-    cmd.current_dir(&project_root).args(["-m", "build"]);
-    let output = cmd
-        .output()
-        .map_err(|e| eyre!("failed to execute python -m build: {}", e))?;
-
-    let exit_code = output.status.code().unwrap_or(-1);
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-
-    if matches!(format, OutputFormat::Text) {
-        if !stdout.trim().is_empty() {
-            println!("{stdout}");
-        }
-        if !stderr.trim().is_empty() {
-            eprintln!("{stderr}");
+    let mut cache_hit = false;
+    if !no_cache {
+        cache_hit = build_cache
+            .restore_dist(&cache_key, &project_root.join("dist"))
+            .map_err(|e| eyre!("failed to restore build cache: {}", e))?;
+        if cache_hit {
+            collector.event(EventType::CacheHit);
         }
     }
 
-    if !output.status.success() {
-        return Err(eyre!(
-            "python -m build failed with exit code {}.\nstdout:\n{}\nstderr:\n{}",
-            exit_code,
-            stdout,
-            stderr
+    let builder = "python -m build".to_string();
+    let mut stdout = String::new();
+    let mut stderr = String::new();
+    let mut exit_code = 0;
+
+    if !cache_hit {
+        if !cache_dir.exists() {
+            fs::create_dir_all(&cache_dir).map_err(|e| {
+                eyre!(
+                    "failed to create build cache dir {}: {}",
+                    cache_dir.display(),
+                    e
+                )
+            })?;
+        }
+        let progress_event = collector.event(EventType::Progress);
+        progress_event.message = Some(format!(
+            "invoking python -m build (backend: {})",
+            backend.kind.as_str()
         ));
+
+        let mut cmd = ProcessCommand::new(&python_env.python_path);
+        cmd.current_dir(&project_root).args(["-m", "build"]);
+        for (key, value) in backend.env_overrides(&cache_dir) {
+            cmd.env(key, value);
+        }
+        let output = cmd
+            .output()
+            .map_err(|e| eyre!("failed to execute python -m build: {}", e))?;
+
+        exit_code = output.status.code().unwrap_or(-1);
+        stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+        if matches!(format, OutputFormat::Text) {
+            if !stdout.trim().is_empty() {
+                println!("{stdout}");
+            }
+            if !stderr.trim().is_empty() {
+                eprintln!("{stderr}");
+            }
+        }
+
+        if !output.status.success() {
+            return Err(eyre!(
+                "python -m build failed with exit code {}.\nstdout:\n{}\nstderr:\n{}",
+                exit_code,
+                stdout,
+                stderr
+            ));
+        }
     }
 
     let dist_dir = project_root.join("dist");
     let artifacts = collect_artifacts(&dist_dir)?;
+    if !cache_hit {
+        build_cache
+            .store_dist(&cache_key, &dist_dir)
+            .map_err(|e| eyre!("failed to store build cache: {}", e))?;
+    }
 
     let sbom = if args.sbom {
         fs::create_dir_all(&dist_dir).map_err(|e| eyre!("failed to create dist dir: {}", e))?;
@@ -851,12 +912,21 @@ fn run_build(
         None
     };
 
-    let summary = format!(
-        "Built {} artifact{} to {}",
-        artifacts.len(),
-        if artifacts.len() == 1 { "" } else { "s" },
-        dist_dir.display()
-    );
+    let summary = if cache_hit {
+        format!(
+            "Reused {} cached artifact{} from {}",
+            artifacts.len(),
+            if artifacts.len() == 1 { "" } else { "s" },
+            dist_dir.display()
+        )
+    } else {
+        format!(
+            "Built {} artifact{} to {}",
+            artifacts.len(),
+            if artifacts.len() == 1 { "" } else { "s" },
+            dist_dir.display()
+        )
+    };
 
     Ok(BuildOutcome {
         summary,
@@ -868,6 +938,10 @@ fn run_build(
         exit_code,
         builder,
         python: python_env.python_path,
+        backend,
+        cache_hit,
+        cache_key,
+        cache_dir,
     })
 }
 

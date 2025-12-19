@@ -50,6 +50,13 @@ pub struct ProjectMetadata {
     pub dependencies: Vec<String>,
 }
 
+/// Build system configuration from [build-system].
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BuildSystem {
+    pub build_backend: Option<String>,
+    pub requires: Vec<String>,
+}
+
 /// PyBun-specific configuration from [tool.pybun].
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PybunConfig {
@@ -131,6 +138,31 @@ impl Project {
             .get("project")
             .and_then(|v| v.clone().try_into().ok())
             .unwrap_or_default()
+    }
+
+    /// Get build system configuration.
+    pub fn build_system(&self) -> BuildSystem {
+        if let Some(build_system) = self.raw.get("build-system") {
+            let build_backend = build_system
+                .get("build-backend")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let requires = build_system
+                .get("requires")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+            BuildSystem {
+                build_backend,
+                requires,
+            }
+        } else {
+            BuildSystem::default()
+        }
     }
 
     /// Get list of dependencies.

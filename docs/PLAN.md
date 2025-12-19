@@ -148,9 +148,10 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
   - Notes: SBOMの本実装は PR5.3 で良いが、`--sbom` が何かを出すこと自体は早めに整えるとUXが良い。
   - Current: `pybun build` がプロジェクトの `pyproject.toml` を検出して `python -m build` を実行し、dist配下の成果物を列挙してJSON/Textで報告。`--sbom` 指定時は `dist/pybun-sbom.json` にスタブを書き出す。stdout/stderr/exit_codeをJSONに含め、Python環境情報も返す。
   - Tests: `cargo test --test cli_build`, `cargo test --test json_schema`, `cargo test`.
-- PR5.1: C/C++ build wrapper (setuptools/maturin/scikit-build isolation) + build cache.  
+- [DONE] PR5.1: C/C++ build wrapper (setuptools/maturin/scikit-build isolation) + build cache.  
   - Depends on: M1 installer infra.  
-  - Tests: integration building sample C extension; cache hit/miss assertions.
+  - Current: Build backend detection from `pyproject.toml` with isolation env wrapper; build cache hashes project inputs and restores/stores dist artifacts. JSON output now includes backend and cache metadata for `pybun build`.
+  - Tests: `tests/cli_build.rs` cache hit/miss integration; `src/build.rs` unit tests for cache key change and dist restore.
 - PR5.2: Pre-built wheel discovery & preference; fallback to source with warnings.  
   - Depends on: PR5.1, PR1.2 resolver.  
   - Tests: integration selecting correct wheel per platform; JSON diagnostics.
