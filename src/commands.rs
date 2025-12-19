@@ -12,9 +12,10 @@ use crate::resolver::{Requirement, resolve};
 use crate::schema::{Diagnostic, Event, EventCollector, EventType, JsonEnvelope, Status};
 use color_eyre::eyre::{Result, eyre};
 use serde_json::{Value, json};
+use std::fs;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 use std::time::Duration;
 
@@ -227,7 +228,34 @@ pub async fn execute(cli: Cli) -> Result<()> {
         }
         Commands::Build(args) => (
             "build".to_string(),
-            stub_detail(format!("sbom={}", args.sbom), json!({"sbom": args.sbom})),
+            match run_build(args, &mut collector, cli.format) {
+                Ok(outcome) => RenderDetail::with_json(
+                    outcome.summary,
+                    json!({
+                        "builder": outcome.builder,
+                        "python": outcome.python.display().to_string(),
+                        "dist_dir": outcome.dist_dir.display().to_string(),
+                        "artifacts": outcome.artifacts.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+                        "sbom": {
+                            "requested": args.sbom,
+                            "path": outcome.sbom.as_ref().map(|p| p.display().to_string()),
+                            "status": if args.sbom { "stub" } else { "not_requested" },
+                        },
+                        "stdout": outcome.stdout,
+                        "stderr": outcome.stderr,
+                        "exit_code": outcome.exit_code,
+                    }),
+                ),
+                Err(e) => {
+                    collector.error(e.to_string());
+                    RenderDetail::error(
+                        e.to_string(),
+                        json!({
+                            "error": e.to_string(),
+                        }),
+                    )
+                }
+            },
         ),
         Commands::Doctor(args) => {
             collector.info("Running environment diagnostics");
@@ -734,6 +762,131 @@ impl RenderDetail {
             is_error: true,
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// pybun build
+// ---------------------------------------------------------------------------
+
+#[derive(Debug)]
+struct BuildOutcome {
+    summary: String,
+    dist_dir: PathBuf,
+    artifacts: Vec<PathBuf>,
+    sbom: Option<PathBuf>,
+    stdout: String,
+    stderr: String,
+    exit_code: i32,
+    builder: String,
+    python: PathBuf,
+}
+
+fn run_build(
+    args: &crate::cli::BuildArgs,
+    collector: &mut EventCollector,
+    format: OutputFormat,
+) -> Result<BuildOutcome> {
+    let cwd = std::env::current_dir()?;
+    let project =
+        Project::discover(&cwd).map_err(|e| eyre!("failed to locate pyproject.toml: {}", e))?;
+    let project_root = project.root().to_path_buf();
+
+    collector.info(format!("Building project in {}", project_root.display()));
+
+    let python_env = find_python_env(&project_root)?;
+    collector.info(format!(
+        "Using Python from {} ({})",
+        python_env.python_path.display(),
+        python_env.source
+    ));
+
+    let builder = "python -m build".to_string();
+    let progress_event = collector.event(EventType::Progress);
+    progress_event.message = Some("invoking python -m build".to_string());
+
+    let mut cmd = ProcessCommand::new(&python_env.python_path);
+    cmd.current_dir(&project_root).args(["-m", "build"]);
+    let output = cmd
+        .output()
+        .map_err(|e| eyre!("failed to execute python -m build: {}", e))?;
+
+    let exit_code = output.status.code().unwrap_or(-1);
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+    if matches!(format, OutputFormat::Text) {
+        if !stdout.trim().is_empty() {
+            println!("{stdout}");
+        }
+        if !stderr.trim().is_empty() {
+            eprintln!("{stderr}");
+        }
+    }
+
+    if !output.status.success() {
+        return Err(eyre!(
+            "python -m build failed with exit code {}.\nstdout:\n{}\nstderr:\n{}",
+            exit_code,
+            stdout,
+            stderr
+        ));
+    }
+
+    let dist_dir = project_root.join("dist");
+    let artifacts = collect_artifacts(&dist_dir)?;
+
+    let sbom = if args.sbom {
+        fs::create_dir_all(&dist_dir).map_err(|e| eyre!("failed to create dist dir: {}", e))?;
+        let sbom_path = dist_dir.join("pybun-sbom.json");
+        let sbom_payload = json!({
+            "status": "stub",
+            "note": "SBOM generation not implemented yet",
+            "generated_by": "pybun build",
+        });
+        let sbom_json =
+            serde_json::to_string_pretty(&sbom_payload).expect("failed to serialize sbom stub");
+        fs::write(&sbom_path, sbom_json).map_err(|e| eyre!("failed to write sbom stub: {}", e))?;
+        Some(sbom_path)
+    } else {
+        None
+    };
+
+    let summary = format!(
+        "Built {} artifact{} to {}",
+        artifacts.len(),
+        if artifacts.len() == 1 { "" } else { "s" },
+        dist_dir.display()
+    );
+
+    Ok(BuildOutcome {
+        summary,
+        dist_dir,
+        artifacts,
+        sbom,
+        stdout,
+        stderr,
+        exit_code,
+        builder,
+        python: python_env.python_path,
+    })
+}
+
+fn collect_artifacts(dist_dir: &Path) -> Result<Vec<PathBuf>> {
+    if !dist_dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut artifacts = Vec::new();
+    let entries = fs::read_dir(dist_dir)
+        .map_err(|e| eyre!("failed to read dist dir {}: {}", dist_dir.display(), e))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| eyre!("failed to read dist entry: {}", e))?;
+        if entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
+            artifacts.push(entry.path());
+        }
+    }
+
+    Ok(artifacts)
 }
 
 // ---------------------------------------------------------------------------

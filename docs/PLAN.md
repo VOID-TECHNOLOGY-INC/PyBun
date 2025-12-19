@@ -143,9 +143,11 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
   - Tests: 9 observability E2E tests (trace_id presence/absence, event timestamps, duration_ms, schema version, diagnostics, env var redaction, log level, event types).
 
 ### M5: Builder & Security (Phase 3/4)
-- PR5.0 (bootstrap): `pybun build` の “まず動く” 実装（`python -m build` の薄いラッパー + `--sbom` はスタブ出力）  
+- [DONE] PR5.0 (bootstrap): `pybun build` の “まず動く” 実装（`python -m build` の薄いラッパー + `--sbom` はスタブ出力）  
   - Goal: CLI/JSON/成果物ディレクトリの外形を固める。  
   - Notes: SBOMの本実装は PR5.3 で良いが、`--sbom` が何かを出すこと自体は早めに整えるとUXが良い。
+  - Current: `pybun build` がプロジェクトの `pyproject.toml` を検出して `python -m build` を実行し、dist配下の成果物を列挙してJSON/Textで報告。`--sbom` 指定時は `dist/pybun-sbom.json` にスタブを書き出す。stdout/stderr/exit_codeをJSONに含め、Python環境情報も返す。
+  - Tests: `cargo test --test cli_build`, `cargo test --test json_schema`, `cargo test`.
 - PR5.1: C/C++ build wrapper (setuptools/maturin/scikit-build isolation) + build cache.  
   - Depends on: M1 installer infra.  
   - Tests: integration building sample C extension; cache hit/miss assertions.
