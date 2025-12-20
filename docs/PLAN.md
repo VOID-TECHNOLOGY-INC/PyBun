@@ -186,6 +186,43 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
   - Current: Full benchmark suite implemented with 8 scenarios (B1-B8). Measures dependency resolution, package installation, script execution, ad-hoc execution, module finding, lazy import, test execution, and MCP response time. Compares PyBun vs uv, pip, pipx, pytest. Supports JSON/Markdown/CSV output, dry-run mode, and report generation with baseline comparison.
   - Tests: Benchmark scripts tested with dry-run and actual execution. Results output to `scripts/benchmark/results/`.
 
+- PR6.5: Release artifacts as “signed, verifiable distribution” (checksums/manifest/provenance)
+  - Goal: GitHub Releases を単一の正本として、ユーザー/CIが**検証可能**にインストールできる形にする（署名・チェックサム・メタデータ）。
+  - Depends on: PR0.4 (release workflow), PR5.3 (sig verification primitives), PR5.4 (self update).
+  - Implementation:
+    - Release workflow で `SHA256SUMS` を生成し、成果物（`.tar.gz/.zip`）と一緒にアップロード。
+    - 署名（例: `cosign`/`minisign`）の導入。少なくとも “tag build” の成果物に署名し、公開鍵/証明情報を repo に固定（トラストルートを明示）。
+    - リリースのメタデータ `pybun-release.json`（version, assets, sha256, signature, published_at, channel）を生成し添付（`pybun self update` の参照源）。
+    - SLSA provenance と SBOM のリリース添付（可能なら GitHub Artifact Attestations も併用）。
+  - Tests: release workflow `workflow_dispatch` の dry-run で “checksum/manifest 生成” まで通す（署名はダミー鍵で可）。`pybun self update --dry-run` が manifest を解釈できることのE2E。
+
+- PR6.6: One-liner installer (curl|sh / PowerShell) + verification-first UX
+  - Goal: “初回導入” を最短にしつつ、デフォルトで検証（checksum/署名）を行う。
+  - Depends on: PR6.5.
+  - Implementation:
+    - `scripts/install.sh` と `scripts/install.ps1` を追加し、OS/Arch 自動判定→該当アセット取得→検証→配置まで行う。
+    - `--version`/`--channel`/`--prefix`/`--bin-dir`/`--no-verify`（危険フラグ）などのオプションを定義。
+    - README / `docs/qiita.md` の推奨インストール手順をこのスクリプトに寄せる（`cargo install --path .` は開発者向けに格下げ）。
+  - Tests: スクリプトの `--dry-run`（取得URL/検証対象/配置先）を CI で検証。必要なら小さな `shellcheck` 相当の静的検査。
+
+- PR6.7: Package-manager channels (Homebrew/Scoop/winget) + automated updates on tag
+  - Goal: 企業/チーム導入（IT管理・CI）で使いやすい配布チャネルを追加し、tag リリースから自動更新する。
+  - Depends on: PR6.5 (checksums/manifest), PR6.6 (install UX).
+  - Implementation:
+    - Homebrew tap（`pybun` formula）: `sha256` を `SHA256SUMS` から引いて埋め込み、`brew install` を第一級導線に。
+    - Scoop manifest（Windowsが本格化した時点で）: asset URL + sha256 + autoupdate を設定。
+    - winget パッケージ（同上）: installer URL + hash + publisher metadata。
+    - Tag push 時に各リポジトリ/manifest を更新する automation（GitHub Actions）を追加。
+  - Tests: macOS/Linux runner で `brew install`（tap）を smoke。Windows は manifest validation（可能なら `winget validate`）。
+
+- PR6.8: PyPI “shim” distribution (pip/pipx entry) aligned with signed releases
+  - Goal: Python ユーザーが `pipx install pybun` / `pip install pybun` で導入できる入口を用意しつつ、実体は署名付きリリース成果物を利用する。
+  - Depends on: PR6.5 (manifest), PR6.6 (install logic).
+  - Implementation:
+    - Python パッケージ `pybun` を追加し、`pybun` コマンドは “署名付きリリースの bootstrap” を行う（OS/Arch 判定→ダウンロード→検証→実行/配置）。
+    - 可能なら platform wheel にバイナリ同梱（サイズ/審査と相談）。難しければ “ダウンロード型” を基本にし、完全オフライン用は別チャネルで提供。
+  - Tests: `pipx install .` で `pybun --version` まで動く integration（ネットワークはモック/fixture でも可）。
+
 ### Benchmark Analysis & Optimization Roadmap
 
 **ベンチマーク結果サマリー (2025-12-14, PR-OPT1後)**:
