@@ -10,6 +10,7 @@ use crate::pep723;
 use crate::pep723_cache::Pep723Cache;
 use crate::project::Project;
 use crate::resolver::{Requirement, current_platform_tags, resolve, select_artifact_for_platform};
+use crate::sbom;
 use crate::schema::{Diagnostic, Event, EventCollector, EventType, JsonEnvelope, Status};
 use color_eyre::eyre::{Result, eyre};
 use serde_json::{Value, json};
@@ -232,6 +233,19 @@ pub async fn execute(cli: Cli) -> Result<()> {
             match run_build(args, &mut collector, cli.format) {
                 Ok(outcome) => RenderDetail::with_json(outcome.summary, {
                     let backend = &outcome.backend;
+                    let sbom_detail = if let Some(sbom) = &outcome.sbom {
+                        json!({
+                            "requested": args.sbom,
+                            "path": sbom.path.display().to_string(),
+                            "format": sbom.format,
+                            "components": sbom.component_count,
+                        })
+                    } else {
+                        json!({
+                            "requested": args.sbom,
+                            "status": if args.sbom { "skipped" } else { "not_requested" },
+                        })
+                    };
                     json!({
                     "builder": outcome.builder,
                     "python": outcome.python.display().to_string(),
@@ -248,11 +262,7 @@ pub async fn execute(cli: Cli) -> Result<()> {
                         "key": outcome.cache_key,
                         "dir": outcome.cache_dir.display().to_string(),
                     },
-                    "sbom": {
-                        "requested": args.sbom,
-                        "path": outcome.sbom.as_ref().map(|p| p.display().to_string()),
-                        "status": if args.sbom { "stub" } else { "not_requested" },
-                    },
+                    "sbom": sbom_detail,
                     "stdout": outcome.stdout,
                     "stderr": outcome.stderr,
                     "exit_code": outcome.exit_code,
@@ -725,7 +735,7 @@ async fn install(
     }
 
     if !download_items.is_empty() {
-        use crate::downloader::Downloader;
+        use crate::downloader::{DownloadRequest, Downloader};
         let downloader = Downloader::new();
         let concurrency = 10; // Default concurrency
         collector.info(format!(
@@ -733,8 +743,10 @@ async fn install(
             download_items.len()
         ));
 
+        let download_requests: Vec<DownloadRequest> =
+            download_items.into_iter().map(Into::into).collect();
         let results = downloader
-            .download_parallel(download_items, concurrency)
+            .download_parallel(download_requests, concurrency)
             .await;
 
         // Check for failures
@@ -805,7 +817,7 @@ struct BuildOutcome {
     summary: String,
     dist_dir: PathBuf,
     artifacts: Vec<PathBuf>,
-    sbom: Option<PathBuf>,
+    sbom: Option<sbom::SbomSummary>,
     stdout: String,
     stderr: String,
     exit_code: i32,
@@ -919,15 +931,10 @@ fn run_build(
     let sbom = if args.sbom {
         fs::create_dir_all(&dist_dir).map_err(|e| eyre!("failed to create dist dir: {}", e))?;
         let sbom_path = dist_dir.join("pybun-sbom.json");
-        let sbom_payload = json!({
-            "status": "stub",
-            "note": "SBOM generation not implemented yet",
-            "generated_by": "pybun build",
-        });
-        let sbom_json =
-            serde_json::to_string_pretty(&sbom_payload).expect("failed to serialize sbom stub");
-        fs::write(&sbom_path, sbom_json).map_err(|e| eyre!("failed to write sbom stub: {}", e))?;
-        Some(sbom_path)
+        let metadata = project.metadata();
+        let summary = sbom::write_cyclonedx_sbom(&sbom_path, &metadata, &artifacts)
+            .map_err(|e| eyre!("failed to write sbom: {}", e))?;
+        Some(summary)
     } else {
         None
     };
