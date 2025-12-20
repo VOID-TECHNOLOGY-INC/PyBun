@@ -174,9 +174,10 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
   - Depends on: M1 cache layout.  
   - Current: `pybun gc` with `--max-size` (e.g., 1G, 500M) and `--dry-run` flags. LRU eviction based on file mtime. `src/cache.rs` extended with `gc()`, `total_size()`, `parse_size()`, `format_size()`. Empty directory cleanup after GC.
   - Tests: 7 GC E2E tests (help, default gc, max-size, JSON output, freed space, size units, dry-run); 6 unit tests in cache module.
-- PR6.2: Workspace/monorepo support (multiple `pyproject` resolution, shared lock).  
+- [DONE] PR6.2: Workspace/monorepo support (multiple `pyproject` resolution, shared lock).  
   - Depends on: PR1.2 resolver extensions.  
-  - Tests: integration on multi-package fixture; E2E install/run across workspace.
+  - Current: Added workspace detection via `[tool.pybun.workspace]` with member aggregation. `pybun install` now merges dependencies from the root project and all workspace members when executed at the workspace root.  
+  - Tests: `tests/workspace.rs` (workspace install aggregating member + root deps), `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test --test '*'`.
 - PR6.3: Telemetry (opt-in metrics) + privacy controls; enterprise-ready configs.  
   - Depends on: PR4.1 schema.  
   - Tests: unit for redaction; integration ensuring opt-out disables emission.

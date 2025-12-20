@@ -78,6 +78,13 @@ pub struct ProfileConfig {
     pub log_level: Option<String>,
 }
 
+/// Workspace configuration under [tool.pybun.workspace]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WorkspaceConfig {
+    #[serde(default)]
+    pub members: Vec<String>,
+}
+
 impl Project {
     /// Find and load pyproject.toml from the current directory or ancestors.
     pub fn discover(start_dir: impl AsRef<Path>) -> Result<Self> {
@@ -254,6 +261,15 @@ impl Project {
             .unwrap_or_default()
     }
 
+    /// Get workspace configuration if present.
+    pub fn workspace_config(&self) -> Option<WorkspaceConfig> {
+        self.raw
+            .get("tool")
+            .and_then(|t| t.get("pybun"))
+            .and_then(|p| p.get("workspace"))
+            .and_then(|v| v.clone().try_into().ok())
+    }
+
     /// Save the project file.
     pub fn save(&self) -> Result<()> {
         let content = toml::to_string_pretty(&self.raw)?;
@@ -267,7 +283,7 @@ impl Project {
 
 /// Extract package name from a dependency specifier.
 /// e.g., "requests>=2.28.0" -> "requests"
-fn extract_package_name(dep: &str) -> &str {
+pub(crate) fn extract_package_name(dep: &str) -> &str {
     let dep = dep.trim();
     // Find first version specifier character
     let end = dep

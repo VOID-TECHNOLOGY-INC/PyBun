@@ -13,6 +13,7 @@ use crate::resolver::{Requirement, current_platform_tags, resolve, select_artifa
 use crate::sandbox;
 use crate::sbom;
 use crate::schema::{Diagnostic, Event, EventCollector, EventType, JsonEnvelope, Status};
+use crate::workspace::Workspace;
 use color_eyre::eyre::{Result, eyre};
 use serde_json::{Value, json};
 use std::fs;
@@ -628,35 +629,43 @@ async fn install(
     } else {
         // Try to load from pyproject.toml
         let working_dir = std::env::current_dir()?;
-        match Project::discover(&working_dir) {
-            Ok(project) => {
-                let deps = project.dependencies();
-                if deps.is_empty() {
-                    // Project found but no dependencies - this is valid
-                    collector.info("No dependencies found in pyproject.toml");
-                    vec![]
-                } else {
-                    collector.info(format!(
-                        "Found {} dependencies in {}",
-                        deps.len(),
-                        project.path().display()
-                    ));
-                    // Parse each dependency string into a Requirement
-                    deps.iter()
-                        .map(|d| {
-                            d.parse::<Requirement>()
-                                .unwrap_or_else(|_| Requirement::any(d.trim()))
-                        })
-                        .collect()
-                }
-            }
-            Err(_) => {
-                return Err(eyre!(
-                    "no requirements provided and no pyproject.toml found. \
+        let project = Project::discover(&working_dir).map_err(|_| {
+            eyre!(
+                "no requirements provided and no pyproject.toml found. \
                      Use --require or create a pyproject.toml with [project.dependencies]"
+            )
+        })?;
+
+        // Workspace-aware dependency gathering.
+        let deps = if let Ok(Some(workspace)) = Workspace::discover(&working_dir) {
+            let merged = workspace.merged_dependencies();
+            collector.info(format!(
+                "Workspace detected at {} ({} members); merged {} dependencies",
+                workspace.root.root().display(),
+                workspace.members.len(),
+                merged.len()
+            ));
+            merged
+        } else {
+            let deps = project.dependencies();
+            if deps.is_empty() {
+                collector.info("No dependencies found in pyproject.toml");
+            } else {
+                collector.info(format!(
+                    "Found {} dependencies in {}",
+                    deps.len(),
+                    project.path().display()
                 ));
             }
-        }
+            deps
+        };
+
+        deps.into_iter()
+            .map(|d| {
+                d.parse::<Requirement>()
+                    .unwrap_or_else(|_| Requirement::any(d.trim()))
+            })
+            .collect()
     };
 
     // If no requirements (empty pyproject dependencies), create empty lockfile
