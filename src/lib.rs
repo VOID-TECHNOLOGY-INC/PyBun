@@ -18,6 +18,7 @@ pub mod profiles;
 pub mod project;
 pub mod resolver;
 pub mod runtime;
+pub mod sandbox;
 pub mod sbom;
 pub mod schema;
 pub mod security;

@@ -10,6 +10,7 @@ use crate::pep723;
 use crate::pep723_cache::Pep723Cache;
 use crate::project::Project;
 use crate::resolver::{Requirement, current_platform_tags, resolve, select_artifact_for_platform};
+use crate::sandbox;
 use crate::sbom;
 use crate::schema::{Diagnostic, Event, EventCollector, EventType, JsonEnvelope, Status};
 use color_eyre::eyre::{Result, eyre};
@@ -136,8 +137,16 @@ pub async fn execute(cli: Cli) -> Result<()> {
                     temp_env,
                     cleanup,
                     cache_hit,
+                    sandbox,
                 }) => {
                     collector.event(EventType::ScriptEnd);
+                    let sandbox_detail = sandbox.as_ref().map(|s| {
+                        json!({
+                            "enabled": s.enabled,
+                            "allow_network": s.allow_network,
+                            "enforcement": s.enforcement,
+                        })
+                    });
                     (
                         "run".to_string(),
                         RenderDetail::with_json(
@@ -149,6 +158,7 @@ pub async fn execute(cli: Cli) -> Result<()> {
                                 "temp_env": temp_env,
                                 "cleanup": cleanup,
                                 "cache_hit": cache_hit,
+                                "sandbox": sandbox_detail,
                             }),
                         ),
                     )
@@ -1112,6 +1122,15 @@ struct RunOutcome {
     cleanup: bool,
     /// Whether the environment was a cache hit
     cache_hit: bool,
+    /// Sandbox information when enabled
+    sandbox: Option<SandboxInfo>,
+}
+
+#[derive(Debug, Clone)]
+struct SandboxInfo {
+    enabled: bool,
+    allow_network: bool,
+    enforcement: String,
 }
 
 fn run_script(
@@ -1428,6 +1447,25 @@ fn run_script(
         cmd.arg(arg);
     }
 
+    // Enable sandbox if requested.
+    let mut sandbox_guard: Option<sandbox::SandboxGuard> = None;
+    let mut sandbox_info: Option<SandboxInfo> = None;
+    if args.sandbox {
+        let allow_network = args.allow_network
+            || std::env::var("PYBUN_SANDBOX_ALLOW_NETWORK")
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false);
+        collector.info(format!("sandbox enabled (allow_network={})", allow_network));
+        let guard =
+            sandbox::apply_python_sandbox(&mut cmd, sandbox::SandboxConfig { allow_network })?;
+        sandbox_info = Some(SandboxInfo {
+            enabled: true,
+            allow_network,
+            enforcement: guard.enforcement().to_string(),
+        });
+        sandbox_guard = Some(guard);
+    }
+
     // Note: with caching, we don't cleanup (venv is reused)
     // cleanup is only true for no-cache mode
     let cleanup =
@@ -1437,7 +1475,7 @@ fn run_script(
     // On Unix, use exec to replace the process if cleanup is not needed AND not in JSON mode
     // (JSON mode requires wrapping to emit final summary)
     #[cfg(unix)]
-    if !cleanup && format != OutputFormat::Json {
+    if !cleanup && format != OutputFormat::Json && sandbox_guard.is_none() {
         let err = cmd.exec();
         return Err(eyre!("failed to exec Python: {}", err));
     }
@@ -1445,6 +1483,8 @@ fn run_script(
     let status = cmd
         .status()
         .map_err(|e| eyre!("failed to execute Python: {}", e))?;
+    // Drop guard after process exit to cleanup temporary sitecustomize dir.
+    drop(sandbox_guard);
 
     let exit_code = status.code().unwrap_or(-1);
 
@@ -1466,6 +1506,7 @@ fn run_script(
         temp_env: cached_env_path,
         cleanup,
         cache_hit,
+        sandbox: sandbox_info,
     })
 }
 
@@ -1488,7 +1529,7 @@ fn get_python_version(python_path: &std::path::Path) -> Result<String> {
 
 fn run_python_code(
     args: &crate::cli::RunArgs,
-    _collector: &mut EventCollector,
+    collector: &mut EventCollector,
     _format: OutputFormat,
 ) -> Result<RunOutcome> {
     // pybun run -c "print('hello')" -- equivalent to python -c "..."
@@ -1503,6 +1544,27 @@ fn run_python_code(
     let mut cmd = ProcessCommand::new(&python);
     cmd.arg("-c").arg(code);
 
+    let mut sandbox_info: Option<SandboxInfo> = None;
+    let mut sandbox_guard: Option<sandbox::SandboxGuard> = None;
+    if args.sandbox {
+        let allow_network = args.allow_network
+            || std::env::var("PYBUN_SANDBOX_ALLOW_NETWORK")
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false);
+        collector.info(format!(
+            "sandbox enabled for inline code (allow_network={})",
+            allow_network
+        ));
+        let guard =
+            sandbox::apply_python_sandbox(&mut cmd, sandbox::SandboxConfig { allow_network })?;
+        sandbox_info = Some(SandboxInfo {
+            enabled: true,
+            allow_network,
+            enforcement: guard.enforcement().to_string(),
+        });
+        sandbox_guard = Some(guard);
+    }
+
     // Add remaining passthrough arguments
     for arg in args.passthrough.iter().skip(1) {
         cmd.arg(arg);
@@ -1511,11 +1573,16 @@ fn run_python_code(
     let status = cmd
         .status()
         .map_err(|e| eyre!("failed to execute Python: {}", e))?;
+    drop(sandbox_guard);
 
     let exit_code = status.code().unwrap_or(-1);
 
     let summary = if status.success() {
-        "executed inline code successfully".to_string()
+        if args.sandbox {
+            "executed inline code successfully (sandboxed)".to_string()
+        } else {
+            "executed inline code successfully".to_string()
+        }
     } else {
         format!("inline code exited with code {}", exit_code)
     };
@@ -1528,6 +1595,7 @@ fn run_python_code(
         temp_env: None,
         cleanup: false,
         cache_hit: false,
+        sandbox: sandbox_info,
     })
 }
 

@@ -164,9 +164,10 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
   - Depends on: M0 CI signing hooks.  
   - Current: `pybun self update` with `--channel` (stable/nightly) and `--dry-run` flags. Version check logic implemented. `pybun doctor` enhanced with environment checks (Python, cache, project). JSON output with detailed check results.
   - Tests: 9 self_update E2E tests (help, version info, dry-run, channels, doctor checks).
-- PR5.5: Sandboxed execution (`pybun run --sandbox` using seccomp/JobObject) with escape hatches.  
+- [DONE] PR5.5: Sandboxed execution (`pybun run --sandbox` using seccomp/JobObject) with escape hatches.  
   - Depends on: PR2 runtime; PR5.3 security primitives.  
-  - Tests: integration blocking unsafe syscalls; allowlist passthrough for network opt-in.
+  - Current: `pybun run --sandbox` injects a Python `sitecustomize` shim that blocks subprocess creation and socket APIs by default, with `--allow-network`/`PYBUN_SANDBOX_ALLOW_NETWORK=1` as an escape hatch. JSON output now reports sandbox policy metadata. Inline `-c` runs are also sandbox-aware.  
+  - Tests: `tests/sandbox.rs` (blocks subprocess spawn, network opt-in), `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test --test '*'`.
 
 ### M6: Release Hardening (Phase 4)
 - [DONE] PR6.1: Remote cache (opt-in) client skeleton; local LRU GC `pybun gc --max-size`.  
