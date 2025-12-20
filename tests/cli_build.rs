@@ -67,11 +67,13 @@ if __name__ == "__main__":
 
 #[test]
 fn build_invokes_python_module_and_collects_artifacts() {
-    let (_temp, project_dir, pythonpath) = setup_fake_build_project();
+    let (temp, project_dir, pythonpath) = setup_fake_build_project();
+    let cache_home = temp.path().join("cache_home");
 
     let mut cmd = bin();
     cmd.current_dir(&project_dir)
         .env("PYTHONPATH", pythonpath)
+        .env("PYBUN_HOME", cache_home)
         .env("PYBUN_BUILD_NO_CACHE", "1")
         .arg("build");
 
@@ -88,11 +90,13 @@ fn build_invokes_python_module_and_collects_artifacts() {
 
 #[test]
 fn build_json_reports_artifacts_and_cyclonedx_sbom() {
-    let (_temp, project_dir, pythonpath) = setup_fake_build_project();
+    let (temp, project_dir, pythonpath) = setup_fake_build_project();
+    let cache_home = temp.path().join("cache_home");
 
     let output = bin()
         .current_dir(&project_dir)
         .env("PYTHONPATH", pythonpath)
+        .env("PYBUN_HOME", cache_home)
         .args(["--format=json", "build", "--sbom"])
         .output()
         .expect("failed to run pybun build");

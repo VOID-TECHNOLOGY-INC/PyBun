@@ -137,6 +137,9 @@ pub struct RunArgs {
     /// Run in sandboxed mode for untrusted code.
     #[arg(long)]
     pub sandbox: bool,
+    /// Allow network access inside the sandbox (escape hatch).
+    #[arg(long)]
+    pub allow_network: bool,
     /// Optional profile (dev/prod/benchmark).
     #[arg(long, default_value = "dev")]
     pub profile: String,
