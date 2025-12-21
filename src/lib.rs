@@ -16,6 +16,7 @@ pub mod pep723;
 pub mod pep723_cache;
 pub mod profiles;
 pub mod project;
+pub mod release_manifest;
 pub mod resolver;
 pub mod runtime;
 pub mod sandbox;

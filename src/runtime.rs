@@ -81,6 +81,18 @@ impl Platform {
         }
     }
 
+    /// Get the target triple used for PyBun release artifacts.
+    pub fn release_target(&self) -> &'static str {
+        match self {
+            Platform::MacOSArm64 => "aarch64-apple-darwin",
+            Platform::MacOSX64 => "x86_64-apple-darwin",
+            Platform::LinuxX64Gnu => "x86_64-unknown-linux-gnu",
+            Platform::LinuxArm64Gnu => "aarch64-unknown-linux-gnu",
+            Platform::LinuxX64Musl => "x86_64-unknown-linux-musl",
+            Platform::WindowsX64 => "x86_64-pc-windows-msvc",
+        }
+    }
+
     /// Get platform identifier for checksums.
     pub fn checksum_key(&self) -> &'static str {
         match self {
