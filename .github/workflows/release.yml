@@ -14,6 +14,8 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 env:
   CARGO_TERM_COLOR: always
@@ -150,11 +152,135 @@ jobs:
             fi
           done
 
+  metadata:
+    name: Release metadata
+    runs-on: ubuntu-latest
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Resolve release metadata
+        id: release_meta
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            version="${GITHUB_REF#refs/tags/v}"
+            channel="stable"
+            release_tag="v${version}"
+          else
+            version=$(grep '^version' Cargo.toml | head -n1 | cut -d'"' -f2)
+            channel="nightly"
+            release_tag="nightly"
+          fi
+          published_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          base_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${release_tag}"
+          release_url="https://github.com/${GITHUB_REPOSITORY}/releases/tag/${release_tag}"
+          echo "version=${version}" >> $GITHUB_OUTPUT
+          echo "channel=${channel}" >> $GITHUB_OUTPUT
+          echo "release_tag=${release_tag}" >> $GITHUB_OUTPUT
+          echo "base_url=${base_url}" >> $GITHUB_OUTPUT
+          echo "release_url=${release_url}" >> $GITHUB_OUTPUT
+          echo "published_at=${published_at}" >> $GITHUB_OUTPUT
+
+      - name: Install minisign
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y minisign
+
+      - name: Prepare minisign key
+        id: minisign
+        shell: bash
+        run: |
+          if [[ "${{ inputs.dry_run }}" == "true" ]]; then
+            minisign -G -p /tmp/pybun-release.pub -s /tmp/pybun-release.key -c "pybun dry-run"
+            echo "public_key=/tmp/pybun-release.pub" >> $GITHUB_OUTPUT
+            echo "private_key=/tmp/pybun-release.key" >> $GITHUB_OUTPUT
+            echo "mode=dummy" >> $GITHUB_OUTPUT
+          else
+            if [[ -z "${{ secrets.PYBUN_MINISIGN_PRIVATE_KEY }}" ]]; then
+              echo "Missing PYBUN_MINISIGN_PRIVATE_KEY secret" >&2
+              exit 1
+            fi
+            echo "${{ secrets.PYBUN_MINISIGN_PRIVATE_KEY }}" > /tmp/pybun-release.key
+            chmod 600 /tmp/pybun-release.key
+            echo "public_key=security/pybun-release.pub" >> $GITHUB_OUTPUT
+            echo "private_key=/tmp/pybun-release.key" >> $GITHUB_OUTPUT
+            echo "mode=release" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Sign artifacts
+        shell: bash
+        run: |
+          while IFS= read -r file; do
+            minisign -Sm "$file" -s "${{ steps.minisign.outputs.private_key }}"
+          done < <(find artifacts -type f \( -name "*.tar.gz" -o -name "*.zip" \))
+
+      - name: Generate SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: artifacts
+          format: cyclonedx-json
+          output-file: pybun-sbom.json
+
+      - name: Generate provenance
+        run: |
+          python3 scripts/release/generate_provenance.py \
+            --assets-dir artifacts \
+            --output pybun-provenance.json \
+            --timestamp "${{ steps.release_meta.outputs.published_at }}"
+
+      - name: Generate manifest and checksums
+        run: |
+          python3 scripts/release/generate_manifest.py \
+            --assets-dir artifacts \
+            --version "${{ steps.release_meta.outputs.version }}" \
+            --channel "${{ steps.release_meta.outputs.channel }}" \
+            --base-url "${{ steps.release_meta.outputs.base_url }}" \
+            --release-url "${{ steps.release_meta.outputs.release_url }}" \
+            --published-at "${{ steps.release_meta.outputs.published_at }}" \
+            --public-key "${{ steps.minisign.outputs.public_key }}" \
+            --sbom pybun-sbom.json \
+            --provenance pybun-provenance.json \
+            --output pybun-release.json \
+            --checksums SHA256SUMS
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: |
+            artifacts/**/*.tar.gz
+            artifacts/**/*.zip
+
+      - name: Attest SBOM
+        uses: actions/attest-sbom@v1
+        with:
+          sbom-path: pybun-sbom.json
+          subject-path: |
+            artifacts/**/*.tar.gz
+            artifacts/**/*.zip
+
+      - name: Upload release metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-metadata
+          path: |
+            SHA256SUMS
+            pybun-release.json
+            pybun-provenance.json
+            pybun-sbom.json
+            artifacts/**/*.minisig
+
   # Release job (only on tags)
   release:
     name: Create Release
     runs-on: ubuntu-latest
-    needs: [build, check-size]
+    needs: [build, check-size, metadata]
     if: startsWith(github.ref, 'refs/tags/') && !inputs.dry_run
     steps:
       - uses: actions/checkout@v4
@@ -164,12 +290,23 @@ jobs:
         with:
           path: artifacts
 
+      - name: Download release metadata
+        uses: actions/download-artifact@v4
+        with:
+          name: release-metadata
+          path: release-metadata
+
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             artifacts/**/*.tar.gz
             artifacts/**/*.zip
+            release-metadata/**/*.minisig
+            release-metadata/SHA256SUMS
+            release-metadata/pybun-release.json
+            release-metadata/pybun-provenance.json
+            release-metadata/pybun-sbom.json
           draft: true
           generate_release_notes: true
         env:

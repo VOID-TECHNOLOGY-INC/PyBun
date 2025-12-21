@@ -9,6 +9,7 @@ use crate::lockfile::{Lockfile, Package, PackageSource};
 use crate::pep723;
 use crate::pep723_cache::Pep723Cache;
 use crate::project::Project;
+use crate::release_manifest::{ReleaseManifest, current_release_target};
 use crate::resolver::{Requirement, current_platform_tags, resolve, select_artifact_for_platform};
 use crate::sandbox;
 use crate::sbom;
@@ -16,6 +17,7 @@ use crate::schema::{Diagnostic, Event, EventCollector, EventType, JsonEnvelope, 
 use crate::workspace::Workspace;
 use color_eyre::eyre::{Result, eyre};
 use serde_json::{Value, json};
+use std::cmp::Ordering;
 use std::fs;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
@@ -1933,70 +1935,117 @@ fn run_self_update(
 
     collector.info(format!("Checking for updates on {} channel", channel));
 
-    // In a real implementation, this would:
-    // 1. Query a release API for the latest version
-    // 2. Download the new binary
-    // 3. Verify the signature
-    // 4. Atomic swap with the current binary
-
-    // For now, we implement a dry-run / check mode
-    let update_check = UpdateCheck {
-        current_version: current_version.to_string(),
-        channel: channel.clone(),
-        // Simulated: no update available (in real impl, would check remote)
-        latest_version: current_version.to_string(),
-        update_available: false,
-        release_url: format!(
-            "https://github.com/pybun/pybun/releases/tag/v{}",
-            current_version
-        ),
+    let manifest_source_env = std::env::var("PYBUN_SELF_UPDATE_MANIFEST").ok();
+    let default_manifest_url = default_manifest_url(channel);
+    let manifest_source = manifest_source_env
+        .clone()
+        .unwrap_or_else(|| default_manifest_url.clone());
+    let should_fetch_manifest =
+        manifest_source_env.is_some() || std::env::var("PYBUN_SELF_UPDATE_FETCH").is_ok();
+    let manifest_result = if should_fetch_manifest {
+        Some(ReleaseManifest::load(&manifest_source))
+    } else {
+        None
     };
 
+    let mut latest_version = current_version.to_string();
+    let mut update_available = false;
+    let mut release_url = release_url_for_version(current_version);
+    let mut manifest_detail = None;
+    let mut manifest_error = None;
+
+    match manifest_result {
+        Some(Ok(manifest)) => {
+            latest_version = manifest.version.clone();
+            update_available = manifest
+                .compare_version(current_version)
+                .map(|ordering| ordering == Ordering::Greater)
+                .unwrap_or(false);
+            release_url = manifest
+                .release_url
+                .clone()
+                .unwrap_or_else(|| release_url_for_version(&manifest.version));
+
+            let target = current_release_target();
+            let asset = target
+                .as_deref()
+                .and_then(|target| manifest.select_asset(target));
+            let asset_json = asset
+                .map(|asset| serde_json::to_value(asset).unwrap_or_else(|_| json!({})))
+                .unwrap_or(Value::Null);
+
+            manifest_detail = Some(json!({
+                "version": manifest.version,
+                "channel": manifest.channel,
+                "published_at": manifest.published_at,
+                "release_url": manifest.release_url,
+                "source": manifest_source,
+                "target": target,
+                "asset": asset_json,
+                "assets": manifest.assets.len(),
+                "sbom": manifest.sbom,
+                "provenance": manifest.provenance,
+            }));
+        }
+        Some(Err(error)) => {
+            manifest_error = Some(error.to_string());
+        }
+        None => {}
+    }
+
     let summary = if args.dry_run {
-        if update_check.update_available {
+        if update_available {
             format!(
                 "Update available: {} -> {} (dry-run, no changes made)",
-                update_check.current_version, update_check.latest_version
+                current_version, latest_version
             )
+        } else if let Some(error) = manifest_error.as_deref() {
+            format!("Update check failed: {} (dry-run)", error)
         } else {
             format!(
                 "Already up to date: {} (channel: {})",
-                update_check.current_version, channel
+                current_version, channel
             )
         }
-    } else if update_check.update_available {
+    } else if update_available {
         // Would perform actual update here
         format!(
             "Would update: {} -> {} (update not yet implemented)",
-            update_check.current_version, update_check.latest_version
+            current_version, latest_version
         )
     } else {
         format!(
             "Already up to date: {} (channel: {})",
-            update_check.current_version, channel
+            current_version, channel
         )
     };
 
     let json_detail = json!({
-        "current_version": update_check.current_version,
-        "latest_version": update_check.latest_version,
+        "current_version": current_version,
+        "latest_version": latest_version,
         "channel": channel,
-        "update_available": update_check.update_available,
-        "release_url": update_check.release_url,
+        "update_available": update_available,
+        "release_url": release_url,
         "dry_run": args.dry_run,
+        "manifest": manifest_detail,
+        "manifest_error": manifest_error,
+        "manifest_source": manifest_source_env.or(Some(default_manifest_url)),
     });
 
     RenderDetail::with_json(summary, json_detail)
 }
 
-#[derive(Debug)]
-#[allow(dead_code)]
-struct UpdateCheck {
-    current_version: String,
-    channel: String,
-    latest_version: String,
-    update_available: bool,
-    release_url: String,
+fn default_manifest_url(channel: &str) -> String {
+    if channel == "nightly" {
+        "https://github.com/pybun/pybun/releases/download/nightly/pybun-release.json".to_string()
+    } else {
+        "https://github.com/pybun/pybun/releases/latest/download/pybun-release.json".to_string()
+    }
+}
+
+fn release_url_for_version(version: &str) -> String {
+    let trimmed = version.trim_start_matches('v');
+    format!("https://github.com/pybun/pybun/releases/tag/v{}", trimmed)
 }
 
 // ---------------------------------------------------------------------------
