@@ -186,15 +186,11 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
   - Current: Full benchmark suite implemented with 8 scenarios (B1-B8). Measures dependency resolution, package installation, script execution, ad-hoc execution, module finding, lazy import, test execution, and MCP response time. Compares PyBun vs uv, pip, pipx, pytest. Supports JSON/Markdown/CSV output, dry-run mode, and report generation with baseline comparison.
   - Tests: Benchmark scripts tested with dry-run and actual execution. Results output to `scripts/benchmark/results/`.
 
-- PR6.5: Release artifacts as “signed, verifiable distribution” (checksums/manifest/provenance)
+- [DONE] PR6.5: Release artifacts as “signed, verifiable distribution” (checksums/manifest/provenance)
   - Goal: GitHub Releases を単一の正本として、ユーザー/CIが**検証可能**にインストールできる形にする（署名・チェックサム・メタデータ）。
   - Depends on: PR0.4 (release workflow), PR5.3 (sig verification primitives), PR5.4 (self update).
-  - Implementation:
-    - Release workflow で `SHA256SUMS` を生成し、成果物（`.tar.gz/.zip`）と一緒にアップロード。
-    - 署名（例: `cosign`/`minisign`）の導入。少なくとも “tag build” の成果物に署名し、公開鍵/証明情報を repo に固定（トラストルートを明示）。
-    - リリースのメタデータ `pybun-release.json`（version, assets, sha256, signature, published_at, channel）を生成し添付（`pybun self update` の参照源）。
-    - SLSA provenance と SBOM のリリース添付（可能なら GitHub Artifact Attestations も併用）。
-  - Tests: release workflow `workflow_dispatch` の dry-run で “checksum/manifest 生成” まで通す（署名はダミー鍵で可）。`pybun self update --dry-run` が manifest を解釈できることのE2E。
+  - Current: Release workflow now signs artifacts via minisign (dummy key on dry-run), generates `SHA256SUMS`, `pybun-release.json` manifest, SBOM, and provenance, and uploads metadata/signature files to releases. Added release-manifest parser/selector for `pybun self update` along with scripts to generate manifest + provenance.
+  - Tests: `cargo fmt`; `cargo clippy --all-targets --all-features -- -D warnings`; `CARGO_INCREMENTAL=0 cargo test`; `cargo build --release`; `PATH=$(pwd)/target/release:$PATH python3 scripts/benchmark/bench.py -s run --format markdown`.
 
 - PR6.6: One-liner installer (curl|sh / PowerShell) + verification-first UX
   - Goal: “初回導入” を最短にしつつ、デフォルトで検証（checksum/署名）を行う。
