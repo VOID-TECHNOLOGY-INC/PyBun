@@ -192,14 +192,11 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
   - Current: Release workflow now signs artifacts via minisign (dummy key on dry-run), generates `SHA256SUMS`, `pybun-release.json` manifest, SBOM, and provenance, and uploads metadata/signature files to releases. Added release-manifest parser/selector for `pybun self update` along with scripts to generate manifest + provenance.
   - Tests: `cargo fmt`; `cargo clippy --all-targets --all-features -- -D warnings`; `CARGO_INCREMENTAL=0 cargo test`; `cargo build --release`; `PATH=$(pwd)/target/release:$PATH python3 scripts/benchmark/bench.py -s run --format markdown`.
 
-- PR6.6: One-liner installer (curl|sh / PowerShell) + verification-first UX
+- [DONE] PR6.6: One-liner installer (curl|sh / PowerShell) + verification-first UX
   - Goal: “初回導入” を最短にしつつ、デフォルトで検証（checksum/署名）を行う。
   - Depends on: PR6.5.
-  - Implementation:
-    - `scripts/install.sh` と `scripts/install.ps1` を追加し、OS/Arch 自動判定→該当アセット取得→検証→配置まで行う。
-    - `--version`/`--channel`/`--prefix`/`--bin-dir`/`--no-verify`（危険フラグ）などのオプションを定義。
-    - README / `docs/qiita.md` の推奨インストール手順をこのスクリプトに寄せる（`cargo install --path .` は開発者向けに格下げ）。
-  - Tests: スクリプトの `--dry-run`（取得URL/検証対象/配置先）を CI で検証。必要なら小さな `shellcheck` 相当の静的検査。
+  - Current: `scripts/install.sh` と `scripts/install.ps1` を追加し、OS/Arch 自動判定→リリースマニフェスト取得→SHA256/署名検証→配置まで対応。`--version`/`--channel`/`--prefix`/`--bin-dir`/`--no-verify`/`--dry-run` と JSON dry-run 出力を実装。README と `docs/qiita.md` をワンライナー導線に更新。
+  - Tests: `tests/install_scripts.rs` (`scripts/install.sh`/`scripts/install.ps1` の `--dry-run --format=json` 検証), `cargo test --test install_scripts`.
 
 - PR6.7: Package-manager channels (Homebrew/Scoop/winget) + automated updates on tag
   - Goal: 企業/チーム導入（IT管理・CI）で使いやすい配布チャネルを追加し、tag リリースから自動更新する。
