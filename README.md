@@ -11,8 +11,27 @@ A Rust-based single-binary Python toolchain. Integrates fast dependency installa
 ## Installation
 
 ```bash
-# Build from source
-cargo build --release
+# macOS / Linux (recommended)
+curl -LsSf https://raw.githubusercontent.com/pybun/pybun/main/scripts/install.sh | sh
+
+# Nightly channel
+curl -LsSf https://raw.githubusercontent.com/pybun/pybun/main/scripts/install.sh | sh -s -- --channel nightly
+
+# Custom prefix
+curl -LsSf https://raw.githubusercontent.com/pybun/pybun/main/scripts/install.sh | sh -s -- --prefix ~/.local
+```
+
+```powershell
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/pybun/pybun/main/scripts/install.ps1 | iex
+
+# With options
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/pybun/pybun/main/scripts/install.ps1))) -Channel nightly -Prefix "$env:LOCALAPPDATA\pybun"
+```
+
+```bash
+# Development (from source)
+cargo install --path .
 ```
 
 ## Quick Start
