@@ -4,14 +4,18 @@ A Rust-based single-binary Python toolchain. Integrates fast dependency installa
 
 ## Status
 - Current: Implementation of M1 (Fast Installer), M2 (Runtime Optimization), and M4 (MCP/JSON) is in progress (**stable/preview/stub mixed**)
-- Platforms: macOS/Linux (arm64/amd64)
+- Platforms: macOS/Linux (arm64/amd64), Windows (preview)
 
 ※ For feature maturity (stub/preview/stable) and phased rollout policy, see `docs/SPECS.md`.
 
 ## Installation
 
 ```bash
-# macOS / Linux (recommended)
+# Homebrew (macOS / Linux)
+brew tap pybun/pybun https://github.com/pybun/pybun
+brew install pybun
+
+# macOS / Linux (one-liner installer)
 curl -LsSf https://raw.githubusercontent.com/pybun/pybun/main/scripts/install.sh | sh
 
 # Nightly channel
@@ -22,7 +26,14 @@ curl -LsSf https://raw.githubusercontent.com/pybun/pybun/main/scripts/install.sh
 ```
 
 ```powershell
-# Windows (PowerShell)
+# Windows (Scoop)
+scoop bucket add pybun https://github.com/pybun/pybun
+scoop install pybun
+
+# Windows (winget)
+winget install PyBun.PyBun
+
+# Windows (PowerShell installer)
 irm https://raw.githubusercontent.com/pybun/pybun/main/scripts/install.ps1 | iex
 
 # With options
