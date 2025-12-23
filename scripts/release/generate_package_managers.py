@@ -102,7 +102,11 @@ class Pybun < Formula
   end
 
   def install
-    bin.install Dir["pybun-*/pybun"]
+    if File.exist?("pybun")
+      bin.install "pybun"
+    else
+      bin.install Dir["pybun-*/pybun"]
+    end
   end
 
   test do
