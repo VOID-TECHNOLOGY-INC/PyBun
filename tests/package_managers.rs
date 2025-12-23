@@ -6,10 +6,7 @@ use serde_json::Value;
 use tempfile::tempdir;
 
 fn python_available() -> bool {
-    Command::new("python3")
-        .arg("--version")
-        .output()
-        .is_ok()
+    Command::new("python3").arg("--version").output().is_ok()
 }
 
 fn write_manifest(path: &Path, version: &str, assets: &[(&str, &str)]) {
@@ -137,9 +134,11 @@ fn generate_package_manager_files() {
     let homebrew = fs::read_to_string(&homebrew_path).unwrap();
     assert!(homebrew.contains("version \"1.2.3\""));
     assert!(homebrew.contains("PYBUN_HOMEBREW_TEST_TARBALL"));
-    assert!(homebrew.contains(
-        "sha256 \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\""
-    ));
+    assert!(
+        homebrew.contains(
+            "sha256 \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\""
+        )
+    );
 
     let scoop: Value = serde_json::from_str(&fs::read_to_string(&scoop_path).unwrap()).unwrap();
     assert_eq!(scoop["version"].as_str(), Some("1.2.3"));
@@ -155,9 +154,7 @@ fn generate_package_manager_files() {
 
     let winget = fs::read_to_string(&winget_path).unwrap();
     assert!(winget.contains("PackageVersion: 1.2.3"));
-    assert!(winget.contains(
-        "InstallerUrl: https://example.com/pybun-x86_64-pc-windows-msvc.zip"
-    ));
+    assert!(winget.contains("InstallerUrl: https://example.com/pybun-x86_64-pc-windows-msvc.zip"));
     assert!(winget.contains(
         "InstallerSha256: eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
     ));

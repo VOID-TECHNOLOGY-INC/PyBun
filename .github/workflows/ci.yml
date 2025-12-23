@@ -90,6 +90,8 @@ jobs:
         shell: bash
         run: |
           brew tap pybun/pybun "$PWD"
+          tap_repo="$(brew --repo pybun/pybun)"
+          git -C "$tap_repo" checkout "$GITHUB_SHA"
           PYBUN_HOMEBREW_TEST_TARBALL="file://$PYBUN_TEST_TARBALL" \
           PYBUN_HOMEBREW_TEST_SHA256="$PYBUN_TEST_SHA" \
             brew install pybun/pybun/pybun
