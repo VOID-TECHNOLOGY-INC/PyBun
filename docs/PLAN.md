@@ -195,10 +195,10 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
 - [DONE] PR6.6: One-liner installer (curl|sh / PowerShell) + verification-first UX
   - Goal: “初回導入” を最短にしつつ、デフォルトで検証（checksum/署名）を行う。
   - Depends on: PR6.5.
-  - Current: `scripts/install.sh` と `scripts/install.ps1` を追加し、OS/Arch 自動判定→リリースマニフェスト取得→SHA256/署名検証→配置まで対応。`--version`/`--channel`/`--prefix`/`--bin-dir`/`--no-verify`/`--dry-run` と JSON dry-run 出力を実装。README と `docs/qiita.md` をワンライナー導線に更新。
+  - Current: `scripts/install.sh` と `scripts/install.ps1` を追加し、OS/Arch 自動判定→リリースマニフェスト取得→SHA256/署名検証→配置まで対応。`--version`/`--channel`/`--prefix`/`--bin-dir`/`--no-verify`/`--dry-run` と JSON dry-run 出力を実装。README をワンライナー導線に更新。
   - Tests: `tests/install_scripts.rs` (`scripts/install.sh`/`scripts/install.ps1` の `--dry-run --format=json` 検証), `cargo test --test install_scripts`.
 
-- PR6.7: Package-manager channels (Homebrew/Scoop/winget) + automated updates on tag
+- [DONE] PR6.7: Package-manager channels (Homebrew/Scoop/winget) + automated updates on tag
   - Goal: 企業/チーム導入（IT管理・CI）で使いやすい配布チャネルを追加し、tag リリースから自動更新する。
   - Depends on: PR6.5 (checksums/manifest), PR6.6 (install UX).
   - Implementation:
@@ -206,7 +206,8 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
     - Scoop manifest（Windowsが本格化した時点で）: asset URL + sha256 + autoupdate を設定。
     - winget パッケージ（同上）: installer URL + hash + publisher metadata。
     - Tag push 時に各リポジトリ/manifest を更新する automation（GitHub Actions）を追加。
-  - Tests: macOS/Linux runner で `brew install`（tap）を smoke。Windows は manifest validation（可能なら `winget validate`）。
+  - Current: `scripts/release/generate_package_managers.py` で Homebrew Formula / Scoop manifest / winget manifest を生成。`Formula/pybun.rb` / `bucket/pybun.json` / `winget/pybun.yaml` をリポジトリに追加し、タグリリース時にPRで自動更新するワークフローを追加。
+  - Tests: `tests/package_managers.rs`（Python unit + generator integration）を追加。CI で macOS/Linux の `brew install`（tap）を smoke、Windows runner で `winget validate` を実行。
 
 - PR6.8: PyPI “shim” distribution (pip/pipx entry) aligned with signed releases
   - Goal: Python ユーザーが `pipx install pybun` / `pip install pybun` で導入できる入口を用意しつつ、実体は署名付きリリース成果物を利用する。

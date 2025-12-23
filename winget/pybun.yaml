@@ -1,0 +1,26 @@
+PackageIdentifier: PyBun.PyBun
+PackageVersion: 0.1.0
+PackageLocale: en-US
+Publisher: VOID TECHNOLOGY INC
+PublisherUrl: https://github.com/pybun/pybun
+PublisherSupportUrl: https://github.com/pybun/pybun/issues
+PackageName: PyBun
+PackageUrl: https://github.com/pybun/pybun
+License: MIT
+LicenseUrl: https://github.com/pybun/pybun/blob/main/LICENSE
+ShortDescription: Rust-based single-binary Python toolchain.
+Moniker: pybun
+Tags:
+  - python
+  - package-manager
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/pybun/pybun/releases/download/v0.1.0/pybun-x86_64-pc-windows-msvc.zip
+    InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000
+    InstallerType: zip
+    NestedInstallerType: portable
+    NestedInstallerFiles:
+      - RelativeFilePath: pybun-x86_64-pc-windows-msvc/pybun.exe
+        PortableCommandAlias: pybun
+ManifestType: singleton
+ManifestVersion: 1.4.0
