@@ -5,9 +5,9 @@ class Pybun < Formula
   version "0.1.0"
   license "MIT"
 
-  if ENV["PYBUN_HOMEBREW_TEST_TARBALL"]
-    url ENV["PYBUN_HOMEBREW_TEST_TARBALL"]
-    sha256 ENV["PYBUN_HOMEBREW_TEST_SHA256"]
+  if ENV["HOMEBREW_PYBUN_TEST_TARBALL"]
+    url ENV["HOMEBREW_PYBUN_TEST_TARBALL"]
+    sha256 ENV["HOMEBREW_PYBUN_TEST_SHA256"]
   else
     on_macos do
       if Hardware::CPU.arm?

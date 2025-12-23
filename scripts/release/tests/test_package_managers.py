@@ -51,7 +51,7 @@ class PackageManagerTests(unittest.TestCase):
         }
         formula = gpm.build_homebrew_formula("1.2.3", assets)
         self.assertIn('version "1.2.3"', formula)
-        self.assertIn("PYBUN_HOMEBREW_TEST_TARBALL", formula)
+        self.assertIn("HOMEBREW_PYBUN_TEST_TARBALL", formula)
         self.assertIn("https://example.com/macos-arm.tar.gz", formula)
 
     def test_build_scoop_manifest(self):

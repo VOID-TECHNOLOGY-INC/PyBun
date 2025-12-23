@@ -133,7 +133,7 @@ fn generate_package_manager_files() {
 
     let homebrew = fs::read_to_string(&homebrew_path).unwrap();
     assert!(homebrew.contains("version \"1.2.3\""));
-    assert!(homebrew.contains("PYBUN_HOMEBREW_TEST_TARBALL"));
+    assert!(homebrew.contains("HOMEBREW_PYBUN_TEST_TARBALL"));
     assert!(
         homebrew.contains(
             "sha256 \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\""
