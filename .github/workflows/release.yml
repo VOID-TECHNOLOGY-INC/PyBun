@@ -298,11 +298,11 @@ jobs:
         shell: bash
         run: |
           version="$(python3 - <<'PY'
-import json
-with open("release-metadata/pybun-release.json", "r", encoding="utf-8") as handle:
-    print(json.load(handle)["version"])
-PY
-)"
+          import json
+          with open("release-metadata/pybun-release.json", "r", encoding="utf-8") as handle:
+              print(json.load(handle)["version"])
+          PY
+          )"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
 
       - name: Generate package manager manifests

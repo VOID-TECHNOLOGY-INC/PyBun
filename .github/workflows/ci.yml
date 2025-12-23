@@ -73,13 +73,13 @@ jobs:
           tmpdir="$(mktemp -d)"
           mkdir -p "$tmpdir/pybun-$target"
           cat > "$tmpdir/pybun-$target/pybun" <<'SH'
-#!/usr/bin/env bash
-if [ "$1" = "--version" ]; then
-  echo "pybun test"
-  exit 0
-fi
-echo "pybun test"
-SH
+          #!/usr/bin/env bash
+          if [ "$1" = "--version" ]; then
+            echo "pybun test"
+            exit 0
+          fi
+          echo "pybun test"
+          SH
           chmod +x "$tmpdir/pybun-$target/pybun"
           tarball="$tmpdir/pybun-test.tar.gz"
           tar -czf "$tarball" -C "$tmpdir" "pybun-$target"
