@@ -9,6 +9,7 @@ use crate::lockfile::{Lockfile, Package, PackageSource};
 use crate::pep723;
 use crate::pep723_cache::Pep723Cache;
 use crate::project::Project;
+use crate::pypi::{PyPiClient, PyPiIndex};
 use crate::release_manifest::{ReleaseManifest, current_release_target};
 use crate::resolver::{Requirement, current_platform_tags, resolve, select_artifact_for_platform};
 use crate::sandbox;
@@ -681,19 +682,35 @@ async fn install(
         });
     }
 
-    let index_path = args
-        .index
-        .clone()
-        .ok_or_else(|| eyre!("index path is required for now (--index)"))?;
-
-    let index = load_index_from_path(&index_path).map_err(|e| eyre!(e))?;
-    let resolution = match resolve(requirements.clone(), &index).await {
-        Ok(r) => r,
-        Err(e) => {
-            for d in crate::self_heal::diagnostics_for_resolve_error(&requirements, &e) {
-                collector.diagnostic(d);
+    let offline = args.offline;
+    let resolution = if let Some(index_path) = args.index.clone() {
+        let index = load_index_from_path(&index_path).map_err(|e| eyre!(e))?;
+        match resolve(requirements.clone(), &index).await {
+            Ok(r) => r,
+            Err(e) => {
+                for d in crate::self_heal::diagnostics_for_resolve_error(&requirements, &e) {
+                    collector.diagnostic(d);
+                }
+                return Err(eyre!(e.to_string()));
             }
-            return Err(eyre!(e.to_string()));
+        }
+    } else {
+        let client = PyPiClient::from_env(offline)
+            .map_err(|e| eyre!("failed to init pypi client: {}", e))?;
+        collector.info(format!(
+            "Using PyPI index {} (offline: {})",
+            client.index_url(),
+            offline
+        ));
+        let index = PyPiIndex::new(client);
+        match resolve(requirements.clone(), &index).await {
+            Ok(r) => r,
+            Err(e) => {
+                for d in crate::self_heal::diagnostics_for_resolve_error(&requirements, &e) {
+                    collector.diagnostic(d);
+                }
+                return Err(eyre!(e.to_string()));
+            }
         }
     };
 

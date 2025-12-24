@@ -218,14 +218,11 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
   - Current: `pyproject.toml` + `pybun` Python パッケージを追加し、PyPI shim がリリース manifest から対象 asset を取得→SHA256/署名検証→解凍→実行するフローを実装。`PYBUN_PYPI_MANIFEST`/`PYBUN_PYPI_CHANNEL`/`PYBUN_PYPI_NO_VERIFY`/`PYBUN_PYPI_OFFLINE` を用意し、キャッシュ済みバイナリへフォールバック可能。`pybun` エントリポイントは引数をそのまま Rust バイナリに渡す。
   - Tests: `python3 -m unittest pybun.tests.test_bootstrap`, `cargo test pypi_shim`.
 
-- PR6.9: PyPI 連携（Simple API/JSON index）
+- [DONE] PR6.9: PyPI 連携（Simple API/JSON index）
   - Goal: `pybun install/add` が `--index` なしで PyPI から依存解決できるようにする。
   - Depends on: PR1.2 (resolver core), PR5.2 (wheel preference).
-  - Implementation:
-    - PyPI Simple API (`https://pypi.org/simple`) の取得 + キャッシュ層を実装（ETag/Last-Modified 対応）。
-    - JSON index 生成（`--format=json` での診断/解決木）と `--offline` フォールバック。
-    - `--index` 未指定時のデフォルトを PyPI にし、`--index` はカスタムリポジトリ用に残す。
-  - Tests: PyPI をモックする integration（固定 fixture + HTTP server）、`--offline` でキャッシュ未ヒット時の失敗を検証。
+  - Current: デフォルトで PyPI JSON API を使用する `PyPiIndex` を追加（ETag/Last-Modified キャッシュ、環境変数 `PYBUN_PYPI_BASE_URL`/`PYBUN_PYPI_CACHE_DIR` でエンドポイント・キャッシュを切替）。`--offline` でキャッシュ専用モードに入り、キャッシュが無い場合は明示的に失敗する。`pybun install` は `--index` 省略時に PyPI を選択し、ローカル JSON インデックスも従来通りサポート。
+  - Tests: 新規 `tests/pypi_integration.rs` でデフォルト PyPI 解決、キャッシュを使ったオフライン再実行、キャッシュ無しオフライン失敗をモックサーバーで検証。`cargo test`, `just lint` 実行済み。
 
 ### M7: GA Launch / Release Readiness
 - PR7.1: API/JSON schema freeze + compat tests
