@@ -48,9 +48,7 @@ fn pypi_shim_bootstraps_from_manifest() {
         return;
     }
 
-    let tar_path = temp
-        .path()
-        .join(format!("pybun-{}.tar.gz", target));
+    let tar_path = temp.path().join(format!("pybun-{}.tar.gz", target));
     let dir_name = bin_dir.file_name().expect("dir name");
     let status = Command::new("tar")
         .args([
@@ -79,12 +77,13 @@ fn pypi_shim_bootstraps_from_manifest() {
             }
         ]
     });
-    fs::write(&manifest_path, serde_json::to_string_pretty(&manifest).unwrap()).unwrap();
+    fs::write(
+        &manifest_path,
+        serde_json::to_string_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
 
-    let python_available = Command::new("python3")
-        .arg("--version")
-        .output()
-        .is_ok();
+    let python_available = Command::new("python3").arg("--version").output().is_ok();
     if !python_available {
         eprintln!("python3 not available; skipping pypi shim test");
         return;
