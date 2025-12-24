@@ -209,13 +209,23 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
   - Current: `scripts/release/generate_package_managers.py` で Homebrew Formula / Scoop manifest / winget manifest を生成。`Formula/pybun.rb` / `bucket/pybun.json` / `winget/pybun.yaml` をリポジトリに追加し、タグリリース時にPRで自動更新するワークフローを追加。
   - Tests: `tests/package_managers.rs`（Python unit + generator integration）を追加。CI で macOS/Linux の `brew install`（tap）を smoke、Windows runner で `winget validate` を実行。
 
-- PR6.8: PyPI “shim” distribution (pip/pipx entry) aligned with signed releases
+- [DONE] PR6.8: PyPI “shim” distribution (pip/pipx entry) aligned with signed releases
   - Goal: Python ユーザーが `pipx install pybun` / `pip install pybun` で導入できる入口を用意しつつ、実体は署名付きリリース成果物を利用する。
   - Depends on: PR6.5 (manifest), PR6.6 (install logic).
   - Implementation:
     - Python パッケージ `pybun` を追加し、`pybun` コマンドは “署名付きリリースの bootstrap” を行う（OS/Arch 判定→ダウンロード→検証→実行/配置）。
     - 可能なら platform wheel にバイナリ同梱（サイズ/審査と相談）。難しければ “ダウンロード型” を基本にし、完全オフライン用は別チャネルで提供。
-  - Tests: `pipx install .` で `pybun --version` まで動く integration（ネットワークはモック/fixture でも可）。
+  - Current: `pyproject.toml` + `pybun` Python パッケージを追加し、PyPI shim がリリース manifest から対象 asset を取得→SHA256/署名検証→解凍→実行するフローを実装。`PYBUN_PYPI_MANIFEST`/`PYBUN_PYPI_CHANNEL`/`PYBUN_PYPI_NO_VERIFY`/`PYBUN_PYPI_OFFLINE` を用意し、キャッシュ済みバイナリへフォールバック可能。`pybun` エントリポイントは引数をそのまま Rust バイナリに渡す。
+  - Tests: `python3 -m unittest pybun.tests.test_bootstrap`, `cargo test pypi_shim`.
+
+- PR6.9: PyPI 連携（Simple API/JSON index）
+  - Goal: `pybun install/add` が `--index` なしで PyPI から依存解決できるようにする。
+  - Depends on: PR1.2 (resolver core), PR5.2 (wheel preference).
+  - Implementation:
+    - PyPI Simple API (`https://pypi.org/simple`) の取得 + キャッシュ層を実装（ETag/Last-Modified 対応）。
+    - JSON index 生成（`--format=json` での診断/解決木）と `--offline` フォールバック。
+    - `--index` 未指定時のデフォルトを PyPI にし、`--index` はカスタムリポジトリ用に残す。
+  - Tests: PyPI をモックする integration（固定 fixture + HTTP server）、`--offline` でキャッシュ未ヒット時の失敗を検証。
 
 ### Benchmark Analysis & Optimization Roadmap
 
