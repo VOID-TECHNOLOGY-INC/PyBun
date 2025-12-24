@@ -227,6 +227,28 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
     - `--index` 未指定時のデフォルトを PyPI にし、`--index` はカスタムリポジトリ用に残す。
   - Tests: PyPI をモックする integration（固定 fixture + HTTP server）、`--offline` でキャッシュ未ヒット時の失敗を検証。
 
+### M7: GA Launch / Release Readiness
+- PR7.1: API/JSON schema freeze + compat tests
+  - Goal: CLI flags/env/exit codes と JSON schema v1 を GA で凍結し、ヘルプ/JSONのスナップショットテストで後方互換を守る（`--format=json` 各コマンド、`pybun --help` diff ガード）。
+  - Depends on: M4 schema完成, M5/M6 release artifacts.
+  - Tests: ゴールデンテストを CI に追加（text+json）。`pybun schema check` のような自己診断を用意できると良い。
+- PR7.2: Telemetry UX/Privacy finalize（PR6.3完了後の仕上げ）
+  - Goal: デフォルト opt-in/opt-out ポリシーと UI を確定し、`pybun telemetry status|enable|disable` を提供。収集フィールドのレダクションリストと Privacy Notice を docs/README に記載。
+  - Depends on: PR6.3。
+  - Tests: E2E でデフォルト無送信、明示enable時のみ送信、env/flag優先順位、redaction が JSON/ログに反映されることを確認。
+- PR7.3: Supportability bundle + crash report hook
+  - Goal: `pybun doctor --bundle` でログ/設定/trace を収集し、`--upload`（エンドポイントは env/flag 指定）でサニタイズ済みバンドルを送信。クラッシュ時にダンプ収集の opt-in フローを追加。
+  - Depends on: PR5.4 doctor, PR4.4 observability.
+  - Tests: Bundle 内容のシークレットレダクション、オフライン時の graceful fallback、アップロード先モックでのE2Eを追加。
+- PR7.4: GA docs + release note automation
+  - Goal: docs を GA 用に再編（インストール導線/Homebrew/winget/PyPI shim/手動バイナリ、Quickstart、各コマンドのJSON例、sandbox/profile/test/build/MCPの運用ガイド）。タグから CHANGELOG/release notes を自動生成し、アップグレードガイド（pre-GA→GA）を用意。
+  - Depends on: M6.6–6.8 チャネル整備。
+  - Tests: ドキュメントlint/リンクチェック、README のワンライナーが最新リリース manifest で成功する smoke。
+- PR7.5: Security/compliance sign-off
+  - Goal: リリース前に `cargo audit`/`pip-audit`/license scan/SBOM 署名を CI gate にし、SLSA/provenance と minisign 鍵ローテーション手順を SECURITY.md に追加。脆弱性報告窓口/SLAs を明記（`SECURITY.md`/`SECURITY.txt`）。
+  - Depends on: PR5.3, PR6.5。
+  - Tests: CI で audit ジョブ必須化、リリース artifact に SBOM/provenance/署名が揃っていることを検証する smoke。
+
 ### Benchmark Analysis & Optimization Roadmap
 
 **ベンチマーク結果サマリー (2025-12-14, PR-OPT1後)**:
