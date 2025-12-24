@@ -41,6 +41,14 @@ irm https://raw.githubusercontent.com/pybun/pybun/main/scripts/install.ps1 | iex
 ```
 
 ```bash
+# PyPI shim (pipx / pip)
+pipx install pybun
+# or
+pip install --user pybun
+```
+The PyPI shim downloads and verifies the signed release binary on first run.
+
+```bash
 # Development (from source)
 cargo install --path .
 ```
