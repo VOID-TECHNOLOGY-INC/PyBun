@@ -248,6 +248,11 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
   - Goal: リリース前に `cargo audit`/`pip-audit`/license scan/SBOM 署名を CI gate にし、SLSA/provenance と minisign 鍵ローテーション手順を SECURITY.md に追加。脆弱性報告窓口/SLAs を明記（`SECURITY.md`/`SECURITY.txt`）。
   - Depends on: PR5.3, PR6.5。
   - Tests: CI で audit ジョブ必須化、リリース artifact に SBOM/provenance/署名が揃っていることを検証する smoke。
+- PR7.6: デフォルト別名の配布で Bun `pybun` との衝突を回避
+  - Goal: 公式で衝突回避用の別名（例: `pybun-rs`/`pybun-cli`）を全チャネルに同梱し、PATH 優先順位に依存せずに併存できるようにする。
+  - Depends on: PR6.7 パッケージマネージャ導線, PR6.8 PyPI shim。
+  - Implementation: install.sh/PowerShell の symlink/launcher 作成を追加、Homebrew Formula/Scoop/winget manifest に別名を登録、PyPI shim で追加 console_script を提供。README/Quickstart に別名と衝突時の案内を追記し、既存 `pybun` が Bun の場合に warning を出すオプションを検討。
+  - Tests: install script dry-run で別名作成を確認、packaging テストで alias バイナリが配置されることを検証、衝突時の warning 表示が出ることを E2E で確認。
 
 ### Benchmark Analysis & Optimization Roadmap
 
