@@ -412,10 +412,11 @@ fn parse_requires_dist(raw: String) -> Option<Requirement> {
     // Split marker and requirement
     let mut iter = raw.splitn(2, ';');
     let req_part = iter.next()?.trim();
-    if let Some(marker) = iter.next() {
-        if !marker_allows(marker, &py_version) {
-            return None;
-        }
+    if iter
+        .next()
+        .is_some_and(|marker| !marker_allows(marker, &py_version))
+    {
+        return None;
     }
 
     let without_extras = req_part.split('[').next().unwrap_or("").trim();
@@ -441,12 +442,10 @@ fn marker_allows(marker: &str, py_version: &str) -> bool {
     }
 
     // Handle simple python_version comparisons; if parsing fails, allow by default
-    if marker.contains("python_version") {
-        if let Some(result) = eval_python_version_marker(&marker, py_version) {
-            if !result {
-                return false;
-            }
-        }
+    if marker.contains("python_version")
+        && matches!(eval_python_version_marker(&marker, py_version), Some(false))
+    {
+        return false;
     }
 
     true
@@ -494,22 +493,6 @@ fn version_tuple(s: &str) -> (u64, u64, u64) {
     (parts[0], parts[1], parts[2])
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn marker_rejects_extra() {
-        assert!(!marker_allows(r#"extra == "cffi""#, "3.11"));
-    }
-
-    #[test]
-    fn marker_respects_python_version() {
-        assert!(!marker_allows(r#"python_version >= "3.14""#, "3.11"));
-        assert!(marker_allows(r#"python_version < "3.14""#, "3.11"));
-    }
-}
-
 fn wheel_platforms(filename: &str) -> Vec<String> {
     if !filename.ends_with(".whl") {
         return Vec::new();
@@ -525,4 +508,20 @@ fn wheel_platforms(filename: &str) -> Vec<String> {
     }
     let platform = components.last().unwrap_or(&"any").to_string();
     vec![platform]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn marker_rejects_extra() {
+        assert!(!marker_allows(r#"extra == "cffi""#, "3.11"));
+    }
+
+    #[test]
+    fn marker_respects_python_version() {
+        assert!(!marker_allows(r#"python_version >= "3.14""#, "3.11"));
+        assert!(marker_allows(r#"python_version < "3.14""#, "3.11"));
+    }
 }
