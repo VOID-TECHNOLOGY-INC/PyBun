@@ -330,6 +330,7 @@ pub async fn resolve(
     index: &impl PackageIndex,
 ) -> Result<Resolution, ResolveError> {
     let mut resolved: BTreeMap<String, ResolvedPackage> = BTreeMap::new();
+    let mut constraints: BTreeMap<String, Vec<Requirement>> = BTreeMap::new();
 
     // Requirements to process: (Requirement, RequestedBy)
     let mut pending: Vec<(Requirement, Option<String>)> =
@@ -378,18 +379,40 @@ pub async fn resolve(
 
         // 3. Process resolution logic (Synchronous part)
         for (req, requested_by) in current_batch {
+            constraints
+                .entry(req.name.clone())
+                .or_default()
+                .push(req.clone());
+
             // Check if already resolved
             if let Some(existing) = resolved.get(&req.name) {
                 if !req.is_satisfied_by(&existing.version) {
-                    let existing_chain = build_chain(&parents, &req.name);
-                    let requested_chain = build_requested_chain(&parents, &req.name, requested_by);
-                    return Err(ResolveError::Conflict {
-                        name: req.name.clone(),
-                        existing: existing.version.clone(),
-                        requested: req.constraint_display(),
-                        existing_chain,
-                        requested_chain,
-                    });
+                    // Try to select a version that satisfies all constraints seen so far
+                    let candidates = version_cache.get(&req.name).cloned().unwrap_or_default();
+                    if let Ok(pkg) = select_with_constraints(
+                        &constraints,
+                        &req.name,
+                        &candidates,
+                        requested_by.as_deref(),
+                    ) {
+                        resolved.insert(req.name.clone(), pkg.clone());
+                        // push dependencies of the newly selected package
+                        for dep in &pkg.dependencies {
+                            next_batch.push((dep.clone(), Some(pkg.name.clone())));
+                        }
+                        parents.insert(req.name.clone(), requested_by.clone());
+                    } else {
+                        let existing_chain = build_chain(&parents, &req.name);
+                        let requested_chain =
+                            build_requested_chain(&parents, &req.name, requested_by);
+                        return Err(ResolveError::Conflict {
+                            name: req.name.clone(),
+                            existing: existing.version.clone(),
+                            requested: req.constraint_display(),
+                            existing_chain,
+                            requested_chain,
+                        });
+                    }
                 }
                 continue;
             }
@@ -404,7 +427,12 @@ pub async fn resolve(
                     available_versions: vec![],
                 })?;
 
-            let pkg = select_package_from_candidates(&req, candidates, requested_by.as_deref())?;
+            let pkg = select_with_constraints(
+                &constraints,
+                &req.name,
+                candidates,
+                requested_by.as_deref(),
+            )?;
 
             // Add dependencies to next batch
             for dep in &pkg.dependencies {
@@ -421,39 +449,36 @@ pub async fn resolve(
     Ok(Resolution { packages: resolved })
 }
 
-fn select_package_from_candidates(
-    req: &Requirement,
+fn select_with_constraints(
+    reqs: &BTreeMap<String, Vec<Requirement>>,
+    name: &str,
     candidates: &[ResolvedPackage],
     requested_by: Option<&str>,
 ) -> Result<ResolvedPackage, ResolveError> {
-    match &req.spec {
-        VersionSpec::Exact(version) => candidates
-            .iter()
-            .find(|p| p.version == *version)
-            .cloned()
-            .ok_or_else(|| ResolveError::Missing {
-                name: req.name.clone(),
-                constraint: req.constraint_display(),
-                requested_by: requested_by.map(ToString::to_string),
-                available_versions: candidates.iter().map(|p| p.version.clone()).collect(),
-            }),
-        _ => {
-            let candidate = candidates
-                .iter()
-                .filter(|pkg| req.is_satisfied_by(&pkg.version))
-                .max_by(|a, b| version_cmp(&a.version, &b.version));
+    let constraints = reqs.get(name).cloned().unwrap_or_default();
+    let candidate = candidates
+        .iter()
+        .filter(|pkg| constraints.iter().all(|r| r.is_satisfied_by(&pkg.version)))
+        .max_by(|a, b| version_cmp(&a.version, &b.version));
 
-            if let Some(pkg) = candidate {
-                Ok(pkg.clone())
-            } else {
-                Err(ResolveError::Missing {
-                    name: req.name.clone(),
-                    constraint: req.constraint_display(),
-                    requested_by: requested_by.map(ToString::to_string),
-                    available_versions: candidates.iter().map(|p| p.version.clone()).collect(),
-                })
-            }
-        }
+    if let Some(pkg) = candidate {
+        Ok(pkg.clone())
+    } else {
+        let constraint_display = if constraints.is_empty() {
+            "*".to_string()
+        } else {
+            constraints
+                .iter()
+                .map(|r| r.constraint_display())
+                .collect::<Vec<_>>()
+                .join(" & ")
+        };
+        Err(ResolveError::Missing {
+            name: name.to_string(),
+            constraint: constraint_display,
+            requested_by: requested_by.map(ToString::to_string),
+            available_versions: candidates.iter().map(|p| p.version.clone()).collect(),
+        })
     }
 }
 
@@ -597,7 +622,7 @@ fn parse_version_relaxed(input: &str) -> Option<Version> {
     }
     let prefix_norm = parts[..3].join(".");
     let suffix_norm = suffix
-        .trim_start_matches(|c| c == '-' || c == '_' || c == '.')
+        .trim_start_matches(['-', '_', '.'])
         .to_ascii_lowercase();
     let semver_str = if suffix_norm.is_empty() {
         prefix_norm
