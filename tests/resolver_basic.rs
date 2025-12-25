@@ -182,6 +182,21 @@ async fn compatible_release_major_minor_only() {
 }
 
 #[tokio::test]
+async fn relaxed_semver_handles_two_segment_requirement() {
+    // >=3.7 should accept 3.10.8 even though the specifier omits patch
+    let mut index = InMemoryIndex::default();
+    index.add("root", "1.0.0", ["lib>=3.7"]);
+    index.add("lib", "3.10.8", Vec::<&str>::new());
+    index.add("lib", "3.6.9", Vec::<&str>::new());
+
+    let resolution = resolve(vec![Requirement::exact("root", "1.0.0")], &index)
+        .await
+        .unwrap();
+    let lib = resolution.packages.get("lib").expect("lib resolved");
+    assert_eq!(lib.version, "3.10.8");
+}
+
+#[tokio::test]
 async fn errors_when_no_version_meets_maximum() {
     let mut index = InMemoryIndex::default();
     index.add("app", "1.0.0", ["lib<1.0.0"]);

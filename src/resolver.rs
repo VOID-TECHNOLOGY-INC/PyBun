@@ -563,9 +563,21 @@ fn build_requested_chain(
 
 /// Compare two version strings, returning their ordering.
 fn compare_versions(a: &str, b: &str) -> Ordering {
-    match (Version::parse(a), Version::parse(b)) {
-        (Ok(left), Ok(right)) => left.cmp(&right),
+    match (parse_version_relaxed(a), parse_version_relaxed(b)) {
+        (Some(left), Some(right)) => left.cmp(&right),
         _ => a.cmp(b),
+    }
+}
+
+fn parse_version_relaxed(input: &str) -> Option<Version> {
+    if let Ok(v) = Version::parse(input) {
+        return Some(v);
+    }
+    let parts: Vec<&str> = input.split('.').collect();
+    match parts.len() {
+        1 => Version::parse(&format!("{}.0.0", input)).ok(),
+        2 => Version::parse(&format!("{}.0", input)).ok(),
+        _ => None,
     }
 }
 
