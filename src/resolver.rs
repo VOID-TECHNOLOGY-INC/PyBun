@@ -573,12 +573,38 @@ fn parse_version_relaxed(input: &str) -> Option<Version> {
     if let Ok(v) = Version::parse(input) {
         return Some(v);
     }
-    let parts: Vec<&str> = input.split('.').collect();
-    match parts.len() {
-        1 => Version::parse(&format!("{}.0.0", input)).ok(),
-        2 => Version::parse(&format!("{}.0", input)).ok(),
-        _ => None,
+    // Split into numeric prefix and optional suffix (rc, a, b, etc.)
+    let mut prefix = String::new();
+    let mut suffix = String::new();
+    for (idx, ch) in input.char_indices() {
+        if ch.is_ascii_digit() || ch == '.' {
+            prefix.push(ch);
+        } else {
+            suffix = input[idx..].to_string();
+            break;
+        }
     }
+    if prefix.is_empty() {
+        return None;
+    }
+    let mut parts: Vec<&str> = prefix
+        .trim_matches('.')
+        .split('.')
+        .filter(|p| !p.is_empty())
+        .collect();
+    while parts.len() < 3 {
+        parts.push("0");
+    }
+    let prefix_norm = parts[..3].join(".");
+    let suffix_norm = suffix
+        .trim_start_matches(|c| c == '-' || c == '_' || c == '.')
+        .to_ascii_lowercase();
+    let semver_str = if suffix_norm.is_empty() {
+        prefix_norm
+    } else {
+        format!("{}-{}", prefix_norm, suffix_norm)
+    };
+    Version::parse(&semver_str).ok()
 }
 
 /// Check if a version satisfies the compatible release constraint (~=).

@@ -197,6 +197,21 @@ async fn relaxed_semver_handles_two_segment_requirement() {
 }
 
 #[tokio::test]
+async fn pre_release_treated_as_less_than_final() {
+    // <2.4 should allow 2.4.0rc1 (pre-release) over 2.3.x
+    let mut index = InMemoryIndex::default();
+    index.add("root", "1.0.0", ["lib<2.4"]);
+    index.add("lib", "2.4.0rc1", Vec::<&str>::new());
+    index.add("lib", "2.3.5", Vec::<&str>::new());
+
+    let resolution = resolve(vec![Requirement::exact("root", "1.0.0")], &index)
+        .await
+        .unwrap();
+    let lib = resolution.packages.get("lib").expect("lib resolved");
+    assert_eq!(lib.version, "2.4.0rc1");
+}
+
+#[tokio::test]
 async fn errors_when_no_version_meets_maximum() {
     let mut index = InMemoryIndex::default();
     index.add("app", "1.0.0", ["lib<1.0.0"]);
