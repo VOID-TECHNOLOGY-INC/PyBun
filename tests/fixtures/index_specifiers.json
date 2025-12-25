@@ -25,6 +25,21 @@
     "dependencies": ["lib~=1.4.0"]
   },
   {
+    "name": "root-numpy",
+    "version": "1.0.0",
+    "dependencies": ["numpy<2.4"]
+  },
+  {
+    "name": "numpy",
+    "version": "2.3.5",
+    "dependencies": []
+  },
+  {
+    "name": "numpy",
+    "version": "2.4.0",
+    "dependencies": []
+  },
+  {
     "name": "lib",
     "version": "1.0.0",
     "dependencies": []

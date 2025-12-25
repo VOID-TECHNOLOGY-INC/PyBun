@@ -256,6 +256,31 @@ fn install_with_compatible_release_specifier() {
     assert_eq!(lib.version, "1.4.5", "~=1.4.0 should select 1.4.5");
 }
 
+#[test]
+fn install_resolves_under_upper_bound_with_higher_version_available() {
+    // numpy<2.4 should pick 2.3.5 even if 2.4.0 exists
+    let temp = tempdir().unwrap();
+    let lock_path = temp.path().join("pybun.lockb");
+    let index = index_specifiers_path();
+
+    bin()
+        .args([
+            "install",
+            "--index",
+            index.to_str().unwrap(),
+            "--require",
+            "root-numpy==1.0.0",
+            "--lock",
+            lock_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let lock = Lockfile::load_from_path(&lock_path).expect("lock loads");
+    let numpy = lock.packages.get("numpy").expect("numpy entry");
+    assert_eq!(numpy.version, "2.3.5");
+}
+
 // =============================================================================
 // PR1.8: Install from pyproject.toml (normal flow)
 // =============================================================================

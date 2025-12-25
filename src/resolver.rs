@@ -449,15 +449,6 @@ pub async fn resolve(
     Ok(Resolution { packages: resolved })
 }
 
-fn select_package_from_candidates(
-    reqs: &BTreeMap<String, Vec<Requirement>>,
-    name: &str,
-    candidates: &[ResolvedPackage],
-    requested_by: Option<&str>,
-) -> Result<ResolvedPackage, ResolveError> {
-    select_with_constraints(reqs, name, candidates, requested_by)
-}
-
 fn select_with_constraints(
     reqs: &BTreeMap<String, Vec<Requirement>>,
     name: &str,
@@ -631,7 +622,7 @@ fn parse_version_relaxed(input: &str) -> Option<Version> {
     }
     let prefix_norm = parts[..3].join(".");
     let suffix_norm = suffix
-        .trim_start_matches(|c| c == '-' || c == '_' || c == '.')
+        .trim_start_matches(['-', '_', '.'])
         .to_ascii_lowercase();
     let semver_str = if suffix_norm.is_empty() {
         prefix_norm
