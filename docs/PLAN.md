@@ -250,6 +250,11 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
   - Depends on: PR6.7 パッケージマネージャ導線, PR6.8 PyPI shim。
   - Implementation: install.sh/PowerShell の symlink/launcher 作成を追加、Homebrew Formula/Scoop/winget manifest に別名を登録、PyPI shim で追加 console_script を提供。README/Quickstart に別名と衝突時の案内を追記し、既存 `pybun` が Bun の場合に warning を出すオプションを検討。
   - Tests: install script dry-run で別名作成を確認、packaging テストで alias バイナリが配置されることを検証、衝突時の warning 表示が出ることを E2E で確認。
+- PR7.7: CLI 進捗UI（Bun 風の途中経過表示）
+  - Goal: `pybun install/add/test/build/run` などの長い処理で、解決/ダウンロード/ビルド/配置の進捗を人間向けに可視化。TTY ではスピナー/プログレスバー、非TTYや `--format=json` では抑制。
+  - Depends on: PR4.1 グローバルイベントスキーマ, PR4.4 observability。
+  - Implementation: JSON イベントストリームから進捗レンダラーを構成（resolve/download/build/install）。`--progress=auto|always|never` + `--no-progress` エイリアス、`PYBUN_PROGRESS` を追加。`--format=json` は UI を無効化しイベントのみ出力。
+  - Tests: text 出力のゴールデン/スナップショット、`--no-progress` の抑制、TTY 判定、JSON イベントとの整合性。
 
 ### Benchmark Analysis & Optimization Roadmap
 
