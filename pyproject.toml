@@ -17,6 +17,7 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
 ]
 dependencies = [
+    "cffi>=1.15,<2",
     "numpy",
     "pandas",
     "scikit-image",

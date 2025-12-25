@@ -407,8 +407,18 @@ fn normalize_base(input: &str) -> Result<Url, PyPiError> {
 }
 
 fn parse_requires_dist(raw: String) -> Option<Requirement> {
-    let without_marker = raw.split(';').next()?.trim();
-    let without_extras = without_marker.split('[').next().unwrap_or("").trim();
+    let py_version = std::env::var("PYBUN_PYPI_PYTHON_VERSION").unwrap_or_else(|_| "3.11".into());
+
+    // Split marker and requirement
+    let mut iter = raw.splitn(2, ';');
+    let req_part = iter.next()?.trim();
+    if let Some(marker) = iter.next() {
+        if !marker_allows(marker, &py_version) {
+            return None;
+        }
+    }
+
+    let without_extras = req_part.split('[').next().unwrap_or("").trim();
 
     if let Some((name, rest)) = without_extras.split_once('(') {
         let spec = rest.trim_end_matches(')').trim();
@@ -419,6 +429,84 @@ fn parse_requires_dist(raw: String) -> Option<Requirement> {
         let normalized = without_extras.replace(' ', "");
         let first = normalized.split(',').next().unwrap_or("").trim();
         Requirement::from_str(first).ok()
+    }
+}
+
+fn marker_allows(marker: &str, py_version: &str) -> bool {
+    let marker = marker.to_lowercase();
+
+    // Skip extras we didn't request
+    if marker.contains("extra ==") || marker.contains("extra==") || marker.contains("extra===") {
+        return false;
+    }
+
+    // Handle simple python_version comparisons; if parsing fails, allow by default
+    if marker.contains("python_version") {
+        if let Some(result) = eval_python_version_marker(&marker, py_version) {
+            if !result {
+                return false;
+            }
+        }
+    }
+
+    true
+}
+
+fn eval_python_version_marker(marker: &str, py_version: &str) -> Option<bool> {
+    // Support simple markers like python_version >= "3.10", < "3.14"
+    let ops = ["<=", ">=", "==", "!=", "<", ">"];
+    for op in ops {
+        if let Some(idx) = marker.find(op) {
+            if !marker[..idx].contains("python_version") {
+                continue;
+            }
+            let rhs = marker[idx + op.len()..].trim();
+            let rhs = rhs.trim_matches(|c: char| c == '"' || c == '\'' || c.is_whitespace());
+            return Some(compare_versions(py_version, rhs, op));
+        }
+    }
+    None
+}
+
+fn compare_versions(lhs: &str, rhs: &str, op: &str) -> bool {
+    let lhs_parts = version_tuple(lhs);
+    let rhs_parts = version_tuple(rhs);
+    match op {
+        "==" => lhs_parts == rhs_parts,
+        "!=" => lhs_parts != rhs_parts,
+        ">=" => lhs_parts >= rhs_parts,
+        "<=" => lhs_parts <= rhs_parts,
+        ">" => lhs_parts > rhs_parts,
+        "<" => lhs_parts < rhs_parts,
+        _ => true,
+    }
+}
+
+fn version_tuple(s: &str) -> (u64, u64, u64) {
+    let mut parts = s
+        .split('.')
+        .take(3)
+        .map(|p| p.parse().unwrap_or(0))
+        .collect::<Vec<_>>();
+    while parts.len() < 3 {
+        parts.push(0);
+    }
+    (parts[0], parts[1], parts[2])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn marker_rejects_extra() {
+        assert!(!marker_allows(r#"extra == "cffi""#, "3.11"));
+    }
+
+    #[test]
+    fn marker_respects_python_version() {
+        assert!(!marker_allows(r#"python_version >= "3.14""#, "3.11"));
+        assert!(marker_allows(r#"python_version < "3.14""#, "3.11"));
     }
 }
 
