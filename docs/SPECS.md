@@ -187,6 +187,7 @@ CLI の出力を構造化データとして提供するモード。
 ## 6\. CLI インターフェース仕様 (CLI Reference)
 
 Bun の UX を踏襲し、短く直感的なコマンド体系とする。
+テキスト出力では、解決/ダウンロード/ビルド/配置の **途中経過** を逐次表示し、TTY ではスピナーやプログレスバーで視認性を高める。`--progress=auto|always|never`（または `--no-progress`）で制御し、`--format=json` の場合は UI を無効化してイベントのみ出力する。
 
 | コマンド | 説明 | 既存ツール対応 |
 | :--- | :--- | :--- |
@@ -201,7 +202,7 @@ Bun の UX を踏襲し、短く直感的なコマンド体系とする。
 | `pybun self update` | バイナリアップデート（署名検証付） | - |
 | `pybun mcp serve` | MCP サーバーとして待受（stdio先行、HTTPは段階導入） | - |
 
-**共通フラグ例:** `--format=json|text`, `--profile`, `--python 3.11`, `--cache-dir`, `--offline`, `--no-lock`, `--verbose`, `--quiet`.
+**共通フラグ例:** `--format=json|text`, `--profile`, `--python 3.11`, `--cache-dir`, `--offline`, `--no-lock`, `--verbose`, `--quiet`, `--progress=auto|always|never`.
 
 -----
 
