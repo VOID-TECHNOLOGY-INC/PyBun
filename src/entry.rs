@@ -135,23 +135,17 @@ mod tests {
     #[test]
     fn installs_color_eyre_for_verbose_flag() {
         let cli = test_cli(true);
-        with_env_vars(
-            &[("PYBUN_TRACE", None), ("RUST_BACKTRACE", None)],
-            || {
-                assert!(should_install_color_eyre(&cli));
-            },
-        );
+        with_env_vars(&[("PYBUN_TRACE", None), ("RUST_BACKTRACE", None)], || {
+            assert!(should_install_color_eyre(&cli));
+        });
     }
 
     #[test]
     fn skips_color_eyre_by_default() {
         let cli = test_cli(false);
-        with_env_vars(
-            &[("PYBUN_TRACE", None), ("RUST_BACKTRACE", None)],
-            || {
-                assert!(!should_install_color_eyre(&cli));
-            },
-        );
+        with_env_vars(&[("PYBUN_TRACE", None), ("RUST_BACKTRACE", None)], || {
+            assert!(!should_install_color_eyre(&cli));
+        });
     }
 
     #[test]
