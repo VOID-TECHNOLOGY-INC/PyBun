@@ -1,9 +1,32 @@
 use clap::Parser;
-use pybun::{cli::Cli, commands::execute};
+use color_eyre::eyre::{Result, WrapErr, eyre};
+use pybun::{cli::Cli, commands::execute, entry};
 
-#[tokio::main]
-async fn main() -> color_eyre::Result<()> {
-    color_eyre::install()?;
+fn main() -> Result<()> {
     let cli = Cli::parse();
-    execute(cli).await
+    if entry::should_install_color_eyre(&cli) {
+        color_eyre::install()?;
+    }
+
+    let stack_size = entry::runtime_stack_size();
+    let main2 = move || -> Result<()> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .thread_stack_size(stack_size)
+            .build()
+            .wrap_err("failed to build tokio runtime")?;
+        let result = runtime.block_on(execute(cli));
+        runtime.shutdown_background();
+        result
+    };
+
+    let handle = std::thread::Builder::new()
+        .name("pybun-main".to_string())
+        .stack_size(stack_size)
+        .spawn(main2)
+        .wrap_err("tokio executor thread spawn failed")?;
+
+    handle
+        .join()
+        .map_err(|_| eyre!("tokio executor thread panicked"))?
 }
