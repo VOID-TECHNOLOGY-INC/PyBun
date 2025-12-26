@@ -7,3 +7,5 @@ __pycache__/
 
 # Benchmark results (generated)
 scripts/benchmark/results/
+
+ref/uv

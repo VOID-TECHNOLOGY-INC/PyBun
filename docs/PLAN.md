@@ -229,6 +229,11 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
   - Goal: CLI flags/env/exit codes と JSON schema v1 を GA で凍結し、ヘルプ/JSONのスナップショットテストで後方互換を守る（`--format=json` 各コマンド、`pybun --help` diff ガード）。
   - Depends on: M4 schema完成, M5/M6 release artifacts.
   - Tests: ゴールデンテストを CI に追加（text+json）。`pybun schema check` のような自己診断を用意できると良い。
+  - Implementation (Tasks):
+    - [ ] `pybun schema print|check` を追加（schema v1 の出力 + 破壊的変更検知）
+    - [ ] `pybun --help` / 各サブコマンド help の text snapshot を追加（diff guard）
+    - [ ] 代表コマンドの JSON snapshot を追加（envelope/version/events/diagnostics を固定）
+    - [ ] CI に「snapshot差分があれば失敗」を追加（GA後の互換性維持）
 - PR7.2: Telemetry UX/Privacy finalize（PR6.3完了後の仕上げ）
   - Goal: デフォルト opt-in/opt-out ポリシーと UI を確定し、`pybun telemetry status|enable|disable` を提供。収集フィールドのレダクションリストと Privacy Notice を docs/README に記載。
   - Depends on: PR6.3。
@@ -237,10 +242,20 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
   - Goal: `pybun doctor --bundle` でログ/設定/trace を収集し、`--upload`（エンドポイントは env/flag 指定）でサニタイズ済みバンドルを送信。クラッシュ時にダンプ収集の opt-in フローを追加。
   - Depends on: PR5.4 doctor, PR4.4 observability.
   - Tests: Bundle 内容のシークレットレダクション、オフライン時の graceful fallback、アップロード先モックでのE2Eを追加。
+  - Implementation (Tasks):
+    - [ ] `pybun doctor --bundle <path>` を実装（logs/config/trace/versions を収集）
+    - [ ] バンドル内の secrets を redact（env/token/URL credential 等のルール化）
+    - [ ] `pybun doctor --upload` を実装（エンドポイントは env/flag、デフォルト無送信）
+    - [ ] クラッシュ時の opt-in 収集フロー（ユーザー確認→保存/送信）
 - PR7.4: GA docs + release note automation
   - Goal: docs を GA 用に再編（インストール導線/Homebrew/winget/PyPI shim/手動バイナリ、Quickstart、各コマンドのJSON例、sandbox/profile/test/build/MCPの運用ガイド）。タグから CHANGELOG/release notes を自動生成し、アップグレードガイド（pre-GA→GA）を用意。
   - Depends on: M6.6–6.8 チャネル整備。
   - Tests: ドキュメントlint/リンクチェック、README のワンライナーが最新リリース manifest で成功する smoke。
+  - Implementation (Tasks):
+    - [ ] Quickstart（install → init → add/install → run/test/build）を追加
+    - [ ] 各コマンドの `--format=json` 出力例（最小 + 失敗例）を追加
+    - [ ] `--sandbox` / `--profile` / `pybun mcp serve --stdio` の運用ガイドを追加
+    - [ ] pre-GA→GA のアップグレードガイド（breaking changes, migration）を追加
 - PR7.5: Security/compliance sign-off
   - Goal: リリース前に `cargo audit`/`pip-audit`/license scan/SBOM 署名を CI gate にし、SLSA/provenance と minisign 鍵ローテーション手順を SECURITY.md に追加。脆弱性報告窓口/SLAs を明記（`SECURITY.md`/`SECURITY.txt`）。
   - Depends on: PR5.3, PR6.5。
@@ -250,11 +265,28 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
   - Depends on: PR6.7 パッケージマネージャ導線, PR6.8 PyPI shim。
   - Implementation: install.sh/PowerShell の symlink/launcher 作成を追加、Homebrew Formula/Scoop/winget manifest に別名を登録、PyPI shim で追加 console_script を提供。README/Quickstart に別名と衝突時の案内を追記し、既存 `pybun` が Bun の場合に warning を出すオプションを検討。
   - Tests: install script dry-run で別名作成を確認、packaging テストで alias バイナリが配置されることを検証、衝突時の warning 表示が出ることを E2E で確認。
+  - Implementation (Tasks):
+    - [ ] 公式別名（`pybun-cli` 等）を配布物に同梱（symlink/launcher/console_script）
+    - [ ] install.sh / install.ps1 / Homebrew/Scoop/winget / PyPI shim の導線を統一
+    - [ ] Bun 側の `pybun` を検知した場合の警告（回避策: alias使用/優先順位）を追加
 - PR7.7: CLI 進捗UI（Bun 風の途中経過表示）
   - Goal: `pybun install/add/test/build/run` などの長い処理で、解決/ダウンロード/ビルド/配置の進捗を人間向けに可視化。TTY ではスピナー/プログレスバー、非TTYや `--format=json` では抑制。
   - Depends on: PR4.1 グローバルイベントスキーマ, PR4.4 observability。
   - Implementation: JSON イベントストリームから進捗レンダラーを構成（resolve/download/build/install）。`--progress=auto|always|never` + `--no-progress` エイリアス、`PYBUN_PROGRESS` を追加。`--format=json` は UI を無効化しイベントのみ出力。
   - Tests: text 出力のゴールデン/スナップショット、`--no-progress` の抑制、TTY 判定、JSON イベントとの整合性。
+  - Implementation (Tasks):
+    - [ ] Event → 進捗モデル（resolve/download/build/install）のマッピングを定義
+    - [ ] TTY時のみスピナー/プログレスを描画（`--progress`/`PYBUN_PROGRESS`で制御）
+    - [ ] `--format=json` では UI を完全無効化（イベントのみ）
+    - [ ] text出力の snapshot を追加（`--no-progress` 含む）
+
+- PR7.8: Perceived performance polish（GA体験のキビキビ感）
+  - Goal: “止まって見える/遅く感じる” を減らすため、起動/PEP723の体感を GA 基準まで引き上げる。
+  - Depends on: PR-OPT6a, PR-OPT7。
+  - Implementation (Tasks):
+    - [ ] PR-OPT6a（PEP 723 cold を `uv run` 委譲デフォルト化）をGA候補として仕上げ
+    - [ ] PR-OPT7（起動オーバーヘッド調査と改善）をGA候補として仕上げ
+    - [ ] ベンチの “UX基準” を定義し、回帰チェック（nightly/label）に組み込む
 
 ### Benchmark Analysis & Optimization Roadmap
 
@@ -361,6 +393,42 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
     3. iterations を 10 に増やし、外れ値を除外（trimmed mean）。
   - Expected: StdDev を 10ms 以下に安定化。
   - Priority: Low
+
+- [ ] PR-OPT9: CLI ランタイム/アロケータ最適化（uv の実装を踏襲）
+  - **背景**: uv は current-thread tokio runtime + `shutdown_background()` により、起動オーバーヘッドと “終了時に待たされる” 問題を避けている（例: `ref/uv/crates/uv/src/lib.rs:2522`）。また jemalloc/mimalloc を global allocator として有効化している（例: `ref/uv/crates/uv-performance-memory-allocator/src/lib.rs`）。
+  - **対策案**:
+    1. `#[tokio::main]` をやめ、`tokio::runtime::Builder::new_current_thread()` で明示的に runtime を構築（必要なら別スレッド + 大きめstack）。
+    2. 終了時に `runtime.shutdown_background()` を呼び、不要になったHTTPタスク等を待たない（体感改善/ハング回避）。
+    3. `color_eyre::install()` をデフォルトでは抑制し、`PYBUN_TRACE=1` / `RUST_BACKTRACE=1` / `--verbose` 等でのみ有効化（起動コスト削減）。
+    4. uv と同様に `jemalloc`/`mimalloc` を feature flag で導入し、リリースビルドでは既定有効化を検討。
+  - Expected: Simple startup の数ms改善 + 終了時の待ち/ハング低減。
+  - Priority: High
+
+- [ ] PR-OPT10: PyPI メタデータ取得の戦略変更（“全バージョン事前取得”の廃止）
+  - **背景**: 現状 `src/pypi.rs` は `pypi/{name}/json` の後に、全バージョンに対して `pypi/{name}/{version}/json` を並列取得し `requires_dist` を埋めている（= パッケージによってはリクエスト数が爆発）。uv は “必要な候補だけ” メタデータを取りに行く設計で、さらに wheel から `.dist-info/METADATA` をレンジリクエストで読むことで全ダウンロードを避けられる（例: `ref/uv/crates/uv-client/src/remote_metadata.rs`）。
+  - **対策案**:
+    1. 依存解決に必要なメタデータを **lazy fetch**（候補バージョンに対してオンデマンドに取得）へ切替。
+    2. キャッシュヒット時はネットワーク/JSONパースを避ける（PR-OPT11 と連携）。
+    3. 可能なら PEP 658 の dist-info metadata を優先、fallback として wheel の remote zip から METADATA 抽出（uv方式）。
+  - Expected: `pybun install` / resolve のネットワーク往復と総時間を大幅削減。
+  - Priority: High
+
+- [ ] PR-OPT11: HTTP キャッシュポリシー + バイナリキャッシュ（uv の `CachePolicy`/rkyv 方式を参考）
+  - **背景**: uv は HTTP キャッシュセマンティクスを `CachePolicy` として保持し、fast path では rkyv により “デシリアライズほぼ無し” で鮮度判定できる（例: `ref/uv/crates/uv-client/src/httpcache/mod.rs`, `ref/uv/crates/uv-client/src/cached_client.rs:782`）。PyBun の PyPI キャッシュは JSON pretty-print 保存のため、読み書き/パースが重い。
+  - **対策案**:
+    1. PyPIメタデータ/インデックスレスポンスは “raw bytes + cache policy” の単一ファイル形式で保存（JSON pretty を廃止）。
+    2. `Cache-Control: max-age` / ETag / 304 revalidate を正しく扱い、オフライン時の説明可能な失敗を維持。
+    3. キャッシュ読み込み・重いパースは `spawn_blocking` へ逃がし、current-thread runtime と共存できるようにする。
+  - Expected: Warm run のCPU時間削減 + PyPIへの不要な再問い合わせ減。
+  - Priority: Medium
+
+- [ ] PR-OPT12: 並列フェッチの重複排除（uv の `OnceMap` 方式）
+  - **背景**: uv は `OnceMap` により “同一キーのネットワーク取得は1回だけ” を保証し、並列解決時の重複リクエストを抑えている（例: `ref/uv/crates/uv-once-map/src/lib.rs:10`）。
+  - **対策案**:
+    1. PyPIメタデータ・wheelメタデータ・アーティファクトダウンロードに OnceMap/同等の仕組みを導入。
+    2. in-memory cache は `Mutex<HashMap>` から `DashMap`/OnceMap に移行し、ロック競合を削減。
+  - Expected: 解決/ダウンロードのネットワーク重複と待ち時間を削減。
+  - Priority: Medium
 
 ## Testing & CI Strategy
 - **Unit tests:** Rust crates for resolver, lockfile, module loader, test discovery; run on every PR.
