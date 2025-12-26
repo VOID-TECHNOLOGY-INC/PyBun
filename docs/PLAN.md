@@ -394,13 +394,15 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
   - Expected: StdDev を 10ms 以下に安定化。
   - Priority: Low
 
-- [ ] PR-OPT9: CLI ランタイム/アロケータ最適化（uv の実装を踏襲）
+- [DONE] PR-OPT9: CLI ランタイム/アロケータ最適化（uv の実装を踏襲）
   - **背景**: uv は current-thread tokio runtime + `shutdown_background()` により、起動オーバーヘッドと “終了時に待たされる” 問題を避けている（例: `ref/uv/crates/uv/src/lib.rs:2522`）。また jemalloc/mimalloc を global allocator として有効化している（例: `ref/uv/crates/uv-performance-memory-allocator/src/lib.rs`）。
   - **対策案**:
     1. `#[tokio::main]` をやめ、`tokio::runtime::Builder::new_current_thread()` で明示的に runtime を構築（必要なら別スレッド + 大きめstack）。
     2. 終了時に `runtime.shutdown_background()` を呼び、不要になったHTTPタスク等を待たない（体感改善/ハング回避）。
     3. `color_eyre::install()` をデフォルトでは抑制し、`PYBUN_TRACE=1` / `RUST_BACKTRACE=1` / `--verbose` 等でのみ有効化（起動コスト削減）。
     4. uv と同様に `jemalloc`/`mimalloc` を feature flag で導入し、リリースビルドでは既定有効化を検討。
+  - Current: CLI で current-thread tokio runtime を明示構築し、終了時に `shutdown_background()` を実行。`PYBUN_TRACE`/`RUST_BACKTRACE`/`--verbose` のときのみ `color_eyre` を有効化。`performance-allocator` feature で mimalloc/jemalloc を導入し default 有効化。
+  - Tests: `src/entry.rs` のユニットテストで `color_eyre` の有効化条件を検証。
   - Expected: Simple startup の数ms改善 + 終了時の待ち/ハング低減。
   - Priority: High
 

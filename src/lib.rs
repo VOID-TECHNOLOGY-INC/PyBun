@@ -3,8 +3,11 @@ pub mod cache;
 pub mod cli;
 pub mod commands;
 pub mod downloader;
+#[cfg(feature = "performance-allocator")]
+pub mod allocator;
 pub mod env;
 pub mod env_cache;
+pub mod entry;
 pub mod hot_reload;
 pub mod index;
 pub mod lazy_import;
