@@ -389,12 +389,15 @@ pub async fn resolve(
                 if !req.is_satisfied_by(&existing.version) {
                     // Try to select a version that satisfies all constraints seen so far
                     let candidates = version_cache.get(&req.name).cloned().unwrap_or_default();
-                    if let Ok(pkg) = select_with_constraints(
+                    if let Ok(mut pkg) = select_with_constraints(
                         &constraints,
                         &req.name,
                         &candidates,
                         requested_by.as_deref(),
                     ) {
+                        if let Some(fetched) = index.get(&pkg.name, &pkg.version).await? {
+                            pkg = fetched;
+                        }
                         resolved.insert(req.name.clone(), pkg.clone());
                         // push dependencies of the newly selected package
                         for dep in &pkg.dependencies {
@@ -427,12 +430,16 @@ pub async fn resolve(
                     available_versions: vec![],
                 })?;
 
-            let pkg = select_with_constraints(
+            let mut pkg = select_with_constraints(
                 &constraints,
                 &req.name,
                 candidates,
                 requested_by.as_deref(),
             )?;
+
+            if let Some(fetched) = index.get(&pkg.name, &pkg.version).await? {
+                pkg = fetched;
+            }
 
             // Add dependencies to next batch
             for dep in &pkg.dependencies {
