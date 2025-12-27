@@ -382,7 +382,7 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
   - Expected: Simple startup を 22ms 以下に。
   - Priority: Medium
 
-- [ ] PR-OPT8: ベンチマークスクリプト改善
+- [DONE] PR-OPT8: ベンチマークスクリプト改善
   - **分析**: B3.2_warm の高 StdDev (78ms) はベンチマーク手法に起因する可能性。
   - **問題**:
     1. PEP 723 スクリプトが `tempfile.TemporaryDirectory` に配置されるため、毎回パスが変わる。
@@ -397,6 +397,8 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
     7. 依存ダウンロードの影響を分離するため、依存を事前取得した状態（wheel cache あり）での cold を追加測定。
   - Expected: StdDev を 10ms 以下に安定化。
   - Priority: Low
+  - Current: PEP 723  fixture を `scripts/benchmark/fixtures/pep723.py` に固定し、B3.2 の cold/warm 前に pep723 envs と FS cache のクリアを実施（許可/対応OSのみ）。trimmed mean 用に `trim_ratio` を追加し、デフォルト iterations を 10 に増加。ベンチ結果メタデータに cache 状態を付与。
+  - Tests: `python3 -m unittest discover -s scripts/benchmark/tests`
 
 - [DONE] PR-OPT9: CLI ランタイム/アロケータ最適化（uv の実装を踏襲）
   - **背景**: uv は current-thread tokio runtime + `shutdown_background()` により、起動オーバーヘッドと “終了時に待たされる” 問題を避けている（例: `ref/uv/crates/uv/src/lib.rs:2522`）。また jemalloc/mimalloc を global allocator として有効化している（例: `ref/uv/crates/uv-performance-memory-allocator/src/lib.rs`）。

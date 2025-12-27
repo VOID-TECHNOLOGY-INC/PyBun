@@ -112,6 +112,7 @@ def lazy_import_benchmark(config: dict, scenario_config: dict, base_dir: Path) -
     general = config.get("general", {})
     iterations = general.get("iterations", 5)
     warmup = general.get("warmup", 1)
+    trim_ratio = scenario_config.get("trim_ratio", general.get("trim_ratio", 0.0))
     dry_run = config.get("dry_run", False)
     verbose = config.get("verbose", False)
     
@@ -145,6 +146,7 @@ def lazy_import_benchmark(config: dict, scenario_config: dict, base_dir: Path) -
                         cmd,
                         warmup=warmup,
                         iterations=iterations,
+                        trim_ratio=trim_ratio,
                     )
                     result.scenario = f"B6.1_heavy_{module}"
                     result.tool = "python"
@@ -178,6 +180,7 @@ print(f"{{(end - start) / 1e6:.2f}}")
                         warmup=warmup,
                         iterations=iterations,
                         env={"PYBUN_LAZY_IMPORT": "1"},
+                        trim_ratio=trim_ratio,
                     )
                     result.scenario = f"B6.1_heavy_{module}"
                     result.tool = "pybun_lazy"
@@ -203,6 +206,7 @@ print(f"{{(end - start) / 1e6:.2f}}")
                     cmd,
                     warmup=warmup,
                     iterations=iterations,
+                    trim_ratio=trim_ratio,
                 )
                 result.scenario = "B6.2_many_imports"
                 result.tool = "python"
@@ -222,6 +226,7 @@ print(f"{{(end - start) / 1e6:.2f}}")
                     warmup=warmup,
                     iterations=iterations,
                     env={"PYBUN_LAZY_IMPORT": "1"},
+                    trim_ratio=trim_ratio,
                 )
                 result.scenario = "B6.2_many_imports"
                 result.tool = "pybun_lazy"
@@ -272,6 +277,7 @@ print(f"import:{import_ms:.2f},access:{access_ms:.2f}")
                     cmd,
                     warmup=warmup,
                     iterations=iterations,
+                    trim_ratio=trim_ratio,
                 )
                 result.scenario = "B6.3_access_timing"
                 result.tool = "python"
@@ -290,6 +296,7 @@ print(f"import:{import_ms:.2f},access:{access_ms:.2f}")
                     warmup=warmup,
                     iterations=iterations,
                     env={"PYBUN_LAZY_IMPORT": "1"},
+                    trim_ratio=trim_ratio,
                 )
                 result.scenario = "B6.3_access_timing"
                 result.tool = "pybun_lazy"
@@ -297,4 +304,3 @@ print(f"import:{import_ms:.2f},access:{access_ms:.2f}")
                 print(f"  pybun lazy: {result.duration_ms:.2f}ms")
     
     return results
-

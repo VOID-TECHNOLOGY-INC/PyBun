@@ -143,6 +143,7 @@ def mcp_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
     general = config.get("general", {})
     iterations = general.get("iterations", 5)
     warmup = general.get("warmup", 1)
+    trim_ratio = scenario_config.get("trim_ratio", general.get("trim_ratio", 0.0))
     dry_run = config.get("dry_run", False)
     verbose = config.get("verbose", False)
     
@@ -254,6 +255,7 @@ def mcp_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
                 cmd,
                 warmup=warmup,
                 iterations=iterations,
+                trim_ratio=trim_ratio,
             )
             result.scenario = "B8.4_json_overhead"
             result.tool = "pybun_text"
@@ -273,6 +275,7 @@ def mcp_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
                 cmd,
                 warmup=warmup,
                 iterations=iterations,
+                trim_ratio=trim_ratio,
             )
             result.scenario = "B8.4_json_overhead"
             result.tool = "pybun_json"
@@ -286,4 +289,3 @@ def mcp_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
                 print(f"  JSON overhead: {overhead:.1f}%")
     
     return results
-

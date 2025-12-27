@@ -72,6 +72,7 @@ def module_find_benchmark(config: dict, scenario_config: dict, base_dir: Path) -
     general = config.get("general", {})
     iterations = general.get("iterations", 5)
     warmup = general.get("warmup", 1)
+    trim_ratio = scenario_config.get("trim_ratio", general.get("trim_ratio", 0.0))
     dry_run = config.get("dry_run", False)
     verbose = config.get("verbose", False)
     
@@ -108,6 +109,7 @@ def module_find_benchmark(config: dict, scenario_config: dict, base_dir: Path) -
                         [python_path, str(timer_script), module],
                         warmup=warmup,
                         iterations=iterations,
+                        trim_ratio=trim_ratio,
                     )
                     result.scenario = f"B5.1_stdlib_{module}"
                     result.tool = "python_import"
@@ -127,6 +129,7 @@ def module_find_benchmark(config: dict, scenario_config: dict, base_dir: Path) -
                         [pybun_path, "module-find", module],
                         warmup=warmup,
                         iterations=iterations,
+                        trim_ratio=trim_ratio,
                     )
                     result.scenario = f"B5.1_stdlib_{module}"
                     result.tool = "pybun"
@@ -152,6 +155,7 @@ def module_find_benchmark(config: dict, scenario_config: dict, base_dir: Path) -
                         [pybun_path, "module-find", module],
                         warmup=warmup,
                         iterations=iterations,
+                        trim_ratio=trim_ratio,
                     )
                     result.scenario = f"B5.2_thirdparty_{module}"
                     result.tool = "pybun"
@@ -184,6 +188,7 @@ def module_find_benchmark(config: dict, scenario_config: dict, base_dir: Path) -
                         [pybun_path, "module-find", "--scan", str(fake_pkg)],
                         warmup=warmup,
                         iterations=iterations,
+                        trim_ratio=trim_ratio,
                     )
                     result.scenario = "B5.3_large_scan"
                     result.tool = "pybun"
@@ -209,6 +214,7 @@ print(f"{{len(files)}} files in {{(end-start)/1e6:.2f}}ms")
                         [python_path, str(scan_script)],
                         warmup=warmup,
                         iterations=iterations,
+                        trim_ratio=trim_ratio,
                     )
                     result.scenario = "B5.3_large_scan"
                     result.tool = "python_glob"
@@ -228,6 +234,7 @@ print(f"{{len(files)}} files in {{(end-start)/1e6:.2f}}ms")
                     [pybun_path, "module-find", "os"],
                     warmup=0,
                     iterations=1,
+                    trim_ratio=trim_ratio,
                 )
                 result.scenario = "B5.4_cache_cold"
                 result.tool = "pybun"
@@ -243,6 +250,7 @@ print(f"{{len(files)}} files in {{(end-start)/1e6:.2f}}ms")
                     [pybun_path, "module-find", "os"],
                     warmup=warmup,
                     iterations=iterations,
+                    trim_ratio=trim_ratio,
                 )
                 result.scenario = "B5.4_cache_warm"
                 result.tool = "pybun"
@@ -258,6 +266,7 @@ print(f"{{len(files)}} files in {{(end-start)/1e6:.2f}}ms")
                     [pybun_path, "module-find", "--benchmark", "os"],
                     warmup=warmup,
                     iterations=iterations,
+                    trim_ratio=trim_ratio,
                 )
                 result.scenario = "B5.4_benchmark_mode"
                 result.tool = "pybun"
@@ -266,4 +275,3 @@ print(f"{{len(files)}} files in {{(end-start)/1e6:.2f}}ms")
                 print(f"  pybun module-find --benchmark os: {result.duration_ms:.2f}ms")
     
     return results
-

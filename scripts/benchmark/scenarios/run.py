@@ -12,6 +12,10 @@ Scenarios:
 
 from __future__ import annotations
 
+import os
+import shutil
+import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -25,19 +29,6 @@ SIMPLE_SCRIPT = '''\
 #!/usr/bin/env python3
 """Simple hello world script."""
 print("Hello, World!")
-'''
-
-PEP723_SCRIPT = '''\
-#!/usr/bin/env python3
-# /// script
-# requires-python = ">=3.9"
-# dependencies = [
-#     "requests>=2.28.0",
-# ]
-# ///
-"""PEP 723 script with dependencies."""
-import requests
-print(f"requests version: {requests.__version__}")
 '''
 
 HEAVY_IMPORT_SCRIPT = '''\
@@ -74,6 +65,53 @@ print(f"Python: {sys.executable}")
 '''
 
 
+def resolve_pep723_script(base_dir: Path, scenario_config: dict) -> Path:
+    """Resolve the fixed PEP 723 fixture path."""
+    fixture = scenario_config.get("pep723_fixture", "fixtures/pep723.py")
+    script_path = (base_dir / fixture).resolve()
+    if not script_path.exists():
+        raise FileNotFoundError(f"PEP 723 fixture not found: {script_path}")
+    return script_path
+
+
+def pep723_envs_dir() -> Path:
+    """Return the PEP 723 env cache directory for PyBun."""
+    cache_root = Path(os.environ.get("PYBUN_HOME", Path.home() / ".cache/pybun"))
+    return cache_root / "pep723-envs"
+
+
+def clear_pep723_envs() -> str:
+    """Clear PyBun's PEP 723 env cache."""
+    envs = pep723_envs_dir()
+    if not envs.exists():
+        return "missing"
+    try:
+        shutil.rmtree(envs)
+        return "cleared"
+    except Exception:
+        return "error"
+
+
+def clear_fs_cache() -> str:
+    """Best-effort FS cache clear to stabilize cold/warm measurements."""
+    if sys.platform == "linux":
+        subprocess.run(["sync"], check=False)
+        drop_caches = Path("/proc/sys/vm/drop_caches")
+        if not drop_caches.exists():
+            return "unsupported"
+        if os.geteuid() != 0:
+            return "permission_denied"
+        try:
+            drop_caches.write_text("3")
+            return "cleared"
+        except Exception:
+            return "error"
+    if sys.platform == "darwin":
+        result = subprocess.run(["purge"], check=False)
+        return "cleared" if result.returncode == 0 else "error"
+    return "unsupported"
+
+
 def run_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
     """Run script execution benchmarks."""
     results: list[BenchResult] = []
@@ -81,8 +119,11 @@ def run_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
     general = config.get("general", {})
     iterations = general.get("iterations", 5)
     warmup = general.get("warmup", 1)
+    trim_ratio = scenario_config.get("trim_ratio", general.get("trim_ratio", 0.0))
     dry_run = config.get("dry_run", False)
     verbose = config.get("verbose", False)
+    pep723_clear_envs = scenario_config.get("pep723_clear_envs", True)
+    pep723_clear_fs_cache = scenario_config.get("pep723_clear_fs_cache", True)
     
     # Find tools
     pybun_path = find_tool("pybun", config)
@@ -110,6 +151,7 @@ def run_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
                     [python_path, str(simple_script)],
                     warmup=warmup,
                     iterations=iterations,
+                    trim_ratio=trim_ratio,
                 )
                 result.scenario = "B3.1_simple_startup"
                 result.tool = "python"
@@ -127,6 +169,7 @@ def run_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
                     [pybun_path, "run", str(simple_script)],
                     warmup=warmup,
                     iterations=iterations,
+                    trim_ratio=trim_ratio,
                 )
                 result.scenario = "B3.1_simple_startup"
                 result.tool = "pybun"
@@ -144,6 +187,7 @@ def run_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
                     [uv_path, "run", str(simple_script)],
                     warmup=warmup,
                     iterations=iterations,
+                    trim_ratio=trim_ratio,
                 )
                 result.scenario = "B3.1_simple_startup"
                 result.tool = "uv"
@@ -153,9 +197,8 @@ def run_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
         # === B3.2: PEP 723 Script ===
         if scenario_config.get("pep723", True):
             print("\n--- B3.2: PEP 723 Script (with dependencies) ---")
-            
-            pep723_script = tmp / "pep723.py"
-            pep723_script.write_text(PEP723_SCRIPT)
+
+            pep723_script = resolve_pep723_script(base_dir, scenario_config)
             
             # PyBun (should handle PEP 723 natively)
             if pybun_path:
@@ -164,27 +207,41 @@ def run_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
                 else:
                     if verbose:
                         print(f"  Running: {pybun_path} run {pep723_script}")
+                    cache_state = {
+                        "pep723_envs": clear_pep723_envs() if pep723_clear_envs else "kept",
+                        "fs_cache": clear_fs_cache() if pep723_clear_fs_cache else "kept",
+                    }
                     # First run may install dependencies
                     result = measure_command(
                         [pybun_path, "run", str(pep723_script)],
                         warmup=0,  # No warmup for first run measurement
                         iterations=1,
+                        trim_ratio=trim_ratio,
                     )
                     result.scenario = "B3.2_pep723_cold"
                     result.tool = "pybun"
                     result.metadata["type"] = "cold"
+                    result.metadata["cache_state"] = cache_state
+                    result.metadata["pep723_fixture"] = str(pep723_script)
                     results.append(result)
                     print(f"  pybun (cold): {result.duration_ms:.2f}ms")
                     
                     # Warm runs
+                    cache_state = {
+                        "pep723_envs": "kept",
+                        "fs_cache": clear_fs_cache() if pep723_clear_fs_cache else "kept",
+                    }
                     result = measure_command(
                         [pybun_path, "run", str(pep723_script)],
                         warmup=warmup,
                         iterations=iterations,
+                        trim_ratio=trim_ratio,
                     )
                     result.scenario = "B3.2_pep723_warm"
                     result.tool = "pybun"
                     result.metadata["type"] = "warm"
+                    result.metadata["cache_state"] = cache_state
+                    result.metadata["pep723_fixture"] = str(pep723_script)
                     results.append(result)
                     print(f"  pybun (warm): {result.duration_ms:.2f}ms")
             
@@ -195,27 +252,39 @@ def run_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
                 else:
                     if verbose:
                         print(f"  Running: {uv_path} run {pep723_script}")
+                    cache_state = {
+                        "fs_cache": clear_fs_cache() if pep723_clear_fs_cache else "kept",
+                    }
                     # Cold run
                     result = measure_command(
                         [uv_path, "run", str(pep723_script)],
                         warmup=0,
                         iterations=1,
+                        trim_ratio=trim_ratio,
                     )
                     result.scenario = "B3.2_pep723_cold"
                     result.tool = "uv"
                     result.metadata["type"] = "cold"
+                    result.metadata["cache_state"] = cache_state
+                    result.metadata["pep723_fixture"] = str(pep723_script)
                     results.append(result)
                     print(f"  uv (cold): {result.duration_ms:.2f}ms")
                     
                     # Warm runs
+                    cache_state = {
+                        "fs_cache": clear_fs_cache() if pep723_clear_fs_cache else "kept",
+                    }
                     result = measure_command(
                         [uv_path, "run", str(pep723_script)],
                         warmup=warmup,
                         iterations=iterations,
+                        trim_ratio=trim_ratio,
                     )
                     result.scenario = "B3.2_pep723_warm"
                     result.tool = "uv"
                     result.metadata["type"] = "warm"
+                    result.metadata["cache_state"] = cache_state
+                    result.metadata["pep723_fixture"] = str(pep723_script)
                     results.append(result)
                     print(f"  uv (warm): {result.duration_ms:.2f}ms")
         
@@ -234,6 +303,7 @@ def run_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
                     [python_path, str(heavy_script)],
                     warmup=warmup,
                     iterations=iterations,
+                    trim_ratio=trim_ratio,
                 )
                 result.scenario = "B3.3_heavy_import"
                 result.tool = "python"
@@ -249,6 +319,7 @@ def run_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
                     [pybun_path, "run", str(heavy_script)],
                     warmup=warmup,
                     iterations=iterations,
+                    trim_ratio=trim_ratio,
                 )
                 result.scenario = "B3.3_heavy_import"
                 result.tool = "pybun"
@@ -264,6 +335,7 @@ def run_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
                     [uv_path, "run", str(heavy_script)],
                     warmup=warmup,
                     iterations=iterations,
+                    trim_ratio=trim_ratio,
                 )
                 result.scenario = "B3.3_heavy_import"
                 result.tool = "uv"
@@ -288,6 +360,7 @@ def run_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
                             warmup=warmup,
                             iterations=iterations,
                             env={"PYBUN_PROFILE": profile},
+                            trim_ratio=trim_ratio,
                         )
                         result.scenario = f"B3.4_profile_{profile}"
                         result.tool = "pybun"
@@ -296,4 +369,3 @@ def run_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
                         print(f"  pybun --profile={profile}: {result.duration_ms:.2f}ms")
     
     return results
-

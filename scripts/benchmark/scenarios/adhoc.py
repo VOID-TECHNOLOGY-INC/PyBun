@@ -25,6 +25,7 @@ def adhoc_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list
     general = config.get("general", {})
     iterations = general.get("iterations", 5)
     warmup = general.get("warmup", 1)
+    trim_ratio = scenario_config.get("trim_ratio", general.get("trim_ratio", 0.0))
     dry_run = config.get("dry_run", False)
     verbose = config.get("verbose", False)
     
@@ -61,6 +62,7 @@ def adhoc_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list
                         warmup=0,  # No warmup for cold run
                         iterations=1,
                         env={"PYBUN_X_CACHE": tmpdir},  # Use temp cache
+                        trim_ratio=trim_ratio,
                     )
                     result.scenario = f"B4.1_cold_{package}"
                     result.tool = "pybun"
@@ -82,6 +84,7 @@ def adhoc_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list
                         warmup=0,
                         iterations=1,
                         env={"PIPX_HOME": tmpdir},
+                        trim_ratio=trim_ratio,
                     )
                     result.scenario = f"B4.1_cold_{package}"
                     result.tool = "pipx"
@@ -108,6 +111,7 @@ def adhoc_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list
                         warmup=0,
                         iterations=1,
                         env={"UV_TOOL_DIR": tmpdir},
+                        trim_ratio=trim_ratio,
                     )
                     result.scenario = f"B4.1_cold_{package}"
                     result.tool = "uvx"
@@ -131,6 +135,7 @@ def adhoc_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list
                     cmd,
                     warmup=warmup,
                     iterations=iterations,
+                    trim_ratio=trim_ratio,
                 )
                 result.scenario = f"B4.2_warm_{package}"
                 result.tool = "pybun"
@@ -151,6 +156,7 @@ def adhoc_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list
                     cmd,
                     warmup=warmup,
                     iterations=iterations,
+                    trim_ratio=trim_ratio,
                 )
                 result.scenario = f"B4.2_warm_{package}"
                 result.tool = "pipx"
@@ -175,6 +181,7 @@ def adhoc_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list
                     cmd,
                     warmup=warmup,
                     iterations=iterations,
+                    trim_ratio=trim_ratio,
                 )
                 result.scenario = f"B4.2_warm_{package}"
                 result.tool = "uvx"
@@ -196,11 +203,12 @@ def adhoc_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list
         else:
             if verbose:
                 print(f"  Running: {' '.join(cmd)}")
-            result = measure_command(
-                cmd,
-                warmup=warmup,
-                iterations=iterations,
-            )
+                result = measure_command(
+                    cmd,
+                    warmup=warmup,
+                    iterations=iterations,
+                    trim_ratio=trim_ratio,
+                )
             result.scenario = "B4.3_versioned"
             result.tool = "pybun"
             result.metadata["package"] = versioned_package
@@ -218,6 +226,7 @@ def adhoc_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list
                 cmd,
                 warmup=warmup,
                 iterations=iterations,
+                trim_ratio=trim_ratio,
             )
             result.scenario = "B4.3_versioned"
             result.tool = "pipx"
@@ -240,6 +249,7 @@ def adhoc_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list
                 cmd,
                 warmup=warmup,
                 iterations=iterations,
+                trim_ratio=trim_ratio,
             )
             result.scenario = "B4.3_versioned"
             result.tool = "uvx"
@@ -248,4 +258,3 @@ def adhoc_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list
             print(f"  uvx {versioned_package}: {result.duration_ms:.2f}ms")
     
     return results
-

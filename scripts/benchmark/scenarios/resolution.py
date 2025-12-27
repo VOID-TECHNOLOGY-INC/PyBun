@@ -129,6 +129,7 @@ def resolution_benchmark(config: dict, scenario_config: dict, base_dir: Path) ->
     general = config.get("general", {})
     iterations = general.get("iterations", 5)
     warmup = general.get("warmup", 1)
+    trim_ratio = scenario_config.get("trim_ratio", general.get("trim_ratio", 0.0))
     dry_run = config.get("dry_run", False)
     verbose = config.get("verbose", False)
     
@@ -170,6 +171,7 @@ def resolution_benchmark(config: dict, scenario_config: dict, base_dir: Path) ->
                         cmd,
                         warmup=warmup,
                         iterations=iterations,
+                        trim_ratio=trim_ratio,
                         cwd=str(tmp),
                     )
                     result.scenario = f"{scenario_id}_resolution"
@@ -208,6 +210,7 @@ def resolution_benchmark(config: dict, scenario_config: dict, base_dir: Path) ->
                         cmd,
                         warmup=warmup,
                         iterations=iterations,
+                        trim_ratio=trim_ratio,
                         cwd=str(tmp),
                     )
                     result.scenario = f"{scenario_id}_resolution"
@@ -245,6 +248,7 @@ def resolution_benchmark(config: dict, scenario_config: dict, base_dir: Path) ->
                         cmd,
                         warmup=warmup,
                         iterations=iterations,
+                        trim_ratio=trim_ratio,
                         cwd=str(tmp),
                     )
                     result.scenario = f"{scenario_id}_resolution"
@@ -272,6 +276,7 @@ def resolution_benchmark(config: dict, scenario_config: dict, base_dir: Path) ->
                         cmd,
                         warmup=0,  # Poetry lock is slow
                         iterations=1,
+                        trim_ratio=trim_ratio,
                         cwd=str(tmp),
                     )
                     result.scenario = f"{scenario_id}_resolution"
@@ -297,6 +302,7 @@ def resolution_benchmark(config: dict, scenario_config: dict, base_dir: Path) ->
                     cmd,
                     warmup=warmup,
                     iterations=iterations,
+                    trim_ratio=trim_ratio,
                     cwd=str(tmp),
                 )
                 result.scenario = "B1.4_conflict"
@@ -316,6 +322,7 @@ def resolution_benchmark(config: dict, scenario_config: dict, base_dir: Path) ->
                     cmd,
                     warmup=warmup,
                     iterations=iterations,
+                    trim_ratio=trim_ratio,
                     cwd=str(tmp),
                 )
                 result.scenario = "B1.4_conflict"
@@ -341,6 +348,7 @@ def resolution_benchmark(config: dict, scenario_config: dict, base_dir: Path) ->
                     cmd,
                     warmup=0,
                     iterations=1,
+                    trim_ratio=trim_ratio,
                     cwd=str(tmp),
                 )
                 result.scenario = "B1.5_cached_cold"
@@ -356,6 +364,7 @@ def resolution_benchmark(config: dict, scenario_config: dict, base_dir: Path) ->
                     cmd,
                     warmup=warmup,
                     iterations=iterations,
+                    trim_ratio=trim_ratio,
                     cwd=str(tmp),
                 )
                 result.scenario = "B1.5_cached_warm"
@@ -364,4 +373,3 @@ def resolution_benchmark(config: dict, scenario_config: dict, base_dir: Path) ->
                 print(f"  pybun (warm): {result.duration_ms:.2f}ms")
     
     return results
-

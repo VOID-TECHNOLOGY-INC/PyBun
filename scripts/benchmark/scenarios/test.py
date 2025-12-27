@@ -118,6 +118,7 @@ def test_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
     general = config.get("general", {})
     iterations = general.get("iterations", 5)
     warmup = general.get("warmup", 1)
+    trim_ratio = scenario_config.get("trim_ratio", general.get("trim_ratio", 0.0))
     dry_run = config.get("dry_run", False)
     verbose = config.get("verbose", False)
     
@@ -156,6 +157,7 @@ def test_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
                     cmd,
                     warmup=warmup,
                     iterations=iterations,
+                    trim_ratio=trim_ratio,
                 )
                 result.scenario = "B7.1_discovery"
                 result.tool = "pybun"
@@ -176,6 +178,7 @@ def test_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
                     cmd,
                     warmup=warmup,
                     iterations=iterations,
+                    trim_ratio=trim_ratio,
                 )
                 result.scenario = "B7.1_discovery"
                 result.tool = "pytest"
@@ -199,6 +202,7 @@ def test_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
                     cmd,
                     warmup=warmup,
                     iterations=iterations,
+                    trim_ratio=trim_ratio,
                 )
                 result.scenario = "B7.2_small_suite"
                 result.tool = "pybun"
@@ -217,6 +221,7 @@ def test_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
                     cmd,
                     warmup=warmup,
                     iterations=iterations,
+                    trim_ratio=trim_ratio,
                 )
                 result.scenario = "B7.2_small_suite"
                 result.tool = "pytest"
@@ -252,6 +257,7 @@ if __name__ == "__main__":
                     cmd,
                     warmup=warmup,
                     iterations=iterations,
+                    trim_ratio=trim_ratio,
                 )
                 result.scenario = "B7.2_small_suite"
                 result.tool = "unittest"
@@ -273,6 +279,7 @@ if __name__ == "__main__":
                         cmd,
                         warmup=warmup,
                         iterations=iterations,
+                        trim_ratio=trim_ratio,
                     )
                     result.scenario = f"B7.3_parallel_{workers}"
                     result.tool = "pybun"
@@ -299,6 +306,7 @@ if __name__ == "__main__":
                             cmd,
                             warmup=warmup,
                             iterations=iterations,
+                            trim_ratio=trim_ratio,
                         )
                         result.scenario = f"B7.3_parallel_{workers}"
                         result.tool = "pytest-xdist"
@@ -319,6 +327,7 @@ if __name__ == "__main__":
                     cmd,
                     warmup=warmup,
                     iterations=iterations,
+                    trim_ratio=trim_ratio,
                 )
                 result.scenario = "B7.4_ast_vs_pytest"
                 result.tool = "pybun_ast"
@@ -334,6 +343,7 @@ if __name__ == "__main__":
                     cmd,
                     warmup=warmup,
                     iterations=iterations,
+                    trim_ratio=trim_ratio,
                 )
                 result.scenario = "B7.4_ast_vs_pytest"
                 result.tool = "pybun_pytest_compat"
@@ -341,4 +351,3 @@ if __name__ == "__main__":
                 print(f"  pybun --pytest-compat: {result.duration_ms:.2f}ms")
     
     return results
-
