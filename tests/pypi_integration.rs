@@ -1,9 +1,9 @@
 use assert_cmd::Command;
 use assert_cmd::cargo::cargo_bin_cmd;
 use httpmock::prelude::*;
+use pybun::lockfile::Lockfile;
 use pybun::pypi::{PyPiClient, PyPiIndex};
 use pybun::resolver::PackageIndex;
-use pybun::lockfile::Lockfile;
 use serde_json::json;
 use std::fs;
 use tempfile::tempdir;

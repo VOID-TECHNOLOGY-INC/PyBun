@@ -55,10 +55,7 @@ pub enum DownloadError {
         path: PathBuf,
     },
     #[error("signature verification failed for {path}: {message}")]
-    SignatureVerificationFailed {
-        path: PathBuf,
-        message: String,
-    },
+    SignatureVerificationFailed { path: PathBuf, message: String },
     #[error("max retries exceeded for {url}")]
     MaxRetriesExceeded { url: String },
 }

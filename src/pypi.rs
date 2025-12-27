@@ -1,5 +1,7 @@
 use crate::lockfile::PackageSource;
+use crate::once_map::OnceMap;
 use crate::resolver::{PackageArtifacts, PackageIndex, Requirement, ResolvedPackage, Wheel};
+use dashmap::DashMap;
 use reqwest::{StatusCode, Url, header};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -8,8 +10,6 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use dashmap::DashMap;
-use crate::once_map::OnceMap;
 
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum PyPiError {

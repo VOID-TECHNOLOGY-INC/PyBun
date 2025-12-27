@@ -53,8 +53,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::OnceMap;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[tokio::test]
     async fn dedupes_parallel_inits() {
