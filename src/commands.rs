@@ -17,8 +17,8 @@ use crate::sbom;
 use crate::schema::{Diagnostic, Event, EventCollector, EventType, JsonEnvelope, Status};
 use crate::workspace::Workspace;
 use color_eyre::eyre::{Result, eyre};
-use sha2::{Digest, Sha256};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
 use std::fs;
 #[cfg(unix)]
@@ -861,10 +861,7 @@ struct LockOutcome {
     packages: Vec<String>,
 }
 
-async fn lock_dependencies(
-    args: &LockArgs,
-    collector: &mut EventCollector,
-) -> Result<LockOutcome> {
+async fn lock_dependencies(args: &LockArgs, collector: &mut EventCollector) -> Result<LockOutcome> {
     let script_path = args
         .script
         .as_ref()
@@ -890,7 +887,10 @@ async fn lock_dependencies(
 
     let requirements: Vec<Requirement> = pep723_deps
         .iter()
-        .map(|d| d.parse::<Requirement>().unwrap_or_else(|_| Requirement::any(d.trim())))
+        .map(|d| {
+            d.parse::<Requirement>()
+                .unwrap_or_else(|_| Requirement::any(d.trim()))
+        })
         .collect();
 
     if pep723_deps.is_empty() {
@@ -906,8 +906,7 @@ async fn lock_dependencies(
     let offline = args.offline;
     let resolution = if let Some(index_path) = args.index.clone() {
         let index = load_index_from_path(&index_path).map_err(|e| eyre!(e))?;
-        match resolve(requirements.clone(), &index).await
-        {
+        match resolve(requirements.clone(), &index).await {
             Ok(r) => r,
             Err(e) => {
                 for d in crate::self_heal::diagnostics_for_resolve_error(&requirements, &e) {
@@ -925,8 +924,7 @@ async fn lock_dependencies(
             offline
         ));
         let index = PyPiIndex::new(client);
-        match resolve(requirements.clone(), &index).await
-        {
+        match resolve(requirements.clone(), &index).await {
             Ok(r) => r,
             Err(e) => {
                 for d in crate::self_heal::diagnostics_for_resolve_error(&requirements, &e) {
@@ -1353,10 +1351,7 @@ fn load_script_lock(script_path: &Path) -> Result<Option<ScriptLockInfo>> {
     let digest = hasher.finalize();
     let lock_hash = hex::encode(&digest[..16]);
 
-    Ok(Some(ScriptLockInfo {
-        lock,
-        lock_hash,
-    }))
+    Ok(Some(ScriptLockInfo { lock, lock_hash }))
 }
 
 fn pep723_index_settings(metadata: Option<&pep723::ScriptMetadata>) -> Vec<String> {
@@ -1547,7 +1542,10 @@ fn run_script(
                 );
 
                 // Create virtual environment
-                eprintln!("info: creating cached environment at {}", venv_path.display());
+                eprintln!(
+                    "info: creating cached environment at {}",
+                    venv_path.display()
+                );
 
                 let venv_status = ProcessCommand::new(&base_python)
                     .args(["-m", "venv"])
