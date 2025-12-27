@@ -63,6 +63,9 @@ pub enum Commands {
     Watch(WatchArgs),
     /// Show or configure launch profiles.
     Profile(ProfileArgs),
+    /// Print or validate the CLI JSON schema.
+    #[command(subcommand)]
+    Schema(SchemaCommands),
 }
 
 #[derive(Subcommand, Debug)]
@@ -240,6 +243,24 @@ pub struct DoctorArgs {
 pub enum McpCommands {
     /// Start MCP server for programmatic control.
     Serve(McpServeArgs),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SchemaCommands {
+    /// Print the JSON schema for CLI output.
+    Print(SchemaPrintArgs),
+    /// Check the JSON schema against the frozen v1 definition.
+    Check(SchemaCheckArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct SchemaPrintArgs {}
+
+#[derive(Args, Debug)]
+pub struct SchemaCheckArgs {
+    /// Optional path to compare against the embedded schema.
+    #[arg(long, value_name = "PATH")]
+    pub path: Option<std::path::PathBuf>,
 }
 
 #[derive(Args, Debug)]

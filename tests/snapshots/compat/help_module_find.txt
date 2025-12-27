@@ -1,0 +1,14 @@
+Find Python modules using Rust-based module finder
+
+Usage: pybun module-find [OPTIONS] [MODULE]
+
+Arguments:
+  [MODULE]  Module name to find (e.g., "os.path", "numpy.core")
+
+Options:
+      --format <FORMAT>    Output format for machine readability [default: text] [possible values: text, json]
+  -p, --path <PATH>        Search path(s) for modules. Can be specified multiple times
+      --scan               Scan directory and list all modules instead of finding a specific one
+      --benchmark          Show timing information for benchmarking
+      --threads <THREADS>  Number of threads for parallel scanning [default: 4]
+  -h, --help               Print help

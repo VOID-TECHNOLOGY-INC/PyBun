@@ -1,0 +1,11 @@
+Add a package and update lockfile
+
+Usage: pybun add [OPTIONS] [PACKAGE]
+
+Arguments:
+  [PACKAGE]  Package name (optionally with version)
+
+Options:
+      --format <FORMAT>  Output format for machine readability [default: text] [possible values: text, json]
+      --offline          Use offline mode when cache is sufficient
+  -h, --help             Print help

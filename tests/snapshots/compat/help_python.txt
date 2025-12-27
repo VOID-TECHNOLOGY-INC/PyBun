@@ -1,0 +1,14 @@
+Manage Python versions (install, list, remove)
+
+Usage: pybun python [OPTIONS] <COMMAND>
+
+Commands:
+  list     List installed and available Python versions
+  install  Install a Python version
+  remove   Remove an installed Python version
+  which    Show path to Python for a version
+  help     Print this message or the help of the given subcommand(s)
+
+Options:
+      --format <FORMAT>  Output format for machine readability [default: text] [possible values: text, json]
+  -h, --help             Print help

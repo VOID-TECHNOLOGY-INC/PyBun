@@ -1,0 +1,14 @@
+Run a script with import/runtime optimizations
+
+Usage: pybun run [OPTIONS] [TARGET] [-- <PASSTHROUGH>...]
+
+Arguments:
+  [TARGET]          Script or module to execute. Use -c for inline code
+  [PASSTHROUGH]...  Pass additional args to the target
+
+Options:
+      --format <FORMAT>    Output format for machine readability [default: text] [possible values: text, json]
+      --sandbox            Run in sandboxed mode for untrusted code
+      --allow-network      Allow network access inside the sandbox (escape hatch)
+      --profile <PROFILE>  Optional profile (dev/prod/benchmark) [default: dev]
+  -h, --help               Print help

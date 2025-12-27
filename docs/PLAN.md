@@ -225,15 +225,17 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
   - Tests: 新規 `tests/pypi_integration.rs` でデフォルト PyPI 解決、キャッシュを使ったオフライン再実行、キャッシュ無しオフライン失敗をモックサーバーで検証。`cargo test`, `just lint` 実行済み。
 
 ### M7: GA Launch / Release Readiness
-- PR7.1: API/JSON schema freeze + compat tests
+- [DONE] PR7.1: API/JSON schema freeze + compat tests
   - Goal: CLI flags/env/exit codes と JSON schema v1 を GA で凍結し、ヘルプ/JSONのスナップショットテストで後方互換を守る（`--format=json` 各コマンド、`pybun --help` diff ガード）。
   - Depends on: M4 schema完成, M5/M6 release artifacts.
   - Tests: ゴールデンテストを CI に追加（text+json）。`pybun schema check` のような自己診断を用意できると良い。
   - Implementation (Tasks):
-    - [ ] `pybun schema print|check` を追加（schema v1 の出力 + 破壊的変更検知）
-    - [ ] `pybun --help` / 各サブコマンド help の text snapshot を追加（diff guard）
-    - [ ] 代表コマンドの JSON snapshot を追加（envelope/version/events/diagnostics を固定）
-    - [ ] CI に「snapshot差分があれば失敗」を追加（GA後の互換性維持）
+    - [x] `pybun schema print|check` を追加（schema v1 の出力 + 破壊的変更検知）
+    - [x] `pybun --help` / 各サブコマンド help の text snapshot を追加（diff guard）
+    - [x] 代表コマンドの JSON snapshot を追加（envelope/version/events/diagnostics を固定）
+    - [x] CI に「snapshot差分があれば失敗」を追加（GA後の互換性維持）
+  - Current: `schema/schema_v1.json` を追加し、`pybun schema print|check` で v1 定義の出力/検証が可能に。`tests/compat_snapshots.rs` で help/JSON のスナップショット差分ガードを追加し、`PYBUN_UPDATE_SNAPSHOTS=1` で更新可能にした。
+  - Tests: `just lint`, `just fmt`, `CARGO_INCREMENTAL=0 cargo test`, `PYBUN_UPDATE_SNAPSHOTS=1 cargo test --test compat_snapshots`, `cargo build --release`, `PATH=$(pwd)/target/release:$PATH python3 scripts/benchmark/bench.py -s run --format markdown`.
 - PR7.2: Telemetry UX/Privacy finalize（PR6.3完了後の仕上げ）
   - Goal: デフォルト opt-in/opt-out ポリシーと UI を確定し、`pybun telemetry status|enable|disable` を提供。収集フィールドのレダクションリストと Privacy Notice を docs/README に記載。
   - Depends on: PR6.3。

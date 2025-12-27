@@ -1,0 +1,14 @@
+Show or configure launch profiles
+
+Usage: pybun profile [OPTIONS] [PROFILE]
+
+Arguments:
+  [PROFILE]  Profile to show or set (dev, prod, benchmark)
+
+Options:
+      --format <FORMAT>    Output format for machine readability [default: text] [possible values: text, json]
+      --list               List all available profiles
+      --show               Show detailed profile configuration
+      --compare <PROFILE>  Compare two profiles
+  -o, --output <FILE>      Export profile to a file
+  -h, --help               Print help

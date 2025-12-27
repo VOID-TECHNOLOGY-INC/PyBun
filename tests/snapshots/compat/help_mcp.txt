@@ -1,0 +1,11 @@
+Run PyBun as an MCP server
+
+Usage: pybun mcp [OPTIONS] <COMMAND>
+
+Commands:
+  serve  Start MCP server for programmatic control
+  help   Print this message or the help of the given subcommand(s)
+
+Options:
+      --format <FORMAT>  Output format for machine readability [default: text] [possible values: text, json]
+  -h, --help             Print help

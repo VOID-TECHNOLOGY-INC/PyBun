@@ -1,0 +1,8 @@
+Diagnose environment and produce support bundle
+
+Usage: pybun doctor [OPTIONS]
+
+Options:
+      --format <FORMAT>  Output format for machine readability [default: text] [possible values: text, json]
+      --verbose          Include verbose logs in bundle
+  -h, --help             Print help

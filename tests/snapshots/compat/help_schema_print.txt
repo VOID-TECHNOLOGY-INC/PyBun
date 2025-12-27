@@ -1,0 +1,7 @@
+Print the JSON schema for CLI output
+
+Usage: pybun schema print [OPTIONS]
+
+Options:
+      --format <FORMAT>  Output format for machine readability [default: text] [possible values: text, json]
+  -h, --help             Print help

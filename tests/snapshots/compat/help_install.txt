@@ -1,0 +1,11 @@
+Install dependencies from lock or project metadata
+
+Usage: pybun install [OPTIONS]
+
+Options:
+      --format <FORMAT>          Output format for machine readability [default: text] [possible values: text, json]
+      --offline                  Use offline mode when cache is sufficient
+      --require <NAME==VERSION>  Requirements to install (temporary M1 flag)
+      --index <INDEX>            Path to index JSON (temporary M1 flag)
+      --lock <LOCK>              Path to write lockfile [default: pybun.lockb]
+  -h, --help                     Print help

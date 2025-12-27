@@ -1,0 +1,10 @@
+Remove an installed Python version
+
+Usage: pybun python remove [OPTIONS] <VERSION>
+
+Arguments:
+  <VERSION>  Version to remove
+
+Options:
+      --format <FORMAT>  Output format for machine readability [default: text] [possible values: text, json]
+  -h, --help             Print help

@@ -1,7 +1,7 @@
 use crate::build::{BuildBackend, BuildCache};
 use crate::cli::{
     Cli, Commands, LazyImportArgs, LockArgs, McpCommands, ModuleFindArgs, OutputFormat,
-    ProfileArgs, PythonCommands, SelfCommands, WatchArgs,
+    ProfileArgs, PythonCommands, SchemaCommands, SelfCommands, WatchArgs,
 };
 use crate::env::{EnvSource, find_python_env};
 use crate::index::load_index_from_path;
@@ -491,6 +491,34 @@ pub async fn execute(cli: Cli) -> Result<()> {
                 }
             }
         }
+        Commands::Schema(cmd) => match cmd {
+            SchemaCommands::Print(_args) => {
+                let schema_json = crate::schema::schema_v1_json();
+                let schema_text = crate::schema::schema_v1_pretty();
+                let detail = if matches!(cli.format, OutputFormat::Text) {
+                    RenderDetail::with_json_raw_text(
+                        schema_text,
+                        json!({
+                            "schema": schema_json,
+                            "version": crate::schema::SCHEMA_VERSION,
+                        }),
+                    )
+                } else {
+                    RenderDetail::with_json(
+                        format!("schema v{}", crate::schema::SCHEMA_VERSION),
+                        json!({
+                            "schema": schema_json,
+                            "version": crate::schema::SCHEMA_VERSION,
+                        }),
+                    )
+                };
+                ("schema print".to_string(), detail)
+            }
+            SchemaCommands::Check(args) => {
+                let detail = run_schema_check(args);
+                ("schema check".to_string(), detail)
+            }
+        },
     };
 
     // Record command end
@@ -529,7 +557,13 @@ fn render(
     trace_id: Option<String>,
 ) -> String {
     match format {
-        OutputFormat::Text => format!("pybun {command}: {}", detail.text),
+        OutputFormat::Text => {
+            if detail.raw_text {
+                detail.text
+            } else {
+                format!("pybun {command}: {}", detail.text)
+            }
+        }
         OutputFormat::Json => {
             let status = if detail.is_error {
                 Status::Error
@@ -556,6 +590,95 @@ fn stub_detail(message: String, payload: Value) -> RenderDetail {
             "payload": payload,
         }),
     )
+}
+
+fn schema_version_from(schema: &Value) -> Option<String> {
+    schema
+        .get("properties")
+        .and_then(|v| v.get("version"))
+        .and_then(|v| v.get("const").or_else(|| v.get("enum")))
+        .and_then(|v| {
+            if v.is_string() {
+                v.as_str().map(|s| s.to_string())
+            } else {
+                v.get(0)
+                    .and_then(|item| item.as_str().map(|s| s.to_string()))
+            }
+        })
+}
+
+fn run_schema_check(args: &crate::cli::SchemaCheckArgs) -> RenderDetail {
+    let embedded = crate::schema::schema_v1_json();
+    let embedded_version = schema_version_from(&embedded);
+    let expected_version = crate::schema::SCHEMA_VERSION.to_string();
+
+    let mut issues = Vec::new();
+    if embedded_version.as_deref() != Some(expected_version.as_str()) {
+        issues.push(format!(
+            "embedded schema version mismatch (found {:?}, expected {})",
+            embedded_version, expected_version
+        ));
+    }
+
+    let default_path = PathBuf::from("schema/schema_v1.json");
+    let path = args.path.clone().or_else(|| {
+        if default_path.exists() {
+            Some(default_path)
+        } else {
+            None
+        }
+    });
+
+    let mut path_string = None;
+    let mut file_error = None;
+    let mut mismatch = None;
+
+    if let Some(path) = path {
+        path_string = Some(path.display().to_string());
+        match fs::read_to_string(&path) {
+            Ok(contents) => match serde_json::from_str::<Value>(&contents) {
+                Ok(on_disk) => {
+                    if on_disk != embedded {
+                        mismatch = Some(true);
+                        issues.push("schema file differs from embedded definition".to_string());
+                    } else {
+                        mismatch = Some(false);
+                    }
+                }
+                Err(e) => {
+                    file_error = Some(format!("failed to parse schema file: {}", e));
+                    issues.push("schema file is not valid JSON".to_string());
+                }
+            },
+            Err(e) => {
+                file_error = Some(format!("failed to read schema file: {}", e));
+                issues.push("schema file could not be read".to_string());
+            }
+        }
+    }
+
+    let status = if issues.is_empty() { "ok" } else { "error" };
+    let summary = if issues.is_empty() {
+        format!("schema v{} OK", expected_version)
+    } else {
+        format!("schema check failed ({} issue(s))", issues.len())
+    };
+
+    let detail = json!({
+        "status": status,
+        "schema_version": expected_version,
+        "embedded_version": embedded_version,
+        "path": path_string,
+        "mismatch": mismatch,
+        "error": file_error,
+        "issues": issues,
+    });
+
+    if status == "ok" {
+        RenderDetail::with_json(summary, detail)
+    } else {
+        RenderDetail::error(summary, detail)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -989,6 +1112,7 @@ struct RenderDetail {
     text: String,
     json: Value,
     is_error: bool,
+    raw_text: bool,
 }
 
 impl RenderDetail {
@@ -997,6 +1121,7 @@ impl RenderDetail {
             text: text.into(),
             json,
             is_error: false,
+            raw_text: false,
         }
     }
 
@@ -1005,6 +1130,16 @@ impl RenderDetail {
             text: text.into(),
             json,
             is_error: true,
+            raw_text: false,
+        }
+    }
+
+    fn with_json_raw_text(text: impl Into<String>, json: Value) -> Self {
+        Self {
+            text: text.into(),
+            json,
+            is_error: false,
+            raw_text: true,
         }
     }
 }

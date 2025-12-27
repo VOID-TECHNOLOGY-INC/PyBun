@@ -1,0 +1,8 @@
+Build distributable artifacts
+
+Usage: pybun build [OPTIONS]
+
+Options:
+      --format <FORMAT>  Output format for machine readability [default: text] [possible values: text, json]
+      --sbom             Emit SBOM along with artifacts
+  -h, --help             Print help

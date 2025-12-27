@@ -1,0 +1,11 @@
+Run an ad-hoc package without prior install
+
+Usage: pybun x [OPTIONS] [PACKAGE] [-- <PASSTHROUGH>...]
+
+Arguments:
+  [PACKAGE]         Package to execute temporarily
+  [PASSTHROUGH]...  Arguments to forward to the tool
+
+Options:
+      --format <FORMAT>  Output format for machine readability [default: text] [possible values: text, json]
+  -h, --help             Print help

@@ -1,0 +1,8 @@
+List installed and available Python versions
+
+Usage: pybun python list [OPTIONS]
+
+Options:
+      --all              Show all available versions (not just installed)
+      --format <FORMAT>  Output format for machine readability [default: text] [possible values: text, json]
+  -h, --help             Print help

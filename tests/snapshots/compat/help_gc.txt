@@ -1,0 +1,9 @@
+Manage caches
+
+Usage: pybun gc [OPTIONS]
+
+Options:
+      --format <FORMAT>      Output format for machine readability [default: text] [possible values: text, json]
+      --max-size <MAX_SIZE>  Maximum cache size (e.g., 10G); LRU eviction if exceeded
+      --dry-run              Preview what would be deleted without actually deleting
+  -h, --help                 Print help
