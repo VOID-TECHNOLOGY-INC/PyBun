@@ -415,10 +415,10 @@ impl PyPiClient {
         deps: Vec<String>,
         memory: &Arc<DashMap<String, Vec<CachedPackage>>>,
     ) -> Result<(), PyPiError> {
-        if let Some(mut packages) = memory.get_mut(name) {
-            if let Some(pkg) = packages.iter_mut().find(|pkg| pkg.version == version) {
-                pkg.dependencies = Some(deps.clone());
-            }
+        if let Some(mut packages) = memory.get_mut(name)
+            && let Some(pkg) = packages.iter_mut().find(|pkg| pkg.version == version)
+        {
+            pkg.dependencies = Some(deps.clone());
         }
 
         if let Some(mut entry) = self.load_cache(name).await? {

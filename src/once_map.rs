@@ -44,7 +44,7 @@ where
             .entry(key.clone())
             .or_insert_with(|| Arc::new(OnceCell::new()))
             .clone();
-        let result = cell.get_or_try_init(init).await.map(Clone::clone);
+        let result = cell.get_or_try_init(init).await.cloned();
         self.entries.remove(&key);
         result
     }
