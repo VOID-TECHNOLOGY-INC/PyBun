@@ -1,8 +1,10 @@
-use crate::security::{SignatureError, verify_ed25519_signature};
+use crate::once_map::OnceMap;
+use crate::security::verify_ed25519_signature;
 use futures::StreamExt;
 use reqwest::Client;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
 use tokio::fs::{self, File};
@@ -22,6 +24,12 @@ pub struct DownloadRequest {
     pub signature: Option<SignatureSpec>,
 }
 
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+struct DownloadKey {
+    url: String,
+    destination: PathBuf,
+}
+
 impl From<(String, PathBuf, Option<String>)> for DownloadRequest {
     fn from(value: (String, PathBuf, Option<String>)) -> Self {
         let (url, destination, checksum) = value;
@@ -34,30 +42,43 @@ impl From<(String, PathBuf, Option<String>)> for DownloadRequest {
     }
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug, Clone, Error)]
 pub enum DownloadError {
     #[error("network error: {0}")]
-    Network(#[from] reqwest::Error),
+    Network(String),
     #[error("io error: {0}")]
-    Io(#[from] std::io::Error),
+    Io(String),
     #[error("checksum mismatch for {path}: expected {expected}, got {actual}")]
     ChecksumMismatch {
         expected: String,
         actual: String,
         path: PathBuf,
     },
-    #[error("signature verification failed for {path}: {source}")]
+    #[error("signature verification failed for {path}: {message}")]
     SignatureVerificationFailed {
         path: PathBuf,
-        source: SignatureError,
+        message: String,
     },
     #[error("max retries exceeded for {url}")]
     MaxRetriesExceeded { url: String },
 }
 
+impl From<reqwest::Error> for DownloadError {
+    fn from(value: reqwest::Error) -> Self {
+        Self::Network(value.to_string())
+    }
+}
+
+impl From<std::io::Error> for DownloadError {
+    fn from(value: std::io::Error) -> Self {
+        Self::Io(value.to_string())
+    }
+}
+
 #[derive(Debug)]
 pub struct Downloader {
     client: Client,
+    inflight: Arc<OnceMap<DownloadKey, PathBuf>>,
 }
 
 impl Default for Downloader {
@@ -73,6 +94,7 @@ impl Downloader {
                 .timeout(Duration::from_secs(300))
                 .build()
                 .expect("failed to build reqwest client"),
+            inflight: Arc::new(OnceMap::new()),
         }
     }
 
@@ -196,7 +218,7 @@ impl Downloader {
                 let _ = fs::remove_file(path).await;
                 Err(DownloadError::SignatureVerificationFailed {
                     path: path.to_path_buf(),
-                    source,
+                    message: source.to_string(),
                 })
             }
         }
@@ -212,15 +234,24 @@ impl Downloader {
         concurrency: usize,
     ) -> Vec<Result<PathBuf, DownloadError>> {
         let stream = futures::stream::iter(items.into_iter().map(|req| {
-            let client = &self;
+            let client = self;
             async move {
+                let key = DownloadKey {
+                    url: req.url.clone(),
+                    destination: req.destination.clone(),
+                };
                 client
-                    .download_file_with_signature(
-                        &req.url,
-                        &req.destination,
-                        req.checksum.as_deref(),
-                        req.signature.as_ref(),
-                    )
+                    .inflight
+                    .get_or_try_init(key, || async move {
+                        client
+                            .download_file_with_signature(
+                                &req.url,
+                                &req.destination,
+                                req.checksum.as_deref(),
+                                req.signature.as_ref(),
+                            )
+                            .await
+                    })
                     .await
             }
         }));
