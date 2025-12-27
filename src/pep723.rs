@@ -39,6 +39,36 @@ pub struct ScriptMetadata {
     /// List of dependencies (PEP 508 format)
     #[serde(default)]
     pub dependencies: Vec<String>,
+    /// Tool-specific configuration.
+    #[serde(default)]
+    pub tool: Option<ToolConfig>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ToolConfig {
+    #[serde(default)]
+    pub uv: Option<UvToolConfig>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct UvToolConfig {
+    #[serde(default)]
+    pub index: Vec<UvIndex>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct UvIndex {
+    pub url: String,
+}
+
+impl ScriptMetadata {
+    pub fn index_urls(&self) -> Vec<String> {
+        self.tool
+            .as_ref()
+            .and_then(|tool| tool.uv.as_ref())
+            .map(|uv| uv.index.iter().map(|idx| idx.url.clone()).collect())
+            .unwrap_or_default()
+    }
 }
 
 /// Extract PEP 723 metadata from a Python script file.
@@ -248,5 +278,27 @@ import numpy
             .expect("should have metadata");
 
         assert_eq!(metadata.dependencies, vec!["numpy"]);
+    }
+
+    #[test]
+    fn parse_tool_uv_indexes() {
+        let script = r#"# /// script
+# dependencies = ["requests"]
+# [tool.uv]
+# [[tool.uv.index]]
+# url = "https://example.com/simple"
+# [[tool.uv.index]]
+# url = "https://pypi.org/simple"
+# ///
+"#;
+
+        let metadata = parse_script_metadata_from_str(script)
+            .unwrap()
+            .expect("should have metadata");
+
+        let indexes = metadata.index_urls();
+        assert_eq!(indexes.len(), 2);
+        assert_eq!(indexes[0], "https://example.com/simple");
+        assert_eq!(indexes[1], "https://pypi.org/simple");
     }
 }
