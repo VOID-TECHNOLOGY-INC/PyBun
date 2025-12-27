@@ -428,12 +428,23 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
   - Expected: Warm run のCPU時間削減 + PyPIへの不要な再問い合わせ減。
   - Priority: Medium
 
-- [ ] PR-OPT12: 並列フェッチの重複排除（uv の `OnceMap` 方式）
+- [DONE] PR-OPT12: 並列フェッチの重複排除（uv の `OnceMap` 方式）
   - **背景**: uv は `OnceMap` により “同一キーのネットワーク取得は1回だけ” を保証し、並列解決時の重複リクエストを抑えている（例: `ref/uv/crates/uv-once-map/src/lib.rs:10`）。
   - **対策案**:
     1. PyPIメタデータ・wheelメタデータ・アーティファクトダウンロードに OnceMap/同等の仕組みを導入。
     2. in-memory cache は `Mutex<HashMap>` から `DashMap`/OnceMap に移行し、ロック競合を削減。
+  - Current: OnceMap を導入して PyPI メタデータ/依存取得の並列フェッチを重複排除し、in-memory を `DashMap` に移行。アーティファクトの並列ダウンロードは (url, destination) 単位で重複排除。
+  - Tests: `src/once_map.rs` のユニットテスト、`tests/pypi_integration.rs` の並列取得テスト。
   - Expected: 解決/ダウンロードのネットワーク重複と待ち時間を削減。
+  - Priority: Medium
+
+- [ ] PR-OPT13: PEP 723 cold start 最適化（uv の script 環境/lock の活用に追従）
+  - **背景**: uv は PEP 723 スクリプト実行時にスクリプト専用の仮想環境を cache dir 配下に作成し再利用する（`ref/uv/docs/reference/storage.md` の Script virtual environments）。また `uv lock --script` により script 用ロックファイルを生成し、以後の `uv run --script` などで解決を再利用する（`ref/uv/docs/guides/scripts.md` の Locking dependencies）。依存物は uv の dependency cache に保持され、同一FS上に置くことでリンク/再利用を効率化する前提がある（`ref/uv/docs/concepts/cache.md` の cache directory 注意）。
+  - **対策案**:
+    1. `pybun lock --script` を追加し、`pybun run` が `.lock` を優先して解決コストを削減。
+    2. PEP 723 の env cache キーを「Python 版本 + 依存 + index設定 + lock hash」に統一し、cache dir 配下に永続化（削除は `pybun cache prune`/専用コマンド）。
+    3. wheel/metadata cache を script env へ hardlink/clone できる配置に揃え、初回インストールを短縮（同一FS前提）。
+  - Expected: B3.2 (PEP 723 cold) の初回実行時間の大幅短縮。
   - Priority: Medium
 
 ## Testing & CI Strategy

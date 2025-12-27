@@ -2,6 +2,8 @@ use assert_cmd::Command;
 use assert_cmd::cargo::cargo_bin_cmd;
 use httpmock::prelude::*;
 use pybun::lockfile::Lockfile;
+use pybun::pypi::{PyPiClient, PyPiIndex};
+use pybun::resolver::PackageIndex;
 use serde_json::json;
 use std::fs;
 use tempfile::tempdir;
@@ -100,6 +102,87 @@ fn setup_package_mocks(server: &MockServer) -> String {
     });
 
     base
+}
+
+#[tokio::test]
+async fn concurrent_metadata_fetch_is_deduped() {
+    let temp = tempdir().unwrap();
+    let cache_dir = temp.path().join("cache");
+    let server = MockServer::start();
+    let base = server.base_url();
+
+    let project_body = json!({
+        "info": { "name": "app", "version": "1.0.0" },
+        "releases": {
+            "1.0.0": [
+                {
+                    "filename": "app-1.0.0-py3-none-any.whl",
+                    "packagetype": "bdist_wheel",
+                    "url": format!("{}/files/app-1.0.0-py3-none-any.whl", base),
+                    "yanked": false,
+                    "digests": { "sha256": "abc" }
+                }
+            ]
+        }
+    })
+    .to_string();
+
+    let project_mock = server.mock(|when, then| {
+        when.method(GET).path("/pypi/app/json");
+        then.status(200)
+            .header("Content-Type", "application/json")
+            .body(project_body.clone());
+    });
+
+    let meta_body = json!({
+        "info": {
+            "name": "app",
+            "version": "1.0.0",
+            "requires_dist": ["dep==1.0.0"]
+        }
+    })
+    .to_string();
+
+    let meta_mock = server.mock(|when, then| {
+        when.method(GET).path("/pypi/app/1.0.0/json");
+        then.status(200)
+            .header("Content-Type", "application/json")
+            .body(meta_body.clone());
+    });
+
+    let prev_base = std::env::var("PYBUN_PYPI_BASE_URL").ok();
+    let prev_cache = std::env::var("PYBUN_PYPI_CACHE_DIR").ok();
+    unsafe {
+        std::env::set_var("PYBUN_PYPI_BASE_URL", &base);
+        std::env::set_var("PYBUN_PYPI_CACHE_DIR", cache_dir.to_str().unwrap());
+    }
+
+    let client = PyPiClient::from_env(false).unwrap();
+    let index = PyPiIndex::new(client);
+
+    let fut1 = index.get("app", "1.0.0");
+    let fut2 = index.get("app", "1.0.0");
+    let fut3 = index.get("app", "1.0.0");
+    let (r1, r2, r3) = tokio::join!(fut1, fut2, fut3);
+    assert!(r1.unwrap().is_some());
+    assert!(r2.unwrap().is_some());
+    assert!(r3.unwrap().is_some());
+
+    assert_eq!(project_mock.hits(), 1);
+    assert_eq!(meta_mock.hits(), 1);
+
+    unsafe {
+        if let Some(value) = prev_base {
+            std::env::set_var("PYBUN_PYPI_BASE_URL", value);
+        } else {
+            std::env::remove_var("PYBUN_PYPI_BASE_URL");
+        }
+        if let Some(value) = prev_cache {
+            std::env::set_var("PYBUN_PYPI_CACHE_DIR", value);
+        } else {
+            std::env::remove_var("PYBUN_PYPI_CACHE_DIR");
+        }
+    }
 }
 
 #[test]

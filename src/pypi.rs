@@ -1,5 +1,7 @@
 use crate::lockfile::PackageSource;
+use crate::once_map::OnceMap;
 use crate::resolver::{PackageArtifacts, PackageIndex, Requirement, ResolvedPackage, Wheel};
+use dashmap::DashMap;
 use reqwest::{StatusCode, Url, header};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -8,9 +10,8 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::sync::Mutex;
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum PyPiError {
     #[error("invalid PyPI base url {0}")]
     InvalidBaseUrl(String),
@@ -19,25 +20,37 @@ pub enum PyPiError {
     #[error("cache miss for {0} in offline mode")]
     OfflineCacheMiss(String),
     #[error("http error: {0}")]
-    Http(#[from] reqwest::Error),
+    Http(String),
     #[error("io error: {0}")]
-    Io(#[from] std::io::Error),
+    Io(String),
     #[error("parse error: {0}")]
     Parse(String),
+}
+
+impl From<reqwest::Error> for PyPiError {
+    fn from(value: reqwest::Error) -> Self {
+        Self::Http(value.to_string())
+    }
+}
+
+impl From<std::io::Error> for PyPiError {
+    fn from(value: std::io::Error) -> Self {
+        Self::Io(value.to_string())
+    }
 }
 
 /// Package index backed by the PyPI JSON API with local caching and offline support.
 #[derive(Clone)]
 pub struct PyPiIndex {
     client: PyPiClient,
-    memory: Arc<Mutex<HashMap<String, Vec<CachedPackage>>>>,
+    memory: Arc<DashMap<String, Vec<CachedPackage>>>,
 }
 
 impl PyPiIndex {
     pub fn new(client: PyPiClient) -> Self {
         Self {
             client,
-            memory: Arc::new(Mutex::new(HashMap::new())),
+            memory: Arc::new(DashMap::new()),
         }
     }
 }
@@ -112,6 +125,8 @@ pub struct PyPiClient {
     cache_dir: PathBuf,
     http: reqwest::Client,
     offline: bool,
+    package_once: Arc<OnceMap<String, Vec<CachedPackage>>>,
+    deps_once: Arc<OnceMap<String, Vec<String>>>,
 }
 
 impl PyPiClient {
@@ -131,23 +146,33 @@ impl PyPiClient {
             cache_dir,
             http: reqwest::Client::builder().user_agent("pybun/0.1").build()?,
             offline,
+            package_once: Arc::new(OnceMap::new()),
+            deps_once: Arc::new(OnceMap::new()),
         })
     }
 
     async fn get_or_fetch(
         &self,
         name: &str,
-        memory: &Arc<Mutex<HashMap<String, Vec<CachedPackage>>>>,
+        memory: &Arc<DashMap<String, Vec<CachedPackage>>>,
     ) -> Result<Vec<CachedPackage>, PyPiError> {
-        if let Some(cached) = memory.lock().await.get(name).cloned() {
+        if let Some(cached) = memory.get(name).map(|entry| entry.clone()) {
             return Ok(cached);
         }
-
-        let packages = self.fetch_packages(name).await?;
-        memory
-            .lock()
-            .await
-            .insert(name.to_string(), packages.clone());
+        let name_owned = name.to_string();
+        let memory = Arc::clone(memory);
+        let packages = self
+            .package_once
+            .get_or_try_init(name_owned.clone(), || {
+                let client = self.clone();
+                let memory = Arc::clone(&memory);
+                async move {
+                    let packages = client.fetch_packages(&name_owned).await?;
+                    memory.insert(name_owned.clone(), packages.clone());
+                    Ok::<Vec<CachedPackage>, PyPiError>(packages)
+                }
+            })
+            .await?;
         Ok(packages)
     }
 
@@ -196,7 +221,9 @@ impl PyPiClient {
         }
 
         if !resp.status().is_success() {
-            return Err(PyPiError::Http(resp.error_for_status().unwrap_err()));
+            return Err(PyPiError::Http(
+                resp.error_for_status().unwrap_err().to_string(),
+            ));
         }
 
         let headers = resp.headers().clone();
@@ -321,26 +348,48 @@ impl PyPiClient {
         &self,
         name: &str,
         version: &str,
-        memory: &Arc<Mutex<HashMap<String, Vec<CachedPackage>>>>,
+        memory: &Arc<DashMap<String, Vec<CachedPackage>>>,
     ) -> Result<Vec<String>, PyPiError> {
         if let Some(deps) = self.cached_dependencies(name, version, memory).await {
             return Ok(deps);
         }
 
-        if self.offline {
-            return Err(PyPiError::OfflineCacheMiss(format!(
-                "{}=={}",
-                name, version
-            )));
-        }
+        let key = format!("{}=={}", name, version);
+        let memory = Arc::clone(memory);
+        let name_owned = name.to_string();
+        let version_owned = version.to_string();
+        let deps = self
+            .deps_once
+            .get_or_try_init(key, || {
+                let client = self.clone();
+                let memory = Arc::clone(&memory);
+                async move {
+                    if client.offline {
+                        return Err(PyPiError::OfflineCacheMiss(format!(
+                            "{}=={}",
+                            name_owned, version_owned
+                        )));
+                    }
 
-        let raw_deps = self.fetch_requires_dist(name, version).await?;
-        let deps = raw_deps
-            .into_iter()
-            .filter_map(parse_requires_dist)
-            .map(|req| req.to_string())
-            .collect::<Vec<_>>();
-        self.update_cached_dependencies(name, version, deps.clone(), memory)
+                    let raw_deps = client
+                        .fetch_requires_dist(&name_owned, &version_owned)
+                        .await?;
+                    let deps = raw_deps
+                        .into_iter()
+                        .filter_map(parse_requires_dist)
+                        .map(|req| req.to_string())
+                        .collect::<Vec<_>>();
+                    client
+                        .update_cached_dependencies(
+                            &name_owned,
+                            &version_owned,
+                            deps.clone(),
+                            &memory,
+                        )
+                        .await?;
+                    Ok::<Vec<String>, PyPiError>(deps)
+                }
+            })
             .await?;
         Ok(deps)
     }
@@ -349,9 +398,9 @@ impl PyPiClient {
         &self,
         name: &str,
         version: &str,
-        memory: &Arc<Mutex<HashMap<String, Vec<CachedPackage>>>>,
+        memory: &Arc<DashMap<String, Vec<CachedPackage>>>,
     ) -> Option<Vec<String>> {
-        memory.lock().await.get(name).and_then(|packages| {
+        memory.get(name).and_then(|packages| {
             packages
                 .iter()
                 .find(|pkg| pkg.version == version)
@@ -364,15 +413,13 @@ impl PyPiClient {
         name: &str,
         version: &str,
         deps: Vec<String>,
-        memory: &Arc<Mutex<HashMap<String, Vec<CachedPackage>>>>,
+        memory: &Arc<DashMap<String, Vec<CachedPackage>>>,
     ) -> Result<(), PyPiError> {
-        let mut guard = memory.lock().await;
-        if let Some(packages) = guard.get_mut(name)
+        if let Some(mut packages) = memory.get_mut(name)
             && let Some(pkg) = packages.iter_mut().find(|pkg| pkg.version == version)
         {
             pkg.dependencies = Some(deps.clone());
         }
-        drop(guard);
 
         if let Some(mut entry) = self.load_cache(name).await? {
             if let Some(pkg) = entry.packages.iter_mut().find(|pkg| pkg.version == version) {
@@ -768,6 +815,8 @@ mod tests {
             cache_dir: temp.path().join("cache"),
             http: reqwest::Client::new(),
             offline: false,
+            package_once: Arc::new(OnceMap::new()),
+            deps_once: Arc::new(OnceMap::new()),
         };
         let entry = CacheEntry {
             policy: HttpCachePolicy {
