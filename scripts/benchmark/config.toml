@@ -1,8 +1,9 @@
 # PyBun Benchmark Configuration
 
 [general]
-iterations = 5           # Number of iterations per benchmark
+iterations = 10          # Number of iterations per benchmark
 warmup = 1               # Warmup runs (not counted)
+trim_ratio = 0.1         # Trim ratio for outlier removal (per tail)
 timeout_seconds = 300    # Maximum time per scenario
 hyperfine_path = ""      # Optional: path to hyperfine binary for more accurate timing
 
@@ -34,6 +35,9 @@ warm_cache = true
 enabled = true
 pep723 = true
 profiles = ["dev", "prod"]
+pep723_fixture = "fixtures/pep723.py"
+pep723_clear_envs = true
+pep723_clear_fs_cache = true
 
 [scenarios.adhoc]
 enabled = true
@@ -61,4 +65,3 @@ format = "json"                     # json, markdown, csv
 include_system_info = true
 save_raw_results = true
 results_dir = "results"
-

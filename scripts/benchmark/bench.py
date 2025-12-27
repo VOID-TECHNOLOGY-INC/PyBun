@@ -162,6 +162,35 @@ def is_tool_enabled(name: str, config: dict) -> bool:
     return tools.get(name, False)
 
 
+def trim_samples(samples: list[float], trim_ratio: float) -> list[float]:
+    """Trim outliers from samples by removing a ratio from each tail."""
+    if trim_ratio <= 0 or not samples:
+        return samples
+    trim_n = int(len(samples) * trim_ratio)
+    if trim_n == 0 or (trim_n * 2) >= len(samples):
+        return samples
+    sorted_samples = sorted(samples)
+    return sorted_samples[trim_n:-trim_n]
+
+
+def compute_stats(samples: list[float], trim_ratio: float = 0.0) -> tuple[float, float, float, float, int]:
+    """Compute mean/min/max/stddev with optional trimming."""
+    import statistics
+
+    if not samples:
+        return 0.0, 0.0, 0.0, 0.0, 0
+
+    trimmed = trim_samples(samples, trim_ratio)
+    if not trimmed:
+        trimmed = samples
+
+    avg = statistics.mean(trimmed)
+    min_t = min(trimmed)
+    max_t = max(trimmed)
+    stddev = statistics.stdev(trimmed) if len(trimmed) > 1 else 0.0
+    return avg, min_t, max_t, stddev, len(trimmed)
+
+
 def measure_command(
     cmd: list[str],
     warmup: int = 1,
@@ -169,14 +198,13 @@ def measure_command(
     timeout: int = 300,
     env: dict | None = None,
     cwd: str | None = None,
+    trim_ratio: float = 0.0,
 ) -> BenchResult:
     """
     Execute command multiple times and measure performance.
     
     Returns BenchResult with timing statistics.
     """
-    import statistics
-    
     # Prepare environment
     run_env = os.environ.copy()
     if env:
@@ -227,15 +255,9 @@ def measure_command(
             last_error = str(e)
     
     # Calculate statistics
-    if times:
-        avg = statistics.mean(times)
-        min_t = min(times)
-        max_t = max(times)
-        stddev = statistics.stdev(times) if len(times) > 1 else 0.0
-    else:
-        avg = min_t = max_t = stddev = 0.0
-    
-    return BenchResult(
+    avg, min_t, max_t, stddev, trimmed_count = compute_stats(times, trim_ratio)
+
+    result = BenchResult(
         scenario="",  # Will be set by caller
         tool=cmd[0] if cmd else "unknown",
         duration_ms=round(avg, 2),
@@ -246,6 +268,10 @@ def measure_command(
         success=success,
         error=last_error if not success else None,
     )
+    if trim_ratio > 0 and trimmed_count:
+        result.metadata["trim_ratio"] = trim_ratio
+        result.metadata["trimmed_iterations"] = trimmed_count
+    return result
 
 
 def measure_with_hyperfine(
@@ -704,4 +730,3 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
-

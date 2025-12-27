@@ -80,6 +80,7 @@ def install_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> li
     general = config.get("general", {})
     iterations = general.get("iterations", 5)
     warmup = general.get("warmup", 1)
+    trim_ratio = scenario_config.get("trim_ratio", general.get("trim_ratio", 0.0))
     dry_run = config.get("dry_run", False)
     verbose = config.get("verbose", False)
     
@@ -127,6 +128,7 @@ def install_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> li
                         cmd,
                         warmup=0,  # No warmup for cold
                         iterations=1,
+                        trim_ratio=trim_ratio,
                         cwd=str(tmp),
                     )
                     result.scenario = "B2.1_cold_install"
@@ -153,6 +155,7 @@ def install_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> li
                             cmd,
                             warmup=0,
                             iterations=1,
+                            trim_ratio=trim_ratio,
                             cwd=str(tmp),
                         )
                         result.scenario = "B2.1_cold_install"
@@ -203,6 +206,7 @@ def install_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> li
                         cmd,
                         warmup=warmup,
                         iterations=iterations,
+                        trim_ratio=trim_ratio,
                         cwd=str(tmp),
                     )
                     result.scenario = "B2.2_warm_install"
@@ -229,6 +233,7 @@ def install_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> li
                             cmd,
                             warmup=warmup,
                             iterations=iterations,
+                            trim_ratio=trim_ratio,
                             cwd=str(tmp),
                         )
                         result.scenario = "B2.2_warm_install"
@@ -267,6 +272,7 @@ def install_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> li
                     cmd,
                     warmup=0,
                     iterations=1,  # Large install, single run
+                    trim_ratio=trim_ratio,
                     cwd=str(tmp),
                 )
                 result.scenario = "B2.3_large_install"
@@ -294,6 +300,7 @@ def install_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> li
                         cmd,
                         warmup=0,
                         iterations=1,
+                        trim_ratio=trim_ratio,
                         cwd=str(tmp),
                     )
                     result.scenario = "B2.3_large_install"
@@ -303,4 +310,3 @@ def install_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> li
                     print(f"  pip install (large): {result.duration_ms:.2f}ms")
     
     return results
-

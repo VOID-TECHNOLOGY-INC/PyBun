@@ -63,8 +63,9 @@ scripts/benchmark/
 
 ```toml
 [general]
-iterations = 5           # 反復回数
+iterations = 10          # 反復回数
 warmup = 1               # ウォームアップ回数
+trim_ratio = 0.1         # 外れ値除外の割合（左右）
 timeout_seconds = 300    # タイムアウト
 
 [tools]
@@ -78,6 +79,9 @@ pipx = true
 enabled = true
 pep723 = true
 profiles = ["dev", "prod"]
+pep723_fixture = "fixtures/pep723.py"
+pep723_clear_envs = true
+pep723_clear_fs_cache = true
 ```
 
 ## 出力形式
@@ -209,4 +213,3 @@ uv = "/path/to/uv"
 [general]
 timeout_seconds = 600
 ```
-
