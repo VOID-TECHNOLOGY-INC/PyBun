@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 
-use pybun::resolver::{InMemoryIndex, Requirement, ResolveError, resolve};
+use pybun::resolver::{
+    InMemoryIndex, PackageArtifacts, PackageIndex, Requirement, ResolveError, ResolvedPackage,
+    resolve,
+};
 
 #[tokio::test]
 async fn resolves_simple_dependency_tree() {
@@ -222,6 +225,72 @@ async fn errors_when_no_version_meets_maximum() {
         .await
         .unwrap_err();
     assert!(matches!(err, ResolveError::Missing { name, .. } if name == "lib"));
+}
+
+#[tokio::test]
+async fn resolves_dependencies_fetched_after_selection() {
+    struct LazyIndex {
+        all_map: HashMap<String, Vec<ResolvedPackage>>,
+        get_map: HashMap<(String, String), ResolvedPackage>,
+    }
+
+    impl PackageIndex for LazyIndex {
+        async fn get(
+            &self,
+            name: &str,
+            version: &str,
+        ) -> Result<Option<ResolvedPackage>, ResolveError> {
+            Ok(self
+                .get_map
+                .get(&(name.to_string(), version.to_string()))
+                .cloned())
+        }
+
+        async fn all(&self, name: &str) -> Result<Vec<ResolvedPackage>, ResolveError> {
+            Ok(self.all_map.get(name).cloned().unwrap_or_default())
+        }
+    }
+
+    let mut all_map = HashMap::new();
+    all_map.insert(
+        "app".to_string(),
+        vec![ResolvedPackage {
+            name: "app".to_string(),
+            version: "1.0.0".to_string(),
+            dependencies: Vec::new(),
+            source: None,
+            artifacts: PackageArtifacts::default(),
+        }],
+    );
+    all_map.insert(
+        "dep".to_string(),
+        vec![ResolvedPackage {
+            name: "dep".to_string(),
+            version: "1.0.0".to_string(),
+            dependencies: Vec::new(),
+            source: None,
+            artifacts: PackageArtifacts::default(),
+        }],
+    );
+
+    let mut get_map = HashMap::new();
+    get_map.insert(
+        ("app".to_string(), "1.0.0".to_string()),
+        ResolvedPackage {
+            name: "app".to_string(),
+            version: "1.0.0".to_string(),
+            dependencies: vec![Requirement::exact("dep", "1.0.0")],
+            source: None,
+            artifacts: PackageArtifacts::default(),
+        },
+    );
+
+    let index = LazyIndex { all_map, get_map };
+    let resolution = resolve(vec![Requirement::exact("app", "1.0.0")], &index)
+        .await
+        .unwrap();
+
+    assert!(resolution.packages.contains_key("dep"));
 }
 
 #[test]
