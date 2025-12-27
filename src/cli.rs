@@ -30,6 +30,8 @@ pub enum Commands {
     Add(PackageArgs),
     /// Remove a package and update lockfile.
     Remove(PackageArgs),
+    /// Lock dependencies for scripts.
+    Lock(LockArgs),
     /// Run a script with import/runtime optimizations.
     Run(RunArgs),
     /// Run an ad-hoc package without prior install.
@@ -117,6 +119,19 @@ pub struct InstallArgs {
     /// Path to write lockfile.
     #[arg(long, default_value = "pybun.lockb")]
     pub lock: std::path::PathBuf,
+}
+
+#[derive(Args, Debug)]
+pub struct LockArgs {
+    /// Lock dependencies for a PEP 723 script.
+    #[arg(long, value_name = "SCRIPT")]
+    pub script: Option<std::path::PathBuf>,
+    /// Use offline mode when cache is sufficient.
+    #[arg(long)]
+    pub offline: bool,
+    /// Path to index JSON (temporary M1 flag).
+    #[arg(long)]
+    pub index: Option<std::path::PathBuf>,
 }
 
 #[derive(Args, Debug)]

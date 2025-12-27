@@ -391,6 +391,10 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
     1. PEP 723 ベンチ用スクリプトを `scripts/benchmark/fixtures/pep723.py` に固定配置。
     2. Cold/Warm 測定前に `sync; echo 3 > /proc/sys/vm/drop_caches`（Linux）または `purge`（macOS）で FS キャッシュをクリア。
     3. iterations を 10 に増やし、外れ値を除外（trimmed mean）。
+    4. `pep723-envs` を削除するケースと、削除せず resolver をバイパスするケース（lock + `--no-deps`）を別シナリオで測定。
+    5. PEP 723 の warm を「同一パス＋同一 lock hash」で再実行するように固定し、env root 変動を排除。
+    6. ベンチ出力に「cache 状態（env hit/miss, lock 有無）」を埋め込み、比較を明確化。
+    7. 依存ダウンロードの影響を分離するため、依存を事前取得した状態（wheel cache あり）での cold を追加測定。
   - Expected: StdDev を 10ms 以下に安定化。
   - Priority: Low
 
@@ -438,12 +442,14 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
   - Expected: 解決/ダウンロードのネットワーク重複と待ち時間を削減。
   - Priority: Medium
 
-- [ ] PR-OPT13: PEP 723 cold start 最適化（uv の script 環境/lock の活用に追従）
+- [DONE] PR-OPT13: PEP 723 cold start 最適化（uv の script 環境/lock の活用に追従）
   - **背景**: uv は PEP 723 スクリプト実行時にスクリプト専用の仮想環境を cache dir 配下に作成し再利用する（`ref/uv/docs/reference/storage.md` の Script virtual environments）。また `uv lock --script` により script 用ロックファイルを生成し、以後の `uv run --script` などで解決を再利用する（`ref/uv/docs/guides/scripts.md` の Locking dependencies）。依存物は uv の dependency cache に保持され、同一FS上に置くことでリンク/再利用を効率化する前提がある（`ref/uv/docs/concepts/cache.md` の cache directory 注意）。
   - **対策案**:
     1. `pybun lock --script` を追加し、`pybun run` が `.lock` を優先して解決コストを削減。
     2. PEP 723 の env cache キーを「Python 版本 + 依存 + index設定 + lock hash」に統一し、cache dir 配下に永続化（削除は `pybun cache prune`/専用コマンド）。
     3. wheel/metadata cache を script env へ hardlink/clone できる配置に揃え、初回インストールを短縮（同一FS前提）。
+  - Current: Script 環境の root を script path/hash ベースにし、deps/index/lock hash の一致を確認して再利用するように変更。lockfile がある場合は `--no-deps` を使って resolver をバイパスする fast path を追加。Script 環境の排他ロックを導入。
+  - Tests: `CARGO_INCREMENTAL=0 cargo test pep723_cache` / ベンチマーク `scripts/benchmark/results/benchmark_20251227_132210.md` (B3.2 cold 2527ms, warm 117ms)
   - Expected: B3.2 (PEP 723 cold) の初回実行時間の大幅短縮。
   - Priority: Medium
 
