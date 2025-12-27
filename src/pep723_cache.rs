@@ -397,6 +397,7 @@ impl Pep723Cache {
             .create(true)
             .read(true)
             .write(true)
+            .truncate(true)
             .open(&lock_path)
             .map_err(|source| Pep723CacheError::Lock {
                 path: lock_path.clone(),

@@ -1498,16 +1498,15 @@ fn run_script(
                 .map_err(|e| eyre!("failed to lock script env: {}", e))?;
 
             let mut cache_hit = false;
-            if venv_path.exists() && venv_python.exists() {
-                if let Some(info) = pep_cache
+            if venv_path.exists()
+                && venv_python.exists()
+                && let Some(info) = pep_cache
                     .read_cache_entry(&env_root)
                     .map_err(|e| eyre!("failed to read cache entry: {}", e))?
-                {
-                    if Pep723Cache::cache_entry_matches_key(&info, &cache_key) {
-                        let _ = pep_cache.update_last_used_at(&env_root);
-                        cache_hit = true;
-                    }
-                }
+                && Pep723Cache::cache_entry_matches_key(&info, &cache_key)
+            {
+                let _ = pep_cache.update_last_used_at(&env_root);
+                cache_hit = true;
             }
 
             if cache_hit {
