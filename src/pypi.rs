@@ -1,6 +1,5 @@
 use crate::lockfile::PackageSource;
 use crate::resolver::{PackageArtifacts, PackageIndex, Requirement, ResolvedPackage, Wheel};
-use futures::future::try_join_all;
 use reqwest::{StatusCode, Url, header};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -8,6 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
 
 #[derive(Debug, thiserror::Error)]
@@ -30,7 +30,7 @@ pub enum PyPiError {
 #[derive(Clone)]
 pub struct PyPiIndex {
     client: PyPiClient,
-    memory: Arc<Mutex<HashMap<String, Vec<ResolvedPackage>>>>,
+    memory: Arc<Mutex<HashMap<String, Vec<CachedPackage>>>>,
 }
 
 impl PyPiIndex {
@@ -59,7 +59,21 @@ impl PackageIndex for PyPiIndex {
                 .get_or_fetch(&name, &this.memory)
                 .await
                 .map_err(|e| crate::resolver::ResolveError::Io(e.to_string()))?;
-            Ok(packages.into_iter().find(|p| p.version == version))
+            let cached = packages.iter().find(|p| p.version == version);
+            if cached.is_none() {
+                return Ok(None);
+            }
+            let dependencies = this
+                .client
+                .ensure_dependencies(&name, &version, &this.memory)
+                .await
+                .map_err(|e| crate::resolver::ResolveError::Io(e.to_string()))?;
+            let source = this.client.package_source();
+            Ok(Some(this.client.build_resolved(
+                cached.expect("checked"),
+                &dependencies,
+                &source,
+            )))
         }
     }
 
@@ -72,10 +86,22 @@ impl PackageIndex for PyPiIndex {
         let name = name.to_string();
         let this = self.clone();
         async move {
-            this.client
+            let cached = this
+                .client
                 .get_or_fetch(&name, &this.memory)
                 .await
-                .map_err(|e| crate::resolver::ResolveError::Io(e.to_string()))
+                .map_err(|e| crate::resolver::ResolveError::Io(e.to_string()))?;
+            let source = this.client.package_source();
+            Ok(cached
+                .iter()
+                .map(|pkg| {
+                    this.client.build_resolved(
+                        pkg,
+                        pkg.dependencies.as_deref().unwrap_or(&[]),
+                        &source,
+                    )
+                })
+                .collect())
         }
     }
 }
@@ -108,11 +134,11 @@ impl PyPiClient {
         })
     }
 
-    pub async fn get_or_fetch(
+    async fn get_or_fetch(
         &self,
         name: &str,
-        memory: &Arc<Mutex<HashMap<String, Vec<ResolvedPackage>>>>,
-    ) -> Result<Vec<ResolvedPackage>, PyPiError> {
+        memory: &Arc<Mutex<HashMap<String, Vec<CachedPackage>>>>,
+    ) -> Result<Vec<CachedPackage>, PyPiError> {
         if let Some(cached) = memory.lock().await.get(name).cloned() {
             return Ok(cached);
         }
@@ -132,14 +158,19 @@ impl PyPiClient {
             .unwrap_or_else(|_| "https://pypi.org/simple".into())
     }
 
-    async fn fetch_packages(&self, name: &str) -> Result<Vec<ResolvedPackage>, PyPiError> {
-        let cache_path = self.cache_path(name);
-        let cached_entry = self.load_cache(&cache_path)?;
+    async fn fetch_packages(&self, name: &str) -> Result<Vec<CachedPackage>, PyPiError> {
+        let cached_entry = self.load_cache(name).await?;
 
         if self.offline {
             let entry =
                 cached_entry.ok_or_else(|| PyPiError::OfflineCacheMiss(name.to_string()))?;
-            return Ok(self.packages_from_cache(entry));
+            return Ok(entry.packages);
+        }
+
+        if let Some(entry) = &cached_entry
+            && entry.policy.is_fresh(now_epoch_seconds())
+        {
+            return Ok(entry.packages.clone());
         }
 
         let mut req = self.http.get(
@@ -148,10 +179,10 @@ impl PyPiClient {
                 .map_err(|e| PyPiError::Parse(e.to_string()))?,
         );
         if let Some(entry) = &cached_entry {
-            if let Some(etag) = &entry.etag {
+            if let Some(etag) = &entry.policy.etag {
                 req = req.header(header::IF_NONE_MATCH, etag.as_str());
             }
-            if let Some(modified) = &entry.last_modified {
+            if let Some(modified) = &entry.policy.last_modified {
                 req = req.header(header::IF_MODIFIED_SINCE, modified.as_str());
             }
         }
@@ -161,183 +192,197 @@ impl PyPiClient {
         if resp.status() == StatusCode::NOT_MODIFIED {
             let entry =
                 cached_entry.ok_or_else(|| PyPiError::OfflineCacheMiss(name.to_string()))?;
-            return Ok(self.packages_from_cache(entry));
+            return Ok(entry.packages);
         }
 
         if !resp.status().is_success() {
             return Err(PyPiError::Http(resp.error_for_status().unwrap_err()));
         }
 
-        let etag = resp
-            .headers()
-            .get(header::ETAG)
-            .and_then(|h| h.to_str().ok())
-            .map(str::to_string);
-        let last_modified = resp
-            .headers()
-            .get(header::LAST_MODIFIED)
-            .and_then(|h| h.to_str().ok())
-            .map(str::to_string);
+        let headers = resp.headers().clone();
+        let body = resp.bytes().await?;
+        let cached_deps = cached_entry
+            .as_ref()
+            .map(|entry| {
+                entry
+                    .packages
+                    .iter()
+                    .map(|pkg| (pkg.version.clone(), pkg.dependencies.clone()))
+                    .collect::<HashMap<_, _>>()
+            })
+            .unwrap_or_default();
 
-        let body: ProjectResponse = resp.json().await?;
+        let body_bytes = body.to_vec();
+        let body_bytes_for_parse = body_bytes.clone();
+        let packages = tokio::task::spawn_blocking(move || {
+            let parsed: ProjectResponse = serde_json::from_slice(&body_bytes_for_parse)
+                .map_err(|e| PyPiError::Parse(format!("json decode error: {}", e)))?;
+            Ok::<_, PyPiError>(build_cached_packages(parsed, &cached_deps))
+        })
+        .await
+        .map_err(|e| PyPiError::Parse(format!("cache parse join error: {}", e)))??;
 
-        // Fetch per-version dependency metadata
-        let versions: Vec<String> = body.releases.keys().cloned().collect();
-        let deps = self.fetch_requires_map(name, &versions).await?;
-
-        let mut packages = Vec::new();
-        for (version, files) in body.releases {
-            if files.is_empty() {
-                continue;
-            }
-            let mut wheels = Vec::new();
-            let mut sdist = None;
-            for file in files {
-                if file.yanked.unwrap_or(false) {
-                    continue;
-                }
-                match file.packagetype.as_str() {
-                    "bdist_wheel" => {
-                        let platforms = wheel_platforms(&file.filename);
-                        wheels.push(CachedWheel {
-                            file: file.filename.clone(),
-                            platforms: if platforms.is_empty() {
-                                vec!["any".into()]
-                            } else {
-                                platforms
-                            },
-                        });
-                    }
-                    "sdist" => {
-                        sdist = Some(file.filename.clone());
-                    }
-                    _ => {}
-                }
-            }
-
-            let dependencies = deps
-                .get(&version)
-                .cloned()
-                .unwrap_or_default()
-                .into_iter()
-                .filter_map(parse_requires_dist)
-                .map(|r| r.to_string())
-                .collect::<Vec<_>>();
-
-            packages.push(CachedPackage {
-                name: body.info.name.clone(),
-                version,
-                dependencies,
-                wheels,
-                sdist,
-            });
-        }
-
+        let policy = HttpCachePolicy::from_headers(&headers, now_epoch_seconds());
         let entry = CacheEntry {
-            etag,
-            last_modified,
+            policy: policy.clone(),
+            body: body_bytes,
             packages,
         };
-        self.save_cache(&cache_path, &entry)?;
+        if !policy.no_store {
+            self.save_cache(name, entry.clone()).await?;
+        }
 
-        Ok(self.packages_from_cache(entry))
+        Ok(entry.packages)
     }
 
-    async fn fetch_requires_map(
+    async fn fetch_requires_dist(
         &self,
         name: &str,
-        versions: &[String],
-    ) -> Result<HashMap<String, Vec<String>>, PyPiError> {
-        let mut out = HashMap::new();
-        let futures = versions.iter().map(|version| {
-            let url = self
-                .base
-                .join(&format!("pypi/{}/{}/json", name, version))
-                .map_err(|e| PyPiError::Parse(e.to_string()));
-            let client = self.http.clone();
-            let version = version.clone();
-            async move {
-                let url = url?;
-                let resp = client.get(url).send().await?;
-                if !resp.status().is_success() {
-                    return Ok::<(String, Vec<String>), PyPiError>((version, Vec::new()));
-                }
-                let body: VersionResponse = resp.json().await?;
-                Ok::<(String, Vec<String>), PyPiError>((
-                    version,
-                    body.info.requires_dist.unwrap_or_default(),
-                ))
-            }
-        });
-
-        for result in try_join_all(futures).await? {
-            out.insert(result.0, result.1);
+        version: &str,
+    ) -> Result<Vec<String>, PyPiError> {
+        let url = self
+            .base
+            .join(&format!("pypi/{}/{}/json", name, version))
+            .map_err(|e| PyPiError::Parse(e.to_string()))?;
+        let resp = self.http.get(url).send().await?;
+        if !resp.status().is_success() {
+            return Ok(Vec::new());
         }
-        Ok(out)
+        let body: VersionResponse = resp.json().await?;
+        Ok(body.info.requires_dist.unwrap_or_default())
     }
 
     fn cache_path(&self, name: &str) -> PathBuf {
+        self.cache_dir.join(format!("{}.bin", name.to_lowercase()))
+    }
+
+    fn legacy_cache_path(&self, name: &str) -> PathBuf {
         self.cache_dir.join(format!("{}.json", name.to_lowercase()))
     }
 
-    fn load_cache(&self, path: &Path) -> Result<Option<CacheEntry>, PyPiError> {
-        if !path.exists() {
-            return Ok(None);
-        }
-        let data = fs::read_to_string(path)?;
-        let entry: CacheEntry = serde_json::from_str(&data)
-            .map_err(|e| PyPiError::Parse(format!("cache decode error: {}", e)))?;
-        Ok(Some(entry))
+    async fn load_cache(&self, name: &str) -> Result<Option<CacheEntry>, PyPiError> {
+        let path = self.cache_path(name);
+        let legacy_path = self.legacy_cache_path(name);
+        let now = now_epoch_seconds();
+        tokio::task::spawn_blocking(move || load_cache_from_paths(&path, &legacy_path, now))
+            .await
+            .map_err(|e| PyPiError::Parse(format!("cache join error: {}", e)))?
     }
 
-    fn save_cache(&self, path: &Path, entry: &CacheEntry) -> Result<(), PyPiError> {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let data = serde_json::to_string_pretty(entry)
-            .map_err(|e| PyPiError::Parse(format!("cache encode error: {}", e)))?;
-        fs::write(path, data)?;
-        Ok(())
+    async fn save_cache(&self, name: &str, entry: CacheEntry) -> Result<(), PyPiError> {
+        let path = self.cache_path(name);
+        tokio::task::spawn_blocking(move || save_cache_to_path(&path, &entry))
+            .await
+            .map_err(|e| PyPiError::Parse(format!("cache join error: {}", e)))?
     }
 
-    fn packages_from_cache(&self, entry: CacheEntry) -> Vec<ResolvedPackage> {
-        let source = PackageSource::Registry {
+    fn package_source(&self) -> PackageSource {
+        PackageSource::Registry {
             index: "pypi".into(),
             url: self.index_url(),
+        }
+    }
+
+    fn build_resolved(
+        &self,
+        pkg: &CachedPackage,
+        dependencies: &[String],
+        source: &PackageSource,
+    ) -> ResolvedPackage {
+        let deps = dependencies
+            .iter()
+            .filter_map(|d| Requirement::from_str(d).ok())
+            .collect::<Vec<_>>();
+        let artifacts = PackageArtifacts {
+            wheels: pkg
+                .wheels
+                .iter()
+                .map(|w| Wheel {
+                    file: w.file.clone(),
+                    platforms: if w.platforms.is_empty() {
+                        vec!["any".into()]
+                    } else {
+                        w.platforms.clone()
+                    },
+                })
+                .collect(),
+            sdist: pkg.sdist.clone(),
         };
-        entry
-            .packages
+        ResolvedPackage {
+            name: pkg.name.clone(),
+            version: pkg.version.clone(),
+            dependencies: deps,
+            source: Some(source.clone()),
+            artifacts,
+        }
+    }
+
+    async fn ensure_dependencies(
+        &self,
+        name: &str,
+        version: &str,
+        memory: &Arc<Mutex<HashMap<String, Vec<CachedPackage>>>>,
+    ) -> Result<Vec<String>, PyPiError> {
+        if let Some(deps) = self.cached_dependencies(name, version, memory).await {
+            return Ok(deps);
+        }
+
+        if self.offline {
+            return Err(PyPiError::OfflineCacheMiss(format!(
+                "{}=={}",
+                name, version
+            )));
+        }
+
+        let raw_deps = self.fetch_requires_dist(name, version).await?;
+        let deps = raw_deps
             .into_iter()
-            .map(|pkg| {
-                let deps = pkg
-                    .dependencies
-                    .iter()
-                    .filter_map(|d| Requirement::from_str(d).ok())
-                    .collect::<Vec<_>>();
-                let artifacts = PackageArtifacts {
-                    wheels: pkg
-                        .wheels
-                        .iter()
-                        .map(|w| Wheel {
-                            file: w.file.clone(),
-                            platforms: if w.platforms.is_empty() {
-                                vec!["any".into()]
-                            } else {
-                                w.platforms.clone()
-                            },
-                        })
-                        .collect(),
-                    sdist: pkg.sdist.clone(),
-                };
-                ResolvedPackage {
-                    name: pkg.name.clone(),
-                    version: pkg.version.clone(),
-                    dependencies: deps,
-                    source: Some(source.clone()),
-                    artifacts,
-                }
-            })
-            .collect()
+            .filter_map(parse_requires_dist)
+            .map(|req| req.to_string())
+            .collect::<Vec<_>>();
+        self.update_cached_dependencies(name, version, deps.clone(), memory)
+            .await?;
+        Ok(deps)
+    }
+
+    async fn cached_dependencies(
+        &self,
+        name: &str,
+        version: &str,
+        memory: &Arc<Mutex<HashMap<String, Vec<CachedPackage>>>>,
+    ) -> Option<Vec<String>> {
+        memory.lock().await.get(name).and_then(|packages| {
+            packages
+                .iter()
+                .find(|pkg| pkg.version == version)
+                .and_then(|pkg| pkg.dependencies.clone())
+        })
+    }
+
+    async fn update_cached_dependencies(
+        &self,
+        name: &str,
+        version: &str,
+        deps: Vec<String>,
+        memory: &Arc<Mutex<HashMap<String, Vec<CachedPackage>>>>,
+    ) -> Result<(), PyPiError> {
+        let mut guard = memory.lock().await;
+        if let Some(packages) = guard.get_mut(name)
+            && let Some(pkg) = packages.iter_mut().find(|pkg| pkg.version == version)
+        {
+            pkg.dependencies = Some(deps.clone());
+        }
+        drop(guard);
+
+        if let Some(mut entry) = self.load_cache(name).await? {
+            if let Some(pkg) = entry.packages.iter_mut().find(|pkg| pkg.version == version) {
+                pkg.dependencies = Some(deps);
+            }
+            if !entry.policy.no_store {
+                self.save_cache(name, entry).await?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -381,19 +426,85 @@ struct CachedWheel {
 struct CachedPackage {
     name: String,
     version: String,
-    dependencies: Vec<String>,
+    #[serde(default)]
+    dependencies: Option<Vec<String>>,
     wheels: Vec<CachedWheel>,
     #[serde(default)]
     sdist: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+struct HttpCachePolicy {
+    #[serde(default)]
+    etag: Option<String>,
+    #[serde(default)]
+    last_modified: Option<String>,
+    #[serde(default)]
+    max_age: Option<u64>,
+    #[serde(default)]
+    no_cache: bool,
+    #[serde(default)]
+    no_store: bool,
+    #[serde(default)]
+    fetched_at: u64,
+}
+
+impl HttpCachePolicy {
+    fn from_headers(headers: &header::HeaderMap, fetched_at: u64) -> Self {
+        let cache_control = headers
+            .get(header::CACHE_CONTROL)
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or_default();
+        let directives = parse_cache_control(cache_control);
+        Self {
+            etag: headers
+                .get(header::ETAG)
+                .and_then(|h| h.to_str().ok())
+                .map(str::to_string),
+            last_modified: headers
+                .get(header::LAST_MODIFIED)
+                .and_then(|h| h.to_str().ok())
+                .map(str::to_string),
+            max_age: directives.max_age,
+            no_cache: directives.no_cache,
+            no_store: directives.no_store,
+            fetched_at,
+        }
+    }
+
+    fn is_fresh(&self, now: u64) -> bool {
+        if self.no_cache {
+            return false;
+        }
+        match self.max_age {
+            Some(max_age) => now.saturating_sub(self.fetched_at) <= max_age,
+            None => false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct CacheEntry {
+    policy: HttpCachePolicy,
+    #[serde(default)]
+    body: Vec<u8>,
+    packages: Vec<CachedPackage>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LegacyCacheEntry {
     #[serde(default)]
     etag: Option<String>,
     #[serde(default)]
     last_modified: Option<String>,
     packages: Vec<CachedPackage>,
+}
+
+#[derive(Default)]
+struct CacheControlDirectives {
+    max_age: Option<u64>,
+    no_cache: bool,
+    no_store: bool,
 }
 
 fn normalize_base(input: &str) -> Result<Url, PyPiError> {
@@ -510,9 +621,121 @@ fn wheel_platforms(filename: &str) -> Vec<String> {
     vec![platform]
 }
 
+fn parse_cache_control(raw: &str) -> CacheControlDirectives {
+    let mut directives = CacheControlDirectives::default();
+    for part in raw.split(',') {
+        let part = part.trim().to_lowercase();
+        if part == "no-cache" {
+            directives.no_cache = true;
+        } else if part == "no-store" {
+            directives.no_store = true;
+        } else if let Some(value) = part.strip_prefix("max-age=")
+            && let Ok(seconds) = value.trim().parse::<u64>()
+        {
+            directives.max_age = Some(seconds);
+        }
+    }
+    directives
+}
+
+fn now_epoch_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+fn load_cache_from_paths(
+    path: &Path,
+    legacy_path: &Path,
+    now: u64,
+) -> Result<Option<CacheEntry>, PyPiError> {
+    if path.exists() {
+        let data = fs::read(path)?;
+        let entry: CacheEntry = bincode::deserialize(&data)
+            .map_err(|e| PyPiError::Parse(format!("cache decode error: {}", e)))?;
+        return Ok(Some(entry));
+    }
+    if legacy_path.exists() {
+        let data = fs::read_to_string(legacy_path)?;
+        let entry: LegacyCacheEntry = serde_json::from_str(&data)
+            .map_err(|e| PyPiError::Parse(format!("cache decode error: {}", e)))?;
+        return Ok(Some(CacheEntry {
+            policy: HttpCachePolicy {
+                etag: entry.etag,
+                last_modified: entry.last_modified,
+                max_age: None,
+                no_cache: false,
+                no_store: false,
+                fetched_at: now,
+            },
+            body: Vec::new(),
+            packages: entry.packages,
+        }));
+    }
+    Ok(None)
+}
+
+fn save_cache_to_path(path: &Path, entry: &CacheEntry) -> Result<(), PyPiError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let data = bincode::serialize(entry)
+        .map_err(|e| PyPiError::Parse(format!("cache encode error: {}", e)))?;
+    fs::write(path, data)?;
+    Ok(())
+}
+
+fn build_cached_packages(
+    body: ProjectResponse,
+    cached_deps: &HashMap<String, Option<Vec<String>>>,
+) -> Vec<CachedPackage> {
+    let mut packages = Vec::new();
+    for (version, files) in body.releases {
+        if files.is_empty() {
+            continue;
+        }
+        let mut wheels = Vec::new();
+        let mut sdist = None;
+        for file in files {
+            if file.yanked.unwrap_or(false) {
+                continue;
+            }
+            match file.packagetype.as_str() {
+                "bdist_wheel" => {
+                    let platforms = wheel_platforms(&file.filename);
+                    wheels.push(CachedWheel {
+                        file: file.filename.clone(),
+                        platforms: if platforms.is_empty() {
+                            vec!["any".into()]
+                        } else {
+                            platforms
+                        },
+                    });
+                }
+                "sdist" => {
+                    sdist = Some(file.filename.clone());
+                }
+                _ => {}
+            }
+        }
+
+        let dependencies = cached_deps.get(&version).cloned().unwrap_or(None);
+        packages.push(CachedPackage {
+            name: body.info.name.clone(),
+            version,
+            dependencies,
+            wheels,
+            sdist,
+        });
+    }
+    packages
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
     #[test]
     fn marker_rejects_extra() {
@@ -523,5 +746,45 @@ mod tests {
     fn marker_respects_python_version() {
         assert!(!marker_allows(r#"python_version >= "3.14""#, "3.11"));
         assert!(marker_allows(r#"python_version < "3.14""#, "3.11"));
+    }
+
+    #[test]
+    fn cache_policy_respects_max_age() {
+        let mut headers = header::HeaderMap::new();
+        headers.insert(
+            header::CACHE_CONTROL,
+            header::HeaderValue::from_static("max-age=60"),
+        );
+        let policy = HttpCachePolicy::from_headers(&headers, 100);
+        assert!(policy.is_fresh(160));
+        assert!(!policy.is_fresh(161));
+    }
+
+    #[tokio::test]
+    async fn binary_cache_roundtrip() {
+        let temp = tempdir().unwrap();
+        let client = PyPiClient {
+            base: Url::parse("https://pypi.org").unwrap(),
+            cache_dir: temp.path().join("cache"),
+            http: reqwest::Client::new(),
+            offline: false,
+        };
+        let entry = CacheEntry {
+            policy: HttpCachePolicy {
+                etag: Some("\"v1\"".into()),
+                last_modified: None,
+                max_age: Some(30),
+                no_cache: false,
+                no_store: false,
+                fetched_at: 10,
+            },
+            body: b"{\"info\":{\"name\":\"demo\"},\"releases\":{}}".to_vec(),
+            packages: Vec::new(),
+        };
+        client.save_cache("demo", entry.clone()).await.unwrap();
+        let loaded = client.load_cache("demo").await.unwrap().unwrap();
+        assert_eq!(loaded.policy.etag, entry.policy.etag);
+        assert_eq!(loaded.policy.max_age, entry.policy.max_age);
+        assert_eq!(loaded.body, entry.body);
     }
 }

@@ -406,21 +406,25 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
   - Expected: Simple startup の数ms改善 + 終了時の待ち/ハング低減。
   - Priority: High
 
-- [ ] PR-OPT10: PyPI メタデータ取得の戦略変更（“全バージョン事前取得”の廃止）
+- [DONE] PR-OPT10: PyPI メタデータ取得の戦略変更（“全バージョン事前取得”の廃止）
   - **背景**: 現状 `src/pypi.rs` は `pypi/{name}/json` の後に、全バージョンに対して `pypi/{name}/{version}/json` を並列取得し `requires_dist` を埋めている（= パッケージによってはリクエスト数が爆発）。uv は “必要な候補だけ” メタデータを取りに行く設計で、さらに wheel から `.dist-info/METADATA` をレンジリクエストで読むことで全ダウンロードを避けられる（例: `ref/uv/crates/uv-client/src/remote_metadata.rs`）。
   - **対策案**:
     1. 依存解決に必要なメタデータを **lazy fetch**（候補バージョンに対してオンデマンドに取得）へ切替。
     2. キャッシュヒット時はネットワーク/JSONパースを避ける（PR-OPT11 と連携）。
     3. 可能なら PEP 658 の dist-info metadata を優先、fallback として wheel の remote zip から METADATA 抽出（uv方式）。
+  - Current: PyPI の `/pypi/{name}/json` からバージョン/アーティファクト一覧のみ取得し、選択したバージョンの `requires_dist` は `/pypi/{name}/{version}/json` をオンデマンドで取得。依存解決時に `index.get()` でバージョンの依存を補完し、取得済みの依存はキャッシュに記録。
+  - Tests: `cargo test --test pypi_integration`（新規: 事前フェッチしないことの検証）。
   - Expected: `pybun install` / resolve のネットワーク往復と総時間を大幅削減。
   - Priority: High
 
-- [ ] PR-OPT11: HTTP キャッシュポリシー + バイナリキャッシュ（uv の `CachePolicy`/rkyv 方式を参考）
+- [DONE] PR-OPT11: HTTP キャッシュポリシー + バイナリキャッシュ（uv の `CachePolicy`/rkyv 方式を参考）
   - **背景**: uv は HTTP キャッシュセマンティクスを `CachePolicy` として保持し、fast path では rkyv により “デシリアライズほぼ無し” で鮮度判定できる（例: `ref/uv/crates/uv-client/src/httpcache/mod.rs`, `ref/uv/crates/uv-client/src/cached_client.rs:782`）。PyBun の PyPI キャッシュは JSON pretty-print 保存のため、読み書き/パースが重い。
   - **対策案**:
     1. PyPIメタデータ/インデックスレスポンスは “raw bytes + cache policy” の単一ファイル形式で保存（JSON pretty を廃止）。
     2. `Cache-Control: max-age` / ETag / 304 revalidate を正しく扱い、オフライン時の説明可能な失敗を維持。
     3. キャッシュ読み込み・重いパースは `spawn_blocking` へ逃がし、current-thread runtime と共存できるようにする。
+  - Current: PyPI cache を `.bin` のバイナリ形式に変更し、Cache-Control の `max-age` と ETag/Last-Modified を保持。fresh 判定でネットワークを回避し、stale 時は conditional request。読み書きと JSON パースは `spawn_blocking` に退避し、旧 `.json` キャッシュは読み込み互換で移行。
+  - Tests: `cargo test pypi`（unit: cache policy/binary cache、integration: max-age によるネットワーク回避）。
   - Expected: Warm run のCPU時間削減 + PyPIへの不要な再問い合わせ減。
   - Priority: Medium
 
