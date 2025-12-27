@@ -103,6 +103,98 @@ fn setup_package_mocks(server: &MockServer) -> String {
 }
 
 #[test]
+fn install_does_not_prefetch_all_version_metadata() {
+    let temp = tempdir().unwrap();
+    let cache_dir = temp.path().join("cache");
+    let server = MockServer::start();
+    let base = server.base_url();
+
+    let project_body = json!({
+        "info": { "name": "app", "version": "2.0.0" },
+        "releases": {
+            "1.0.0": [
+                {
+                    "filename": "app-1.0.0-py3-none-any.whl",
+                    "packagetype": "bdist_wheel",
+                    "url": format!("{}/files/app-1.0.0-py3-none-any.whl", base),
+                    "yanked": false,
+                    "digests": { "sha256": "abc" }
+                }
+            ],
+            "2.0.0": [
+                {
+                    "filename": "app-2.0.0-py3-none-any.whl",
+                    "packagetype": "bdist_wheel",
+                    "url": format!("{}/files/app-2.0.0-py3-none-any.whl", base),
+                    "yanked": false,
+                    "digests": { "sha256": "def" }
+                }
+            ]
+        }
+    })
+    .to_string();
+
+    server.mock(|when, then| {
+        when.method(GET).path("/pypi/app/json");
+        then.status(200)
+            .header("Content-Type", "application/json")
+            .body(project_body.clone());
+    });
+
+    server.mock(|when, then| {
+        when.method(GET).path("/pypi/app/1.0.0/json");
+        then.status(200)
+            .header("Content-Type", "application/json")
+            .body(
+                json!({
+                    "info": {
+                        "name": "app",
+                        "version": "1.0.0",
+                        "requires_dist": []
+                    }
+                })
+                .to_string(),
+            );
+    });
+
+    let unused_meta = server.mock(|when, then| {
+        when.method(GET).path("/pypi/app/2.0.0/json");
+        then.status(200)
+            .header("Content-Type", "application/json")
+            .body(
+                json!({
+                    "info": {
+                        "name": "app",
+                        "version": "2.0.0",
+                        "requires_dist": []
+                    }
+                })
+                .to_string(),
+            );
+    });
+
+    fs::write(
+        temp.path().join("pyproject.toml"),
+        r#"[project]
+name = "demo"
+version = "0.1.0"
+dependencies = ["app==1.0.0"]
+"#,
+    )
+    .unwrap();
+
+    bin()
+        .current_dir(temp.path())
+        .env("PYBUN_PYPI_BASE_URL", base)
+        .env("PYBUN_PYPI_CACHE_DIR", cache_dir.to_str().unwrap())
+        .args(["install"])
+        .assert()
+        .success();
+
+    assert_eq!(unused_meta.hits(), 0);
+}
+
+#[test]
 fn install_defaults_to_pypi_with_dependencies() {
     let temp = tempdir().unwrap();
     let cache_dir = temp.path().join("cache");
@@ -192,4 +284,82 @@ dependencies = ["app==1.0.0"]
         .args(["install", "--offline"])
         .assert()
         .failure();
+}
+
+#[test]
+fn install_uses_fresh_cache_without_network() {
+    let temp = tempdir().unwrap();
+    let cache_dir = temp.path().join("cache");
+    let server = MockServer::start();
+    let base = server.base_url();
+
+    let project_body = json!({
+        "info": { "name": "app", "version": "1.0.0" },
+        "releases": {
+            "1.0.0": [
+                {
+                    "filename": "app-1.0.0-py3-none-any.whl",
+                    "packagetype": "bdist_wheel",
+                    "url": format!("{}/files/app-1.0.0-py3-none-any.whl", base),
+                    "yanked": false,
+                    "digests": { "sha256": "abc" }
+                }
+            ]
+        }
+    })
+    .to_string();
+
+    let project_mock = server.mock(|when, then| {
+        when.method(GET).path("/pypi/app/json");
+        then.status(200)
+            .header("Content-Type", "application/json")
+            .header("Cache-Control", "max-age=3600")
+            .header("ETag", "\"v1\"")
+            .body(project_body.clone());
+    });
+
+    let meta_mock = server.mock(|when, then| {
+        when.method(GET).path("/pypi/app/1.0.0/json");
+        then.status(200)
+            .header("Content-Type", "application/json")
+            .body(
+                json!({
+                    "info": {
+                        "name": "app",
+                        "version": "1.0.0",
+                        "requires_dist": []
+                    }
+                })
+                .to_string(),
+            );
+    });
+
+    fs::write(
+        temp.path().join("pyproject.toml"),
+        r#"[project]
+name = "demo"
+version = "0.1.0"
+dependencies = ["app==1.0.0"]
+"#,
+    )
+    .unwrap();
+
+    bin()
+        .current_dir(temp.path())
+        .env("PYBUN_PYPI_BASE_URL", &base)
+        .env("PYBUN_PYPI_CACHE_DIR", cache_dir.to_str().unwrap())
+        .args(["install"])
+        .assert()
+        .success();
+
+    bin()
+        .current_dir(temp.path())
+        .env("PYBUN_PYPI_BASE_URL", &base)
+        .env("PYBUN_PYPI_CACHE_DIR", cache_dir.to_str().unwrap())
+        .args(["install"])
+        .assert()
+        .success();
+
+    assert_eq!(project_mock.hits(), 1);
+    assert_eq!(meta_mock.hits(), 1);
 }
