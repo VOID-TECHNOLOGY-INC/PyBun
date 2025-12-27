@@ -167,10 +167,10 @@ impl PyPiClient {
             return Ok(entry.packages);
         }
 
-        if let Some(entry) = &cached_entry {
-            if entry.policy.is_fresh(now_epoch_seconds()) {
-                return Ok(entry.packages.clone());
-            }
+        if let Some(entry) = &cached_entry
+            && entry.policy.is_fresh(now_epoch_seconds())
+        {
+            return Ok(entry.packages.clone());
         }
 
         let mut req = self.http.get(
@@ -367,10 +367,10 @@ impl PyPiClient {
         memory: &Arc<Mutex<HashMap<String, Vec<CachedPackage>>>>,
     ) -> Result<(), PyPiError> {
         let mut guard = memory.lock().await;
-        if let Some(packages) = guard.get_mut(name) {
-            if let Some(pkg) = packages.iter_mut().find(|pkg| pkg.version == version) {
-                pkg.dependencies = Some(deps.clone());
-            }
+        if let Some(packages) = guard.get_mut(name)
+            && let Some(pkg) = packages.iter_mut().find(|pkg| pkg.version == version)
+        {
+            pkg.dependencies = Some(deps.clone());
         }
         drop(guard);
 
@@ -629,10 +629,10 @@ fn parse_cache_control(raw: &str) -> CacheControlDirectives {
             directives.no_cache = true;
         } else if part == "no-store" {
             directives.no_store = true;
-        } else if let Some(value) = part.strip_prefix("max-age=") {
-            if let Ok(seconds) = value.trim().parse::<u64>() {
-                directives.max_age = Some(seconds);
-            }
+        } else if let Some(value) = part.strip_prefix("max-age=")
+            && let Ok(seconds) = value.trim().parse::<u64>()
+        {
+            directives.max_age = Some(seconds);
         }
     }
     directives
