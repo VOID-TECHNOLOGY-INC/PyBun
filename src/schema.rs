@@ -28,6 +28,15 @@ use uuid::Uuid;
 
 /// Schema version - bump when breaking changes occur
 pub const SCHEMA_VERSION: &str = "1";
+pub const SCHEMA_V1_JSON: &str = include_str!("../schema/schema_v1.json");
+
+pub fn schema_v1_json() -> Value {
+    serde_json::from_str(SCHEMA_V1_JSON).expect("schema v1 JSON must be valid")
+}
+
+pub fn schema_v1_pretty() -> String {
+    serde_json::to_string_pretty(&schema_v1_json()).expect("schema v1 JSON serialization")
+}
 
 /// Response status
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

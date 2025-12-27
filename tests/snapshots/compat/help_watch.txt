@@ -1,0 +1,18 @@
+Watch files and reload on changes (dev mode)
+
+Usage: pybun watch [OPTIONS] [TARGET]
+
+Arguments:
+  [TARGET]  Script or command to run on file changes
+
+Options:
+      --format <FORMAT>      Output format for machine readability [default: text] [possible values: text, json]
+  -p, --path <PATH>          Paths to watch (can be specified multiple times)
+      --include <PATTERN>    File patterns to include (e.g., "*.py")
+      --exclude <PATTERN>    File patterns to exclude (e.g., "__pycache__")
+      --debounce <DEBOUNCE>  Debounce delay in milliseconds [default: 300]
+      --clear                Clear terminal before each reload
+      --show-config          Show configuration without starting watcher
+      --shell-command        Generate shell command for external watcher
+      --dry-run              Preview what would be watched without actually starting (for testing)
+  -h, --help                 Print help

@@ -1,0 +1,22 @@
+Execute test suite with PyBun's fast runner
+
+Usage: pybun test [OPTIONS] [PATH]... [-- <PASSTHROUGH>...]
+
+Arguments:
+  [PATH]...         Test file(s) or directory to run. Defaults to current directory
+  [PASSTHROUGH]...  Additional arguments to pass to the test runner
+
+Options:
+      --format <FORMAT>      Output format for machine readability [default: text] [possible values: text, json]
+      --shard <SHARD>        Shard identifier (N/M) for distributed testing
+  -x, --fail-fast            Stop on first failure
+      --pytest-compat        Enable pytest compatibility layer
+      --backend <BACKEND>    Test runner backend (pytest or unittest). Auto-detected if not specified [possible values: pytest, unittest]
+      --discover             Only discover tests without running them
+  -j, --parallel <PARALLEL>  Run tests in parallel (number of workers)
+  -k, --filter <FILTER>      Filter tests by name pattern
+  -v, --verbose              Show verbose output including fixture information
+      --snapshot             Enable snapshot testing
+      --update-snapshots     Update snapshots instead of comparing them
+      --snapshot-dir <DIR>   Directory for snapshot files (default: __snapshots__)
+  -h, --help                 Print help

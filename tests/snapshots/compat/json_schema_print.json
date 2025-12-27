@@ -1,0 +1,199 @@
+{
+  "command": "pybun schema print",
+  "detail": {
+    "schema": {
+      "$defs": {
+        "diagnostic": {
+          "additionalProperties": false,
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "context": {
+              "type": [
+                "object",
+                "array",
+                "string",
+                "number",
+                "boolean",
+                "null"
+              ]
+            },
+            "file": {
+              "type": "string"
+            },
+            "level": {
+              "enum": [
+                "error",
+                "warning",
+                "info",
+                "hint"
+              ],
+              "type": "string"
+            },
+            "line": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "message": {
+              "type": "string"
+            },
+            "suggestion": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "level",
+            "message"
+          ],
+          "type": "object"
+        },
+        "event": {
+          "additionalProperties": false,
+          "properties": {
+            "data": {
+              "type": [
+                "object",
+                "array",
+                "string",
+                "number",
+                "boolean",
+                "null"
+              ]
+            },
+            "message": {
+              "type": "string"
+            },
+            "progress": {
+              "maximum": 100,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "timestamp_ms": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "enum": [
+                "command_start",
+                "command_end",
+                "resolve_start",
+                "resolve_progress",
+                "resolve_complete",
+                "install_start",
+                "download_start",
+                "download_progress",
+                "download_complete",
+                "extract_start",
+                "extract_complete",
+                "install_complete",
+                "env_create",
+                "env_activate",
+                "script_start",
+                "script_end",
+                "cache_hit",
+                "cache_miss",
+                "cache_write",
+                "python_list_start",
+                "python_list_complete",
+                "python_install_start",
+                "python_install_complete",
+                "python_remove_start",
+                "python_remove_complete",
+                "module_find_start",
+                "module_find_complete",
+                "lazy_import_start",
+                "lazy_import_complete",
+                "watch_start",
+                "watch_stop",
+                "file_change",
+                "test_start",
+                "test_discovery",
+                "test_pass",
+                "test_fail",
+                "test_skip",
+                "test_complete",
+                "progress",
+                "custom"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "timestamp_ms"
+          ],
+          "type": "object"
+        }
+      },
+      "$id": "https://pybun.dev/schema/cli-output/v1.json",
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "type": "string"
+        },
+        "detail": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "diagnostics": {
+          "items": {
+            "$ref": "#/$defs/diagnostic"
+          },
+          "type": "array"
+        },
+        "duration_ms": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "events": {
+          "items": {
+            "$ref": "#/$defs/event"
+          },
+          "type": "array"
+        },
+        "status": {
+          "enum": [
+            "ok",
+            "error"
+          ],
+          "type": "string"
+        },
+        "trace_id": {
+          "type": "string"
+        },
+        "version": {
+          "const": "1",
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "command",
+        "status",
+        "duration_ms",
+        "detail",
+        "events",
+        "diagnostics"
+      ],
+      "title": "PyBun CLI JSON Envelope",
+      "type": "object"
+    },
+    "version": "1"
+  },
+  "diagnostics": [],
+  "duration_ms": 0,
+  "events": [
+    {
+      "timestamp_ms": 0,
+      "type": "command_start"
+    },
+    {
+      "timestamp_ms": 0,
+      "type": "command_end"
+    }
+  ],
+  "status": "ok",
+  "version": "1"
+}

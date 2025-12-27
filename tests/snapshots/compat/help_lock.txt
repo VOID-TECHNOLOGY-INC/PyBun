@@ -1,0 +1,10 @@
+Lock dependencies for scripts
+
+Usage: pybun lock [OPTIONS]
+
+Options:
+      --format <FORMAT>  Output format for machine readability [default: text] [possible values: text, json]
+      --script <SCRIPT>  Lock dependencies for a PEP 723 script
+      --offline          Use offline mode when cache is sufficient
+      --index <INDEX>    Path to index JSON (temporary M1 flag)
+  -h, --help             Print help

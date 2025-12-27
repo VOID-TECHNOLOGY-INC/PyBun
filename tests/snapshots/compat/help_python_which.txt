@@ -1,0 +1,10 @@
+Show path to Python for a version
+
+Usage: pybun python which [OPTIONS] [VERSION]
+
+Arguments:
+  [VERSION]  Version to look up
+
+Options:
+      --format <FORMAT>  Output format for machine readability [default: text] [possible values: text, json]
+  -h, --help             Print help

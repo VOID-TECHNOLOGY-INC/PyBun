@@ -1,0 +1,9 @@
+Start MCP server for programmatic control
+
+Usage: pybun mcp serve [OPTIONS]
+
+Options:
+      --format <FORMAT>  Output format for machine readability [default: text] [possible values: text, json]
+      --port <PORT>      Port to bind (for HTTP mode) [default: 9999]
+      --stdio            Use stdio mode for MCP communication
+  -h, --help             Print help

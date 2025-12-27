@@ -1,0 +1,15 @@
+Configure and generate lazy import settings
+
+Usage: pybun lazy-import [OPTIONS]
+
+Options:
+      --format <FORMAT>  Output format for machine readability [default: text] [possible values: text, json]
+      --generate         Generate Python code for lazy import injection
+      --check <MODULE>   Check if a module would be lazily imported
+      --show-config      Show current configuration
+      --allow <MODULE>   Add module to allowlist
+      --deny <MODULE>    Add module to denylist
+      --log-imports      Enable logging of lazy imports in generated code
+      --no-fallback      Disable fallback to CPython import
+  -o, --output <FILE>    Output file for generated Python code
+  -h, --help             Print help

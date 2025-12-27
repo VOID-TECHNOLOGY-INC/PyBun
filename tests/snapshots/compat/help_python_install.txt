@@ -1,0 +1,10 @@
+Install a Python version
+
+Usage: pybun python install [OPTIONS] <VERSION>
+
+Arguments:
+  <VERSION>  Version to install (e.g., 3.11, 3.12.7)
+
+Options:
+      --format <FORMAT>  Output format for machine readability [default: text] [possible values: text, json]
+  -h, --help             Print help

@@ -1,0 +1,29 @@
+PyBun CLI: fast installer/runtime/tester for Python projects (use --sandbox for untrusted code)
+
+Usage: pybun [OPTIONS] <COMMAND>
+
+Commands:
+  install      Install dependencies from lock or project metadata
+  add          Add a package and update lockfile
+  remove       Remove a package and update lockfile
+  lock         Lock dependencies for scripts
+  run          Run a script with import/runtime optimizations
+  x            Run an ad-hoc package without prior install
+  test         Execute test suite with PyBun's fast runner
+  build        Build distributable artifacts
+  doctor       Diagnose environment and produce support bundle
+  mcp          Run PyBun as an MCP server
+  self         Self-related commands
+  gc           Manage caches
+  python       Manage Python versions (install, list, remove)
+  module-find  Find Python modules using Rust-based module finder
+  lazy-import  Configure and generate lazy import settings
+  watch        Watch files and reload on changes (dev mode)
+  profile      Show or configure launch profiles
+  schema       Print or validate the CLI JSON schema
+  help         Print this message or the help of the given subcommand(s)
+
+Options:
+      --format <FORMAT>  Output format for machine readability [default: text] [possible values: text, json]
+  -h, --help             Print help
+  -V, --version          Print version

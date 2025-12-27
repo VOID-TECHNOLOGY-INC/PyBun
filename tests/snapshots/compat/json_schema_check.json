@@ -1,0 +1,26 @@
+{
+  "command": "pybun schema check",
+  "detail": {
+    "embedded_version": "1",
+    "error": null,
+    "issues": [],
+    "mismatch": false,
+    "path": "schema/schema_v1.json",
+    "schema_version": "1",
+    "status": "ok"
+  },
+  "diagnostics": [],
+  "duration_ms": 0,
+  "events": [
+    {
+      "timestamp_ms": 0,
+      "type": "command_start"
+    },
+    {
+      "timestamp_ms": 0,
+      "type": "command_end"
+    }
+  ],
+  "status": "ok",
+  "version": "1"
+}
