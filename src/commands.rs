@@ -15,6 +15,7 @@ use crate::resolver::{Requirement, current_platform_tags, resolve, select_artifa
 use crate::sandbox;
 use crate::sbom;
 use crate::schema::{Diagnostic, Event, EventCollector, EventType, JsonEnvelope, Status};
+use crate::support_bundle::{BundleContext, BundleReport, build_support_bundle, upload_bundle};
 use crate::workspace::Workspace;
 use color_eyre::eyre::{Result, eyre};
 use serde_json::{Value, json};
@@ -765,6 +766,7 @@ fn run_telemetry(cmd: &TelemetryCommands) -> Result<RenderDetail> {
 fn run_doctor(args: &crate::cli::DoctorArgs, collector: &mut EventCollector) -> RenderDetail {
     let mut checks: Vec<Value> = Vec::new();
     let mut all_ok = true;
+    let mut bundle_report: Option<BundleReport> = None;
 
     // Check Python availability
     let working_dir = std::env::current_dir().unwrap_or_default();
@@ -844,14 +846,105 @@ fn run_doctor(args: &crate::cli::DoctorArgs, collector: &mut EventCollector) -> 
         collector.info("Verbose diagnostics enabled");
     }
 
-    RenderDetail::with_json(
-        summary,
-        json!({
-            "status": status,
-            "checks": checks,
-            "verbose": args.verbose,
-        }),
-    )
+    if args.bundle.is_some() || args.upload {
+        let trace_id = collector.trace_id().map(|value| value.to_string());
+        let context = BundleContext {
+            checks: checks.clone(),
+            verbose_logs: args.verbose,
+            trace_id,
+            command: "pybun doctor".to_string(),
+        };
+
+        let mut temp_bundle: Option<tempfile::TempDir> = None;
+        let bundle_path = if let Some(path) = args.bundle.clone() {
+            path
+        } else if let Ok(temp) = tempfile::TempDir::new() {
+            let path = temp.path().join("bundle");
+            temp_bundle = Some(temp);
+            path
+        } else {
+            std::env::temp_dir().join("pybun-support-bundle")
+        };
+
+        match build_support_bundle(&bundle_path, &context) {
+            Ok(collection) => {
+                let mut upload_outcome = None;
+                let mut bundle_path_out = args.bundle.clone();
+
+                if args.upload {
+                    let upload_url = args
+                        .upload_url
+                        .clone()
+                        .or_else(|| std::env::var("PYBUN_SUPPORT_UPLOAD_URL").ok());
+                    match upload_url {
+                        Some(url) => {
+                            let outcome = upload_bundle(&collection, &url);
+                            if outcome.status != "uploaded"
+                                && bundle_path_out.is_none()
+                                && let Some(temp) = temp_bundle.take()
+                            {
+                                let _ = temp.keep();
+                                bundle_path_out = Some(collection.path.clone());
+                            }
+                            upload_outcome = Some(outcome);
+                        }
+                        None => {
+                            upload_outcome = Some(crate::support_bundle::UploadOutcome {
+                                url: "".to_string(),
+                                status: "failed".to_string(),
+                                http_status: None,
+                                error: Some("upload endpoint not configured".to_string()),
+                            });
+                            if bundle_path_out.is_none()
+                                && let Some(temp) = temp_bundle.take()
+                            {
+                                let _ = temp.keep();
+                                bundle_path_out = Some(collection.path.clone());
+                            }
+                        }
+                    }
+                }
+
+                bundle_report = Some(BundleReport {
+                    bundle_path: bundle_path_out,
+                    files: collection.files,
+                    redactions: collection.redactions,
+                    logs_included: collection.logs_included,
+                    upload: upload_outcome,
+                });
+            }
+            Err(err) => {
+                collector.warning(format!("Support bundle failed: {:?}", err));
+                return RenderDetail::error(
+                    "Support bundle failed".to_string(),
+                    json!({
+                        "status": status,
+                        "checks": checks,
+                        "verbose": args.verbose,
+                        "bundle_error": format!("{:?}", err),
+                    }),
+                );
+            }
+        }
+    }
+
+    let mut detail = json!({
+        "status": status,
+        "checks": checks,
+        "verbose": args.verbose,
+    });
+
+    if let Some(bundle) = &bundle_report {
+        detail["bundle"] = bundle.to_json();
+    }
+
+    let summary = if bundle_report.is_some() {
+        format!("{}. Support bundle captured", summary)
+    } else {
+        summary
+    };
+
+    RenderDetail::with_json(summary, detail)
 }
 
 async fn install(

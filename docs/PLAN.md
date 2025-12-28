@@ -241,15 +241,11 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
   - Depends on: PR6.3。
   - Current: `src/telemetry.rs` で TelemetryConfig/TelemetryManager/レダクションを実装。`cli.rs` に Telemetry サブコマンド (status/enable/disable) を追加。`~/.pybun/telemetry.json` に設定を永続化。環境変数 `PYBUN_TELEMETRY=0|1` でオーバーライド可能。デフォルトは無効 (opt-in)。README.md に Privacy Notice セクションを追加。
   - Tests: 12 E2E tests in `tests/telemetry.rs`（help, status with JSON, enable/disable, env override, redaction patterns）。10 unit tests in telemetry module.
-- PR7.3: Supportability bundle + crash report hook
+- [DONE] PR7.3: Supportability bundle + crash report hook
   - Goal: `pybun doctor --bundle` でログ/設定/trace を収集し、`--upload`（エンドポイントは env/flag 指定）でサニタイズ済みバンドルを送信。クラッシュ時にダンプ収集の opt-in フローを追加。
   - Depends on: PR5.4 doctor, PR4.4 observability.
-  - Tests: Bundle 内容のシークレットレダクション、オフライン時の graceful fallback、アップロード先モックでのE2Eを追加。
-  - Implementation (Tasks):
-    - [ ] `pybun doctor --bundle <path>` を実装（logs/config/trace/versions を収集）
-    - [ ] バンドル内の secrets を redact（env/token/URL credential 等のルール化）
-    - [ ] `pybun doctor --upload` を実装（エンドポイントは env/flag、デフォルト無送信）
-    - [ ] クラッシュ時の opt-in 収集フロー（ユーザー確認→保存/送信）
+  - Current: `src/support_bundle.rs` を追加し、`pybun doctor --bundle/--upload/--upload-url` で bundle 作成とアップロードを実装。ログ/設定/環境/versions を収集し、env・URL・クエリのシークレットレダクションを適用。クラッシュ時の opt-in プロンプトで bundle 作成/送信をサポート。
+  - Tests: `cargo test --test support_bundle`（bundle 作成＋env redaction、upload の E2E）、`src/support_bundle.rs` のユニットテスト（redaction ルール）。
 - PR7.4: GA docs + release note automation
   - Goal: docs を GA 用に再編（インストール導線/Homebrew/winget/PyPI shim/手動バイナリ、Quickstart、各コマンドのJSON例、sandbox/profile/test/build/MCPの運用ガイド）。タグから CHANGELOG/release notes を自動生成し、アップグレードガイド（pre-GA→GA）を用意。
   - Depends on: M6.6–6.8 チャネル整備。
