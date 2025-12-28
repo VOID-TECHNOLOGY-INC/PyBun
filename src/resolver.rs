@@ -283,7 +283,7 @@ pub fn select_artifact_for_platform(
             .iter()
             .map(|w| (rank_wheel(w, &tags), w))
             .collect();
-        
+
         // Sort by score descending
         scored_wheels.sort_by(|a, b| b.0.cmp(&a.0));
 

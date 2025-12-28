@@ -250,11 +250,11 @@ impl Pep723Cache {
     }
 
     /// Fast cache validation using mtime comparison.
-    /// 
+    ///
     /// Returns the cached environment if:
     /// 1. The venv exists
     /// 2. The script hasn't been modified since the cache was created
-    /// 
+    ///
     /// This avoids expensive hash computation on every run.
     pub fn get_cached_env_fast(
         &self,
@@ -271,19 +271,17 @@ impl Pep723Cache {
         }
 
         // Mtime-based validation: if script is older than cache, skip hash check
-        if let (Ok(script_meta), Ok(cache_meta)) = (
-            fs::metadata(script_path),
-            fs::metadata(&deps_json_path),
-        ) {
-            if let (Ok(script_mtime), Ok(cache_mtime)) = (
-                script_meta.modified(),
-                cache_meta.modified(),
-            ) {
+        if let (Ok(script_meta), Ok(cache_meta)) =
+            (fs::metadata(script_path), fs::metadata(&deps_json_path))
+        {
+            if let (Ok(script_mtime), Ok(cache_mtime)) =
+                (script_meta.modified(), cache_meta.modified())
+            {
                 // Script hasn't been modified since cache was created
                 if script_mtime <= cache_mtime {
                     // Update last_used timestamp (throttled)
                     let _ = self.update_last_used_at(cache_root);
-                    
+
                     // Return cached environment
                     return Some(CachedEnvPath {
                         hash: cache_root

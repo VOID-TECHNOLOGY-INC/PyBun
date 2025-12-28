@@ -251,7 +251,7 @@ fn matches_glob_pattern(pattern: &str, text: &str) -> bool {
     // Check middle parts exist in text
     let mut search_start = parts[0].len();
     let search_end = text.len().saturating_sub(parts[parts.len() - 1].len());
-    
+
     for part in &parts[1..parts.len() - 1] {
         if part.is_empty() {
             continue;

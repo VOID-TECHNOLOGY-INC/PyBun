@@ -514,7 +514,7 @@ pub async fn execute(cli: Cli) -> Result<()> {
                 };
                 ("schema print".to_string(), detail)
             }
-        SchemaCommands::Check(args) => {
+            SchemaCommands::Check(args) => {
                 let detail = run_schema_check(args);
                 ("schema check".to_string(), detail)
             }
@@ -704,8 +704,8 @@ fn run_schema_check(args: &crate::cli::SchemaCheckArgs) -> RenderDetail {
 // ---------------------------------------------------------------------------
 
 fn run_telemetry(cmd: &TelemetryCommands) -> Result<RenderDetail> {
-    use crate::telemetry::TelemetryManager;
     use crate::paths::PyBunPaths;
+    use crate::telemetry::TelemetryManager;
 
     let paths = PyBunPaths::new().map_err(|e| eyre!("failed to get config path: {}", e))?;
     let manager = TelemetryManager::new(paths.root());
@@ -713,7 +713,11 @@ fn run_telemetry(cmd: &TelemetryCommands) -> Result<RenderDetail> {
     match cmd {
         TelemetryCommands::Status(_) => {
             let status = manager.status();
-            let enabled_str = if status.enabled { "enabled" } else { "disabled" };
+            let enabled_str = if status.enabled {
+                "enabled"
+            } else {
+                "disabled"
+            };
             let summary = format!("Telemetry: {} ({})", enabled_str, status.source);
 
             Ok(RenderDetail::with_json(
