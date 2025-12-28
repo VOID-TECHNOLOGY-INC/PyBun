@@ -3,6 +3,9 @@ Diagnose environment and produce support bundle
 Usage: pybun doctor [OPTIONS]
 
 Options:
-      --format <FORMAT>  Output format for machine readability [default: text] [possible values: text, json]
-      --verbose          Include verbose logs in bundle
-  -h, --help             Print help
+      --format <FORMAT>   Output format for machine readability [default: text] [possible values: text, json]
+      --verbose           Include verbose logs in bundle
+      --bundle <PATH>     Write support bundle to a directory
+      --upload            Upload support bundle to the configured endpoint
+      --upload-url <URL>  Override the support bundle upload endpoint
+  -h, --help              Print help

@@ -240,6 +240,15 @@ pub struct DoctorArgs {
     /// Include verbose logs in bundle.
     #[arg(long)]
     pub verbose: bool,
+    /// Write support bundle to a directory.
+    #[arg(long, value_name = "PATH")]
+    pub bundle: Option<std::path::PathBuf>,
+    /// Upload support bundle to the configured endpoint.
+    #[arg(long)]
+    pub upload: bool,
+    /// Override the support bundle upload endpoint.
+    #[arg(long, value_name = "URL")]
+    pub upload_url: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]

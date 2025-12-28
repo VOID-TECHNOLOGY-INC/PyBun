@@ -1,12 +1,13 @@
 use clap::Parser;
 use color_eyre::eyre::{Result, WrapErr, eyre};
-use pybun::{cli::Cli, commands::execute, entry};
+use pybun::{cli::Cli, commands::execute, entry, support_bundle};
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
     if entry::should_install_color_eyre(&cli) {
         color_eyre::install()?;
     }
+    support_bundle::install_crash_hook();
 
     let stack_size = entry::runtime_stack_size();
     let main2 = move || -> Result<()> {

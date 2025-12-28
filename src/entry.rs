@@ -106,7 +106,12 @@ mod tests {
     fn doctor_cli(verbose: bool) -> Cli {
         Cli {
             format: OutputFormat::Text,
-            command: Commands::Doctor(DoctorArgs { verbose }),
+            command: Commands::Doctor(DoctorArgs {
+                verbose,
+                bundle: None,
+                upload: false,
+                upload_url: None,
+            }),
         }
     }
 
