@@ -159,10 +159,13 @@ fn generate_package_manager_files() {
     );
     assert!(
         bin_entries.iter().any(|entry| {
-            entry.as_array().map(|arr| {
-                arr.first().and_then(|v| v.as_str()) == Some("pybun.exe")
-                    && arr.get(1).and_then(|v| v.as_str()) == Some("pybun-cli")
-            }).unwrap_or(false)
+            entry
+                .as_array()
+                .map(|arr| {
+                    arr.first().and_then(|v| v.as_str()) == Some("pybun.exe")
+                        && arr.get(1).and_then(|v| v.as_str()) == Some("pybun-cli")
+                })
+                .unwrap_or(false)
         }),
         "expected pybun-cli alias shim"
     );
