@@ -119,7 +119,7 @@ jobs:
       - name: Cargo license scan
         run: cargo deny check licenses
       - name: Pip audit
-        run: pip-audit --progress-spinner off --project .
+        run: pip-audit --progress-spinner off .
 
   winget-validate:
     name: winget validate
