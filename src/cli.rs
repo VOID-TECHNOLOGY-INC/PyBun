@@ -66,6 +66,9 @@ pub enum Commands {
     /// Print or validate the CLI JSON schema.
     #[command(subcommand)]
     Schema(SchemaCommands),
+    /// Manage telemetry settings (opt-in/opt-out).
+    #[command(subcommand)]
+    Telemetry(TelemetryCommands),
 }
 
 #[derive(Subcommand, Debug)]
@@ -262,6 +265,25 @@ pub struct SchemaCheckArgs {
     #[arg(long, value_name = "PATH")]
     pub path: Option<std::path::PathBuf>,
 }
+
+#[derive(Subcommand, Debug)]
+pub enum TelemetryCommands {
+    /// Show current telemetry status.
+    Status(TelemetryStatusArgs),
+    /// Enable telemetry collection.
+    Enable(TelemetryEnableArgs),
+    /// Disable telemetry collection.
+    Disable(TelemetryDisableArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct TelemetryStatusArgs {}
+
+#[derive(Args, Debug)]
+pub struct TelemetryEnableArgs {}
+
+#[derive(Args, Debug)]
+pub struct TelemetryDisableArgs {}
 
 #[derive(Args, Debug)]
 pub struct McpServeArgs {

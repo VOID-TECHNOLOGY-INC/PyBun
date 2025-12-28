@@ -232,6 +232,39 @@ pub fn current_platform_tags() -> Vec<String> {
     tags
 }
 
+/// Rank a wheel for selection priority.
+/// Higher score = better preference.
+/// Prefers: native platform wheels > abi3 wheels > any-platform wheels
+fn rank_wheel(wheel: &Wheel, platform_tags: &[String]) -> u32 {
+    let mut score: u32 = 100; // Base score for being a wheel (vs sdist)
+
+    // Check platform match
+    if wheel.platforms.is_empty() {
+        // Universal wheel (any platform)
+        score += 10;
+    } else {
+        for (priority, tag) in platform_tags.iter().enumerate() {
+            if wheel.platforms.iter().any(|p| p == tag) {
+                // Native platform match - higher priority = lower index = higher score
+                score += 50 - (priority as u32).min(40);
+                break;
+            }
+        }
+    }
+
+    // Prefer abi3 wheels (stable ABI, faster to select)
+    if wheel.file.contains("-abi3-") || wheel.file.contains("-cp3") {
+        score += 20;
+    }
+
+    // Prefer wheels with fewer platform restrictions (more portable)
+    if wheel.platforms.len() <= 1 {
+        score += 5;
+    }
+
+    score
+}
+
 /// Select the best artifact for the current platform.
 pub fn select_artifact_for_platform(
     pkg: &ResolvedPackage,
@@ -242,6 +275,40 @@ pub fn select_artifact_for_platform(
         tags.push("any".into());
     }
 
+    // Find the best wheel using ranking
+    if !pkg.artifacts.wheels.is_empty() {
+        let mut scored_wheels: Vec<_> = pkg
+            .artifacts
+            .wheels
+            .iter()
+            .map(|w| (rank_wheel(w, &tags), w))
+            .collect();
+        
+        // Sort by score descending
+        scored_wheels.sort_by(|a, b| b.0.cmp(&a.0));
+
+        // Take the best wheel if it matches the platform
+        if let Some((score, wheel)) = scored_wheels.first() {
+            if *score > 100 {
+                // Score > 100 means platform match or universal
+                let matched_platform = if wheel.platforms.is_empty() {
+                    None
+                } else {
+                    tags.iter()
+                        .find(|t| wheel.platforms.iter().any(|p| p == *t))
+                        .cloned()
+                };
+                return ArtifactSelection {
+                    filename: wheel.file.clone(),
+                    matched_platform,
+                    from_source: false,
+                    available_wheels: pkg.artifacts.wheels.len(),
+                };
+            }
+        }
+    }
+
+    // Fallback: try platform matching the old way
     for tag in &tags {
         if let Some(wheel) = pkg
             .artifacts

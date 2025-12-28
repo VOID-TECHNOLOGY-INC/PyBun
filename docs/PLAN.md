@@ -236,10 +236,11 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
     - [x] CI に「snapshot差分があれば失敗」を追加（GA後の互換性維持）
   - Current: `schema/schema_v1.json` を追加し、`pybun schema print|check` で v1 定義の出力/検証が可能に。`tests/compat_snapshots.rs` で help/JSON のスナップショット差分ガードを追加し、`PYBUN_UPDATE_SNAPSHOTS=1` で更新可能にした。
   - Tests: `just lint`, `just fmt`, `CARGO_INCREMENTAL=0 cargo test`, `PYBUN_UPDATE_SNAPSHOTS=1 cargo test --test compat_snapshots`, `cargo build --release`, `PATH=$(pwd)/target/release:$PATH python3 scripts/benchmark/bench.py -s run --format markdown`.
-- PR7.2: Telemetry UX/Privacy finalize（PR6.3完了後の仕上げ）
+- [DONE] PR7.2: Telemetry UX/Privacy finalize（PR6.3完了後の仕上げ）
   - Goal: デフォルト opt-in/opt-out ポリシーと UI を確定し、`pybun telemetry status|enable|disable` を提供。収集フィールドのレダクションリストと Privacy Notice を docs/README に記載。
   - Depends on: PR6.3。
-  - Tests: E2E でデフォルト無送信、明示enable時のみ送信、env/flag優先順位、redaction が JSON/ログに反映されることを確認。
+  - Current: `src/telemetry.rs` で TelemetryConfig/TelemetryManager/レダクションを実装。`cli.rs` に Telemetry サブコマンド (status/enable/disable) を追加。`~/.pybun/telemetry.json` に設定を永続化。環境変数 `PYBUN_TELEMETRY=0|1` でオーバーライド可能。デフォルトは無効 (opt-in)。README.md に Privacy Notice セクションを追加。
+  - Tests: 12 E2E tests in `tests/telemetry.rs`（help, status with JSON, enable/disable, env override, redaction patterns）。10 unit tests in telemetry module.
 - PR7.3: Supportability bundle + crash report hook
   - Goal: `pybun doctor --bundle` でログ/設定/trace を収集し、`--upload`（エンドポイントは env/flag 指定）でサニタイズ済みバンドルを送信。クラッシュ時にダンプ収集の opt-in フローを追加。
   - Depends on: PR5.4 doctor, PR4.4 observability.
@@ -289,6 +290,15 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
     - [ ] PR-OPT6a（PEP 723 cold を `uv run` 委譲デフォルト化）をGA候補として仕上げ
     - [ ] PR-OPT7（起動オーバーヘッド調査と改善）をGA候補として仕上げ
     - [ ] ベンチの “UX基準” を定義し、回帰チェック（nightly/label）に組み込む
+- PR7.9: PEP 723 Cold Start Optimization（B3.2パフォーマンス改善）
+  - Goal: B3.2 cold start を uv 並み（~850ms）に近づける。現状 ~2400ms から 50% 以上改善を目指す。
+  - Depends on: PR7.2（Telemetry UX/Privacy）。
+  - Current: Quick Wins 実装済み（mtime-based cache validation, wheel ranking, HTTP connection pooling）。約4%改善。
+  - Implementation (Tasks):
+    - [ ] Wheel キャッシュ層の追加（`src/wheel_cache.rs`）— ダウンロード済み wheel を再利用
+    - [ ] venv 作成の遅延 or シンボリックリンク化 — 最小構造で起動を高速化
+    - [ ] パッケージインストールの並列化（`JoinSet`-based parallel execution）
+  - Tests: B3.2 cold/warm ベンチマークで回帰チェック、`just lint`, `cargo test`。
 
 ### Benchmark Analysis & Optimization Roadmap
 
