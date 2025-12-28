@@ -1,7 +1,7 @@
 use crate::build::{BuildBackend, BuildCache};
 use crate::cli::{
     Cli, Commands, LazyImportArgs, LockArgs, McpCommands, ModuleFindArgs, OutputFormat,
-    ProfileArgs, PythonCommands, SchemaCommands, SelfCommands, WatchArgs,
+    ProfileArgs, PythonCommands, SchemaCommands, SelfCommands, TelemetryCommands, WatchArgs,
 };
 use crate::env::{EnvSource, find_python_env};
 use crate::index::load_index_from_path;
@@ -519,6 +519,24 @@ pub async fn execute(cli: Cli) -> Result<()> {
                 ("schema check".to_string(), detail)
             }
         },
+        Commands::Telemetry(cmd) => {
+            let result = run_telemetry(cmd);
+            match result {
+                Ok(detail) => ("telemetry".to_string(), detail),
+                Err(e) => {
+                    collector.error(e.to_string());
+                    (
+                        "telemetry".to_string(),
+                        RenderDetail::error(
+                            e.to_string(),
+                            json!({
+                                "error": e.to_string(),
+                            }),
+                        ),
+                    )
+                }
+            }
+        }
     };
 
     // Record command end
@@ -678,6 +696,65 @@ fn run_schema_check(args: &crate::cli::SchemaCheckArgs) -> RenderDetail {
         RenderDetail::with_json(summary, detail)
     } else {
         RenderDetail::error(summary, detail)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// pybun telemetry
+// ---------------------------------------------------------------------------
+
+fn run_telemetry(cmd: &TelemetryCommands) -> Result<RenderDetail> {
+    use crate::paths::PyBunPaths;
+    use crate::telemetry::TelemetryManager;
+
+    let paths = PyBunPaths::new().map_err(|e| eyre!("failed to get config path: {}", e))?;
+    let manager = TelemetryManager::new(paths.root());
+
+    match cmd {
+        TelemetryCommands::Status(_) => {
+            let status = manager.status();
+            let enabled_str = if status.enabled {
+                "enabled"
+            } else {
+                "disabled"
+            };
+            let summary = format!("Telemetry: {} ({})", enabled_str, status.source);
+
+            Ok(RenderDetail::with_json(
+                summary,
+                json!({
+                    "enabled": status.enabled,
+                    "source": status.source.to_string(),
+                    "redaction_patterns": status.redaction_patterns,
+                }),
+            ))
+        }
+        TelemetryCommands::Enable(_) => {
+            let status = manager.enable().map_err(|e| eyre!("{}", e))?;
+            let summary = "Telemetry enabled".to_string();
+
+            Ok(RenderDetail::with_json(
+                summary,
+                json!({
+                    "enabled": status.enabled,
+                    "source": status.source.to_string(),
+                    "message": "Telemetry collection is now enabled. Thank you for helping improve PyBun!",
+                }),
+            ))
+        }
+        TelemetryCommands::Disable(_) => {
+            let status = manager.disable().map_err(|e| eyre!("{}", e))?;
+            let summary = "Telemetry disabled".to_string();
+
+            Ok(RenderDetail::with_json(
+                summary,
+                json!({
+                    "enabled": status.enabled,
+                    "source": status.source.to_string(),
+                    "message": "Telemetry collection is now disabled.",
+                }),
+            ))
+        }
     }
 }
 

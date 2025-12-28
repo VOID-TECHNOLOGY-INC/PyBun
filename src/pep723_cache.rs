@@ -249,6 +249,55 @@ impl Pep723Cache {
         }
     }
 
+    /// Fast cache validation using mtime comparison.
+    ///
+    /// Returns the cached environment if:
+    /// 1. The venv exists
+    /// 2. The script hasn't been modified since the cache was created
+    ///
+    /// This avoids expensive hash computation on every run.
+    pub fn get_cached_env_fast(
+        &self,
+        script_path: &Path,
+        cache_root: &Path,
+    ) -> Option<CachedEnvPath> {
+        let venv_path = self.venv_path_for_root(cache_root);
+        let python_path = self.python_path_for_venv(&venv_path);
+        let deps_json_path = cache_root.join("deps.json");
+
+        // Fast path: check if venv and deps.json exist
+        if !venv_path.exists() || !python_path.exists() || !deps_json_path.exists() {
+            return None;
+        }
+
+        // Mtime-based validation: if script is older than cache, skip hash check
+        if let (Ok(script_meta), Ok(cache_meta)) =
+            (fs::metadata(script_path), fs::metadata(&deps_json_path))
+            && let (Ok(script_mtime), Ok(cache_mtime)) =
+                (script_meta.modified(), cache_meta.modified())
+        {
+            // Script hasn't been modified since cache was created
+            if script_mtime <= cache_mtime {
+                // Update last_used timestamp (throttled)
+                let _ = self.update_last_used_at(cache_root);
+
+                // Return cached environment
+                return Some(CachedEnvPath {
+                    hash: cache_root
+                        .file_name()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_default(),
+                    venv_path,
+                    python_path,
+                    cache_hit: true,
+                });
+            }
+        }
+
+        // Fallback: require full validation
+        None
+    }
+
     /// Create a new cached venv for the given dependencies.
     ///
     /// Returns the path where the venv should be created.

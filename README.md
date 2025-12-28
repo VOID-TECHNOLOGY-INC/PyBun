@@ -337,6 +337,31 @@ cargo test mcp
 
 See `docs/PLAN.md` for details.
 
+## Privacy & Telemetry
+
+PyBun does **not** collect telemetry by default (opt-in model).
+
+```bash
+# Check telemetry status
+pybun telemetry status
+
+# Enable telemetry
+pybun telemetry enable
+
+# Disable telemetry
+pybun telemetry disable
+```
+
+**Collected data (when enabled):**
+- Command usage (anonymized)
+- Error diagnostics
+- Performance metrics
+
+**Never collected:** API keys, tokens, credentials, passwords, or file contents.
+
+Environment override: `PYBUN_TELEMETRY=0|1`
+
 ## License
 
 MIT
+

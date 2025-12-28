@@ -87,8 +87,17 @@ impl Default for Downloader {
 impl Downloader {
     pub fn new() -> Self {
         Self {
+            // Enhanced HTTP client with connection pooling and keepalive
+            // for improved cold start performance
             client: Client::builder()
                 .timeout(Duration::from_secs(300))
+                // Connection pooling: reuse connections for multiple requests
+                .pool_max_idle_per_host(10)
+                .pool_idle_timeout(Duration::from_secs(90))
+                // TCP keepalive to prevent connection drops
+                .tcp_keepalive(Duration::from_secs(30))
+                // Connection timeout for faster failure detection
+                .connect_timeout(Duration::from_secs(10))
                 .build()
                 .expect("failed to build reqwest client"),
             inflight: Arc::new(OnceMap::new()),
