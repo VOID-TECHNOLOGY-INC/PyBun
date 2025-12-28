@@ -273,26 +273,24 @@ impl Pep723Cache {
         // Mtime-based validation: if script is older than cache, skip hash check
         if let (Ok(script_meta), Ok(cache_meta)) =
             (fs::metadata(script_path), fs::metadata(&deps_json_path))
-        {
-            if let (Ok(script_mtime), Ok(cache_mtime)) =
+            && let (Ok(script_mtime), Ok(cache_mtime)) =
                 (script_meta.modified(), cache_meta.modified())
-            {
-                // Script hasn't been modified since cache was created
-                if script_mtime <= cache_mtime {
-                    // Update last_used timestamp (throttled)
-                    let _ = self.update_last_used_at(cache_root);
+        {
+            // Script hasn't been modified since cache was created
+            if script_mtime <= cache_mtime {
+                // Update last_used timestamp (throttled)
+                let _ = self.update_last_used_at(cache_root);
 
-                    // Return cached environment
-                    return Some(CachedEnvPath {
-                        hash: cache_root
-                            .file_name()
-                            .map(|s| s.to_string_lossy().to_string())
-                            .unwrap_or_default(),
-                        venv_path,
-                        python_path,
-                        cache_hit: true,
-                    });
-                }
+                // Return cached environment
+                return Some(CachedEnvPath {
+                    hash: cache_root
+                        .file_name()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_default(),
+                    venv_path,
+                    python_path,
+                    cache_hit: true,
+                });
             }
         }
 

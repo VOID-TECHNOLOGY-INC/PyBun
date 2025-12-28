@@ -275,36 +275,42 @@ pub fn select_artifact_for_platform(
         tags.push("any".into());
     }
 
-    // Find the best wheel using ranking
+    // Find the best matching wheel using ranking
     if !pkg.artifacts.wheels.is_empty() {
         let mut scored_wheels: Vec<_> = pkg
             .artifacts
             .wheels
             .iter()
-            .map(|w| (rank_wheel(w, &tags), w))
+            .filter_map(|w| {
+                let matches_platform = w.platforms.is_empty()
+                    || tags.iter().any(|t| w.platforms.iter().any(|p| p == t));
+                if matches_platform {
+                    Some((rank_wheel(w, &tags), w))
+                } else {
+                    None
+                }
+            })
             .collect();
 
         // Sort by score descending
         scored_wheels.sort_by(|a, b| b.0.cmp(&a.0));
 
         // Take the best wheel if it matches the platform
-        if let Some((score, wheel)) = scored_wheels.first() {
-            if *score > 100 {
-                // Score > 100 means platform match or universal
-                let matched_platform = if wheel.platforms.is_empty() {
-                    None
-                } else {
-                    tags.iter()
-                        .find(|t| wheel.platforms.iter().any(|p| p == *t))
-                        .cloned()
-                };
-                return ArtifactSelection {
-                    filename: wheel.file.clone(),
-                    matched_platform,
-                    from_source: false,
-                    available_wheels: pkg.artifacts.wheels.len(),
-                };
-            }
+        if let Some((_, wheel)) = scored_wheels.first() {
+            // This is the highest-ranked matching wheel for the platform.
+            let matched_platform = if wheel.platforms.is_empty() {
+                None
+            } else {
+                tags.iter()
+                    .find(|t| wheel.platforms.iter().any(|p| p == *t))
+                    .cloned()
+            };
+            return ArtifactSelection {
+                filename: wheel.file.clone(),
+                matched_platform,
+                from_source: false,
+                available_wheels: pkg.artifacts.wheels.len(),
+            };
         }
     }
 
