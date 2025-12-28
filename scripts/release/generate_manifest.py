@@ -75,6 +75,7 @@ def main() -> None:
     parser.add_argument("--release-url")
     parser.add_argument("--sbom", type=Path)
     parser.add_argument("--provenance", type=Path)
+    parser.add_argument("--release-notes", type=Path)
     args = parser.parse_args()
 
     assets_dir = args.assets_dir
@@ -123,6 +124,7 @@ def main() -> None:
         "published_at": published_at,
         "assets": assets,
         "release_url": args.release_url,
+        "release_notes": attachment_entry(args.release_notes, base_url),
         "sbom": attachment_entry(args.sbom, base_url),
         "provenance": attachment_entry(args.provenance, base_url),
     }

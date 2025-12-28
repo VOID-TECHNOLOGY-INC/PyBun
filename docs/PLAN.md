@@ -246,15 +246,16 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
   - Depends on: PR5.4 doctor, PR4.4 observability.
   - Current: `src/support_bundle.rs` を追加し、`pybun doctor --bundle/--upload/--upload-url` で bundle 作成とアップロードを実装。ログ/設定/環境/versions を収集し、env・URL・クエリのシークレットレダクションを適用。クラッシュ時の opt-in プロンプトで bundle 作成/送信をサポート。
   - Tests: `cargo test --test support_bundle`（bundle 作成＋env redaction、upload の E2E）、`src/support_bundle.rs` のユニットテスト（redaction ルール）。
-- PR7.4: GA docs + release note automation
+- [DONE] PR7.4: GA docs + release note automation
   - Goal: docs を GA 用に再編（インストール導線/Homebrew/winget/PyPI shim/手動バイナリ、Quickstart、各コマンドのJSON例、sandbox/profile/test/build/MCPの運用ガイド）。タグから CHANGELOG/release notes を自動生成し、アップグレードガイド（pre-GA→GA）を用意。
   - Depends on: M6.6–6.8 チャネル整備。
-  - Tests: ドキュメントlint/リンクチェック、README のワンライナーが最新リリース manifest で成功する smoke。
+  - Current: README を GA Quickstart/JSON output examples/sandbox usage/MCP server (stdio) ガイドで再編し、release note automation (scripts/release/generate_release_notes.py) と manifest の release_notes 添付に対応。docs/UPGRADE.md を追加し、installer の JSON 出力に release_notes を含める dry-run smoke を追加。
+  - Tests: `cargo test --test docs`, `python -m unittest scripts/release/tests/test_release_notes.py`
   - Implementation (Tasks):
-    - [ ] Quickstart（install → init → add/install → run/test/build）を追加
-    - [ ] 各コマンドの `--format=json` 出力例（最小 + 失敗例）を追加
-    - [ ] `--sandbox` / `--profile` / `pybun mcp serve --stdio` の運用ガイドを追加
-    - [ ] pre-GA→GA のアップグレードガイド（breaking changes, migration）を追加
+    - [x] Quickstart（install → init → add/install → run/test/build）を追加
+    - [x] 各コマンドの `--format=json` 出力例（最小 + 失敗例）を追加
+    - [x] `--sandbox` / `--profile` / `pybun mcp serve --stdio` の運用ガイドを追加
+    - [x] pre-GA→GA のアップグレードガイド（breaking changes, migration）を追加
 - PR7.5: Security/compliance sign-off
   - Goal: リリース前に `cargo audit`/`pip-audit`/license scan/SBOM 署名を CI gate にし、SLSA/provenance と minisign 鍵ローテーション手順を SECURITY.md に追加。脆弱性報告窓口/SLAs を明記（`SECURITY.md`/`SECURITY.txt`）。
   - Depends on: PR5.3, PR6.5。

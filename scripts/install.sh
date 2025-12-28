@@ -148,6 +148,7 @@ for item in manifest.get("assets", []):
 if not asset:
     sys.exit(2)
 
+release_notes = manifest.get("release_notes") or {}
 sig = asset.get("signature") or {}
 def emit(name, value):
     print(f"{name}={shlex.quote(value or '')}")
@@ -161,6 +162,9 @@ emit("ASSET_SHA_FROM_MANIFEST", asset.get("sha256", ""))
 emit("SIG_TYPE_FROM_MANIFEST", sig.get("type", ""))
 emit("SIG_VALUE_FROM_MANIFEST", sig.get("value", ""))
 emit("SIG_PUB_FROM_MANIFEST", sig.get("public_key", ""))
+emit("RELEASE_NOTES_NAME_FROM_MANIFEST", release_notes.get("name", ""))
+emit("RELEASE_NOTES_URL_FROM_MANIFEST", release_notes.get("url", ""))
+emit("RELEASE_NOTES_SHA_FROM_MANIFEST", release_notes.get("sha256", ""))
 PY
 }
 
@@ -187,6 +191,9 @@ emit_json() {
   PYBUN_JSON_SIG_TYPE="${17}" \
   PYBUN_JSON_SIG_VALUE="${18}" \
   PYBUN_JSON_SIG_PUB="${19}" \
+  PYBUN_JSON_RELEASE_NOTES_NAME="${20}" \
+  PYBUN_JSON_RELEASE_NOTES_URL="${21}" \
+  PYBUN_JSON_RELEASE_NOTES_SHA="${22}" \
   python3 - <<'PY'
 import json
 import os
@@ -223,6 +230,15 @@ manifest = {
     "release_url": env("PYBUN_JSON_MANIFEST_RELEASE_URL"),
 }
 manifest = {k: v for k, v in manifest.items() if v}
+
+release_notes = {
+    "name": env("PYBUN_JSON_RELEASE_NOTES_NAME"),
+    "url": env("PYBUN_JSON_RELEASE_NOTES_URL"),
+    "sha256": env("PYBUN_JSON_RELEASE_NOTES_SHA"),
+}
+release_notes = {k: v for k, v in release_notes.items() if v}
+if release_notes:
+    manifest["release_notes"] = release_notes
 
 payload = {
     "status": env("PYBUN_JSON_STATUS"),
@@ -383,6 +399,9 @@ ASSET_SHA=""
 SIG_TYPE=""
 SIG_VALUE=""
 SIG_PUB=""
+RELEASE_NOTES_NAME=""
+RELEASE_NOTES_URL=""
+RELEASE_NOTES_SHA=""
 
 if [ -n "$MANIFEST_PATH" ]; then
   if ! command -v python3 >/dev/null 2>&1; then
@@ -399,6 +418,9 @@ if [ -n "$MANIFEST_PATH" ]; then
     SIG_TYPE="${SIG_TYPE_FROM_MANIFEST:-}"
     SIG_VALUE="${SIG_VALUE_FROM_MANIFEST:-}"
     SIG_PUB="${SIG_PUB_FROM_MANIFEST:-}"
+    RELEASE_NOTES_NAME="${RELEASE_NOTES_NAME_FROM_MANIFEST:-}"
+    RELEASE_NOTES_URL="${RELEASE_NOTES_URL_FROM_MANIFEST:-}"
+    RELEASE_NOTES_SHA="${RELEASE_NOTES_SHA_FROM_MANIFEST:-}"
     if [ -n "$MANIFEST_VERSION" ] && [ -z "$VERSION" ]; then
       VERSION="$MANIFEST_VERSION"
     fi
@@ -430,7 +452,10 @@ if [ "$DRY_RUN" -eq 1 ]; then
       "$ASSET_SHA" \
       "$SIG_TYPE" \
       "$SIG_VALUE" \
-      "$SIG_PUB"
+      "$SIG_PUB" \
+      "$RELEASE_NOTES_NAME" \
+      "$RELEASE_NOTES_URL" \
+      "$RELEASE_NOTES_SHA"
     exit 0
   fi
 

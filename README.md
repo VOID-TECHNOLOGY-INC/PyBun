@@ -10,6 +10,8 @@ A Rust-based single-binary Python toolchain. Integrates fast dependency installa
 
 ## Installation
 
+Installers default to the latest stable release manifest (signatures + `release_notes`). Pin a specific manifest with `PYBUN_INSTALL_MANIFEST` when running in CI or offline builds.
+
 ```bash
 # Homebrew (macOS / Linux)
 brew tap pybun/pybun https://github.com/pybun/pybun
@@ -53,23 +55,45 @@ The PyPI shim downloads and verifies the signed release binary on first run.
 cargo install --path .
 ```
 
-## Quick Start
+## GA Quickstart
 
+1) Install the stable build with a pinned manifest (includes signatures + release notes):
 ```bash
-# Show help
-pybun --help
+export PYBUN_INSTALL_MANIFEST="https://github.com/pybun/pybun/releases/latest/download/pybun-release.json"
+curl -LsSf https://raw.githubusercontent.com/pybun/pybun/main/scripts/install.sh | sh
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/pybun/pybun/main/scripts/install.ps1 | iex
+```
+`--format=json` on the installer surfaces the manifest, chosen asset, and `release_notes` attachment for CI logs.
 
-# Run a Python script
-pybun run script.py
+2) Initialize a project (pyproject + lock):
+```bash
+cat > pyproject.toml <<'EOF'
+[project]
+name = "hello-pybun"
+version = "0.1.0"
+dependencies = ["requests>=2.31"]
+EOF
 
-# Run inline code
-pybun run -c -- "print('Hello, PyBun!')"
+pybun install --require requests==2.31.0 --lock pybun.lockb
+```
 
-# Run a package temporarily (npx-like)
-pybun x cowsay -- "Hello from PyBun"
+3) Add or resolve dependencies:
+```bash
+pybun add httpx
+pybun install --index fixtures/index.json
+```
 
-# JSON output (for AI agents)
-pybun --format=json run script.py
+4) Run / test / build with JSON for automation:
+```bash
+pybun --format=json run -c -- "print('Hello, PyBun!')"      # add --sandbox for untrusted code
+pybun --format=json test --fail-fast
+pybun --format=json build
+```
+
+5) Self-update and verify release metadata:
+```bash
+pybun --format=json self update --channel stable --dry-run
 ```
 
 ## Command Reference
@@ -250,31 +274,86 @@ pybun self update --dry-run
 pybun self update --channel nightly
 ```
 
-## JSON Output
+## Sandbox usage
 
-All commands support the `--format=json` option:
-
+Use the sandbox for untrusted scripts or PEP 723 snippets:
 ```bash
-pybun --format=json run script.py
-pybun --format=json doctor
-pybun --format=json python list
+pybun --format=json run --sandbox examples/hello.py
+pybun --format=json run --sandbox --allow-network -c "print('net ok')"
+```
+The sandbox isolates file and network access; add `--allow-network` only when required. Combine with `--profile=prod` for production-like runs.
+
+## Profiles
+
+Profiles tune defaults for performance vs. development ergonomics:
+- `dev` (default): hot reload enabled, verbose logging.
+- `prod`: lazy imports and optimizations enabled, quieter output.
+- `benchmark`: stable timing/logging for reproducible benchmarks.
+
+Examples:
+```bash
+pybun profile --list
+pybun run --profile=prod app.py
+pybun test --profile=benchmark --format=json
 ```
 
-Output format:
+## MCP server (stdio)
+
+Operate PyBun as an MCP server for agents/IDEs:
+```bash
+pybun mcp serve --stdio
+pybun --format=json mcp serve --stdio  # JSON envelope for tooling
+```
+Tools: `pybun_resolve`, `pybun_install`, `pybun_run`, `pybun_gc`, `pybun_doctor`. Resources: `pybun://cache/info`, `pybun://env/info`. HTTP mode remains TODO; stdio is the GA path.
+
+## JSON output examples
+
+All commands support the `--format=json` option (schema v1). Examples:
+
+```bash
+pybun --format=json run -c -- "print('hello')"
+```
+
 ```json
 {
   "version": "1",
   "command": "pybun run",
   "status": "ok",
-  "duration_ms": 123,
-  "detail": { ... },
-  "events": [ ... ],
-  "diagnostics": [ ... ],
-  "trace_id": "uuid-optional"
+  "detail": {
+    "summary": "executed inline code"
+  },
+  "events": [],
+  "diagnostics": []
 }
 ```
 
-Enable trace ID:
+Failure example:
+```bash
+pybun --format=json run missing.py
+```
+
+```json
+{
+  "version": "1",
+  "command": "pybun run",
+  "status": "error",
+  "diagnostics": [
+    {
+      "kind": "runtime",
+      "message": "missing.py not found",
+      "hint": "pass -c for inline code or a valid path"
+    }
+  ]
+}
+```
+
+Tests/builds emit structured summaries (pass/fail counts, shard info) while keeping the same envelope:
+```bash
+pybun --format=json test --fail-fast
+pybun --format=json build
+```
+
+Enable trace IDs for debugging:
 ```bash
 PYBUN_TRACE=1 pybun --format=json run script.py
 ```
@@ -288,6 +367,18 @@ PYBUN_TRACE=1 pybun --format=json run script.py
 | `PYBUN_PROFILE` | Default profile (dev/prod/benchmark) |
 | `PYBUN_TRACE` | Set to `1` to enable trace ID |
 | `PYBUN_LOG` | Log level (debug/info/warn/error) |
+
+## Release note automation
+
+- Generate GA release notes from tags:  
+  `python scripts/release/generate_release_notes.py --repo . --previous-tag v0.1.0 --tag v0.2.0 --notes-output release/RELEASE_NOTES.md --changelog CHANGELOG.md`
+- Attach the notes to the release manifest (served by installers/self-update via `release_notes` in JSON):  
+  `python scripts/release/generate_manifest.py --assets-dir release --version 0.2.0 --channel stable --base-url https://github.com/pybun/pybun/releases/download/v0.2.0 --output pybun-release.json --release-notes release/RELEASE_NOTES.md`
+- CI-friendly JSON summary: `python scripts/release/generate_release_notes.py --repo . --previous-tag v0.1.0 --tag v0.2.0 --format json`
+
+## Upgrade guide
+
+See `docs/UPGRADE.md` for pre-GA → GA migration notes, breaking changes, and the recommended CI checks (doc lint/link + release note automation).
 
 ## Development
 
@@ -364,4 +455,3 @@ Environment override: `PYBUN_TELEMETRY=0|1`
 ## License
 
 MIT
-
