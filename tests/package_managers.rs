@@ -159,13 +159,10 @@ fn generate_package_manager_files() {
     );
     assert!(
         bin_entries.iter().any(|entry| {
-            entry
-                .as_array()
-                .map(|arr| {
-                    arr.get(0).and_then(|v| v.as_str()) == Some("pybun.exe")
-                        && arr.get(1).and_then(|v| v.as_str()) == Some("pybun-cli")
-                })
-                .unwrap_or(false)
+            entry.as_array().map(|arr| {
+                arr.first().and_then(|v| v.as_str()) == Some("pybun.exe")
+                    && arr.get(1).and_then(|v| v.as_str()) == Some("pybun-cli")
+            }).unwrap_or(false)
         }),
         "expected pybun-cli alias shim"
     );
@@ -177,4 +174,7 @@ fn generate_package_manager_files() {
         "InstallerSha256: eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
     ));
     assert!(winget.contains("PortableCommandAlias: pybun-cli"));
+    assert!(winget.contains("Commands:"));
+    assert!(winget.contains("- pybun"));
+    assert!(winget.contains("- pybun-cli"));
 }

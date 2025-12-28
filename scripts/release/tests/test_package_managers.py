@@ -83,6 +83,9 @@ class PackageManagerTests(unittest.TestCase):
         self.assertIn("InstallerUrl: https://example.com/windows.zip", manifest)
         self.assertIn("InstallerSha256: " + "b" * 64, manifest)
         self.assertIn("PortableCommandAlias: pybun-cli", manifest)
+        self.assertIn("Commands:", manifest)
+        self.assertIn("- pybun", manifest)
+        self.assertIn("- pybun-cli", manifest)
 
 
 if __name__ == "__main__":

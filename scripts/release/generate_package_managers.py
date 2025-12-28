@@ -166,6 +166,9 @@ License: {LICENSE}
 LicenseUrl: {HOMEPAGE}/blob/main/LICENSE
 ShortDescription: {DESCRIPTION}
 Moniker: pybun
+Commands:
+  - pybun
+  - {ALIAS_NAME}
 Tags:
   - python
   - package-manager
@@ -176,8 +179,6 @@ Installers:
     InstallerType: zip
     NestedInstallerType: portable
     NestedInstallerFiles:
-      - RelativeFilePath: {extract_dir}/{PRIMARY_NAME}.exe
-        PortableCommandAlias: {PRIMARY_NAME}
       - RelativeFilePath: {extract_dir}/{PRIMARY_NAME}.exe
         PortableCommandAlias: {ALIAS_NAME}
 ManifestType: singleton
