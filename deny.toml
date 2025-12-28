@@ -1,8 +1,8 @@
 [advisories]
-vulnerability = "deny"
-unmaintained = "warn"
+# Fail on unmaintained advisories only for workspace-direct deps (transitives are ignored here).
+unmaintained = "workspace"
 yanked = "warn"
-notice = "warn"
+ignore = []
 
 [licenses]
 allow = [
