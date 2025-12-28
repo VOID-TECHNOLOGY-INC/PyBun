@@ -9,7 +9,13 @@
       "hash": "0000000000000000000000000000000000000000000000000000000000000000"
     }
   },
-  "bin": "pybun.exe",
+  "bin": [
+    "pybun.exe",
+    [
+      "pybun.exe",
+      "pybun-cli"
+    ]
+  ],
   "extract_dir": "pybun-x86_64-pc-windows-msvc",
   "checkver": {
     "url": "https://github.com/pybun/pybun/releases/latest",

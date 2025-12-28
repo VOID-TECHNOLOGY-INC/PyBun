@@ -261,15 +261,15 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
   - Depends on: PR5.3, PR6.5。
   - Current: CI に security-audit ジョブを追加（`cargo audit`/`cargo deny check licenses`/`pip-audit --project .`）。リリースメタデータ検証スクリプト `scripts/release/verify_security_artifacts.py` を追加し、release workflow で SBOM/provenance/署名の存在とハッシュ整合性を確認。`SECURITY.md`/`SECURITY.txt` に報告窓口・SLA・SLSA/provenance 署名・minisign 鍵ローテーション手順を記載。
   - Tests: `python3 -m unittest scripts/release/tests/test_security_artifacts.py`
-- PR7.6: デフォルト別名の配布で Bun `pybun` との衝突を回避
+- [DONE] PR7.6: デフォルト別名の配布で Bun `pybun` との衝突を回避
   - Goal: 公式で衝突回避用の別名（例: `pybun-rs`/`pybun-cli`）を全チャネルに同梱し、PATH 優先順位に依存せずに併存できるようにする。
   - Depends on: PR6.7 パッケージマネージャ導線, PR6.8 PyPI shim。
-  - Implementation: install.sh/PowerShell の symlink/launcher 作成を追加、Homebrew Formula/Scoop/winget manifest に別名を登録、PyPI shim で追加 console_script を提供。README/Quickstart に別名と衝突時の案内を追記し、既存 `pybun` が Bun の場合に warning を出すオプションを検討。
-  - Tests: install script dry-run で別名作成を確認、packaging テストで alias バイナリが配置されることを検証、衝突時の warning 表示が出ることを E2E で確認。
+  - Current: install.sh / install.ps1 が `pybun-cli` エイリアスを自動作成し、Bun 由来の `pybun` が PATH にある場合に警告を出力。Homebrew/Scoop/winget manifest に `pybun-cli` を同梱、PyPI shim の console_script に別名を追加。README に衝突回避の案内を追記。
+  - Tests: `cargo test --test install_scripts`（JSON出力に aliases/warnings を検証、Bun 衝突検知）、`cargo test --test package_managers`（alias を含む manifest 生成を検証）、`python -m unittest scripts/release/tests/test_package_managers.py`
   - Implementation (Tasks):
-    - [ ] 公式別名（`pybun-cli` 等）を配布物に同梱（symlink/launcher/console_script）
-    - [ ] install.sh / install.ps1 / Homebrew/Scoop/winget / PyPI shim の導線を統一
-    - [ ] Bun 側の `pybun` を検知した場合の警告（回避策: alias使用/優先順位）を追加
+    - [x] 公式別名（`pybun-cli` 等）を配布物に同梱（symlink/launcher/console_script）
+    - [x] install.sh / install.ps1 / Homebrew/Scoop/winget / PyPI shim の導線を統一
+    - [x] Bun 側の `pybun` を検知した場合の警告（回避策: alias使用/優先順位）を追加
 - PR7.7: CLI 進捗UI（Bun 風の途中経過表示）
   - Goal: `pybun install/add/test/build/run` などの長い処理で、解決/ダウンロード/ビルド/配置の進捗を人間向けに可視化。TTY ではスピナー/プログレスバー、非TTYや `--format=json` では抑制。
   - Depends on: PR4.1 グローバルイベントスキーマ, PR4.4 observability。

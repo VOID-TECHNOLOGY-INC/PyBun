@@ -36,6 +36,7 @@ text = "MIT"
 
 [project.scripts]
 pybun = "pybun.cli:main"
+pybun-cli = "pybun.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/pybun/pybun"

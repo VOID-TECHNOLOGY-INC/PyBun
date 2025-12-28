@@ -22,5 +22,7 @@ Installers:
     NestedInstallerFiles:
       - RelativeFilePath: pybun-x86_64-pc-windows-msvc/pybun.exe
         PortableCommandAlias: pybun
+      - RelativeFilePath: pybun-x86_64-pc-windows-msvc/pybun.exe
+        PortableCommandAlias: pybun-cli
 ManifestType: singleton
 ManifestVersion: 1.4.0
