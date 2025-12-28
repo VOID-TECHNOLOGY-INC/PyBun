@@ -26,6 +26,8 @@ pub struct ReleaseManifest {
     pub published_at: String,
     pub assets: Vec<ReleaseAsset>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release_notes: Option<ReleaseAttachment>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub release_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sbom: Option<ReleaseAttachment>,
@@ -141,6 +143,11 @@ mod tests {
                 "version": "1.2.3",
                 "channel": "stable",
                 "published_at": "2025-01-01T00:00:00Z",
+                "release_notes": {
+                    "name": "RELEASE_NOTES.md",
+                    "url": "https://example.com/notes",
+                    "sha256": "fff"
+                },
                 "assets": [
                     {
                         "name": "pybun-x86_64-unknown-linux-gnu.tar.gz",
@@ -163,6 +170,10 @@ mod tests {
             .select_asset("x86_64-unknown-linux-gnu")
             .expect("asset should be selectable");
         assert_eq!(asset.name, "pybun-x86_64-unknown-linux-gnu.tar.gz");
+        let notes = manifest
+            .release_notes
+            .expect("release notes attachment present");
+        assert_eq!(notes.name, "RELEASE_NOTES.md");
     }
 
     #[test]

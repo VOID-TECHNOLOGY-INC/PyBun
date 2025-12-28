@@ -2014,6 +2014,7 @@ dependencies = [
  "mimalloc",
  "notify",
  "predicates",
+ "regex",
  "reqwest",
  "semver",
  "serde",

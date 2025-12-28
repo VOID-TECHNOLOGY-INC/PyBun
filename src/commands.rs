@@ -2567,6 +2567,7 @@ fn run_self_update(
                 "channel": manifest.channel,
                 "published_at": manifest.published_at,
                 "release_url": manifest.release_url,
+                "release_notes": manifest.release_notes,
                 "source": manifest_source,
                 "target": target,
                 "asset": asset_json,
