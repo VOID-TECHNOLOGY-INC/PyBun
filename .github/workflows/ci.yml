@@ -97,6 +97,30 @@ jobs:
             brew install pybun/pybun/pybun
           brew test pybun/pybun/pybun
 
+  security-audit:
+    name: security audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-targets: true
+          cache-on-failure: true
+      - name: Install audit tools
+        run: |
+          cargo install cargo-audit --locked
+          cargo install cargo-deny --locked
+          python -m pip install --upgrade pip pip-audit
+      - name: Cargo audit
+        run: cargo audit
+      - name: Cargo license scan
+        run: cargo deny check licenses
+      - name: Pip audit
+        run: pip-audit --progress-spinner off .
+
   winget-validate:
     name: winget validate
     runs-on: windows-latest

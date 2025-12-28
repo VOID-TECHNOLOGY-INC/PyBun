@@ -251,6 +251,16 @@ jobs:
             --output pybun-release.json \
             --checksums SHA256SUMS
 
+      - name: Verify security artifacts
+        run: |
+          python3 scripts/release/verify_security_artifacts.py \
+            --artifacts-dir artifacts \
+            --manifest pybun-release.json \
+            --sbom pybun-sbom.json \
+            --provenance pybun-provenance.json \
+            --checksums SHA256SUMS \
+            --public-key "${{ steps.minisign.outputs.public_key }}"
+
       - name: Attest build provenance
         uses: actions/attest-build-provenance@v1
         with:

@@ -256,10 +256,11 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
     - [x] 各コマンドの `--format=json` 出力例（最小 + 失敗例）を追加
     - [x] `--sandbox` / `--profile` / `pybun mcp serve --stdio` の運用ガイドを追加
     - [x] pre-GA→GA のアップグレードガイド（breaking changes, migration）を追加
-- PR7.5: Security/compliance sign-off
+- [DONE] PR7.5: Security/compliance sign-off
   - Goal: リリース前に `cargo audit`/`pip-audit`/license scan/SBOM 署名を CI gate にし、SLSA/provenance と minisign 鍵ローテーション手順を SECURITY.md に追加。脆弱性報告窓口/SLAs を明記（`SECURITY.md`/`SECURITY.txt`）。
   - Depends on: PR5.3, PR6.5。
-  - Tests: CI で audit ジョブ必須化、リリース artifact に SBOM/provenance/署名が揃っていることを検証する smoke。
+  - Current: CI に security-audit ジョブを追加（`cargo audit`/`cargo deny check licenses`/`pip-audit --project .`）。リリースメタデータ検証スクリプト `scripts/release/verify_security_artifacts.py` を追加し、release workflow で SBOM/provenance/署名の存在とハッシュ整合性を確認。`SECURITY.md`/`SECURITY.txt` に報告窓口・SLA・SLSA/provenance 署名・minisign 鍵ローテーション手順を記載。
+  - Tests: `python3 -m unittest scripts/release/tests/test_security_artifacts.py`
 - PR7.6: デフォルト別名の配布で Bun `pybun` との衝突を回避
   - Goal: 公式で衝突回避用の別名（例: `pybun-rs`/`pybun-cli`）を全チャネルに同梱し、PATH 優先順位に依存せずに併存できるようにする。
   - Depends on: PR6.7 パッケージマネージャ導線, PR6.8 PyPI shim。
