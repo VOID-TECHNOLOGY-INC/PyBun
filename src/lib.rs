@@ -19,6 +19,7 @@ pub mod paths;
 pub mod pep723;
 pub mod pep723_cache;
 pub mod profiles;
+pub mod progress;
 pub mod project;
 pub mod pypi;
 pub mod release_manifest;

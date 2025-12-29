@@ -7,8 +7,10 @@ Arguments:
   [PASSTHROUGH]...  Pass additional args to the target
 
 Options:
-      --format <FORMAT>    Output format for machine readability [default: text] [possible values: text, json]
-      --sandbox            Run in sandboxed mode for untrusted code
-      --allow-network      Allow network access inside the sandbox (escape hatch)
-      --profile <PROFILE>  Optional profile (dev/prod/benchmark) [default: dev]
-  -h, --help               Print help
+      --format <FORMAT>      Output format for machine readability [default: text] [possible values: text, json]
+      --sandbox              Run in sandboxed mode for untrusted code
+      --allow-network        Allow network access inside the sandbox (escape hatch)
+      --progress <PROGRESS>  Progress UI mode (auto hides on non-TTY) [env: PYBUN_PROGRESS=] [default: auto] [possible values: auto, always, never]
+      --no-progress          Disable progress UI
+      --profile <PROFILE>    Optional profile (dev/prod/benchmark) [default: dev]
+  -h, --help                 Print help

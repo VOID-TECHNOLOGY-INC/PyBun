@@ -26,6 +26,8 @@ use serde_json::Value;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
+pub type EventListener = Box<dyn FnMut(&Event) + 'static>;
+
 /// Schema version - bump when breaking changes occur
 pub const SCHEMA_VERSION: &str = "1";
 pub const SCHEMA_V1_JSON: &str = include_str!("../schema/schema_v1.json");
@@ -352,12 +354,12 @@ impl JsonEnvelope {
 }
 
 /// Event collector that tracks events during command execution
-#[derive(Debug)]
 pub struct EventCollector {
     start: Instant,
     events: Vec<Event>,
     diagnostics: Vec<Diagnostic>,
     trace_id: Option<String>,
+    event_listener: Option<EventListener>,
 }
 
 impl EventCollector {
@@ -373,6 +375,7 @@ impl EventCollector {
             events: Vec::new(),
             diagnostics: Vec::new(),
             trace_id,
+            event_listener: None,
         }
     }
 
@@ -382,6 +385,18 @@ impl EventCollector {
             events: Vec::new(),
             diagnostics: Vec::new(),
             trace_id: Some(trace_id.into()),
+            event_listener: None,
+        }
+    }
+
+    /// Attach a listener that is notified whenever an event is recorded.
+    pub fn set_event_listener(&mut self, listener: EventListener) {
+        self.event_listener = Some(listener);
+    }
+
+    fn notify_listener(&mut self) {
+        if let (Some(listener), Some(event)) = (self.event_listener.as_mut(), self.events.last()) {
+            listener(event);
         }
     }
 
@@ -389,14 +404,24 @@ impl EventCollector {
     pub fn event(&mut self, event_type: EventType) -> &mut Event {
         let timestamp_ms = self.start.elapsed().as_millis() as u64;
         self.events.push(Event::new(event_type, timestamp_ms));
+        self.notify_listener();
         self.events.last_mut().unwrap()
+    }
+
+    /// Record an event with custom fields
+    pub fn event_with(&mut self, event_type: EventType, build: impl FnOnce(&mut Event)) {
+        let timestamp_ms = self.start.elapsed().as_millis() as u64;
+        let mut event = Event::new(event_type, timestamp_ms);
+        build(&mut event);
+        self.events.push(event);
+        self.notify_listener();
     }
 
     /// Record an event with data
     pub fn event_with_data(&mut self, event_type: EventType, data: Value) {
-        let timestamp_ms = self.start.elapsed().as_millis() as u64;
-        self.events
-            .push(Event::new(event_type, timestamp_ms).with_data(data));
+        self.event_with(event_type, |event| {
+            event.data = Some(data);
+        });
     }
 
     /// Record a diagnostic
@@ -466,6 +491,17 @@ impl EventCollector {
 impl Default for EventCollector {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl std::fmt::Debug for EventCollector {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EventCollector")
+            .field("start", &self.start)
+            .field("events", &self.events)
+            .field("diagnostics", &self.diagnostics)
+            .field("trace_id", &self.trace_id)
+            .finish()
     }
 }
 

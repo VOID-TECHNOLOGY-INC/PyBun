@@ -3,6 +3,8 @@ Check the JSON schema against the frozen v1 definition
 Usage: pybun schema check [OPTIONS]
 
 Options:
-      --format <FORMAT>  Output format for machine readability [default: text] [possible values: text, json]
-      --path <PATH>      Optional path to compare against the embedded schema
-  -h, --help             Print help
+      --format <FORMAT>      Output format for machine readability [default: text] [possible values: text, json]
+      --path <PATH>          Optional path to compare against the embedded schema
+      --progress <PROGRESS>  Progress UI mode (auto hides on non-TTY) [env: PYBUN_PROGRESS=] [default: auto] [possible values: auto, always, never]
+      --no-progress          Disable progress UI
+  -h, --help                 Print help

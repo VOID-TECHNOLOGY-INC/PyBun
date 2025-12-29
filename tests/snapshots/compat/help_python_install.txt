@@ -6,5 +6,7 @@ Arguments:
   <VERSION>  Version to install (e.g., 3.11, 3.12.7)
 
 Options:
-      --format <FORMAT>  Output format for machine readability [default: text] [possible values: text, json]
-  -h, --help             Print help
+      --format <FORMAT>      Output format for machine readability [default: text] [possible values: text, json]
+      --progress <PROGRESS>  Progress UI mode (auto hides on non-TTY) [env: PYBUN_PROGRESS=] [default: auto] [possible values: auto, always, never]
+      --no-progress          Disable progress UI
+  -h, --help                 Print help
