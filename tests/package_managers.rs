@@ -150,7 +150,25 @@ fn generate_package_manager_files() {
         scoop["architecture"]["64bit"]["hash"].as_str(),
         Some("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee")
     );
-    assert_eq!(scoop["bin"].as_str(), Some("pybun.exe"));
+    let bin_entries = scoop["bin"].as_array().expect("scoop bin entries");
+    assert!(
+        bin_entries
+            .iter()
+            .any(|entry| entry.as_str() == Some("pybun.exe")),
+        "expected primary pybun.exe shim"
+    );
+    assert!(
+        bin_entries.iter().any(|entry| {
+            entry
+                .as_array()
+                .map(|arr| {
+                    arr.first().and_then(|v| v.as_str()) == Some("pybun.exe")
+                        && arr.get(1).and_then(|v| v.as_str()) == Some("pybun-cli")
+                })
+                .unwrap_or(false)
+        }),
+        "expected pybun-cli alias shim"
+    );
 
     let winget = fs::read_to_string(&winget_path).unwrap();
     assert!(winget.contains("PackageVersion: 1.2.3"));
@@ -158,4 +176,8 @@ fn generate_package_manager_files() {
     assert!(winget.contains(
         "InstallerSha256: eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
     ));
+    assert!(winget.contains("PortableCommandAlias: pybun-cli"));
+    assert!(winget.contains("Commands:"));
+    assert!(winget.contains("- pybun"));
+    assert!(winget.contains("- pybun-cli"));
 }

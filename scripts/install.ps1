@@ -17,6 +17,8 @@ $IsLinux = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
 $IsMacOS = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
     [System.Runtime.InteropServices.OSPlatform]::OSX
 )
+$AliasName = "pybun-cli"
+$AliasBinaryName = if ($IsWindows) { "pybun-cli.exe" } else { "pybun-cli" }
 
 function Write-Log {
     param([string]$Message)
@@ -98,6 +100,67 @@ function Get-ManifestData {
     }
 }
 
+function Detect-ExistingPybun {
+    param(
+        [string]$InstallPath,
+        [string]$AliasPath
+    )
+    $script:DetectedPybunPath = $null
+    $script:DetectedPybunKind = $null
+    $script:DetectedPybunMessage = $null
+
+    $cmd = Get-Command pybun -ErrorAction SilentlyContinue
+    if (-not $cmd) {
+        return
+    }
+    $path = $cmd.Source
+    if ($path -eq $InstallPath -or $path -eq $AliasPath) {
+        return
+    }
+
+    $isBun = $false
+    if ($path -like "*\.bun\*") {
+        $isBun = $true
+    }
+    if (-not $isBun -and (Test-Path $path)) {
+        try {
+            $firstLine = (Get-Content -Path $path -TotalCount 1)[0]
+            if ($firstLine -match "bun") {
+                $isBun = $true
+            }
+        } catch {
+        }
+    }
+
+    $script:DetectedPybunPath = $path
+    if ($isBun) {
+        $script:DetectedPybunKind = "bun-pybun-detected"
+        $script:DetectedPybunMessage = "Detected existing Bun-provided pybun at $path. Use the pybun-cli alias or adjust PATH to prefer PyBun."
+    } else {
+        $script:DetectedPybunKind = "pybun-conflict"
+        $script:DetectedPybunMessage = "Detected another pybun on PATH at $path. Use the pybun-cli alias or adjust PATH."
+    }
+}
+
+function New-PybunAlias {
+    param(
+        [string]$Source,
+        [string]$AliasPath
+    )
+    $script:AliasStatus = "created"
+    if (Test-Path $AliasPath) {
+        Write-Log "warning: alias target already exists at $AliasPath (skipping)"
+        $script:AliasStatus = "skipped-existing"
+        return
+    }
+    try {
+        New-Item -ItemType SymbolicLink -Path $AliasPath -Target $Source -Force | Out-Null
+        return
+    } catch {
+    }
+    Copy-Item -Path $Source -Destination $AliasPath -Force
+}
+
 if (-not $BinDir -and -not $Prefix) {
     if ($IsWindows) {
         $Prefix = Join-Path $env:LOCALAPPDATA "pybun"
@@ -123,6 +186,7 @@ $ArchiveExt = if ($IsWindows) { "zip" } else { "tar.gz" }
 $AssetName = "pybun-$Target.$ArchiveExt"
 $BinaryName = if ($IsWindows) { "pybun.exe" } else { "pybun" }
 $InstallPath = Join-Path $BinDir $BinaryName
+$AliasPath = Join-Path $BinDir $AliasBinaryName
 
 $ManifestSource = $env:PYBUN_INSTALL_MANIFEST
 if (-not $ManifestSource) {
@@ -188,6 +252,9 @@ if ($ManifestPath) {
     throw "manifest required for verification (set PYBUN_INSTALL_MANIFEST or use --no-verify)"
 }
 
+$AliasStatus = "planned"
+Detect-ExistingPybun -InstallPath $InstallPath -AliasPath $AliasPath
+
 if ($DryRun) {
     if ($Format -eq "json") {
         $assetInfo = [ordered]@{
@@ -224,6 +291,23 @@ if ($DryRun) {
             manifest = $manifestInfo
             asset = $assetInfo
         }
+        $detail.aliases = @(
+            [ordered]@{
+                name = $AliasName
+                path = $AliasPath
+                status = $AliasStatus
+            }
+        )
+        $warnings = @()
+        if ($DetectedPybunMessage) {
+            $warning = [ordered]@{
+                kind = $DetectedPybunKind
+                message = $DetectedPybunMessage
+                path = $DetectedPybunPath
+            }
+            $warnings += $warning
+        }
+        $detail.warnings = $warnings
         $detail | ConvertTo-Json -Depth 6
         exit 0
     }
@@ -234,6 +318,9 @@ if ($DryRun) {
     Write-Log "Asset: $AssetUrl"
     Write-Log "Install path: $InstallPath"
     Write-Log ("Verify: " + ($(if ($NoVerify) { "disabled" } else { "enabled" })))
+    if ($DetectedPybunMessage) {
+        Write-Log ("warning: " + $DetectedPybunMessage)
+    }
     exit 0
 }
 
@@ -295,6 +382,10 @@ try {
     }
 
     Write-Log "Installed pybun to $InstallPath"
+    New-PybunAlias -Source $InstallPath -AliasPath $AliasPath
+    if ($DetectedPybunMessage) {
+        Write-Log ("warning: " + $DetectedPybunMessage)
+    }
 } finally {
     if (Test-Path $TempDir) {
         Remove-Item -Recurse -Force $TempDir

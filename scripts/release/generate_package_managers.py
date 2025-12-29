@@ -8,6 +8,8 @@ HOMEPAGE = "https://github.com/pybun/pybun"
 LICENSE = "MIT"
 PUBLISHER = "VOID TECHNOLOGY INC"
 PACKAGE_IDENTIFIER = "PyBun.PyBun"
+ALIAS_NAME = "pybun-cli"
+PRIMARY_NAME = "pybun"
 
 TARGETS = {
     "macos_arm": "aarch64-apple-darwin",
@@ -107,6 +109,7 @@ class Pybun < Formula
     else
       bin.install Dir["pybun-*/pybun"]
     end
+    bin.install_symlink "pybun" => "{ALIAS_NAME}"
   end
 
   test do
@@ -118,6 +121,10 @@ end
 
 def build_scoop_manifest(version: str, win_asset: dict) -> dict:
     extract_dir = win_asset["extract_dir"]
+    bin_entries = [
+        f"{PRIMARY_NAME}.exe",
+        [f"{PRIMARY_NAME}.exe", ALIAS_NAME],
+    ]
     return {
         "version": version,
         "description": DESCRIPTION,
@@ -129,7 +136,7 @@ def build_scoop_manifest(version: str, win_asset: dict) -> dict:
                 "hash": win_asset["sha256"],
             }
         },
-        "bin": "pybun.exe",
+        "bin": bin_entries,
         "extract_dir": extract_dir,
         "checkver": {
             "url": f"{HOMEPAGE}/releases/latest",
@@ -159,6 +166,9 @@ License: {LICENSE}
 LicenseUrl: {HOMEPAGE}/blob/main/LICENSE
 ShortDescription: {DESCRIPTION}
 Moniker: pybun
+Commands:
+  - pybun
+  - {ALIAS_NAME}
 Tags:
   - python
   - package-manager
@@ -169,8 +179,8 @@ Installers:
     InstallerType: zip
     NestedInstallerType: portable
     NestedInstallerFiles:
-      - RelativeFilePath: {extract_dir}/pybun.exe
-        PortableCommandAlias: pybun
+      - RelativeFilePath: {extract_dir}/{PRIMARY_NAME}.exe
+        PortableCommandAlias: {ALIAS_NAME}
 ManifestType: singleton
 ManifestVersion: 1.4.0
 """

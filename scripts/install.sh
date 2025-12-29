@@ -8,6 +8,7 @@ BIN_DIR=""
 NO_VERIFY=0
 DRY_RUN=0
 FORMAT="text"
+ALIAS_NAME="pybun-cli"
 
 usage() {
   cat <<'EOF'
@@ -126,6 +127,63 @@ sha256sum_file() {
   die "sha256sum or shasum is required for verification"
 }
 
+detect_existing_pybun() {
+  DETECTED_PYBUN_PATH=""
+  DETECTED_PYBUN_KIND=""
+  DETECTED_PYBUN_MESSAGE=""
+  existing="$(command -v pybun 2>/dev/null || true)"
+  if [ -z "$existing" ]; then
+    return
+  fi
+  case "$existing" in
+    "$INSTALL_PATH"|"$ALIAS_PATH")
+      return
+      ;;
+  esac
+
+  is_bun=0
+  if [ -f "$existing" ]; then
+    shebang="$(head -n 1 "$existing" 2>/dev/null || true)"
+    if printf '%s' "$shebang" | grep -qi "bun"; then
+      is_bun=1
+    fi
+  fi
+  case "$existing" in
+    *"/.bun/"*|*"bun/"*) is_bun=1 ;;
+  esac
+
+  DETECTED_PYBUN_PATH="$existing"
+  if [ "$is_bun" -eq 1 ]; then
+    DETECTED_PYBUN_KIND="bun-pybun-detected"
+    DETECTED_PYBUN_MESSAGE="Detected existing Bun-provided pybun at $existing. Use the pybun-cli alias or adjust PATH to prefer PyBun."
+  else
+    DETECTED_PYBUN_KIND="pybun-conflict"
+    DETECTED_PYBUN_MESSAGE="Detected another pybun on PATH at $existing. Use the pybun-cli alias or adjust PATH."
+  fi
+}
+
+create_alias() {
+  target="$1"
+  link="$2"
+  ALIAS_STATUS="created"
+  if [ -e "$link" ] && [ ! -L "$link" ]; then
+    log "warning: alias target already exists at $link (skipping)"
+    ALIAS_STATUS="skipped-existing"
+    return
+  fi
+  if ln -sf "$target" "$link" 2>/dev/null; then
+    log "Created alias $link -> $(basename "$target")"
+    return
+  fi
+  if cp "$target" "$link" 2>/dev/null; then
+    chmod +x "$link" 2>/dev/null || true
+    log "Created alias copy at $link"
+    return
+  fi
+  log "warning: failed to create alias at $link"
+  ALIAS_STATUS="error"
+}
+
 parse_manifest() {
   manifest_path="$1"
   target="$2"
@@ -194,6 +252,12 @@ emit_json() {
   PYBUN_JSON_RELEASE_NOTES_NAME="${20}" \
   PYBUN_JSON_RELEASE_NOTES_URL="${21}" \
   PYBUN_JSON_RELEASE_NOTES_SHA="${22}" \
+  PYBUN_JSON_ALIAS_NAME="${23}" \
+  PYBUN_JSON_ALIAS_PATH="${24}" \
+  PYBUN_JSON_ALIAS_STATUS="${25}" \
+  PYBUN_JSON_WARNING_KIND="${26}" \
+  PYBUN_JSON_WARNING_MESSAGE="${27}" \
+  PYBUN_JSON_WARNING_PATH="${28}" \
   python3 - <<'PY'
 import json
 import os
@@ -253,6 +317,27 @@ payload = {
     "manifest": manifest or None,
     "asset": asset,
 }
+
+aliases = []
+alias_name = env("PYBUN_JSON_ALIAS_NAME")
+alias_path = env("PYBUN_JSON_ALIAS_PATH")
+alias_status = env("PYBUN_JSON_ALIAS_STATUS")
+if alias_name or alias_path:
+    alias_entry = {"name": alias_name, "path": alias_path, "status": alias_status}
+    alias_entry = {k: v for k, v in alias_entry.items() if v}
+    aliases.append(alias_entry)
+payload["aliases"] = aliases
+
+warnings = []
+warning_kind = env("PYBUN_JSON_WARNING_KIND")
+warning_message = env("PYBUN_JSON_WARNING_MESSAGE")
+warning_path = env("PYBUN_JSON_WARNING_PATH")
+if warning_kind or warning_message:
+    warning = {"kind": warning_kind, "message": warning_message}
+    if warning_path:
+        warning["path"] = warning_path
+    warnings.append(warning)
+payload["warnings"] = warnings
 
 print(json.dumps(payload))
 PY
@@ -350,6 +435,7 @@ TARGET="$(detect_target)"
 ARCHIVE_EXT="tar.gz"
 ASSET_NAME="pybun-${TARGET}.${ARCHIVE_EXT}"
 INSTALL_PATH="$BIN_DIR/pybun"
+ALIAS_PATH="$BIN_DIR/$ALIAS_NAME"
 
 MANIFEST_SOURCE="${PYBUN_INSTALL_MANIFEST:-}"
 if [ -z "$MANIFEST_SOURCE" ]; then
@@ -431,6 +517,9 @@ elif [ "$NO_VERIFY" -eq 0 ] && [ "$DRY_RUN" -eq 0 ]; then
   die "manifest required for verification (set PYBUN_INSTALL_MANIFEST or use --no-verify)"
 fi
 
+ALIAS_STATUS="planned"
+detect_existing_pybun
+
 if [ "$DRY_RUN" -eq 1 ]; then
   if [ "$FORMAT" = "json" ]; then
     emit_json \
@@ -455,7 +544,13 @@ if [ "$DRY_RUN" -eq 1 ]; then
       "$SIG_PUB" \
       "$RELEASE_NOTES_NAME" \
       "$RELEASE_NOTES_URL" \
-      "$RELEASE_NOTES_SHA"
+      "$RELEASE_NOTES_SHA" \
+      "$ALIAS_NAME" \
+      "$ALIAS_PATH" \
+      "$ALIAS_STATUS" \
+      "$DETECTED_PYBUN_KIND" \
+      "$DETECTED_PYBUN_MESSAGE" \
+      "$DETECTED_PYBUN_PATH"
     exit 0
   fi
 
@@ -465,6 +560,9 @@ if [ "$DRY_RUN" -eq 1 ]; then
   log "Asset: $ASSET_URL"
   log "Install path: $INSTALL_PATH"
   log "Verify: $([ "$NO_VERIFY" -eq 0 ] && printf 'enabled' || printf 'disabled')"
+  if [ -n "$DETECTED_PYBUN_MESSAGE" ]; then
+    log "warning: $DETECTED_PYBUN_MESSAGE"
+  fi
   exit 0
 fi
 
@@ -518,6 +616,10 @@ else
 fi
 
 log "Installed pybun to $INSTALL_PATH"
+create_alias "$INSTALL_PATH" "$ALIAS_PATH"
+if [ -n "$DETECTED_PYBUN_MESSAGE" ]; then
+  log "warning: $DETECTED_PYBUN_MESSAGE"
+fi
 
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;

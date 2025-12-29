@@ -36,6 +36,7 @@ class Pybun < Formula
     else
       bin.install Dir["pybun-*/pybun"]
     end
+    bin.install_symlink "pybun" => "pybun-cli"
   end
 
   test do

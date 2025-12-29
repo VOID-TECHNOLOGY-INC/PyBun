@@ -50,6 +50,8 @@ pip install --user pybun
 ```
 The PyPI shim downloads and verifies the signed release binary on first run.
 
+> Heads up: PyBun ships a `pybun-cli` alias in every channel (Homebrew/Scoop/winget/install.sh/pip). If your PATH already resolves `pybun` to Bun, use `pybun-cli` or move PyBun earlier in PATH.
+
 ```bash
 # Development (from source)
 cargo install --path .

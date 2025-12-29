@@ -53,6 +53,7 @@ class PackageManagerTests(unittest.TestCase):
         self.assertIn('version "1.2.3"', formula)
         self.assertIn("HOMEBREW_PYBUN_TEST_TARBALL", formula)
         self.assertIn("https://example.com/macos-arm.tar.gz", formula)
+        self.assertIn('bin.install_symlink "pybun" => "pybun-cli"', formula)
 
     def test_build_scoop_manifest(self):
         manifest = gpm.build_scoop_manifest(
@@ -66,6 +67,8 @@ class PackageManagerTests(unittest.TestCase):
         )
         self.assertEqual(manifest["version"], "1.2.3")
         self.assertEqual(manifest["architecture"]["64bit"]["hash"], "b" * 64)
+        self.assertIn("pybun.exe", manifest["bin"])
+        self.assertIn(["pybun.exe", "pybun-cli"], manifest["bin"])
 
     def test_build_winget_manifest(self):
         manifest = gpm.build_winget_manifest(
@@ -79,6 +82,10 @@ class PackageManagerTests(unittest.TestCase):
         self.assertIn("PackageVersion: 1.2.3", manifest)
         self.assertIn("InstallerUrl: https://example.com/windows.zip", manifest)
         self.assertIn("InstallerSha256: " + "b" * 64, manifest)
+        self.assertIn("PortableCommandAlias: pybun-cli", manifest)
+        self.assertIn("Commands:", manifest)
+        self.assertIn("- pybun", manifest)
+        self.assertIn("- pybun-cli", manifest)
 
 
 if __name__ == "__main__":

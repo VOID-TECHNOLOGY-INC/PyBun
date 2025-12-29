@@ -10,6 +10,9 @@ License: MIT
 LicenseUrl: https://github.com/pybun/pybun/blob/main/LICENSE
 ShortDescription: Rust-based single-binary Python toolchain.
 Moniker: pybun
+Commands:
+  - pybun
+  - pybun-cli
 Tags:
   - python
   - package-manager
@@ -21,6 +24,6 @@ Installers:
     NestedInstallerType: portable
     NestedInstallerFiles:
       - RelativeFilePath: pybun-x86_64-pc-windows-msvc/pybun.exe
-        PortableCommandAlias: pybun
+        PortableCommandAlias: pybun-cli
 ManifestType: singleton
 ManifestVersion: 1.4.0
