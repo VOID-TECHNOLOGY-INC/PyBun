@@ -22,6 +22,7 @@ semver = "1.0"
 dirs = "5.0"
 toml = "0.8"
 tempfile = "3.14"
+zip = { version = "0.6", default-features = false, features = ["deflate"] }
 uuid = { version = "1.11", features = ["v4"] }
 sha2 = "0.10"
 hex = "0.4"

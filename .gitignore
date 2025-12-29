@@ -9,3 +9,5 @@ __pycache__/
 scripts/benchmark/results/
 
 ref/uv
+
+.venv/

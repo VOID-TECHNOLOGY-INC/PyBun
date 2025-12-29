@@ -197,6 +197,7 @@ impl PackageArtifacts {
         Self {
             wheels: vec![Wheel {
                 file: format!("{name}-{version}-py3-none-any.whl"),
+                url: None,
                 platforms: vec!["any".into()],
             }],
             sdist: None,
@@ -207,6 +208,7 @@ impl PackageArtifacts {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Wheel {
     pub file: String,
+    pub url: Option<String>,
     pub platforms: Vec<String>,
 }
 
@@ -218,6 +220,7 @@ pub struct Resolution {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArtifactSelection {
     pub filename: String,
+    pub url: Option<String>,
     pub matched_platform: Option<String>,
     pub from_source: bool,
     pub available_wheels: usize,
@@ -307,6 +310,7 @@ pub fn select_artifact_for_platform(
             };
             return ArtifactSelection {
                 filename: wheel.file.clone(),
+                url: wheel.url.clone(),
                 matched_platform,
                 from_source: false,
                 available_wheels: pkg.artifacts.wheels.len(),
@@ -329,6 +333,7 @@ pub fn select_artifact_for_platform(
             };
             return ArtifactSelection {
                 filename: wheel.file.clone(),
+                url: wheel.url.clone(),
                 matched_platform,
                 from_source: false,
                 available_wheels: pkg.artifacts.wheels.len(),
@@ -339,6 +344,7 @@ pub fn select_artifact_for_platform(
     if let Some(sdist) = &pkg.artifacts.sdist {
         return ArtifactSelection {
             filename: sdist.clone(),
+            url: None,
             matched_platform: None,
             from_source: true,
             available_wheels: pkg.artifacts.wheels.len(),
@@ -354,6 +360,7 @@ pub fn select_artifact_for_platform(
 
     ArtifactSelection {
         filename: fallback,
+        url: None,
         matched_platform: None,
         from_source: pkg.artifacts.wheels.is_empty(),
         available_wheels: pkg.artifacts.wheels.len(),

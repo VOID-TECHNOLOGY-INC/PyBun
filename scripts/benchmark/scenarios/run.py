@@ -79,6 +79,13 @@ def pep723_envs_dir() -> Path:
     return pep723_envs_dir_for(cache_root)
 
 
+def packages_dir(cache_root: Path | None = None) -> Path:
+    """Return the packages cache directory for PyBun."""
+    if cache_root is None:
+        cache_root = Path(os.environ.get("PYBUN_HOME", Path.home() / ".cache/pybun"))
+    return cache_root / "packages"
+
+
 def pep723_envs_dir_for(cache_root: Path) -> Path:
     """Return the PEP 723 env cache directory for PyBun."""
     return cache_root / "pep723-envs"
@@ -93,6 +100,18 @@ def clear_pep723_envs(cache_root: Path | None = None) -> str:
         return "missing"
     try:
         shutil.rmtree(envs)
+        return "cleared"
+    except Exception:
+        return "error"
+
+
+def clear_packages_cache(cache_root: Path | None = None) -> str:
+    """Clear PyBun's package (wheel) cache."""
+    pkgs = packages_dir(cache_root)
+    if not pkgs.exists():
+        return "missing"
+    try:
+        shutil.rmtree(pkgs)
         return "cleared"
     except Exception:
         return "error"
@@ -160,6 +179,7 @@ def run_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
             "PIP_CACHE_DIR": str(shared_uv_cache),
             "UV_PYTHON_PREFERENCE": "system",
             "UV_PYTHON_DOWNLOADS": "never",
+            "PYBUN_PEP723_BACKEND": "pybun",
         }
         uv_env = {
             "UV_CACHE_DIR": str(shared_uv_cache),
@@ -244,6 +264,7 @@ def run_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
                     cache_state = {
                         "uv_cache": clear_dir(shared_uv_cache),
                         "pep723_envs": clear_pep723_envs(pybun_home) if pep723_clear_envs else "kept",
+                        "packages": clear_packages_cache(pybun_home),
                         "fs_cache": clear_fs_cache() if pep723_clear_fs_cache else "kept",
                     }
                     # First run may install dependencies

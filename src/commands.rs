@@ -6,6 +6,7 @@ use crate::cli::{
 };
 use crate::env::{EnvSource, find_python_env};
 use crate::index::load_index_from_path;
+use crate::installer;
 use crate::lockfile::{Lockfile, Package, PackageSource};
 use crate::pep723;
 use crate::pep723_cache::{Pep723Cache, Pep723CacheKey};
@@ -18,6 +19,7 @@ use crate::sandbox;
 use crate::sbom;
 use crate::schema::{Diagnostic, Event, EventCollector, EventType, JsonEnvelope, Status};
 use crate::support_bundle::{BundleContext, BundleReport, build_support_bundle, upload_bundle};
+use crate::wheel_cache::WheelCache;
 use crate::workspace::Workspace;
 use color_eyre::eyre::{Result, eyre};
 use serde_json::{Value, json};
@@ -186,7 +188,7 @@ pub async fn execute(cli: Cli) -> Result<()> {
         }
         Commands::Run(args) => {
             collector.event(EventType::ScriptStart);
-            let result = run_script(args, &mut collector, cli.format);
+            let result = run_script(args, &mut collector, cli.format).await;
             match result {
                 Ok(RunOutcome {
                     summary,
@@ -1771,7 +1773,7 @@ fn capture_stdio(bytes: &[u8]) -> Option<String> {
     Some(out)
 }
 
-fn run_script(
+async fn run_script(
     args: &crate::cli::RunArgs,
     collector: &mut EventCollector,
     format: OutputFormat,
@@ -2161,7 +2163,7 @@ fn run_script(
                     }
 
                     // Get pip path in venv (for fallback install)
-                    let pip_path = if cfg!(windows) {
+                    let _pip_path = if cfg!(windows) {
                         venv_path.join("Scripts").join("pip.exe")
                     } else {
                         venv_path.join("bin").join("pip")
@@ -2198,25 +2200,83 @@ fn run_script(
                             ));
                         }
                     } else {
-                        // Fallback to standard pip
-                        let mut install_cmd = ProcessCommand::new(&pip_path);
-                        install_cmd.args(["install", "--quiet"]);
-                        if install_no_deps {
-                            install_cmd.arg("--no-deps");
-                        }
-                        if let Some(dir) = &wheel_cache_dir {
-                            install_cmd.arg("--cache-dir");
-                            install_cmd.arg(dir);
-                        }
-                        install_cmd.args(&install_deps);
+                        // Native PyBun Installation
+                        eprintln!("info: resolving dependencies (native)...");
 
-                        let install_status = install_cmd
-                            .status()
-                            .map_err(|e| eyre!("failed to install dependencies: {}", e))?;
+                        let requirements: Vec<Requirement> = install_deps
+                            .iter()
+                            .map(|d| d.parse().unwrap_or_else(|_| Requirement::any(d)))
+                            .collect();
 
-                        if !install_status.success() {
-                            collector.warning("failed to install dependencies".to_string());
-                            return Err(eyre!("failed to install PEP 723 dependencies"));
+                        // Use offline flag from args if available?
+                        // run_script args doesn't strictly have offline flag passed down easily unless we parse it?
+                        // But PyPiClient::from_env handles env vars.
+                        let client = PyPiClient::from_env(false).map_err(|e| eyre!(e))?;
+                        let index = PyPiIndex::new(client);
+                        let resolution = resolve(requirements, &index)
+                            .await
+                            .map_err(|e: crate::resolver::ResolveError| eyre!(e))?;
+
+                        // Prepare site-packages path
+                        let major_minor = python_version
+                            .split('.')
+                            .take(2)
+                            .collect::<Vec<_>>()
+                            .join(".");
+                        let site_packages = if cfg!(windows) {
+                            venv_path.join("Lib").join("site-packages")
+                        } else {
+                            venv_path
+                                .join("lib")
+                                .join(format!("python{}", major_minor))
+                                .join("site-packages")
+                        };
+
+                        let wheel_cache = WheelCache::new()
+                            .map_err(|e| eyre!("failed to init wheel cache: {}", e))?;
+                        eprintln!(
+                            "info: downloading {} packages...",
+                            resolution.packages.len()
+                        );
+
+                        let platform_tags = crate::resolver::current_platform_tags();
+                        let mut download_futures = Vec::new();
+
+                        for pkg in resolution.packages.values() {
+                            let selection =
+                                crate::resolver::select_artifact_for_platform(pkg, &platform_tags);
+                            if selection.from_source {
+                                return Err(eyre!(
+                                    "native installer does not support sdist for {}",
+                                    pkg.name
+                                ));
+                            }
+                            if let Some(url) = &selection.url {
+                                let name = pkg.name.clone();
+                                let filename = selection.filename.clone();
+                                let url = url.clone();
+                                let wc = &wheel_cache;
+                                download_futures.push(async move {
+                                    wc.get_wheel(&name, &filename, &url, None).await
+                                });
+                            } else {
+                                return Err(eyre!("no download URL for {}", pkg.name));
+                            }
+                        }
+
+                        let results = futures::future::join_all(download_futures).await;
+                        let mut wheels_to_install = Vec::new();
+                        for res in results {
+                            match res {
+                                Ok(path) => wheels_to_install.push(path),
+                                Err(e) => return Err(eyre!("download failed: {}", e)),
+                            }
+                        }
+
+                        eprintln!("info: installing {} packages...", wheels_to_install.len());
+                        for wheel in wheels_to_install {
+                            installer::install_wheel(&wheel, &site_packages)
+                                .map_err(|e| eyre!("failed to install wheel: {}", e))?;
                         }
                     }
 

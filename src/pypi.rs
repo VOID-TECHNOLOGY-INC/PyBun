@@ -326,6 +326,7 @@ impl PyPiClient {
                 .iter()
                 .map(|w| Wheel {
                     file: w.file.clone(),
+                    url: w.url.clone(),
                     platforms: if w.platforms.is_empty() {
                         vec!["any".into()]
                     } else {
@@ -447,6 +448,7 @@ struct ProjectInfo {
 #[derive(Debug, Deserialize)]
 struct ReleaseFile {
     filename: String,
+    url: String,
     packagetype: String,
     #[serde(default)]
     yanked: Option<bool>,
@@ -466,6 +468,7 @@ struct VersionInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct CachedWheel {
     file: String,
+    pub url: Option<String>,
     platforms: Vec<String>,
 }
 
@@ -753,6 +756,7 @@ fn build_cached_packages(
                     let platforms = wheel_platforms(&file.filename);
                     wheels.push(CachedWheel {
                         file: file.filename.clone(),
+                        url: Some(file.url.clone()),
                         platforms: if platforms.is_empty() {
                             vec!["any".into()]
                         } else {
