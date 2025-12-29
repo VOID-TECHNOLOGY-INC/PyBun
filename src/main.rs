@@ -9,6 +9,10 @@ fn main() -> Result<()> {
     }
     support_bundle::install_crash_hook();
 
+    if !entry::requires_tokio_runtime(&cli) {
+        return futures::executor::block_on(execute(cli));
+    }
+
     let stack_size = entry::runtime_stack_size();
     let main2 = move || -> Result<()> {
         let runtime = tokio::runtime::Builder::new_current_thread()

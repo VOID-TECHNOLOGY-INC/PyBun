@@ -1,0 +1,60 @@
+name: Benchmark UX Gate
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * *"
+  pull_request:
+    types: [labeled, synchronize]
+
+jobs:
+  ux-gate:
+    if: >
+      github.event_name != 'pull_request' ||
+      contains(github.event.pull_request.labels.*.name, 'benchmark') ||
+      contains(github.event.pull_request.labels.*.name, 'perf')
+    name: ux gate (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-targets: true
+          cache-on-failure: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        run: python -m pip install --upgrade pip uv
+
+      - name: Build pybun (release)
+        run: cargo build --release
+
+      - name: Run benchmarks (B3)
+        run: |
+          cd scripts/benchmark
+          python bench.py -s run --config config_ci.toml --format json -o results-ci
+
+      - name: UX gate
+        run: |
+          cd scripts/benchmark
+          python ux_gate.py results-ci --criteria ux_criteria.toml --format text
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results-${{ matrix.os }}
+          path: scripts/benchmark/results-ci/
+

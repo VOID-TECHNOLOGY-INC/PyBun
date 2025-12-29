@@ -25,6 +25,13 @@ pub fn should_install_color_eyre(cli: &Cli) -> bool {
     pybun_trace_enabled() || rust_backtrace_enabled() || command_verbose(cli)
 }
 
+pub fn requires_tokio_runtime(cli: &Cli) -> bool {
+    matches!(
+        cli.command,
+        Commands::Install(_) | Commands::Lock(_) | Commands::Mcp(_)
+    )
+}
+
 fn pybun_trace_enabled() -> bool {
     std::env::var_os("PYBUN_TRACE").is_some()
 }
@@ -48,8 +55,11 @@ fn command_verbose(cli: &Cli) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{runtime_stack_size, should_install_color_eyre};
-    use crate::cli::{Cli, Commands, DoctorArgs, OutputFormat, TestArgs};
+    use super::{requires_tokio_runtime, runtime_stack_size, should_install_color_eyre};
+    use crate::cli::{
+        Cli, Commands, DoctorArgs, InstallArgs, LockArgs, McpCommands, McpServeArgs, OutputFormat,
+        ProgressMode, RunArgs, TestArgs,
+    };
     use std::sync::{LazyLock, Mutex};
 
     static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
@@ -85,7 +95,7 @@ mod tests {
     fn test_cli(verbose: bool) -> Cli {
         Cli {
             format: OutputFormat::Text,
-            progress: crate::cli::ProgressMode::Auto,
+            progress: ProgressMode::Auto,
             no_progress: false,
             command: Commands::Test(TestArgs {
                 paths: Vec::new(),
@@ -108,7 +118,7 @@ mod tests {
     fn doctor_cli(verbose: bool) -> Cli {
         Cli {
             format: OutputFormat::Text,
-            progress: crate::cli::ProgressMode::Auto,
+            progress: ProgressMode::Auto,
             no_progress: false,
             command: Commands::Doctor(DoctorArgs {
                 verbose,
@@ -169,5 +179,67 @@ mod tests {
         with_env_vars(&[("PYBUN_STACK_SIZE", Some("512"))], || {
             assert_eq!(runtime_stack_size(), 4 * 1024 * 1024);
         });
+    }
+
+    #[test]
+    fn tokio_runtime_required_for_install() {
+        let cli = Cli {
+            format: OutputFormat::Text,
+            progress: ProgressMode::Auto,
+            no_progress: false,
+            command: Commands::Install(InstallArgs {
+                offline: false,
+                requirements: Vec::new(),
+                index: None,
+                lock: "pybun.lockb".into(),
+            }),
+        };
+        assert!(requires_tokio_runtime(&cli));
+    }
+
+    #[test]
+    fn tokio_runtime_required_for_lock() {
+        let cli = Cli {
+            format: OutputFormat::Text,
+            progress: ProgressMode::Auto,
+            no_progress: false,
+            command: Commands::Lock(LockArgs {
+                script: None,
+                offline: false,
+                index: None,
+            }),
+        };
+        assert!(requires_tokio_runtime(&cli));
+    }
+
+    #[test]
+    fn tokio_runtime_required_for_mcp() {
+        let cli = Cli {
+            format: OutputFormat::Text,
+            progress: ProgressMode::Auto,
+            no_progress: false,
+            command: Commands::Mcp(McpCommands::Serve(McpServeArgs {
+                port: 9999,
+                stdio: true,
+            })),
+        };
+        assert!(requires_tokio_runtime(&cli));
+    }
+
+    #[test]
+    fn tokio_runtime_not_required_for_run() {
+        let cli = Cli {
+            format: OutputFormat::Text,
+            progress: ProgressMode::Auto,
+            no_progress: false,
+            command: Commands::Run(RunArgs {
+                target: Some("script.py".to_string()),
+                sandbox: false,
+                allow_network: false,
+                profile: "dev".to_string(),
+                passthrough: Vec::new(),
+            }),
+        };
+        assert!(!requires_tokio_runtime(&cli));
     }
 }
