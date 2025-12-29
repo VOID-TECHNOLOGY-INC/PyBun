@@ -2202,37 +2202,54 @@ async fn run_script(
                     } else {
                         // Native PyBun Installation
                         eprintln!("info: resolving dependencies (native)...");
-                        
+
                         let requirements: Vec<Requirement> = install_deps
                             .iter()
                             .map(|d| d.parse().unwrap_or_else(|_| Requirement::any(d)))
                             .collect();
-                        
-                        // Use offline flag from args if available? 
+
+                        // Use offline flag from args if available?
                         // run_script args doesn't strictly have offline flag passed down easily unless we parse it?
                         // But PyPiClient::from_env handles env vars.
                         let client = PyPiClient::from_env(false).map_err(|e| eyre!(e))?;
                         let index = PyPiIndex::new(client);
-                        let resolution = resolve(requirements, &index).await.map_err(|e: crate::resolver::ResolveError| eyre!(e))?;
-                        
+                        let resolution = resolve(requirements, &index)
+                            .await
+                            .map_err(|e: crate::resolver::ResolveError| eyre!(e))?;
+
                         // Prepare site-packages path
-                        let major_minor = python_version.split('.').take(2).collect::<Vec<_>>().join(".");
+                        let major_minor = python_version
+                            .split('.')
+                            .take(2)
+                            .collect::<Vec<_>>()
+                            .join(".");
                         let site_packages = if cfg!(windows) {
                             venv_path.join("Lib").join("site-packages")
                         } else {
-                            venv_path.join("lib").join(format!("python{}", major_minor)).join("site-packages")
+                            venv_path
+                                .join("lib")
+                                .join(format!("python{}", major_minor))
+                                .join("site-packages")
                         };
-                        
-                        let wheel_cache = WheelCache::new().map_err(|e| eyre!("failed to init wheel cache: {}", e))?;
-                        eprintln!("info: downloading {} packages...", resolution.packages.len());
-                        
+
+                        let wheel_cache = WheelCache::new()
+                            .map_err(|e| eyre!("failed to init wheel cache: {}", e))?;
+                        eprintln!(
+                            "info: downloading {} packages...",
+                            resolution.packages.len()
+                        );
+
                         let platform_tags = crate::resolver::current_platform_tags();
                         let mut download_futures = Vec::new();
-                        
+
                         for pkg in resolution.packages.values() {
-                            let selection = crate::resolver::select_artifact_for_platform(pkg, &platform_tags);
+                            let selection =
+                                crate::resolver::select_artifact_for_platform(pkg, &platform_tags);
                             if selection.from_source {
-                                return Err(eyre!("native installer does not support sdist for {}", pkg.name));
+                                return Err(eyre!(
+                                    "native installer does not support sdist for {}",
+                                    pkg.name
+                                ));
                             }
                             if let Some(url) = &selection.url {
                                 let name = pkg.name.clone();
@@ -2246,7 +2263,7 @@ async fn run_script(
                                 return Err(eyre!("no download URL for {}", pkg.name));
                             }
                         }
-                        
+
                         let results = futures::future::join_all(download_futures).await;
                         let mut wheels_to_install = Vec::new();
                         for res in results {
@@ -2255,7 +2272,7 @@ async fn run_script(
                                 Err(e) => return Err(eyre!("download failed: {}", e)),
                             }
                         }
-                        
+
                         eprintln!("info: installing {} packages...", wheels_to_install.len());
                         for wheel in wheels_to_install {
                             installer::install_wheel(&wheel, &site_packages)

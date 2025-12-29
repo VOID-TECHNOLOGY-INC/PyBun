@@ -147,10 +147,10 @@ impl Downloader {
                         }
                     }
                 } else {
-                     // No checksum provided, default to overwrite for safety unless configured otherwise?
-                     // For now, let's just overwrite to be safe.
-                     // Or we could trust it if we want maximum speed. 
-                     // But Standard behavior is usually overwrite if no hash.
+                    // No checksum provided, default to overwrite for safety unless configured otherwise?
+                    // For now, let's just overwrite to be safe.
+                    // Or we could trust it if we want maximum speed.
+                    // But Standard behavior is usually overwrite if no hash.
                 }
             }
 
