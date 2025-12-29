@@ -8,7 +8,7 @@
 
 use std::fs;
 use std::io;
-use std::path::{Path};
+use std::path::Path;
 use thiserror::Error;
 use zip::ZipArchive;
 
@@ -39,10 +39,8 @@ pub fn install_wheel(wheel_path: &Path, site_packages: &Path) -> Result<()> {
         if file.is_dir() {
             fs::create_dir_all(&outpath)?;
         } else {
-            if let Some(p) = outpath.parent() {
-                if !p.exists() {
-                    fs::create_dir_all(p)?;
-                }
+            if let Some(p) = outpath.parent().filter(|p| !p.exists()) {
+                fs::create_dir_all(p)?;
             }
             let mut outfile = fs::File::create(&outpath)?;
             io::copy(&mut file, &mut outfile)?;
