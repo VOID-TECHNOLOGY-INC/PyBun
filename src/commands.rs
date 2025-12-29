@@ -1,13 +1,15 @@
 use crate::build::{BuildBackend, BuildCache};
 use crate::cli::{
     Cli, Commands, LazyImportArgs, LockArgs, McpCommands, ModuleFindArgs, OutputFormat,
-    ProfileArgs, PythonCommands, SchemaCommands, SelfCommands, TelemetryCommands, WatchArgs,
+    ProfileArgs, ProgressMode, PythonCommands, SchemaCommands, SelfCommands, TelemetryCommands,
+    WatchArgs,
 };
 use crate::env::{EnvSource, find_python_env};
 use crate::index::load_index_from_path;
 use crate::lockfile::{Lockfile, Package, PackageSource};
 use crate::pep723;
 use crate::pep723_cache::{Pep723Cache, Pep723CacheKey};
+use crate::progress::{ProgressConfig, ProgressDriver};
 use crate::project::Project;
 use crate::pypi::{PyPiClient, PyPiIndex};
 use crate::release_manifest::{ReleaseManifest, current_release_target};
@@ -22,6 +24,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
 use std::fs;
+use std::io::IsTerminal;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -30,6 +33,24 @@ use std::time::Duration;
 
 pub async fn execute(cli: Cli) -> Result<()> {
     let mut collector = EventCollector::new();
+
+    let requested_progress = if cli.no_progress {
+        ProgressMode::Never
+    } else {
+        cli.progress
+    };
+    let progress_mode = if matches!(cli.format, OutputFormat::Json) {
+        ProgressMode::Never
+    } else {
+        requested_progress
+    };
+    let progress = ProgressDriver::new(ProgressConfig {
+        mode: progress_mode,
+        is_tty: std::io::stderr().is_terminal(),
+    });
+    if let Some(listener) = progress.listener() {
+        collector.set_event_listener(listener);
+    }
 
     // Record command start
     collector.event(EventType::CommandStart);
@@ -556,6 +577,8 @@ pub async fn execute(cli: Cli) -> Result<()> {
         diagnostics,
         trace_id,
     );
+
+    progress.finish();
     println!("{rendered}");
 
     // Exit with error code if command failed
@@ -1039,6 +1062,10 @@ async fn install(
             }
         }
     };
+    collector.event_with(EventType::ResolveComplete, |event| {
+        event.message = Some("Resolved dependencies".to_string());
+        event.progress = Some(40);
+    });
 
     let platform_tags = current_platform_tags();
     let mut lock = Lockfile::new(
@@ -1098,6 +1125,11 @@ async fn install(
         }
     }
 
+    collector.event_with(EventType::DownloadStart, |event| {
+        event.message = Some(format!("Downloading {} artifacts", download_items.len()));
+        event.progress = Some(50);
+    });
+
     if !download_items.is_empty() {
         use crate::downloader::{DownloadRequest, Downloader};
         let downloader = Downloader::new();
@@ -1128,6 +1160,15 @@ async fn install(
             // Let's warn.
         }
     }
+
+    collector.event_with(EventType::DownloadComplete, |event| {
+        event.message = Some("Downloads complete".to_string());
+        event.progress = Some(70);
+    });
+    collector.event_with(EventType::InstallStart, |event| {
+        event.message = Some("Installing packages".to_string());
+        event.progress = Some(85);
+    });
 
     Ok(InstallOutcome {
         summary: format!(
@@ -1227,6 +1268,11 @@ async fn lock_dependencies(args: &LockArgs, collector: &mut EventCollector) -> R
             }
         }
     };
+
+    collector.event_with(EventType::ResolveComplete, |event| {
+        event.message = Some("Resolved dependencies".to_string());
+        event.progress = Some(40);
+    });
 
     let platform_tags = current_platform_tags();
     let mut lock = Lockfile::new(
@@ -1388,11 +1434,13 @@ fn run_build(
                 )
             })?;
         }
-        let progress_event = collector.event(EventType::Progress);
-        progress_event.message = Some(format!(
-            "invoking python -m build (backend: {})",
-            backend.kind.as_str()
-        ));
+        collector.event_with(EventType::Progress, |event| {
+            event.message = Some(format!(
+                "invoking python -m build (backend: {})",
+                backend.kind.as_str()
+            ));
+            event.progress = Some(30);
+        });
 
         let mut cmd = ProcessCommand::new(&python_env.python_path);
         cmd.current_dir(&project_root).args(["-m", "build"]);

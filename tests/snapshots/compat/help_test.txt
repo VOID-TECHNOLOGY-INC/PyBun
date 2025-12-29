@@ -9,7 +9,9 @@ Arguments:
 Options:
       --format <FORMAT>      Output format for machine readability [default: text] [possible values: text, json]
       --shard <SHARD>        Shard identifier (N/M) for distributed testing
+      --progress <PROGRESS>  Progress UI mode (auto hides on non-TTY) [env: PYBUN_PROGRESS=] [default: auto] [possible values: auto, always, never]
   -x, --fail-fast            Stop on first failure
+      --no-progress          Disable progress UI
       --pytest-compat        Enable pytest compatibility layer
       --backend <BACKEND>    Test runner backend (pytest or unittest). Auto-detected if not specified [possible values: pytest, unittest]
       --discover             Only discover tests without running them

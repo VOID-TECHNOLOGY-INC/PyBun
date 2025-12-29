@@ -12,6 +12,20 @@ pub struct Cli {
     #[arg(long, global = true, default_value_t = OutputFormat::Text, value_enum)]
     pub format: OutputFormat,
 
+    /// Progress UI mode (auto hides on non-TTY).
+    #[arg(
+        long,
+        global = true,
+        default_value_t = ProgressMode::Auto,
+        value_enum,
+        env = "PYBUN_PROGRESS"
+    )]
+    pub progress: ProgressMode,
+
+    /// Disable progress UI.
+    #[arg(long = "no-progress", global = true)]
+    pub no_progress: bool,
+
     #[command(subcommand)]
     pub command: Commands,
 }
@@ -20,6 +34,13 @@ pub struct Cli {
 pub enum OutputFormat {
     Text,
     Json,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+pub enum ProgressMode {
+    Auto,
+    Always,
+    Never,
 }
 
 #[derive(Subcommand, Debug)]

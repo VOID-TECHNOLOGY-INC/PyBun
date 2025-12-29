@@ -7,5 +7,7 @@ Arguments:
   [PASSTHROUGH]...  Arguments to forward to the tool
 
 Options:
-      --format <FORMAT>  Output format for machine readability [default: text] [possible values: text, json]
-  -h, --help             Print help
+      --format <FORMAT>      Output format for machine readability [default: text] [possible values: text, json]
+      --progress <PROGRESS>  Progress UI mode (auto hides on non-TTY) [env: PYBUN_PROGRESS=] [default: auto] [possible values: auto, always, never]
+      --no-progress          Disable progress UI
+  -h, --help                 Print help

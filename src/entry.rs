@@ -85,6 +85,8 @@ mod tests {
     fn test_cli(verbose: bool) -> Cli {
         Cli {
             format: OutputFormat::Text,
+            progress: crate::cli::ProgressMode::Auto,
+            no_progress: false,
             command: Commands::Test(TestArgs {
                 paths: Vec::new(),
                 shard: None,
@@ -106,6 +108,8 @@ mod tests {
     fn doctor_cli(verbose: bool) -> Cli {
         Cli {
             format: OutputFormat::Text,
+            progress: crate::cli::ProgressMode::Auto,
+            no_progress: false,
             command: Commands::Doctor(DoctorArgs {
                 verbose,
                 bundle: None,

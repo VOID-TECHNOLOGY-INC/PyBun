@@ -6,6 +6,8 @@ Arguments:
   [PACKAGE]  Package name (optionally with version)
 
 Options:
-      --format <FORMAT>  Output format for machine readability [default: text] [possible values: text, json]
-      --offline          Use offline mode when cache is sufficient
-  -h, --help             Print help
+      --format <FORMAT>      Output format for machine readability [default: text] [possible values: text, json]
+      --offline              Use offline mode when cache is sufficient
+      --progress <PROGRESS>  Progress UI mode (auto hides on non-TTY) [env: PYBUN_PROGRESS=] [default: auto] [possible values: auto, always, never]
+      --no-progress          Disable progress UI
+  -h, --help                 Print help

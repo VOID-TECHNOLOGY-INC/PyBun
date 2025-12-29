@@ -270,16 +270,16 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
     - [x] 公式別名（`pybun-cli` 等）を配布物に同梱（symlink/launcher/console_script）
     - [x] install.sh / install.ps1 / Homebrew/Scoop/winget / PyPI shim の導線を統一
     - [x] Bun 側の `pybun` を検知した場合の警告（回避策: alias使用/優先順位）を追加
-- PR7.7: CLI 進捗UI（Bun 風の途中経過表示）
+- [DONE] PR7.7: CLI 進捗UI（Bun 風の途中経過表示）
   - Goal: `pybun install/add/test/build/run` などの長い処理で、解決/ダウンロード/ビルド/配置の進捗を人間向けに可視化。TTY ではスピナー/プログレスバー、非TTYや `--format=json` では抑制。
   - Depends on: PR4.1 グローバルイベントスキーマ, PR4.4 observability。
-  - Implementation: JSON イベントストリームから進捗レンダラーを構成（resolve/download/build/install）。`--progress=auto|always|never` + `--no-progress` エイリアス、`PYBUN_PROGRESS` を追加。`--format=json` は UI を無効化しイベントのみ出力。
-  - Tests: text 出力のゴールデン/スナップショット、`--no-progress` の抑制、TTY 判定、JSON イベントとの整合性。
+  - Current: JSON イベントにフックする進捗レンダラーを追加し、解決/ダウンロード/インストール/ビルド/テストのイベントをテキスト進捗として描画。`--progress=auto|always|never` と `--no-progress`（`PYBUN_PROGRESS` 環境変数対応）をグローバルに追加し、`--format=json` 時や非TTYの auto では UI を抑制。
+  - Tests: `cargo test --test progress_ui`, `cargo test --test compat_snapshots`
   - Implementation (Tasks):
-    - [ ] Event → 進捗モデル（resolve/download/build/install）のマッピングを定義
-    - [ ] TTY時のみスピナー/プログレスを描画（`--progress`/`PYBUN_PROGRESS`で制御）
-    - [ ] `--format=json` では UI を完全無効化（イベントのみ）
-    - [ ] text出力の snapshot を追加（`--no-progress` 含む）
+    - [x] Event → 進捗モデル（resolve/download/build/install）のマッピングを定義
+    - [x] TTY時のみスピナー/プログレスを描画（`--progress`/`PYBUN_PROGRESS`で制御）
+    - [x] `--format=json` では UI を完全無効化（イベントのみ）
+    - [x] text出力の snapshot を追加（`--no-progress` 含む）
 
 - PR7.8: Perceived performance polish（GA体験のキビキビ感）
   - Goal: “止まって見える/遅く感じる” を減らすため、起動/PEP723の体感を GA 基準まで引き上げる。

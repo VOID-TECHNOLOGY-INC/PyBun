@@ -3,8 +3,10 @@ Lock dependencies for scripts
 Usage: pybun lock [OPTIONS]
 
 Options:
-      --format <FORMAT>  Output format for machine readability [default: text] [possible values: text, json]
-      --script <SCRIPT>  Lock dependencies for a PEP 723 script
-      --offline          Use offline mode when cache is sufficient
-      --index <INDEX>    Path to index JSON (temporary M1 flag)
-  -h, --help             Print help
+      --format <FORMAT>      Output format for machine readability [default: text] [possible values: text, json]
+      --script <SCRIPT>      Lock dependencies for a PEP 723 script
+      --offline              Use offline mode when cache is sufficient
+      --progress <PROGRESS>  Progress UI mode (auto hides on non-TTY) [env: PYBUN_PROGRESS=] [default: auto] [possible values: auto, always, never]
+      --index <INDEX>        Path to index JSON (temporary M1 flag)
+      --no-progress          Disable progress UI
+  -h, --help                 Print help

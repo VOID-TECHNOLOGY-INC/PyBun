@@ -3,6 +3,8 @@ List installed and available Python versions
 Usage: pybun python list [OPTIONS]
 
 Options:
-      --all              Show all available versions (not just installed)
-      --format <FORMAT>  Output format for machine readability [default: text] [possible values: text, json]
-  -h, --help             Print help
+      --all                  Show all available versions (not just installed)
+      --format <FORMAT>      Output format for machine readability [default: text] [possible values: text, json]
+      --progress <PROGRESS>  Progress UI mode (auto hides on non-TTY) [env: PYBUN_PROGRESS=] [default: auto] [possible values: auto, always, never]
+      --no-progress          Disable progress UI
+  -h, --help                 Print help
