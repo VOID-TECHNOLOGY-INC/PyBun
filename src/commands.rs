@@ -2163,7 +2163,7 @@ async fn run_script(
                     }
 
                     // Get pip path in venv (for fallback install)
-                    let pip_path = if cfg!(windows) {
+                    let _pip_path = if cfg!(windows) {
                         venv_path.join("Scripts").join("pip.exe")
                     } else {
                         venv_path.join("bin").join("pip")
