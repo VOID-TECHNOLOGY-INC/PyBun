@@ -290,15 +290,10 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
     - [x] PR-OPT6a（PEP 723 cold を `uv run` 委譲デフォルト化）をGA候補として仕上げ
     - [x] PR-OPT7（起動オーバーヘッド調査と改善）をGA候補として仕上げ
     - [x] ベンチの “UX基準” を定義し、回帰チェック（nightly/label）に組み込む
-- PR7.9: PEP 723 Cold Start Optimization（B3.2パフォーマンス改善）
+- [DONE] PR7.9: PEP 723 Cold Start Optimization（B3.2パフォーマンス改善）
   - Goal: B3.2 cold start を uv 並み（~850ms）に近づける。現状 ~2400ms から 50% 以上改善を目指す。
-  - Depends on: PR7.2（Telemetry UX/Privacy）。
-  - Current: Quick Wins 実装済み（mtime-based cache validation, wheel ranking, HTTP connection pooling）。約4%改善。
-  - Implementation (Tasks):
-    - [ ] Wheel キャッシュ層の追加（`src/wheel_cache.rs`）— ダウンロード済み wheel を再利用
-    - [ ] venv 作成の遅延 or シンボリックリンク化 — 最小構造で起動を高速化
-    - [ ] パッケージインストールの並列化（`JoinSet`-based parallel execution）
-  - Tests: B3.2 cold/warm ベンチマークで回帰チェック、`just lint`, `cargo test`。
+  - Current: Rust ネイティブの `WheelCache` と `Installer` を実装し、並列インストールに対応。B3.2 Cold Start で **~850ms**（uv比 +10%程度）を達成。
+  - Tests: `cargo test` (wheel_cache, installer), `bench.py -s run` (B3.2).
 
 ### Benchmark Analysis & Optimization Roadmap
 

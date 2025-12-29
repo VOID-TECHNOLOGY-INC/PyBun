@@ -130,6 +130,30 @@ impl Downloader {
         let mut attempt = 0;
 
         loop {
+            // Optimization: check if file exists and matches checksum
+            if destination.exists() {
+                if let Some(expected) = checksum {
+                    match self.verify_checksum(destination, expected).await {
+                        Ok(_) => {
+                            // Hash matches, skip download
+                            if let Some(sig) = signature {
+                                self.verify_signature(destination, sig).await?;
+                            }
+                            return Ok(destination.to_path_buf());
+                        }
+                        Err(_) => {
+                            // Hash mismatch, remove and re-download
+                            let _ = tokio::fs::remove_file(destination).await;
+                        }
+                    }
+                } else {
+                     // No checksum provided, default to overwrite for safety unless configured otherwise?
+                     // For now, let's just overwrite to be safe.
+                     // Or we could trust it if we want maximum speed. 
+                     // But Standard behavior is usually overwrite if no hash.
+                }
+            }
+
             match self.download_attempt(url, destination).await {
                 Ok(_) => {
                     if let Some(expected) = checksum {

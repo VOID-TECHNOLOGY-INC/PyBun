@@ -60,6 +60,7 @@ fn build_index(packages: Vec<IndexPackage>) -> InMemoryIndex {
                 .iter()
                 .map(|w| Wheel {
                     file: w.file.clone(),
+                    url: None,
                     platforms: if w.platforms.is_empty() {
                         vec!["any".into()]
                     } else {
