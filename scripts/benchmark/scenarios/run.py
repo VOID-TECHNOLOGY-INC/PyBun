@@ -75,18 +75,34 @@ def resolve_pep723_script(base_dir: Path, scenario_config: dict) -> Path:
 
 
 def pep723_envs_dir() -> Path:
-    """Return the PEP 723 env cache directory for PyBun."""
     cache_root = Path(os.environ.get("PYBUN_HOME", Path.home() / ".cache/pybun"))
+    return pep723_envs_dir_for(cache_root)
+
+
+def pep723_envs_dir_for(cache_root: Path) -> Path:
+    """Return the PEP 723 env cache directory for PyBun."""
     return cache_root / "pep723-envs"
 
 
-def clear_pep723_envs() -> str:
+def clear_pep723_envs(cache_root: Path | None = None) -> str:
     """Clear PyBun's PEP 723 env cache."""
-    envs = pep723_envs_dir()
+    if cache_root is None:
+        cache_root = Path(os.environ.get("PYBUN_HOME", Path.home() / ".cache/pybun"))
+    envs = pep723_envs_dir_for(cache_root)
     if not envs.exists():
         return "missing"
     try:
         shutil.rmtree(envs)
+        return "cleared"
+    except Exception:
+        return "error"
+
+
+def clear_dir(path: Path) -> str:
+    if not path.exists():
+        return "missing"
+    try:
+        shutil.rmtree(path)
         return "cleared"
     except Exception:
         return "error"
@@ -133,6 +149,23 @@ def run_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
     # Create temp directory for test scripts
     with tempfile.TemporaryDirectory(prefix="pybun_bench_") as tmpdir:
         tmp = Path(tmpdir)
+        pybun_home = tmp / "pybun-home"
+        pybun_home.mkdir(parents=True, exist_ok=True)
+        shared_uv_cache = tmp / "uv-cache"
+        shared_uv_cache.mkdir(parents=True, exist_ok=True)
+
+        pybun_env = {
+            "PYBUN_HOME": str(pybun_home),
+            "UV_CACHE_DIR": str(shared_uv_cache),
+            "PIP_CACHE_DIR": str(shared_uv_cache),
+            "UV_PYTHON_PREFERENCE": "system",
+            "UV_PYTHON_DOWNLOADS": "never",
+        }
+        uv_env = {
+            "UV_CACHE_DIR": str(shared_uv_cache),
+            "UV_PYTHON_PREFERENCE": "system",
+            "UV_PYTHON_DOWNLOADS": "never",
+        }
         
         # === B3.1: Simple Script Startup ===
         print("\n--- B3.1: Simple Script Startup ---")
@@ -169,6 +202,7 @@ def run_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
                     [pybun_path, "run", str(simple_script)],
                     warmup=warmup,
                     iterations=iterations,
+                    env=pybun_env,
                     trim_ratio=trim_ratio,
                 )
                 result.scenario = "B3.1_simple_startup"
@@ -208,7 +242,8 @@ def run_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
                     if verbose:
                         print(f"  Running: {pybun_path} run {pep723_script}")
                     cache_state = {
-                        "pep723_envs": clear_pep723_envs() if pep723_clear_envs else "kept",
+                        "uv_cache": clear_dir(shared_uv_cache),
+                        "pep723_envs": clear_pep723_envs(pybun_home) if pep723_clear_envs else "kept",
                         "fs_cache": clear_fs_cache() if pep723_clear_fs_cache else "kept",
                     }
                     # First run may install dependencies
@@ -216,6 +251,7 @@ def run_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
                         [pybun_path, "run", str(pep723_script)],
                         warmup=0,  # No warmup for first run measurement
                         iterations=1,
+                        env=pybun_env,
                         trim_ratio=trim_ratio,
                     )
                     result.scenario = "B3.2_pep723_cold"
@@ -235,6 +271,7 @@ def run_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
                         [pybun_path, "run", str(pep723_script)],
                         warmup=warmup,
                         iterations=iterations,
+                        env=pybun_env,
                         trim_ratio=trim_ratio,
                     )
                     result.scenario = "B3.2_pep723_warm"
@@ -253,6 +290,7 @@ def run_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
                     if verbose:
                         print(f"  Running: {uv_path} run {pep723_script}")
                     cache_state = {
+                        "uv_cache": clear_dir(shared_uv_cache),
                         "fs_cache": clear_fs_cache() if pep723_clear_fs_cache else "kept",
                     }
                     # Cold run
@@ -260,6 +298,7 @@ def run_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
                         [uv_path, "run", str(pep723_script)],
                         warmup=0,
                         iterations=1,
+                        env=uv_env,
                         trim_ratio=trim_ratio,
                     )
                     result.scenario = "B3.2_pep723_cold"
@@ -278,6 +317,7 @@ def run_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
                         [uv_path, "run", str(pep723_script)],
                         warmup=warmup,
                         iterations=iterations,
+                        env=uv_env,
                         trim_ratio=trim_ratio,
                     )
                     result.scenario = "B3.2_pep723_warm"
@@ -319,6 +359,7 @@ def run_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
                     [pybun_path, "run", str(heavy_script)],
                     warmup=warmup,
                     iterations=iterations,
+                    env=pybun_env,
                     trim_ratio=trim_ratio,
                 )
                 result.scenario = "B3.3_heavy_import"
@@ -359,7 +400,7 @@ def run_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
                             [pybun_path, "run", f"--profile={profile}", str(profile_script)],
                             warmup=warmup,
                             iterations=iterations,
-                            env={"PYBUN_PROFILE": profile},
+                            env={**pybun_env, "PYBUN_PROFILE": profile},
                             trim_ratio=trim_ratio,
                         )
                         result.scenario = f"B3.4_profile_{profile}"

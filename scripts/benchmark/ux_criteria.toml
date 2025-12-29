@@ -1,0 +1,43 @@
+# UX criteria for "perceived performance" regression gating.
+#
+# Rules are evaluated against `benchmark_*.json` output from `bench.py`.
+# A rule fails if:
+# - `max_ms` is set and the measured duration exceeds it, or
+# - `compare_to` + `max_ratio` are set and the ratio exceeds it.
+#
+# Fields:
+# - scenario: benchmark scenario ID (e.g. "B3.1_simple_startup")
+# - tool: tool name in results ("pybun", "python", "uv", ...)
+# - max_ms: absolute upper bound (optional)
+# - compare_to: baseline tool to compare against (optional)
+# - max_ratio: upper bound for tool/baseline ratio (optional; requires compare_to)
+
+[[rules]]
+scenario = "B3.1_simple_startup"
+tool = "pybun"
+compare_to = "python"
+max_ratio = 1.5
+
+[[rules]]
+scenario = "B3.1_simple_startup"
+tool = "pybun"
+max_ms = 80.0
+
+[[rules]]
+scenario = "B3.2_pep723_warm"
+tool = "pybun"
+compare_to = "uv"
+max_ratio = 1.5
+
+[[rules]]
+scenario = "B3.2_pep723_cold"
+tool = "pybun"
+compare_to = "uv"
+max_ratio = 1.5
+
+[[rules]]
+scenario = "B3.3_heavy_import"
+tool = "pybun"
+compare_to = "python"
+max_ratio = 1.5
+

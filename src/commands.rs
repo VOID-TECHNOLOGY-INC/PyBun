@@ -193,9 +193,12 @@ pub async fn execute(cli: Cli) -> Result<()> {
                     target,
                     exit_code,
                     pep723_deps,
+                    pep723_backend,
                     temp_env,
                     cleanup,
                     cache_hit,
+                    stdout,
+                    stderr,
                     sandbox,
                 }) => {
                     collector.event(EventType::ScriptEnd);
@@ -214,9 +217,12 @@ pub async fn execute(cli: Cli) -> Result<()> {
                                 "target": target,
                                 "exit_code": exit_code,
                                 "pep723_dependencies": pep723_deps,
+                                "pep723_backend": pep723_backend,
                                 "temp_env": temp_env,
                                 "cleanup": cleanup,
                                 "cache_hit": cache_hit,
+                                "stdout": stdout,
+                                "stderr": stderr,
                                 "sandbox": sandbox_detail,
                             }),
                         ),
@@ -1666,12 +1672,18 @@ struct RunOutcome {
     target: Option<String>,
     exit_code: i32,
     pep723_deps: Vec<String>,
+    /// Execution backend for PEP 723 scripts (system/pybun/uv_run).
+    pep723_backend: String,
     /// Environment path used for PEP 723 dependencies (cached or temporary)
     temp_env: Option<String>,
     /// Whether the environment was cleaned up (only in no-cache mode)
     cleanup: bool,
     /// Whether the environment was a cache hit
     cache_hit: bool,
+    /// Captured stdout (only when `--format=json`).
+    stdout: Option<String>,
+    /// Captured stderr (only when `--format=json`).
+    stderr: Option<String>,
     /// Sandbox information when enabled
     sandbox: Option<SandboxInfo>,
 }
@@ -1681,6 +1693,12 @@ struct SandboxInfo {
     enabled: bool,
     allow_network: bool,
     enforcement: String,
+}
+
+#[derive(Debug)]
+enum RunProgram {
+    Python(String),
+    Uv { uv_path: PathBuf, python: String },
 }
 
 fn script_lock_path(script_path: &Path) -> PathBuf {
@@ -1732,6 +1750,25 @@ fn split_env_list(raw: &str) -> Vec<String> {
         .filter(|part| !part.is_empty())
         .map(|part| part.to_string())
         .collect()
+}
+
+const MAX_RUN_STDIO_CAPTURE_BYTES: usize = 64 * 1024;
+
+fn capture_stdio(bytes: &[u8]) -> Option<String> {
+    if bytes.is_empty() {
+        return None;
+    }
+    let truncated = bytes.len() > MAX_RUN_STDIO_CAPTURE_BYTES;
+    let slice = if truncated {
+        &bytes[..MAX_RUN_STDIO_CAPTURE_BYTES]
+    } else {
+        bytes
+    };
+    let mut out = String::from_utf8_lossy(slice).to_string();
+    if truncated {
+        out.push_str("\n...[truncated]");
+    }
+    Some(out)
 }
 
 fn run_script(
@@ -1805,122 +1842,332 @@ fn run_script(
     let dry_run = std::env::var("PYBUN_PEP723_DRY_RUN").is_ok();
     // Check for no-cache mode (force fresh venv)
     let no_cache = std::env::var("PYBUN_PEP723_NO_CACHE").is_ok();
+    let pep723_backend_setting =
+        std::env::var("PYBUN_PEP723_BACKEND").unwrap_or_else(|_| "auto".to_string());
+    let pep723_backend_setting = pep723_backend_setting.trim().to_ascii_lowercase();
+
+    let mut pep723_backend = "system".to_string();
+    let mut temp_env_dir: Option<tempfile::TempDir> = None;
 
     // If there are PEP 723 dependencies, use cached or create environment
-    let (python_to_use, cached_env_path, cache_hit) = if has_pep723_deps {
+    let (runner, cached_env_path, cache_hit) = if has_pep723_deps {
         collector.info(format!(
             "PEP 723 script with {} dependencies",
             install_deps.len()
         ));
 
-        // Initialize PEP 723 cache
-        let pep_cache =
-            Pep723Cache::new().map_err(|e| eyre!("failed to initialize cache: {}", e))?;
-        let (base_python, env_source) = find_python_interpreter()?;
-        let python_version = get_python_version(Path::new(&base_python))?;
-        let index_settings = pep723_index_settings(pep723_metadata.as_ref());
-        let cache_key = Pep723CacheKey::new(
-            &install_deps,
-            &python_version,
-            &index_settings,
-            lock_hash.as_deref(),
-        );
-        let install_no_deps = script_lock.is_some();
-        let env_root = pep_cache
-            .script_env_root(&script_path)
-            .map_err(|e| eyre!("failed to resolve script env root: {}", e))?;
-        let venv_path = pep_cache.venv_path_for_root(&env_root);
-        let venv_python = pep_cache.python_path_for_venv(&venv_path);
-
-        if dry_run {
-            // In dry-run mode, just report what would happen
-            collector.info(format!(
-                "Would use cached env at {} or create new one: {:?}",
-                venv_path.display(),
-                install_deps
-            ));
-            eprintln!("info: using Python from {} (dry-run)", env_source);
-            (
-                base_python,
-                Some(venv_path.to_string_lossy().to_string()),
-                false,
-            )
-        } else if !no_cache {
-            let _env_lock = pep_cache
-                .lock_script_env(&env_root)
-                .map_err(|e| eyre!("failed to lock script env: {}", e))?;
-
-            let mut cache_hit = false;
-            if venv_path.exists()
-                && venv_python.exists()
-                && let Some(info) = pep_cache
-                    .read_cache_entry(&env_root)
-                    .map_err(|e| eyre!("failed to read cache entry: {}", e))?
-                && Pep723Cache::cache_entry_matches_key(&info, &cache_key)
-            {
-                let _ = pep_cache.update_last_used_at(&env_root);
-                cache_hit = true;
-            }
-
-            if cache_hit {
-                collector.info(format!(
-                    "Cache hit: reusing venv at {} (hash: {})",
-                    venv_path.display(),
-                    &cache_key.hash[..8]
+        match pep723_backend_setting.as_str() {
+            "auto" | "pybun" | "uv" => {}
+            other => {
+                return Err(eyre!(
+                    "invalid PYBUN_PEP723_BACKEND value: {other} (expected auto|pybun|uv)"
                 ));
-                eprintln!(
-                    "info: using cached environment {} (hash: {})",
-                    venv_path.display(),
-                    &cache_key.hash[..8]
-                );
+            }
+        }
+
+        if !dry_run && !no_cache && !args.sandbox && pep723_backend_setting != "pybun" {
+            if let Some(uv_path) = crate::env::find_uv_executable() {
+                let (base_python, env_source) = find_python_interpreter()?;
+                eprintln!("info: using Python from {} for uv run backend", env_source);
+                pep723_backend = "uv_run".to_string();
                 (
-                    venv_python.to_string_lossy().to_string(),
-                    Some(venv_path.to_string_lossy().to_string()),
-                    true,
+                    RunProgram::Uv {
+                        uv_path,
+                        python: base_python,
+                    },
+                    None,
+                    false,
                 )
+            } else if pep723_backend_setting == "uv" {
+                return Err(eyre!(
+                    "PYBUN_PEP723_BACKEND=uv requires `uv` to be available in PATH"
+                ));
             } else {
-                if venv_path.exists() {
-                    fs::remove_dir_all(&venv_path).map_err(|e| {
-                        eyre!("failed to remove stale venv {}: {}", venv_path.display(), e)
-                    })?;
-                }
-                let info_path = env_root.join("deps.json");
-                let _ = fs::remove_file(&info_path);
-
-                eprintln!(
-                    "info: using Python from {} for new cached env (hash: {})",
-                    env_source,
-                    &cache_key.hash[..8]
+                pep723_backend = "pybun".to_string();
+                // Continue with the built-in runner below.
+                let pep_cache =
+                    Pep723Cache::new().map_err(|e| eyre!("failed to initialize cache: {}", e))?;
+                let (base_python, env_source) = find_python_interpreter()?;
+                let python_version = get_python_version(Path::new(&base_python))?;
+                let index_settings = pep723_index_settings(pep723_metadata.as_ref());
+                let cache_key = Pep723CacheKey::new(
+                    &install_deps,
+                    &python_version,
+                    &index_settings,
+                    lock_hash.as_deref(),
                 );
+                let install_no_deps = script_lock.is_some();
+                let env_root = pep_cache
+                    .script_env_root(&script_path)
+                    .map_err(|e| eyre!("failed to resolve script env root: {}", e))?;
+                let venv_path = pep_cache.venv_path_for_root(&env_root);
+                let venv_python = pep_cache.python_path_for_venv(&venv_path);
 
-                // Create virtual environment
-                eprintln!(
-                    "info: creating cached environment at {}",
-                    venv_path.display()
-                );
-
-                let venv_status = ProcessCommand::new(&base_python)
-                    .args(["-m", "venv"])
-                    .arg(&venv_path)
-                    .status()
-                    .map_err(|e| eyre!("failed to create virtual environment: {}", e))?;
-
-                if !venv_status.success() {
-                    return Err(eyre!("failed to create virtual environment"));
-                }
-
-                // Get pip path in venv
-                let pip_path = if cfg!(windows) {
-                    venv_path.join("Scripts").join("pip.exe")
+                if dry_run {
+                    collector.info(format!(
+                        "Would use cached env at {} or create new one: {:?}",
+                        venv_path.display(),
+                        install_deps
+                    ));
+                    eprintln!("info: using Python from {} (dry-run)", env_source);
+                    (
+                        RunProgram::Python(base_python),
+                        Some(venv_path.to_string_lossy().to_string()),
+                        false,
+                    )
                 } else {
-                    venv_path.join("bin").join("pip")
-                };
+                    let _env_lock = pep_cache
+                        .lock_script_env(&env_root)
+                        .map_err(|e| eyre!("failed to lock script env: {}", e))?;
 
-                // Install dependencies
-                if has_pep723_deps {
+                    let mut cache_hit = false;
+                    if venv_path.exists()
+                        && venv_python.exists()
+                        && let Some(info) = pep_cache
+                            .read_cache_entry(&env_root)
+                            .map_err(|e| eyre!("failed to read cache entry: {}", e))?
+                        && Pep723Cache::cache_entry_matches_key(&info, &cache_key)
+                    {
+                        let _ = pep_cache.update_last_used_at(&env_root);
+                        cache_hit = true;
+                    }
+
+                    if cache_hit {
+                        collector.info(format!(
+                            "Cache hit: reusing venv at {} (hash: {})",
+                            venv_path.display(),
+                            &cache_key.hash[..8]
+                        ));
+                        eprintln!(
+                            "info: using cached environment {} (hash: {})",
+                            venv_path.display(),
+                            &cache_key.hash[..8]
+                        );
+                        (
+                            RunProgram::Python(venv_python.to_string_lossy().to_string()),
+                            Some(venv_path.to_string_lossy().to_string()),
+                            true,
+                        )
+                    } else {
+                        if venv_path.exists() {
+                            fs::remove_dir_all(&venv_path).map_err(|e| {
+                                eyre!("failed to remove stale venv {}: {}", venv_path.display(), e)
+                            })?;
+                        }
+                        let info_path = env_root.join("deps.json");
+                        let _ = fs::remove_file(&info_path);
+
+                        eprintln!(
+                            "info: using Python from {} for new cached env (hash: {})",
+                            env_source,
+                            &cache_key.hash[..8]
+                        );
+
+                        // Create virtual environment
+                        eprintln!(
+                            "info: creating cached environment at {}",
+                            venv_path.display()
+                        );
+
+                        let mut venv_cmd = ProcessCommand::new(&base_python);
+                        venv_cmd.args(["-m", "venv"]);
+                        if crate::env::find_uv_executable().is_some() {
+                            venv_cmd.arg("--without-pip");
+                        }
+                        venv_cmd.arg(&venv_path);
+                        let venv_status = venv_cmd
+                            .status()
+                            .map_err(|e| eyre!("failed to create virtual environment: {}", e))?;
+
+                        if !venv_status.success() {
+                            return Err(eyre!("failed to create virtual environment"));
+                        }
+
+                        // Get pip path in venv (for fallback install)
+                        let pip_path = if cfg!(windows) {
+                            venv_path.join("Scripts").join("pip.exe")
+                        } else {
+                            venv_path.join("bin").join("pip")
+                        };
+
+                        // Install dependencies
+                        eprintln!("info: installing {} dependencies...", install_deps.len());
+                        if let Some(uv_path) = crate::env::find_uv_executable() {
+                            eprintln!("info: using uv for fast installation");
+                            let mut install_cmd = ProcessCommand::new(uv_path);
+                            install_cmd.args(["pip", "install", "--quiet"]);
+                            if install_no_deps {
+                                install_cmd.arg("--no-deps");
+                            }
+                            install_cmd.arg("--python");
+                            install_cmd.arg(&venv_path);
+                            if let Some(dir) = &wheel_cache_dir {
+                                if std::env::var_os("UV_CACHE_DIR").is_none() {
+                                    install_cmd.env("UV_CACHE_DIR", dir);
+                                }
+                                if std::env::var_os("PIP_CACHE_DIR").is_none() {
+                                    install_cmd.env("PIP_CACHE_DIR", dir);
+                                }
+                            }
+                            install_cmd.args(&install_deps);
+
+                            let install_status = install_cmd.status().map_err(|e| {
+                                eyre!("failed to install dependencies with uv: {}", e)
+                            })?;
+
+                            if !install_status.success() {
+                                collector
+                                    .warning("failed to install dependencies with uv".to_string());
+                                return Err(eyre!(
+                                    "failed to install PEP 723 dependencies (uv backend)"
+                                ));
+                            }
+                        } else {
+                            // Fallback to standard pip
+                            let mut install_cmd = ProcessCommand::new(&pip_path);
+                            install_cmd.args(["install", "--quiet"]);
+                            if install_no_deps {
+                                install_cmd.arg("--no-deps");
+                            }
+                            if let Some(dir) = &wheel_cache_dir {
+                                install_cmd.arg("--cache-dir");
+                                install_cmd.arg(dir);
+                            }
+                            install_cmd.args(&install_deps);
+
+                            let install_status = install_cmd
+                                .status()
+                                .map_err(|e| eyre!("failed to install dependencies: {}", e))?;
+
+                            if !install_status.success() {
+                                collector.warning("failed to install dependencies".to_string());
+                                return Err(eyre!("failed to install PEP 723 dependencies"));
+                            }
+                        }
+
+                        pep_cache
+                            .record_cache_entry_at(&env_root, &cache_key)
+                            .map_err(|e| eyre!("failed to record cache entry: {}", e))?;
+
+                        eprintln!("info: cached environment ready");
+
+                        (
+                            RunProgram::Python(venv_python.to_string_lossy().to_string()),
+                            Some(venv_path.to_string_lossy().to_string()),
+                            false,
+                        )
+                    }
+                }
+            }
+        } else {
+            pep723_backend = "pybun".to_string();
+            // Initialize PEP 723 cache
+            let pep_cache =
+                Pep723Cache::new().map_err(|e| eyre!("failed to initialize cache: {}", e))?;
+            let (base_python, env_source) = find_python_interpreter()?;
+            let python_version = get_python_version(Path::new(&base_python))?;
+            let index_settings = pep723_index_settings(pep723_metadata.as_ref());
+            let cache_key = Pep723CacheKey::new(
+                &install_deps,
+                &python_version,
+                &index_settings,
+                lock_hash.as_deref(),
+            );
+            let install_no_deps = script_lock.is_some();
+            let env_root = pep_cache
+                .script_env_root(&script_path)
+                .map_err(|e| eyre!("failed to resolve script env root: {}", e))?;
+            let venv_path = pep_cache.venv_path_for_root(&env_root);
+            let venv_python = pep_cache.python_path_for_venv(&venv_path);
+
+            if dry_run {
+                collector.info(format!(
+                    "Would use cached env at {} or create new one: {:?}",
+                    venv_path.display(),
+                    install_deps
+                ));
+                eprintln!("info: using Python from {} (dry-run)", env_source);
+                (
+                    RunProgram::Python(base_python),
+                    Some(venv_path.to_string_lossy().to_string()),
+                    false,
+                )
+            } else if !no_cache {
+                let _env_lock = pep_cache
+                    .lock_script_env(&env_root)
+                    .map_err(|e| eyre!("failed to lock script env: {}", e))?;
+
+                let mut cache_hit = false;
+                if venv_path.exists()
+                    && venv_python.exists()
+                    && let Some(info) = pep_cache
+                        .read_cache_entry(&env_root)
+                        .map_err(|e| eyre!("failed to read cache entry: {}", e))?
+                    && Pep723Cache::cache_entry_matches_key(&info, &cache_key)
+                {
+                    let _ = pep_cache.update_last_used_at(&env_root);
+                    cache_hit = true;
+                }
+
+                if cache_hit {
+                    collector.info(format!(
+                        "Cache hit: reusing venv at {} (hash: {})",
+                        venv_path.display(),
+                        &cache_key.hash[..8]
+                    ));
+                    eprintln!(
+                        "info: using cached environment {} (hash: {})",
+                        venv_path.display(),
+                        &cache_key.hash[..8]
+                    );
+                    (
+                        RunProgram::Python(venv_python.to_string_lossy().to_string()),
+                        Some(venv_path.to_string_lossy().to_string()),
+                        true,
+                    )
+                } else {
+                    if venv_path.exists() {
+                        fs::remove_dir_all(&venv_path).map_err(|e| {
+                            eyre!("failed to remove stale venv {}: {}", venv_path.display(), e)
+                        })?;
+                    }
+                    let info_path = env_root.join("deps.json");
+                    let _ = fs::remove_file(&info_path);
+
+                    eprintln!(
+                        "info: using Python from {} for new cached env (hash: {})",
+                        env_source,
+                        &cache_key.hash[..8]
+                    );
+
+                    // Create virtual environment
+                    eprintln!(
+                        "info: creating cached environment at {}",
+                        venv_path.display()
+                    );
+
+                    let mut venv_cmd = ProcessCommand::new(&base_python);
+                    venv_cmd.args(["-m", "venv"]);
+                    if crate::env::find_uv_executable().is_some() {
+                        venv_cmd.arg("--without-pip");
+                    }
+                    venv_cmd.arg(&venv_path);
+                    let venv_status = venv_cmd
+                        .status()
+                        .map_err(|e| eyre!("failed to create virtual environment: {}", e))?;
+
+                    if !venv_status.success() {
+                        return Err(eyre!("failed to create virtual environment"));
+                    }
+
+                    // Get pip path in venv (for fallback install)
+                    let pip_path = if cfg!(windows) {
+                        venv_path.join("Scripts").join("pip.exe")
+                    } else {
+                        venv_path.join("bin").join("pip")
+                    };
+
                     eprintln!("info: installing {} dependencies...", install_deps.len());
-
-                    // Check for uv
                     if let Some(uv_path) = crate::env::find_uv_executable() {
                         eprintln!("info: using uv for fast installation");
                         let mut install_cmd = ProcessCommand::new(uv_path);
@@ -1928,12 +2175,15 @@ fn run_script(
                         if install_no_deps {
                             install_cmd.arg("--no-deps");
                         }
-                        // uv requires specifying python environment
                         install_cmd.arg("--python");
                         install_cmd.arg(&venv_path);
                         if let Some(dir) = &wheel_cache_dir {
-                            install_cmd.env("UV_CACHE_DIR", dir);
-                            install_cmd.env("PIP_CACHE_DIR", dir);
+                            if std::env::var_os("UV_CACHE_DIR").is_none() {
+                                install_cmd.env("UV_CACHE_DIR", dir);
+                            }
+                            if std::env::var_os("PIP_CACHE_DIR").is_none() {
+                                install_cmd.env("PIP_CACHE_DIR", dir);
+                            }
                         }
                         install_cmd.args(&install_deps);
 
@@ -1969,59 +2219,61 @@ fn run_script(
                             return Err(eyre!("failed to install PEP 723 dependencies"));
                         }
                     }
+
+                    pep_cache
+                        .record_cache_entry_at(&env_root, &cache_key)
+                        .map_err(|e| eyre!("failed to record cache entry: {}", e))?;
+
+                    eprintln!("info: cached environment ready");
+
+                    (
+                        RunProgram::Python(venv_python.to_string_lossy().to_string()),
+                        Some(venv_path.to_string_lossy().to_string()),
+                        false,
+                    )
+                }
+            } else {
+                // No-cache mode: create temporary environment
+                let temp_dir = tempfile::tempdir()
+                    .map_err(|e| eyre!("failed to create temp directory: {}", e))?;
+                let temp_env_str = temp_dir.path().to_string_lossy().to_string();
+
+                eprintln!(
+                    "info: using Python from {} for temp env (no-cache mode)",
+                    env_source
+                );
+
+                let venv_path = temp_dir.path().join("venv");
+                eprintln!(
+                    "info: creating isolated environment at {}",
+                    venv_path.display()
+                );
+
+                let mut venv_cmd = ProcessCommand::new(&base_python);
+                venv_cmd.args(["-m", "venv"]);
+                if crate::env::find_uv_executable().is_some() {
+                    venv_cmd.arg("--without-pip");
+                }
+                venv_cmd.arg(&venv_path);
+                let venv_status = venv_cmd
+                    .status()
+                    .map_err(|e| eyre!("failed to create virtual environment: {}", e))?;
+
+                if !venv_status.success() {
+                    return Err(eyre!("failed to create virtual environment"));
                 }
 
-                pep_cache
-                    .record_cache_entry_at(&env_root, &cache_key)
-                    .map_err(|e| eyre!("failed to record cache entry: {}", e))?;
+                let pip_path = if cfg!(windows) {
+                    venv_path.join("Scripts").join("pip.exe")
+                } else {
+                    venv_path.join("bin").join("pip")
+                };
+                let venv_python = if cfg!(windows) {
+                    venv_path.join("Scripts").join("python.exe")
+                } else {
+                    venv_path.join("bin").join("python")
+                };
 
-                eprintln!("info: cached environment ready");
-
-                (
-                    venv_python.to_string_lossy().to_string(),
-                    Some(venv_path.to_string_lossy().to_string()),
-                    false,
-                )
-            }
-        } else {
-            // No-cache mode: create temporary environment (old behavior)
-            let temp_dir =
-                tempfile::tempdir().map_err(|e| eyre!("failed to create temp directory: {}", e))?;
-            let temp_env_str = temp_dir.path().to_string_lossy().to_string();
-
-            eprintln!(
-                "info: using Python from {} for temp env (no-cache mode)",
-                env_source
-            );
-
-            let venv_path = temp_dir.path().join("venv");
-            eprintln!(
-                "info: creating isolated environment at {}",
-                venv_path.display()
-            );
-
-            let venv_status = ProcessCommand::new(&base_python)
-                .args(["-m", "venv"])
-                .arg(&venv_path)
-                .status()
-                .map_err(|e| eyre!("failed to create virtual environment: {}", e))?;
-
-            if !venv_status.success() {
-                return Err(eyre!("failed to create virtual environment"));
-            }
-
-            let pip_path = if cfg!(windows) {
-                venv_path.join("Scripts").join("pip.exe")
-            } else {
-                venv_path.join("bin").join("pip")
-            };
-            let venv_python = if cfg!(windows) {
-                venv_path.join("Scripts").join("python.exe")
-            } else {
-                venv_path.join("bin").join("python")
-            };
-
-            if has_pep723_deps {
                 eprintln!("info: installing {} dependencies...", install_deps.len());
 
                 if let Some(uv_path) = crate::env::find_uv_executable() {
@@ -2034,8 +2286,12 @@ fn run_script(
                     install_cmd.arg("--python");
                     install_cmd.arg(&venv_path);
                     if let Some(dir) = &wheel_cache_dir {
-                        install_cmd.env("UV_CACHE_DIR", dir);
-                        install_cmd.env("PIP_CACHE_DIR", dir);
+                        if std::env::var_os("UV_CACHE_DIR").is_none() {
+                            install_cmd.env("UV_CACHE_DIR", dir);
+                        }
+                        if std::env::var_os("PIP_CACHE_DIR").is_none() {
+                            install_cmd.env("PIP_CACHE_DIR", dir);
+                        }
                     }
                     install_cmd.args(&install_deps);
 
@@ -2068,36 +2324,64 @@ fn run_script(
                         return Err(eyre!("failed to install PEP 723 dependencies"));
                     }
                 }
-            }
 
-            // temp_dir will be dropped after execution, cleaning up
-            std::mem::forget(temp_dir);
-            (
-                venv_python.to_string_lossy().to_string(),
-                Some(temp_env_str),
-                false,
-            )
+                // Keep the temp dir alive until after execution.
+                temp_env_dir = Some(temp_dir);
+                (
+                    RunProgram::Python(venv_python.to_string_lossy().to_string()),
+                    Some(temp_env_str),
+                    false,
+                )
+            }
         }
     } else {
         // No PEP 723 dependencies, use system/project Python
         let (python, env_source) = find_python_interpreter()?;
         eprintln!("info: using Python from {}", env_source);
-        (python, None, false)
+        (RunProgram::Python(python), None, false)
     };
 
     // Build command
-    let mut cmd = ProcessCommand::new(&python_to_use);
-    cmd.arg(&script_path);
-
-    // Add passthrough arguments
-    for arg in &args.passthrough {
-        cmd.arg(arg);
-    }
+    let (mut cmd, is_uv_runner) = match runner {
+        RunProgram::Python(python) => {
+            let mut cmd = ProcessCommand::new(python);
+            cmd.arg(&script_path);
+            for arg in &args.passthrough {
+                cmd.arg(arg);
+            }
+            (cmd, false)
+        }
+        RunProgram::Uv { uv_path, python } => {
+            let mut cmd = ProcessCommand::new(uv_path);
+            cmd.args(["run", "--python"]);
+            cmd.arg(python);
+            cmd.arg("--script");
+            cmd.arg(&script_path);
+            if let Some(dir) = &wheel_cache_dir {
+                if std::env::var_os("UV_CACHE_DIR").is_none() {
+                    cmd.env("UV_CACHE_DIR", dir);
+                }
+                if std::env::var_os("PIP_CACHE_DIR").is_none() {
+                    cmd.env("PIP_CACHE_DIR", dir);
+                }
+            }
+            if !args.passthrough.is_empty() {
+                cmd.arg("--");
+                for arg in &args.passthrough {
+                    cmd.arg(arg);
+                }
+            }
+            (cmd, true)
+        }
+    };
 
     // Enable sandbox if requested.
     let mut sandbox_guard: Option<sandbox::SandboxGuard> = None;
     let mut sandbox_info: Option<SandboxInfo> = None;
     if args.sandbox {
+        if is_uv_runner {
+            return Err(eyre!("--sandbox is not supported with uv run backend"));
+        }
         let allow_network = args.allow_network
             || std::env::var("PYBUN_SANDBOX_ALLOW_NETWORK")
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
@@ -2113,10 +2397,7 @@ fn run_script(
         sandbox_guard = Some(guard);
     }
 
-    // Note: with caching, we don't cleanup (venv is reused)
-    // cleanup is only true for no-cache mode
-    let cleanup =
-        cached_env_path.is_some() && !cache_hit && std::env::var("PYBUN_PEP723_NO_CACHE").is_ok();
+    let cleanup = temp_env_dir.is_some();
 
     // Execute
     // On Unix, use exec to replace the process if cleanup is not needed AND not in JSON mode
@@ -2124,12 +2405,27 @@ fn run_script(
     #[cfg(unix)]
     if !cleanup && format != OutputFormat::Json && sandbox_guard.is_none() {
         let err = cmd.exec();
-        return Err(eyre!("failed to exec Python: {}", err));
+        return Err(eyre!("failed to exec runner: {}", err));
     }
 
-    let status = cmd
-        .status()
-        .map_err(|e| eyre!("failed to execute Python: {}", e))?;
+    let (status, stdout, stderr) = match format {
+        OutputFormat::Json => {
+            let output = cmd
+                .output()
+                .map_err(|e| eyre!("failed to execute runner: {}", e))?;
+            (
+                output.status,
+                capture_stdio(&output.stdout),
+                capture_stdio(&output.stderr),
+            )
+        }
+        OutputFormat::Text => (
+            cmd.status()
+                .map_err(|e| eyre!("failed to execute runner: {}", e))?,
+            None,
+            None,
+        ),
+    };
     // Drop guard after process exit to cleanup temporary sitecustomize dir.
     drop(sandbox_guard);
 
@@ -2150,9 +2446,12 @@ fn run_script(
         target: Some(target.clone()),
         exit_code,
         pep723_deps,
+        pep723_backend,
         temp_env: cached_env_path,
         cleanup,
         cache_hit,
+        stdout,
+        stderr,
         sandbox: sandbox_info,
     })
 }
@@ -2177,7 +2476,7 @@ fn get_python_version(python_path: &std::path::Path) -> Result<String> {
 fn run_python_code(
     args: &crate::cli::RunArgs,
     collector: &mut EventCollector,
-    _format: OutputFormat,
+    format: OutputFormat,
 ) -> Result<RunOutcome> {
     // pybun run -c "print('hello')" -- equivalent to python -c "..."
     let code = args
@@ -2217,9 +2516,30 @@ fn run_python_code(
         cmd.arg(arg);
     }
 
-    let status = cmd
-        .status()
-        .map_err(|e| eyre!("failed to execute Python: {}", e))?;
+    #[cfg(unix)]
+    if format != OutputFormat::Json && sandbox_guard.is_none() {
+        let err = cmd.exec();
+        return Err(eyre!("failed to exec Python: {}", err));
+    }
+
+    let (status, stdout, stderr) = match format {
+        OutputFormat::Json => {
+            let output = cmd
+                .output()
+                .map_err(|e| eyre!("failed to execute Python: {}", e))?;
+            (
+                output.status,
+                capture_stdio(&output.stdout),
+                capture_stdio(&output.stderr),
+            )
+        }
+        OutputFormat::Text => (
+            cmd.status()
+                .map_err(|e| eyre!("failed to execute Python: {}", e))?,
+            None,
+            None,
+        ),
+    };
     drop(sandbox_guard);
 
     let exit_code = status.code().unwrap_or(-1);
@@ -2239,9 +2559,12 @@ fn run_python_code(
         target: Some("-c".to_string()),
         exit_code,
         pep723_deps: Vec::new(),
+        pep723_backend: "system".to_string(),
         temp_env: None,
         cleanup: false,
         cache_hit: false,
+        stdout,
+        stderr,
         sandbox: sandbox_info,
     })
 }

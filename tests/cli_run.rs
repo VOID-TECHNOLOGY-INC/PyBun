@@ -1,6 +1,7 @@
 use assert_cmd::Command;
 use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
+use serde_json::Value;
 use std::fs;
 use tempfile::tempdir;
 
@@ -68,6 +69,7 @@ print("PEP 723 script")
     fs::write(&script, content).unwrap();
 
     bin()
+        .env("PYBUN_PEP723_DRY_RUN", "1")
         .args(["--format=json", "run", script.to_str().unwrap()])
         .assert()
         .success()
@@ -81,12 +83,15 @@ fn run_json_output() {
     let script = temp.path().join("simple.py");
     fs::write(&script, "print('test')").unwrap();
 
-    bin()
+    let output = bin()
         .args(["--format=json", "run", script.to_str().unwrap()])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("\"exit_code\":0"))
-        .stdout(predicate::str::contains("\"status\":\"ok\""));
+        .output()
+        .expect("run pybun");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let value: Value = serde_json::from_str(&stdout).expect("valid JSON output");
+    assert_eq!(value["status"], "ok");
+    assert_eq!(value["detail"]["exit_code"], 0);
 }
 
 #[test]
@@ -100,6 +105,60 @@ fn run_script_with_exit_code() {
         .assert()
         .success() // pybun itself succeeds, reports script exit code
         .stdout(predicate::str::contains("\"exit_code\":42"));
+}
+
+#[test]
+fn run_pep723_uses_uv_backend_when_forced() {
+    let temp = tempdir().unwrap();
+    let script = temp.path().join("pep723_uv.py");
+    let content = r#"# /// script
+# dependencies = ["requests>=2.28.0"]
+# ///
+print("hello")
+"#;
+    fs::write(&script, content).unwrap();
+
+    // Create a fake `uv` executable on PATH.
+    let uv_dir = temp.path().join("uv-bin");
+    fs::create_dir_all(&uv_dir).unwrap();
+    let uv_path = if cfg!(windows) {
+        uv_dir.join("uv.bat")
+    } else {
+        uv_dir.join("uv")
+    };
+
+    if cfg!(windows) {
+        fs::write(&uv_path, "@echo off\r\necho UV_RUN_OK\r\nexit /b 0\r\n").unwrap();
+    } else {
+        fs::write(&uv_path, "#!/usr/bin/env sh\necho UV_RUN_OK\nexit 0\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&uv_path).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&uv_path, perms).unwrap();
+        }
+    }
+
+    let mut path_entries = vec![uv_dir.clone()];
+    if let Some(existing) = std::env::var_os("PATH") {
+        path_entries.extend(std::env::split_paths(&existing));
+    }
+    let new_path = std::env::join_paths(path_entries).unwrap();
+
+    let output = bin()
+        .env("PYBUN_PEP723_BACKEND", "uv")
+        .env("PATH", new_path)
+        .args(["--format=json", "run", script.to_str().unwrap()])
+        .output()
+        .expect("run pybun with uv backend");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let value: Value = serde_json::from_str(&stdout).expect("valid JSON output");
+    assert_eq!(value["status"], "ok");
+    assert_eq!(value["detail"]["pep723_backend"], "uv_run");
+    assert_eq!(value["detail"]["exit_code"], 0);
 }
 
 // =============================================================================

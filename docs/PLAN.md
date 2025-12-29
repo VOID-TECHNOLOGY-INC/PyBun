@@ -281,13 +281,15 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
     - [x] `--format=json` では UI を完全無効化（イベントのみ）
     - [x] text出力の snapshot を追加（`--no-progress` 含む）
 
-- PR7.8: Perceived performance polish（GA体験のキビキビ感）
+- [DONE] PR7.8: Perceived performance polish（GA体験のキビキビ感）
   - Goal: “止まって見える/遅く感じる” を減らすため、起動/PEP723の体感を GA 基準まで引き上げる。
   - Depends on: PR-OPT6a, PR-OPT7。
+  - Current: PEP 723 実行は uv があればデフォルトで `uv run` に委譲（`PYBUN_PEP723_BACKEND=auto|pybun|uv`）。`pybun run --format=json` は子プロセスの stdout/stderr を capture して JSON を壊さず、`pep723_backend`/`stdout`/`stderr` を detail に追加。起動オーバーヘッド低減のため、Tokio が不要なコマンドは futures executor で実行。ベンチの “UX基準” を `scripts/benchmark/ux_gate.py` + `.github/workflows/benchmark.yml` で gate 化。
+  - Tests: `cargo test`, `python3 -m unittest discover -s scripts/benchmark/tests`
   - Implementation (Tasks):
-    - [ ] PR-OPT6a（PEP 723 cold を `uv run` 委譲デフォルト化）をGA候補として仕上げ
-    - [ ] PR-OPT7（起動オーバーヘッド調査と改善）をGA候補として仕上げ
-    - [ ] ベンチの “UX基準” を定義し、回帰チェック（nightly/label）に組み込む
+    - [x] PR-OPT6a（PEP 723 cold を `uv run` 委譲デフォルト化）をGA候補として仕上げ
+    - [x] PR-OPT7（起動オーバーヘッド調査と改善）をGA候補として仕上げ
+    - [x] ベンチの “UX基準” を定義し、回帰チェック（nightly/label）に組み込む
 - PR7.9: PEP 723 Cold Start Optimization（B3.2パフォーマンス改善）
   - Goal: B3.2 cold start を uv 並み（~850ms）に近づける。現状 ~2400ms から 50% 以上改善を目指す。
   - Depends on: PR7.2（Telemetry UX/Privacy）。
@@ -371,15 +373,17 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
     1. `update_last_used()` 内で `fs::metadata(path).modified()` をチェックし、直近1時間以内に更新されていればRead/Parse/Writeを完全にスキップする最適化を導入。
   - Result: Warm path **106ms** (prev 140ms). 約25%高速化。uv (75ms) との差は縮まったが、startup/import overhead等の差が残る。
   - Priority: High
-- [ ] PR-OPT6a: PEP 723 cold パス高速化（uv run デフォルト化）
+- [DONE] PR-OPT6a: PEP 723 cold パス高速化（uv run デフォルト化）
   - **分析**: cold で最大ボトルネックは venv 作成（~1.8s）。`uv run` に委譲すると venv 作成＋インストールをスキップでき、実測で B3.2_cold が ~3.7s → ~0.63s まで短縮（warm は ~70-100ms で横ばい）。
   - **対策**:
     1. uv が存在する環境では、PEP 723 実行をデフォルトで `uv run` に委譲（単一プロセス）。uv 不在時は従来フローにフォールバック。
     2. ベンチ (B3.2) を uv run モードでも測定し、デフォルト化による回帰が無いことを確認。
     3. ログ/JSON で実行モード（uv run / pybun-run）を明示。
   - **期待効果**: cold のオーバーヘッドを <1s に圧縮し、uv との差をサブ秒レンジに抑える。
+  - Current: `pybun run` が PEP 723 deps を検出した場合、デフォルトで `uv run --python <selected>` に委譲（`PYBUN_PEP723_BACKEND=auto|pybun|uv`）。JSON detail に `pep723_backend` を追加し、`--format=json` では子プロセスの stdout/stderr を capture。
+  - Tests: `cargo test --test cli_run`, `python3 -m unittest discover -s scripts/benchmark/tests`
 
-- [ ] PR-OPT7: 起動オーバーヘッド調査と改善
+- [DONE] PR-OPT7: 起動オーバーヘッド調査と改善
   - **分析**: B3.1 (simple_startup) で pybun (27.82ms) が uv (21.03ms) より約 7ms 遅い。
   - **原因候補**:
     1. `clap` CLI パース + color-eyre 初期化コスト。
@@ -391,6 +395,8 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
     3. プロファイリング（`hyperfine --show-output` + `samply`）で実測。
   - Expected: Simple startup を 22ms 以下に。
   - Priority: Medium
+  - Current: Tokio が不要な CLI コマンドは futures executor で実行し、`pybun run` などの起動オーバーヘッドを削減。
+  - Tests: `cargo test`
 
 - [DONE] PR-OPT8: ベンチマークスクリプト改善
   - **分析**: B3.2_warm の高 StdDev (78ms) はベンチマーク手法に起因する可能性。

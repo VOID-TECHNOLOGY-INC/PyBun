@@ -1,0 +1,27 @@
+# CI-focused benchmark configuration (fast + stable).
+
+[general]
+iterations = 5
+warmup = 1
+trim_ratio = 0.1
+timeout_seconds = 300
+
+[tools]
+pybun = true
+uv = true
+python = true
+pip = false
+pipx = false
+poetry = false
+
+[paths]
+pybun = "../../target/release/pybun"
+
+[scenarios.run]
+enabled = true
+pep723 = true
+profiles = []
+pep723_fixture = "fixtures/pep723.py"
+pep723_clear_envs = true
+pep723_clear_fs_cache = false
+
