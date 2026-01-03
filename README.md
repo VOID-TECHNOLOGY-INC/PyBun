@@ -5,7 +5,8 @@
 </p>
 
 <p align="center">
-  <em>A Rust-based single-binary Python toolchain designed for both humans and AI agents.</em>
+  <em>pip + venv + test runner + MCP server — all in one Rust binary.<br>
+  Built for AI agents (JSON-first) and humans alike.</em>
 </p>
 
 <p align="center">
@@ -65,19 +66,23 @@ Existing Python tools are built for **humans**. PyBun is designed for **both AI 
 ### ✨ Key Differentiators
 
 - 🤖 **AI Native:** Every command supports `--format=json` as a first-class citizen. LLMs can parse outputs reliably without fragile regex.
-- 🔌 **MCP Server Built-in:** Cursor, Claude Desktop, and other AI tools can operate your Python environment directly—no extra setup.
-- ⚡ **Rust Speed:** Of course, it's blazingly fast for humans too.
+- 🔌 **MCP Server Built-in:** [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) lets AI tools like Cursor and Claude Desktop operate your Python environment directly—no extra setup.
+- ⚡ **Rust Speed:** Blazingly fast dependency resolution and installation.
 - 🛡️ **Sandbox Mode:** Run untrusted AI-generated code safely with `--sandbox`.
 - 📦 **Single Binary:** No dependencies. Just download and run.
 
----
+### 💡 Example: AI Agent Workflow
 
-## Demo GIF Placeholder
+```bash
+# AI agent asks: "Install pandas and show the version"
+$ pybun --format=json add pandas
+{"status": "ok", "detail": {"added": ["pandas==2.2.0"], ...}}
 
-<!-- TODO: Add demo GIF showing:
-  - Left: PyBun fast install & run
-  - Right: AI agent (Claude Desktop) using PyBun MCP to execute Python and receive JSON results
--->
+$ pybun --format=json run -c -- "import pandas; print(pandas.__version__)"
+{"status": "ok", "stdout": "2.2.0\n", ...}
+```
+
+The AI receives structured JSON—no regex parsing needed.
 
 ---
 
