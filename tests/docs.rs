@@ -33,7 +33,7 @@ fn readme_has_ga_docs_sections() {
         .expect("README.md should exist at repo root");
 
     for section in [
-        "GA Quickstart",
+        "Quick Start",
         "JSON output examples",
         "Sandbox usage",
         "MCP server (stdio)",
