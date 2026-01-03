@@ -1,12 +1,87 @@
 # PyBun (Python Bundle)
 
-A Rust-based single-binary Python toolchain. Integrates fast dependency installation, runtime/import optimization, testing, build capabilities, and AI agent-friendly JSON output.
+<p align="center">
+  <strong>🐍 The Agent-First Python Runtime 🤖</strong>
+</p>
+
+<p align="center">
+  <em>A Rust-based single-binary Python toolchain designed for both humans and AI agents.</em>
+</p>
+
+<p align="center">
+  <a href="#quick-start">Quick Start</a> •
+  <a href="#why-pybun">Why PyBun?</a> •
+  <a href="#mcp-server">MCP Server</a> •
+  <a href="#command-reference">Commands</a> •
+  <a href="#roadmap">Roadmap</a>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Platform-macOS%20%7C%20Linux%20%7C%20Windows-blue" alt="Platform">
+  <img src="https://img.shields.io/badge/Language-Rust-orange" alt="Rust">
+  <img src="https://img.shields.io/badge/License-MIT-green" alt="License">
+</p>
+
+---
+
+## Quick Start
+
+**macOS / Linux:**
+```bash
+curl -LsSf https://raw.githubusercontent.com/pybun/pybun/main/scripts/install.sh | sh
+```
+
+**Windows (PowerShell):**
+```powershell
+irm https://raw.githubusercontent.com/pybun/pybun/main/scripts/install.ps1 | iex
+```
+
+**Then run:**
+```bash
+pybun add requests
+pybun run -c -- "import requests; print('Hello, PyBun!')"
+```
+
+---
+
+## Why PyBun?
+
+Existing Python tools are built for **humans**. PyBun is designed for **both AI Agents and humans**.
+
+| Feature | Traditional Tools (pip, uv, Poetry) | PyBun |
+|---------|-------------------------------------|-------|
+| **Output Format** | Human-readable text | 🤖 **JSON-first** (`--format=json`) |
+| **AI Integration** | Manual parsing required | 🔌 **Built-in MCP Server** |
+| **Error Handling** | Unstructured error messages | 📋 **Structured diagnostics with hints** |
+| **Agent Automation** | Fragile text scraping | ✅ **Reliable machine-readable output** |
+
+### ✨ Key Differentiators
+
+- 🤖 **AI Native:** Every command supports `--format=json` as a first-class citizen. LLMs can parse outputs reliably without fragile regex.
+- 🔌 **MCP Server Built-in:** Cursor, Claude Desktop, and other AI tools can operate your Python environment directly—no extra setup.
+- ⚡ **Rust Speed:** Of course, it's blazingly fast for humans too.
+- 🛡️ **Sandbox Mode:** Run untrusted AI-generated code safely with `--sandbox`.
+- 📦 **Single Binary:** No dependencies. Just download and run.
+
+---
+
+## Demo GIF Placeholder
+
+<!-- TODO: Add demo GIF showing:
+  - Left: PyBun fast install & run
+  - Right: AI agent (Claude Desktop) using PyBun MCP to execute Python and receive JSON results
+-->
+
+---
 
 ## Status
-- Current: Implementation of M1 (Fast Installer), M2 (Runtime Optimization), and M4 (MCP/JSON) is in progress (**stable/preview/stub mixed**)
-- Platforms: macOS/Linux (arm64/amd64), Windows (preview)
 
-※ For feature maturity (stub/preview/stable) and phased rollout policy, see `docs/SPECS.md`.
+- **Current:** M1 (Fast Installer), M2 (Runtime Optimization), and M4 (MCP/JSON) are in progress (**stable/preview/stub mixed**)
+- **Platforms:** macOS/Linux (arm64/amd64), Windows (preview)
+
+> For feature maturity (stub/preview/stable) and phased rollout policy, see [`docs/SPECS.md`](docs/SPECS.md).
+
+---
 
 ## Installation
 
