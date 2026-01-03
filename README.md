@@ -29,12 +29,12 @@
 
 **macOS / Linux:**
 ```bash
-curl -LsSf https://raw.githubusercontent.com/pybun/pybun/main/scripts/install.sh | sh
+curl -LsSf https://raw.githubusercontent.com/VOID-TECHNOLOGY-INC/PyBun/main/scripts/install.sh | sh
 ```
 
 **Windows (PowerShell):**
 ```powershell
-irm https://raw.githubusercontent.com/pybun/pybun/main/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/VOID-TECHNOLOGY-INC/PyBun/main/scripts/install.ps1 | iex
 ```
 
 **Or via pip/pipx ([PyPI](https://pypi.org/project/pybun-cli/)):**
@@ -97,94 +97,33 @@ The AI receives structured JSON—no regex parsing needed.
 
 ## Installation
 
-Installers default to the latest stable release manifest (signatures + `release_notes`). Pin a specific manifest with `PYBUN_INSTALL_MANIFEST` when running in CI or offline builds.
+The easiest way to install PyBun:
 
 ```bash
-# Homebrew (macOS / Linux)
-brew tap pybun/pybun https://github.com/pybun/pybun
-brew install pybun
-
-# macOS / Linux (one-liner installer)
-curl -LsSf https://raw.githubusercontent.com/pybun/pybun/main/scripts/install.sh | sh
-
-# Nightly channel
-curl -LsSf https://raw.githubusercontent.com/pybun/pybun/main/scripts/install.sh | sh -s -- --channel nightly
-
-# Custom prefix
-curl -LsSf https://raw.githubusercontent.com/pybun/pybun/main/scripts/install.sh | sh -s -- --prefix ~/.local
+pip install pybun-cli
 ```
 
+<details>
+<summary><strong>Other installation methods</strong></summary>
+
+**macOS / Linux (shell script):**
+```bash
+curl -LsSf https://raw.githubusercontent.com/VOID-TECHNOLOGY-INC/PyBun/main/scripts/install.sh | sh
+```
+
+**Windows (PowerShell):**
 ```powershell
-# Windows (Scoop)
-scoop bucket add pybun https://github.com/pybun/pybun
-scoop install pybun
-
-# Windows (winget)
-winget install PyBun.PyBun
-
-# Windows (PowerShell installer)
-irm https://raw.githubusercontent.com/pybun/pybun/main/scripts/install.ps1 | iex
-
-# With options
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/pybun/pybun/main/scripts/install.ps1))) -Channel nightly -Prefix "$env:LOCALAPPDATA\pybun"
+irm https://raw.githubusercontent.com/VOID-TECHNOLOGY-INC/PyBun/main/scripts/install.ps1 | iex
 ```
 
+**From source:**
 ```bash
-# PyPI shim (pipx / pip)
-# Package name on PyPI is `pybun-cli` (module/command stays `pybun`)
-pipx install pybun-cli
-# or
-pip install --user pybun-cli
-```
-The PyPI shim downloads and verifies the signed release binary on first run.
-
-> Heads up: PyBun ships a `pybun-cli` alias in every channel (Homebrew/Scoop/winget/install.sh/pip). If your PATH already resolves `pybun` to Bun, use `pybun-cli` or move PyBun earlier in PATH.
-
-```bash
-# Development (from source)
 cargo install --path .
 ```
 
-## GA Quickstart
+</details>
 
-1) Install the stable build with a pinned manifest (includes signatures + release notes):
-```bash
-export PYBUN_INSTALL_MANIFEST="https://github.com/pybun/pybun/releases/latest/download/pybun-release.json"
-curl -LsSf https://raw.githubusercontent.com/pybun/pybun/main/scripts/install.sh | sh
-# Windows (PowerShell)
-irm https://raw.githubusercontent.com/pybun/pybun/main/scripts/install.ps1 | iex
-```
-`--format=json` on the installer surfaces the manifest, chosen asset, and `release_notes` attachment for CI logs.
-
-2) Initialize a project (pyproject + lock):
-```bash
-cat > pyproject.toml <<'EOF'
-[project]
-name = "hello-pybun"
-version = "0.1.0"
-dependencies = ["requests>=2.31"]
-EOF
-
-pybun install --require requests==2.31.0 --lock pybun.lockb
-```
-
-3) Add or resolve dependencies:
-```bash
-pybun add httpx
-pybun install --index fixtures/index.json
-```
-
-4) Run / test / build with JSON for automation:
-```bash
-pybun --format=json run -c -- "print('Hello, PyBun!')"      # add --sandbox for untrusted code
-pybun --format=json test --fail-fast
-pybun --format=json build
-```
-
-5) Self-update and verify release metadata:
-```bash
-pybun --format=json self update --channel stable --dry-run
-```
+> **Note:** If your PATH resolves `pybun` to [Bun](https://bun.sh), use `pybun-cli` instead.
 
 ## Command Reference
 
@@ -463,7 +402,7 @@ PYBUN_TRACE=1 pybun --format=json run script.py
 - Generate GA release notes from tags:  
   `python scripts/release/generate_release_notes.py --repo . --previous-tag v0.1.0 --tag v0.2.0 --notes-output release/RELEASE_NOTES.md --changelog CHANGELOG.md`
 - Attach the notes to the release manifest (served by installers/self-update via `release_notes` in JSON):  
-  `python scripts/release/generate_manifest.py --assets-dir release --version 0.2.0 --channel stable --base-url https://github.com/pybun/pybun/releases/download/v0.2.0 --output pybun-release.json --release-notes release/RELEASE_NOTES.md`
+  `python scripts/release/generate_manifest.py --assets-dir release --version 0.2.0 --channel stable --base-url https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.2.0 --output pybun-release.json --release-notes release/RELEASE_NOTES.md`
 - CI-friendly JSON summary: `python scripts/release/generate_release_notes.py --repo . --previous-tag v0.1.0 --tag v0.2.0 --format json`
 
 ## Upgrade guide
