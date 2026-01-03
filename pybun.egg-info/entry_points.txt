@@ -1,3 +1,0 @@
-[console_scripts]
-pybun = pybun.cli:main
-pybun-cli = pybun.cli:main

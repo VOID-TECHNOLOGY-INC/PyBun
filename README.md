@@ -44,9 +44,10 @@ irm https://raw.githubusercontent.com/pybun/pybun/main/scripts/install.ps1 | iex
 
 ```bash
 # PyPI shim (pipx / pip)
-pipx install pybun
+# Package name on PyPI is `pybun-cli` (module/command stays `pybun`)
+pipx install pybun-cli
 # or
-pip install --user pybun
+pip install --user pybun-cli
 ```
 The PyPI shim downloads and verifies the signed release binary on first run.
 
