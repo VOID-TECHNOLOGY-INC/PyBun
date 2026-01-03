@@ -36,6 +36,13 @@ curl -LsSf https://raw.githubusercontent.com/pybun/pybun/main/scripts/install.sh
 irm https://raw.githubusercontent.com/pybun/pybun/main/scripts/install.ps1 | iex
 ```
 
+**Or via pip/pipx ([PyPI](https://pypi.org/project/pybun-cli/)):**
+```bash
+pipx install pybun-cli
+# or
+pip install pybun-cli
+```
+
 **Then run:**
 ```bash
 pybun add requests
