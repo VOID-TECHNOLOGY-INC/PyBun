@@ -205,16 +205,12 @@ jobs:
         id: minisign
         shell: bash
         run: |
-          if [[ "${{ inputs.dry_run }}" == "true" ]]; then
+          if [[ "${{ inputs.dry_run }}" == "true" || -z "${{ secrets.PYBUN_MINISIGN_PRIVATE_KEY }}" ]]; then
             minisign -G -p /tmp/pybun-release.pub -s /tmp/pybun-release.key -c "pybun dry-run"
             echo "public_key=/tmp/pybun-release.pub" >> $GITHUB_OUTPUT
             echo "private_key=/tmp/pybun-release.key" >> $GITHUB_OUTPUT
             echo "mode=dummy" >> $GITHUB_OUTPUT
           else
-            if [[ -z "${{ secrets.PYBUN_MINISIGN_PRIVATE_KEY }}" ]]; then
-              echo "Missing PYBUN_MINISIGN_PRIVATE_KEY secret" >&2
-              exit 1
-            fi
             echo "${{ secrets.PYBUN_MINISIGN_PRIVATE_KEY }}" > /tmp/pybun-release.key
             chmod 600 /tmp/pybun-release.key
             echo "public_key=security/pybun-release.pub" >> $GITHUB_OUTPUT
