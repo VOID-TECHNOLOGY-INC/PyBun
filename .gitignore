@@ -4,6 +4,9 @@
 __pycache__/
 *.pyc
 *.pyo
+*.egg-info/
+dist/
+build/
 
 # Benchmark results (generated)
 scripts/benchmark/results/

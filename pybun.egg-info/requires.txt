@@ -1,4 +1,0 @@
-cffi<2,>=1.15
-numpy
-pandas
-scikit-image
