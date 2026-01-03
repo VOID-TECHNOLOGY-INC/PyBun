@@ -81,10 +81,17 @@ jobs:
           key: ${{ matrix.target }}
 
       - name: Build release binary
+        if: runner.os != 'Windows'
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
         run: |
           cargo build --release --target ${{ matrix.target }}
+
+      - name: Build release binary (Windows, no default features)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cargo build --release --target ${{ matrix.target }} --no-default-features
 
       - name: Create artifact directory
         shell: bash
