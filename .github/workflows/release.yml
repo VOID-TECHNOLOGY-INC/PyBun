@@ -206,7 +206,8 @@ jobs:
         shell: bash
         run: |
           if [[ "${{ inputs.dry_run }}" == "true" || -z "${{ secrets.PYBUN_MINISIGN_PRIVATE_KEY }}" ]]; then
-            minisign -G -p /tmp/pybun-release.pub -s /tmp/pybun-release.key -c "pybun dry-run"
+            # -n: generate an unprotected key to avoid interactive prompts on CI
+            minisign -G -n -p /tmp/pybun-release.pub -s /tmp/pybun-release.key -c "pybun dry-run"
             echo "public_key=/tmp/pybun-release.pub" >> $GITHUB_OUTPUT
             echo "private_key=/tmp/pybun-release.key" >> $GITHUB_OUTPUT
             echo "mode=dummy" >> $GITHUB_OUTPUT
