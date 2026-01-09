@@ -2,7 +2,7 @@
 
 ## Reporting a Vulnerability
 - Email: security@pybun.dev (preferred). If confidentiality is required, request a secure channel in your first message.
-- GitHub: https://github.com/pybun/pybun/security/advisories/new
+- GitHub: https://github.com/VOID-TECHNOLOGY-INC/PyBun/security/advisories/new
 - Please include: affected version/commit, platform, reproduction steps, expected vs. actual behavior, and any known mitigations.
 - SLA: acknowledge within **2 business days**, initial triage within **5 business days**, and provide fix/mitigation timelines once impact is confirmed (critical/high targeted within 14 days, medium within 30 days, low best-effort in the next release).
 

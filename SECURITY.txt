@@ -1,5 +1,5 @@
 Contact: mailto:security@pybun.dev
-Contact: https://github.com/pybun/pybun/security/advisories/new
-Policy: https://github.com/pybun/pybun/blob/main/SECURITY.md
+Contact: https://github.com/VOID-TECHNOLOGY-INC/PyBun/security/advisories/new
+Policy: https://github.com/VOID-TECHNOLOGY-INC/PyBun/blob/main/SECURITY.md
 Preferred-Languages: en, ja
 Expires: 2026-12-31T23:59:59Z

@@ -13,8 +13,8 @@ import urllib.request
 import zipfile
 from typing import Any, Dict, Optional, Tuple
 
-DEFAULT_STABLE_MANIFEST = "https://github.com/pybun/pybun/releases/latest/download/pybun-release.json"
-DEFAULT_NIGHTLY_MANIFEST = "https://github.com/pybun/pybun/releases/download/nightly/pybun-release.json"
+DEFAULT_STABLE_MANIFEST = "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/latest/download/pybun-release.json"
+DEFAULT_NIGHTLY_MANIFEST = "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/nightly/pybun-release.json"
 
 
 class BootstrapError(RuntimeError):
