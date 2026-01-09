@@ -594,10 +594,9 @@ if [ "$NO_VERIFY" -eq 0 ]; then
     pub_path="$tmp_dir/pybun-release.pub"
     printf '%s\n' "$SIG_VALUE" > "$sig_path"
     printf '%s\n' "$SIG_PUB" > "$pub_path"
-        log "Verifying signature (minisign)"
-        minisign -Vm "$artifact_path" -x "$sig_path" -p "$pub_path" >/dev/null
-      else
-        log "Skipping signature verification (minisign not found)"  fi
+    log "Verifying signature (minisign)"
+    minisign -Vm "$artifact_path" -x "$sig_path" -p "$pub_path" >/dev/null
+  fi
 fi
 
 log "Extracting archive"
