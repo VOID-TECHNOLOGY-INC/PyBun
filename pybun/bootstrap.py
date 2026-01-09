@@ -47,11 +47,42 @@ def detect_musl() -> bool:
     return os.path.exists("/lib/ld-musl-x86_64.so.1") or os.path.exists("/lib/ld-musl-aarch64.so.1")
 
 
+def detect_glibc_version() -> Optional[str]:
+    libc, version = platform.libc_ver()
+    if (libc or "").lower().startswith("glibc") and version:
+        return version
+    ldd = shutil.which("ldd")
+    if ldd:
+        try:
+            output = subprocess.check_output([ldd, "--version"], stderr=subprocess.STDOUT, text=True)
+            # Usually like: ldd (Ubuntu GLIBC 2.31-0ubuntu9.14) 2.31
+            for line in output.splitlines():
+                if "GLIBC" in line:
+                    # Extract 2.31 from GLIBC 2.31
+                    parts = line.split("GLIBC", 1)[-1].strip().split()
+                    if parts:
+                        ver = parts[0]
+                        if ver[0].isdigit():
+                            return ver
+                # Fallback last token numeric
+                toks = line.strip().split()
+                if toks and toks[-1][0].isdigit():
+                    return toks[-1]
+        except Exception:
+            pass
+    return None
+
+
 def detect_target(
     system: Optional[str] = None,
     machine: Optional[str] = None,
     is_musl: Optional[bool] = None,
 ) -> str:
+    # Explicit override
+    override = os.environ.get("PYBUN_PYPI_TARGET") or os.environ.get("PYBUN_INSTALL_TARGET")
+    if override:
+        return override
+
     system = system or platform.system()
     machine = (machine or platform.machine()).lower()
 
@@ -66,7 +97,12 @@ def detect_target(
         if machine in {"x86_64", "amd64"}:
             if is_musl is None:
                 is_musl = detect_musl()
-            return "x86_64-unknown-linux-musl" if is_musl else "x86_64-unknown-linux-gnu"
+            if is_musl:
+                return "x86_64-unknown-linux-musl"
+            # Prefer musl if requested
+            if _bool_env("PYBUN_PYPI_PREFER_MUSL"):
+                return "x86_64-unknown-linux-musl"
+            return "x86_64-unknown-linux-gnu"
         if machine in {"aarch64", "arm64"}:
             return "aarch64-unknown-linux-gnu"
         raise BootstrapError(f"unsupported Linux arch: {machine}")
@@ -115,6 +151,65 @@ def select_asset(manifest: Dict[str, Any], target: str) -> Dict[str, Any]:
     for asset in manifest.get("assets", []):
         if asset.get("target") == target:
             return asset
+    raise BootstrapError(f"no asset for target: {target}")
+
+
+def _parse_semver_like(value: str) -> Tuple[int, int, int]:
+    try:
+        parts = value.split(".")
+        major = int(parts[0]) if len(parts) > 0 else 0
+        minor = int(parts[1]) if len(parts) > 1 else 0
+        patch = int(parts[2]) if len(parts) > 2 else 0
+        return major, minor, patch
+    except Exception:
+        return 0, 0, 0
+
+
+def select_asset_with_fallback(manifest: Dict[str, Any], target: str) -> Dict[str, Any]:
+    """Select asset; on Linux glibc mismatches, prefer musl if available.
+
+    Honors env overrides:
+      - PYBUN_PYPI_TARGET (exact target)
+      - PYBUN_PYPI_PREFER_MUSL=1 (prefer musl on x86_64)
+      - PYBUN_PYPI_NO_FALLBACK=1 (disable automatic musl fallback)
+    """
+    # Direct selection
+    try:
+        asset = select_asset(manifest, target)
+    except BootstrapError:
+        asset = None
+
+    # Non-Linux or non-gnu targets: return whatever we found (or raise)
+    if not (target.endswith("-unknown-linux-gnu") or target.endswith("-pc-windows-msvc") or target.endswith("-apple-darwin")):
+        if asset:
+            return asset
+        raise BootstrapError(f"no asset for target: {target}")
+
+    # If target is linux-gnu and prefer musl explicitly
+    if target.endswith("-unknown-linux-gnu") and _bool_env("PYBUN_PYPI_PREFER_MUSL"):
+        musl_target = target.replace("-unknown-linux-gnu", "-unknown-linux-musl")
+        try:
+            return select_asset(manifest, musl_target)
+        except BootstrapError:
+            # fallthrough to gnu
+            pass
+
+    # If we have an asset and it's OK, return it; else try fallback based on min_glibc
+    if asset and target.endswith("-unknown-linux-gnu"):
+        min_glibc = (asset.get("compat") or {}).get("min_glibc") or asset.get("min_glibc")
+        if min_glibc and not _bool_env("PYBUN_PYPI_NO_FALLBACK"):
+            local = detect_glibc_version()
+            if local:
+                if _parse_semver_like(local) < _parse_semver_like(min_glibc):
+                    # try musl fallback (x86_64 only for now)
+                    if target.startswith("x86_64-"):
+                        musl_target = target.replace("-unknown-linux-gnu", "-unknown-linux-musl")
+                        try:
+                            return select_asset(manifest, musl_target)
+                        except BootstrapError:
+                            pass
+    if asset:
+        return asset
     raise BootstrapError(f"no asset for target: {target}")
 
 
@@ -288,7 +383,7 @@ def ensure_binary() -> Tuple[str, Optional[Dict[str, Any]]]:
         raise manifest_error or BootstrapError("manifest unavailable")
 
     version = manifest.get("version") or "unknown"
-    asset = select_asset(manifest, target)
+    asset = select_asset_with_fallback(manifest, target)
 
     binary_name = "pybun.exe" if os.name == "nt" else "pybun"
     install_root = os.path.join(root, "shim", version, target)
