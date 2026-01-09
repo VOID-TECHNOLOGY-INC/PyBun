@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.1.7
+
+### Fixes
+- correct minisign flag and bump version to 0.1.7
+- use -p for minisign public key file argument
+
+### Docs
+- update CHANGELOG.md for v0.1.6
+
+### Other
+- chore(release): update package managers for v0.1.6 (#74)
+
 ## v0.1.6
 
 ### Features
