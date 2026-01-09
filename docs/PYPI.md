@@ -14,6 +14,6 @@ pybun --version
 ## Publishing flow
 1) Align versions in `Cargo.toml` and `pyproject.toml` with the release tag (`vX.Y.Z`).
 2) Create/publish the GitHub Release (or dispatch the workflow) to trigger the `publish-pypi` workflow.
-3) The workflow builds `sdist`/`wheel` via `python -m build` and uploads them to PyPI using trusted publishing (`id-token` OIDC). Configure the `pybun-cli` project on PyPI as a trusted publisher for `pybun/pybun` before the first run.
+3) The workflow builds `sdist`/`wheel` via `python -m build` and uploads them to PyPI using trusted publishing (`id-token` OIDC). Configure the `pybun-cli` project on PyPI as a trusted publisher for `VOID-TECHNOLOGY-INC/PyBun` before the first run.
 
 Re-runs of the workflow set `skip-existing` so uploading the same version is non-fatal.

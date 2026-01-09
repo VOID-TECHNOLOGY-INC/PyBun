@@ -193,21 +193,21 @@ if (-not $ManifestSource) {
     if ($Version) {
         $Version = $Version.TrimStart("v")
         $ReleaseTag = "v$Version"
-        $ManifestSource = "https://github.com/pybun/pybun/releases/download/$ReleaseTag/pybun-release.json"
+        $ManifestSource = "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/$ReleaseTag/pybun-release.json"
     } elseif ($Channel -eq "nightly") {
-        $ManifestSource = "https://github.com/pybun/pybun/releases/download/nightly/pybun-release.json"
+        $ManifestSource = "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/nightly/pybun-release.json"
     } else {
-        $ManifestSource = "https://github.com/pybun/pybun/releases/latest/download/pybun-release.json"
+        $ManifestSource = "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/latest/download/pybun-release.json"
     }
 }
 
 if ($Version) {
     $ReleaseTag = "v$($Version.TrimStart("v"))"
-    $AssetUrl = "https://github.com/pybun/pybun/releases/download/$ReleaseTag/$AssetName"
+    $AssetUrl = "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/$ReleaseTag/$AssetName"
 } elseif ($Channel -eq "nightly") {
-    $AssetUrl = "https://github.com/pybun/pybun/releases/download/nightly/$AssetName"
+    $AssetUrl = "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/nightly/$AssetName"
 } else {
-    $AssetUrl = "https://github.com/pybun/pybun/releases/latest/download/$AssetName"
+    $AssetUrl = "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/latest/download/$AssetName"
 }
 
 $ManifestPath = $null

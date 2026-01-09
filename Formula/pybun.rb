@@ -1,7 +1,7 @@
 # This file is auto-generated. Do not edit by hand.
 class Pybun < Formula
   desc "Rust-based single-binary Python toolchain."
-  homepage "https://github.com/pybun/pybun"
+  homepage "https://github.com/VOID-TECHNOLOGY-INC/PyBun"
   version "0.1.5"
   license "MIT"
 

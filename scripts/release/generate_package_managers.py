@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 DESCRIPTION = "Rust-based single-binary Python toolchain."
-HOMEPAGE = "https://github.com/pybun/pybun"
+HOMEPAGE = "https://github.com/VOID-TECHNOLOGY-INC/PyBun"
 LICENSE = "MIT"
 PUBLISHER = "VOID TECHNOLOGY INC"
 PACKAGE_IDENTIFIER = "PyBun.PyBun"

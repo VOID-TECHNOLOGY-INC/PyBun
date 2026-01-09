@@ -2,12 +2,12 @@ PackageIdentifier: PyBun.PyBun
 PackageVersion: 0.1.5
 PackageLocale: en-US
 Publisher: VOID TECHNOLOGY INC
-PublisherUrl: https://github.com/pybun/pybun
-PublisherSupportUrl: https://github.com/pybun/pybun/issues
+PublisherUrl: https://github.com/VOID-TECHNOLOGY-INC/PyBun
+PublisherSupportUrl: https://github.com/VOID-TECHNOLOGY-INC/PyBun/issues
 PackageName: PyBun
-PackageUrl: https://github.com/pybun/pybun
+PackageUrl: https://github.com/VOID-TECHNOLOGY-INC/PyBun
 License: MIT
-LicenseUrl: https://github.com/pybun/pybun/blob/main/LICENSE
+LicenseUrl: https://github.com/VOID-TECHNOLOGY-INC/PyBun/blob/main/LICENSE
 ShortDescription: Rust-based single-binary Python toolchain.
 Moniker: pybun
 Commands:

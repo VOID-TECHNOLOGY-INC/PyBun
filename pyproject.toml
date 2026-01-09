@@ -22,7 +22,7 @@ readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.8"
 license = "MIT"
 license-files = ["LICENSE"]
-version = "0.1.0"
+version = "0.1.1"
 
 [[project.authors]]
 name = "PyBun Authors"
@@ -32,8 +32,8 @@ pybun = "pybun.cli:main"
 pybun-cli = "pybun.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/pybun/pybun"
-Repository = "https://github.com/pybun/pybun"
+Homepage = "https://github.com/VOID-TECHNOLOGY-INC/PyBun"
+Repository = "https://github.com/VOID-TECHNOLOGY-INC/PyBun"
 
 [tool.setuptools]
 include-package-data = false

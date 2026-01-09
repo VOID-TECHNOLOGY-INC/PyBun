@@ -3057,15 +3057,20 @@ fn run_self_update(
 
 fn default_manifest_url(channel: &str) -> String {
     if channel == "nightly" {
-        "https://github.com/pybun/pybun/releases/download/nightly/pybun-release.json".to_string()
+        "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/nightly/pybun-release.json"
+            .to_string()
     } else {
-        "https://github.com/pybun/pybun/releases/latest/download/pybun-release.json".to_string()
+        "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/latest/download/pybun-release.json"
+            .to_string()
     }
 }
 
 fn release_url_for_version(version: &str) -> String {
     let trimmed = version.trim_start_matches('v');
-    format!("https://github.com/pybun/pybun/releases/tag/v{}", trimmed)
+    format!(
+        "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/tag/v{}",
+        trimmed
+    )
 }
 
 // ---------------------------------------------------------------------------

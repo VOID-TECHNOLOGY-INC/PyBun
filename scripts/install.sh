@@ -442,21 +442,21 @@ if [ -z "$MANIFEST_SOURCE" ]; then
   if [ -n "$VERSION" ]; then
     VERSION="${VERSION#v}"
     RELEASE_TAG="v$VERSION"
-    MANIFEST_SOURCE="https://github.com/pybun/pybun/releases/download/${RELEASE_TAG}/pybun-release.json"
+    MANIFEST_SOURCE="https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/${RELEASE_TAG}/pybun-release.json"
   elif [ "$CHANNEL" = "nightly" ]; then
-    MANIFEST_SOURCE="https://github.com/pybun/pybun/releases/download/nightly/pybun-release.json"
+    MANIFEST_SOURCE="https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/nightly/pybun-release.json"
   else
-    MANIFEST_SOURCE="https://github.com/pybun/pybun/releases/latest/download/pybun-release.json"
+    MANIFEST_SOURCE="https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/latest/download/pybun-release.json"
   fi
 fi
 
 if [ -n "$VERSION" ]; then
   RELEASE_TAG="v${VERSION#v}"
-  ASSET_URL="https://github.com/pybun/pybun/releases/download/${RELEASE_TAG}/${ASSET_NAME}"
+  ASSET_URL="https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/${RELEASE_TAG}/${ASSET_NAME}"
 elif [ "$CHANNEL" = "nightly" ]; then
-  ASSET_URL="https://github.com/pybun/pybun/releases/download/nightly/${ASSET_NAME}"
+  ASSET_URL="https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/nightly/${ASSET_NAME}"
 else
-  ASSET_URL="https://github.com/pybun/pybun/releases/latest/download/${ASSET_NAME}"
+  ASSET_URL="https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/latest/download/${ASSET_NAME}"
 fi
 
 MANIFEST_PATH=""

@@ -7,11 +7,10 @@ Guidance for moving from the preview builds to the GA (stable) channel.
 - JSON schema v1 is frozen for GA. Automation should consume the v1 envelope (`version`, `status`, `events`, `diagnostics`) and the new release-notes metadata surfaced by installers/self-update.
 - Verified downloads are the default; offline or manifest-less installs will fail unless `--no-verify` is explicitly set.
 
-## Migration steps
 1) Pin the GA manifest in CI/dev shells:
    ```bash
-   export PYBUN_INSTALL_MANIFEST="https://github.com/pybun/pybun/releases/latest/download/pybun-release.json"
-   curl -LsSf https://raw.githubusercontent.com/pybun/pybun/main/scripts/install.sh | sh
+   export PYBUN_INSTALL_MANIFEST="https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/latest/download/pybun-release.json"
+   curl -LsSf https://raw.githubusercontent.com/VOID-TECHNOLOGY-INC/PyBun/main/scripts/install.sh | sh
    ```
 2) Regenerate lockfiles with the GA toolchain (`pybun install --require ...` or `pybun lock --index ...`) and commit the refreshed `pybun.lockb`.
 3) Update automation to call `pybun --format=json` (see README's JSON output examples) and to respect the `release_notes` attachment surfaced in JSON.
@@ -19,7 +18,7 @@ Guidance for moving from the preview builds to the GA (stable) channel.
 5) Attach release notes to the manifest when cutting a release:
    ```bash
    python scripts/release/generate_release_notes.py --repo . --previous-tag v0.1.0 --tag v0.2.0 --notes-output release/RELEASE_NOTES.md --changelog CHANGELOG.md
-   python scripts/release/generate_manifest.py --assets-dir release --version 0.2.0 --channel stable --base-url https://github.com/pybun/pybun/releases/download/v0.2.0 --output pybun-release.json --release-notes release/RELEASE_NOTES.md
+   python scripts/release/generate_manifest.py --assets-dir release --version 0.2.0 --channel stable --base-url https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.2.0 --output pybun-release.json --release-notes release/RELEASE_NOTES.md
    ```
 
 ## Compatibility notes
