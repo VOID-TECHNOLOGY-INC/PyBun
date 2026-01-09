@@ -7,11 +7,10 @@ Guidance for moving from the preview builds to the GA (stable) channel.
 - JSON schema v1 is frozen for GA. Automation should consume the v1 envelope (`version`, `status`, `events`, `diagnostics`) and the new release-notes metadata surfaced by installers/self-update.
 - Verified downloads are the default; offline or manifest-less installs will fail unless `--no-verify` is explicitly set.
 
-## Migration steps
 1) Pin the GA manifest in CI/dev shells:
    ```bash
    export PYBUN_INSTALL_MANIFEST="https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/latest/download/pybun-release.json"
-   curl -LsSf https://raw.githubusercontent.com/pybun/pybun/main/scripts/install.sh | sh
+   curl -LsSf https://raw.githubusercontent.com/VOID-TECHNOLOGY-INC/PyBun/main/scripts/install.sh | sh
    ```
 2) Regenerate lockfiles with the GA toolchain (`pybun install --require ...` or `pybun lock --index ...`) and commit the refreshed `pybun.lockb`.
 3) Update automation to call `pybun --format=json` (see README's JSON output examples) and to respect the `release_notes` attachment surfaced in JSON.

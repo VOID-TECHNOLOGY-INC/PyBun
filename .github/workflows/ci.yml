@@ -89,13 +89,13 @@ jobs:
       - name: Brew install from tap
         shell: bash
         run: |
-          brew tap pybun/pybun "$PWD"
-          tap_repo="$(brew --repo pybun/pybun)"
+          brew tap VOID-TECHNOLOGY-INC/PyBun "$PWD"
+          tap_repo="$(brew --repo VOID-TECHNOLOGY-INC/PyBun)"
           git -C "$tap_repo" checkout "$GITHUB_SHA"
           HOMEBREW_PYBUN_TEST_TARBALL="file://$PYBUN_TEST_TARBALL" \
           HOMEBREW_PYBUN_TEST_SHA256="$PYBUN_TEST_SHA" \
-            brew install pybun/pybun/pybun
-          brew test pybun/pybun/pybun
+            brew install VOID-TECHNOLOGY-INC/PyBun/pybun
+          brew test VOID-TECHNOLOGY-INC/PyBun/pybun
 
   security-audit:
     name: security audit

@@ -13,7 +13,7 @@
 ## Supply Chain Guarantees
 - Release artifacts are built in GitHub Actions (`.github/workflows/release.yml`), signed with minisign, and paired with checksums in `pybun-release.json`.
 - Public signing key: `security/pybun-release.pub`. Verify with `minisign -Vm <artifact> -p security/pybun-release.pub`.
-- Each release ships `pybun-sbom.json` (CycloneDX) and `pybun-provenance.json` (SLSA provenance). You can verify attestations with `gh attestation verify --repo pybun/pybun --release <tag>`.
+- Each release ships `pybun-sbom.json` (CycloneDX) and `pybun-provenance.json` (SLSA provenance). You can verify attestations with `gh attestation verify --repo VOID-TECHNOLOGY-INC/PyBun --release <tag>`.
 - Release CI fails if SBOM, provenance, or signatures are missing or inconsistent.
 
 ## Minisign Key Rotation

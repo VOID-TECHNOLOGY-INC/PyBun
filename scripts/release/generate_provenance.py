@@ -71,7 +71,7 @@ def main() -> None:
 
     timestamp = args.timestamp or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     server = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
-    repo = os.environ.get("GITHUB_REPOSITORY", "pybun/pybun")
+    repo = os.environ.get("GITHUB_REPOSITORY", "VOID-TECHNOLOGY-INC/PyBun")
     workflow = os.environ.get("GITHUB_WORKFLOW", "Release Build")
     run_id = os.environ.get("GITHUB_RUN_ID")
     run_attempt = os.environ.get("GITHUB_RUN_ATTEMPT")
