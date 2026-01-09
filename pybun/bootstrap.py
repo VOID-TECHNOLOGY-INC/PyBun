@@ -180,7 +180,7 @@ def _verify_signature(path: str, signature: Dict[str, Any]) -> None:
             if not sig_pub.endswith("\n"):
                 handle.write("\n")
         result = subprocess.run(
-            ["minisign", "-Vm", path, "-x", sig_path, "-P", pub_path],
+            ["minisign", "-Vm", path, "-x", sig_path, "-p", pub_path],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
             text=True,

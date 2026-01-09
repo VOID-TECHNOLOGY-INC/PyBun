@@ -355,7 +355,7 @@ try {
             Set-Content -Path $SigPath -Value $SigValue -Encoding ASCII
             Set-Content -Path $PubPath -Value $SigPub -Encoding ASCII
             Write-Log "Verifying signature (minisign)"
-            & minisign -Vm $ArtifactPath -x $SigPath -P $PubPath | Out-Null
+            & minisign -Vm $ArtifactPath -x $SigPath -p $PubPath | Out-Null
             if ($LASTEXITCODE -ne 0) {
                 throw "minisign verification failed"
             }
