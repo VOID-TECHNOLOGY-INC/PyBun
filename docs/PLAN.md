@@ -270,6 +270,30 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
     - [x] 公式別名（`pybun-cli` 等）を配布物に同梱（symlink/launcher/console_script）
     - [x] install.sh / install.ps1 / Homebrew/Scoop/winget / PyPI shim の導線を統一
     - [x] Bun 側の `pybun` を検知した場合の警告（回避策: alias使用/優先順位）を追加
+
+### M8: Developer Experience Polish (Post-GA)
+- PR8.1: `pybun init` (Project Scaffolding)
+  - Goal: インタラクティブまたは `-y` で `pyproject.toml` (と `.gitignore`, `README.md`, `src/`) を生成。
+  - Specs:
+    - User input: Project name, Description, Python version (default: active), Author.
+    - Template: "Minimal" (flat layout) / "Package" (src layout).
+    - JSON出力は生成されたファイルリストを返す。
+  - Tests: E2E test with/without TTY, JSON output checks.
+- PR8.2: `pybun outdated` (Depedency Freshness)
+  - Goal: `pybun.lockb` 内のバージョンと最新インデックスを比較し、更新可能なパッケージを一覧表示。
+  - Specs:
+    - Columns: Package, Current, Wanted (semver-compatible), Latest (semver-breaking), Type (std/dev).
+    - Color coding: Red (major), Yellow (minor), Green (patch).
+    - JSON出力は構造化データ (`[{ "package": "foo", "current": "1.0.0", "latest": "2.0.0" }]`) を返す。
+  - Tests: Mock index server returning newer versions; E2E check of output format.
+- PR8.3: `pybun upgrade` (Interactive/Batch Update)
+  - Goal: `pyproject.toml` の制約内で lockfile を更新する。
+  - Specs:
+    - `pybun upgrade`: 全依存を制約内で最新化。
+    - `pybun upgrade <pkg>`: 特定パッケージを更新。
+    - `--interactive`: TUI (ratatui等) で更新対象を選択（Optional）。
+    - `--latest` (Future): `pyproject.toml` の制約を書き換えて最新化（破壊的変更）。
+  - Tests: E2E test verifying lockfile updates within constraints.
 - [DONE] PR7.7: CLI 進捗UI（Bun 風の途中経過表示）
   - Goal: `pybun install/add/test/build/run` などの長い処理で、解決/ダウンロード/ビルド/配置の進捗を人間向けに可視化。TTY ではスピナー/プログレスバー、非TTYや `--format=json` では抑制。
   - Depends on: PR4.1 グローバルイベントスキーマ, PR4.4 observability。
@@ -488,6 +512,7 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
 - M4 exit: JSON schema stable; MCP server usable by scripted client; self-healing diagnostics for conflicts.
 - M5 exit: C extension build cache works; SBOM generated; self-update succeeds in controlled test; sandbox mode blocks unsafe syscalls.
 - M6 exit: Workspace resolution works; GC reliable; telemetry opt-out verified; Windows arm64/mac arm64 artifacts produced.
+- M8 exit: DX commands (`init`, `outdated`, `upgrade`) fully implemented and tested.
 
 ## Parallelization Notes
 - PR0.3, PR1.4, PR1.5 can proceed in parallel once CLI skeleton exists.  

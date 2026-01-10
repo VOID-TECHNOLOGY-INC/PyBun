@@ -28,8 +28,8 @@
 ### 段階導入の方針（大規模修正を避ける）
 
 - **Tester/Builder は bootstrap → ネイティブ実装へ**: まず薄いラッパーで CLI/JSON/exit-code 等の外形を固め、後から内部エンジンを差し替える。
-- **MCP は stdio を先行**: まず `--stdio` で安定化し、HTTP mode（`--port`）は運用・セキュリティ要件を詰めてから追加する。
-- **Hot Reload は外部ウォッチャー生成を維持**: ネイティブ監視（notify 等）は段階投入し、OS差分は feature flag で吸収する。
+- **MCP は stdio を先行**: `--stdio` は実装済みで安定動作する。HTTP mode（`--port`）は運用・セキュリティ要件を詰めてから追加する。
+- **Hot Reload は外部ウォッチャーとネイティブ監視を併用**: macOS/Linux は `notify` クレートによるネイティブ監視を実装済み（プレビュー）。Windows はまだスタブ。
 
 ---
 
@@ -150,6 +150,13 @@ graph TD
 - **キャッシュ構造:** `packages/`（wheel）、`envs/`（仮想環境）、`build/`（オブジェクトキャッシュ）、`logs/`（実行ログ/構造化イベント）。
 - **クリーンアップ:** `pybun gc` で LRU ベースのキャッシュ削除、`--max-size` 指定で上限管理。
 
+### 4.7 開発者体験 (Developer Experience)
+
+- **Interactive Init:** `pybun init` で対話的に `pyproject.toml` を生成。`-y` で推奨デフォルト設定（`src` layout 等）を即時適用。
+- **Dependency Insights:**
+  - `pybun outdated`: ロックファイルとインデックスを照合し、SemVer 互換範囲内および範囲外の更新を表示。`--format=json` 対応。
+  - `pybun upgrade`: `pyproject.toml` の制約内でパッケージを安全に更新。`--interactive` で TUI 選択更新（段階導入）。
+
 -----
 
 ## 5\. AI エージェント最適化 (AI Integration)
@@ -201,6 +208,9 @@ Bun の UX を踏襲し、短く直感的なコマンド体系とする。
 | `pybun doctor` | 環境・依存関係の診断（AI向け出力対応） | - |
 | `pybun self update` | バイナリアップデート（署名検証付） | - |
 | `pybun mcp serve` | MCP サーバーとして待受（stdio先行、HTTPは段階導入） | - |
+| `pybun init` | プロジェクト初期化（pyproject.toml生成） | `npm init` / `bun init` |
+| `pybun outdated` | 更新可能な依存パッケージの一覧表示 | `npm outdated` / `pip list -o` |
+| `pybun upgrade` | 依存パッケージの更新 | `npm update` / `bun update` |
 
 **共通フラグ例:** `--format=json|text`, `--profile`, `--python 3.11`, `--cache-dir`, `--offline`, `--no-lock`, `--verbose`, `--quiet`, `--progress=auto|always|never`.
 
