@@ -21,6 +21,8 @@ pub struct IndexWheel {
     pub file: String,
     #[serde(default)]
     pub platforms: Vec<String>,
+    #[serde(default)]
+    pub hash: Option<String>,
 }
 
 #[derive(Debug, Error)]
@@ -61,6 +63,7 @@ fn build_index(packages: Vec<IndexPackage>) -> InMemoryIndex {
                 .map(|w| Wheel {
                     file: w.file.clone(),
                     url: None,
+                    hash: w.hash.clone(),
                     platforms: if w.platforms.is_empty() {
                         vec!["any".into()]
                     } else {

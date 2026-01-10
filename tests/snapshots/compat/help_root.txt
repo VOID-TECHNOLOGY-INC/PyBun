@@ -3,6 +3,7 @@ PyBun CLI: fast installer/runtime/tester for Python projects (use --sandbox for 
 Usage: pybun [OPTIONS] <COMMAND>
 
 Commands:
+  init         Initialize a new Python project
   install      Install dependencies from lock or project metadata
   add          Add a package and update lockfile
   remove       Remove a package and update lockfile
@@ -22,6 +23,8 @@ Commands:
   profile      Show or configure launch profiles
   schema       Print or validate the CLI JSON schema
   telemetry    Manage telemetry settings (opt-in/opt-out)
+  outdated     Check for outdated dependencies
+  upgrade      Upgrade dependencies within constraints
   help         Print this message or the help of the given subcommand(s)
 
 Options:

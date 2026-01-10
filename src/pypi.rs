@@ -332,6 +332,7 @@ impl PyPiClient {
                     } else {
                         w.platforms.clone()
                     },
+                    hash: w.hash.clone(),
                 })
                 .collect(),
             sdist: pkg.sdist.clone(),
@@ -449,9 +450,12 @@ struct ProjectInfo {
 struct ReleaseFile {
     filename: String,
     url: String,
-    packagetype: String,
+    pub packagetype: String,
+
     #[serde(default)]
     yanked: Option<bool>,
+    #[serde(default)]
+    digests: Option<HashMap<String, String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -467,8 +471,9 @@ struct VersionInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct CachedWheel {
-    file: String,
+    pub file: String,
     pub url: Option<String>,
+    pub hash: Option<String>,
     platforms: Vec<String>,
 }
 
@@ -754,9 +759,16 @@ fn build_cached_packages(
             match file.packagetype.as_str() {
                 "bdist_wheel" => {
                     let platforms = wheel_platforms(&file.filename);
+                    let hash = file
+                        .digests
+                        .as_ref()
+                        .and_then(|d| d.get("sha256"))
+                        .map(|h| format!("sha256:{}", h));
+
                     wheels.push(CachedWheel {
                         file: file.filename.clone(),
                         url: Some(file.url.clone()),
+                        hash,
                         platforms: if platforms.is_empty() {
                             vec!["any".into()]
                         } else {
