@@ -88,7 +88,10 @@ The AI receives structured JSON—no regex parsing needed.
 
 ## Status
 
-- **Current:** M1 (Fast Installer), M2 (Runtime Optimization), and M4 (MCP/JSON) are in progress (**stable/preview/stub mixed**)
+- **Current:** M1 (Fast Installer), M2 (Runtime Optimization), and M4 (MCP/JSON) are partially stable.
+  - `pybun install` / `pybun x` (with uv backend) / `pybun runs` are **Stable**.
+  - `pybun watch` (Native) / `pybun test` (Wrapper) are **Preview**.
+  - Windows support is **Preview**.
 - **Platforms:** macOS/Linux (arm64/amd64), Windows (preview)
 
 > For feature maturity (stub/preview/stable) and phased rollout policy, see [`docs/SPECS.md`](docs/SPECS.md).
@@ -168,11 +171,13 @@ import requests
 
 ### Ad-hoc Execution (`pybun x`)
 
-Install a package in a temporary environment and execute it (Python version of `npx`):
+Install a package in a temporary environment and execute it (Python version of `npx`).
+If `uv` is available, it is used for faster environment creation.
 
 ```bash
 # Temporarily install and run cowsay
-pybun x cowsay
+# (Use -t flag for Python cowsay package)
+pybun x cowsay -- -t "Hello"
 
 # Specify version
 pybun x cowsay==6.1

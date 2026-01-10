@@ -28,8 +28,8 @@
 ### 段階導入の方針（大規模修正を避ける）
 
 - **Tester/Builder は bootstrap → ネイティブ実装へ**: まず薄いラッパーで CLI/JSON/exit-code 等の外形を固め、後から内部エンジンを差し替える。
-- **MCP は stdio を先行**: まず `--stdio` で安定化し、HTTP mode（`--port`）は運用・セキュリティ要件を詰めてから追加する。
-- **Hot Reload は外部ウォッチャー生成を維持**: ネイティブ監視（notify 等）は段階投入し、OS差分は feature flag で吸収する。
+- **MCP は stdio を先行**: `--stdio` は実装済みで安定動作する。HTTP mode（`--port`）は運用・セキュリティ要件を詰めてから追加する。
+- **Hot Reload は外部ウォッチャーとネイティブ監視を併用**: macOS/Linux は `notify` クレートによるネイティブ監視を実装済み（プレビュー）。Windows はまだスタブ。
 
 ---
 
