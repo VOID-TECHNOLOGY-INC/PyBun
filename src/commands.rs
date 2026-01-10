@@ -2839,9 +2839,15 @@ fn execute_tool(args: &crate::cli::ToolArgs, _collector: &mut EventCollector) ->
         venv_path.display()
     );
 
-    let venv_status = ProcessCommand::new(&python_path)
-        .args(["-m", "venv"])
-        .arg(&venv_path)
+    let uv_available = crate::env::find_uv_executable().is_some();
+
+    let mut venv_cmd = ProcessCommand::new(&python_path);
+    venv_cmd.args(["-m", "venv"]);
+    if uv_available {
+        venv_cmd.arg("--without-pip");
+    }
+    venv_cmd.arg(&venv_path);
+    let venv_status = venv_cmd
         .status()
         .map_err(|e| eyre!("failed to create virtual environment: {}", e))?;
 
@@ -2863,12 +2869,21 @@ fn execute_tool(args: &crate::cli::ToolArgs, _collector: &mut EventCollector) ->
         venv_path.join("bin").join("python")
     };
 
-    // Install the package
+    // Install the package using uv if available, otherwise pip
     eprintln!("info: installing {}...", package_spec);
-    let install_status = ProcessCommand::new(&pip_path)
-        .args(["install", "--quiet", package_spec])
-        .status()
-        .map_err(|e| eyre!("failed to install package: {}", e))?;
+    let install_status = if let Some(uv_path) = crate::env::find_uv_executable() {
+        ProcessCommand::new(uv_path)
+            .args(["pip", "install", "--quiet", "--python"])
+            .arg(&venv_path)
+            .arg(package_spec)
+            .status()
+            .map_err(|e| eyre!("failed to install package with uv: {}", e))?
+    } else {
+        ProcessCommand::new(&pip_path)
+            .args(["install", "--quiet", package_spec])
+            .status()
+            .map_err(|e| eyre!("failed to install package: {}", e))?
+    };
 
     if !install_status.success() {
         return Err(eyre!("failed to install package {}", package_spec));
