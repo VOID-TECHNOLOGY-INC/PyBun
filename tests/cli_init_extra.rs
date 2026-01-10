@@ -22,16 +22,20 @@ fn init_skips_existing_files() {
         .expect("command run");
 
     assert!(output.status.success());
-    
+
     // Check content wasn't overwritten
     let content = fs::read_to_string(&gitignore).unwrap();
-    assert_eq!(content, "existing content", ".gitignore should not be overwritten");
+    assert_eq!(
+        content, "existing content",
+        ".gitignore should not be overwritten"
+    );
 
     // Check JSON output indicates skip
     let stdout = String::from_utf8_lossy(&output.stdout);
     let json: Value = serde_json::from_str(&stdout).unwrap();
     assert!(json["detail"]["files_skipped"].is_array());
-    let skipped: Vec<String> = serde_json::from_value(json["detail"]["files_skipped"].clone()).unwrap();
+    let skipped: Vec<String> =
+        serde_json::from_value(json["detail"]["files_skipped"].clone()).unwrap();
     assert!(skipped.iter().any(|p| p.contains(".gitignore")));
 }
 
@@ -50,7 +54,10 @@ fn init_sanitizes_project_name() {
     let pyproject = project_dir.join("pyproject.toml");
     let content = fs::read_to_string(&pyproject).unwrap();
     // "My Project!" -> "my_project"
-    assert!(content.contains("name = \"my_project\""), "project name should be sanitized");
+    assert!(
+        content.contains("name = \"my_project\""),
+        "project name should be sanitized"
+    );
 }
 
 #[test]
@@ -73,7 +80,7 @@ fn init_sanitizes_leading_numbers() {
 #[test]
 fn init_separates_package_name_sanitization() {
     let temp = tempdir().unwrap();
-    
+
     bin()
         .current_dir(temp.path())
         .args(["init", "-y", "--name", "123-pkg", "--template", "package"])

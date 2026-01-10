@@ -512,4 +512,3 @@ pub struct UpgradeArgs {
     #[arg(long, default_value = "pybun.lockb")]
     pub lock: std::path::PathBuf,
 }
-

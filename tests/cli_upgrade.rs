@@ -130,7 +130,8 @@ dependencies = [
     fs::write(&index_path, index_v1).unwrap();
 
     // 3. Install
-    Command::cargo_bin("pybun").unwrap()
+    Command::cargo_bin("pybun")
+        .unwrap()
         .current_dir(&project_root)
         .args(["install", "--index", index_path.to_str().unwrap()])
         .assert()
@@ -166,7 +167,8 @@ dependencies = [
     fs::write(&index_path, index_v2).unwrap();
 
     // 5. Partial upgrade ONLY pkg-a
-    Command::cargo_bin("pybun").unwrap()
+    Command::cargo_bin("pybun")
+        .unwrap()
         .current_dir(&project_root)
         .args(["upgrade", "pkg-a", "--index", index_path.to_str().unwrap()])
         .assert()

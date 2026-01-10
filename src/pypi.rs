@@ -758,23 +758,23 @@ fn build_cached_packages(
             }
             match file.packagetype.as_str() {
                 "bdist_wheel" => {
-                        let platforms = wheel_platforms(&file.filename);
-                        let hash = file
-                            .digests
-                            .as_ref()
-                            .and_then(|d| d.get("sha256"))
-                            .map(|h| format!("sha256:{}", h));
-                        
-                        wheels.push(CachedWheel {
-                            file: file.filename.clone(),
-                            url: Some(file.url.clone()),
-                            hash,
-                            platforms: if platforms.is_empty() {
-                                vec!["any".into()]
-                            } else {
-                                platforms
-                            },
-                        });
+                    let platforms = wheel_platforms(&file.filename);
+                    let hash = file
+                        .digests
+                        .as_ref()
+                        .and_then(|d| d.get("sha256"))
+                        .map(|h| format!("sha256:{}", h));
+
+                    wheels.push(CachedWheel {
+                        file: file.filename.clone(),
+                        url: Some(file.url.clone()),
+                        hash,
+                        platforms: if platforms.is_empty() {
+                            vec!["any".into()]
+                        } else {
+                            platforms
+                        },
+                    });
                 }
                 "sdist" => {
                     sdist = Some(file.filename.clone());

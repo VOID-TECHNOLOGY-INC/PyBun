@@ -23,7 +23,10 @@ fn init_creates_pyproject_toml() {
     assert!(pyproject.exists(), "pyproject.toml should be created");
 
     let content = fs::read_to_string(&pyproject).unwrap();
-    assert!(content.contains("[project]"), "should have [project] section");
+    assert!(
+        content.contains("[project]"),
+        "should have [project] section"
+    );
 }
 
 #[test]
@@ -40,7 +43,10 @@ fn init_creates_gitignore() {
     assert!(gitignore.exists(), ".gitignore should be created");
 
     let content = fs::read_to_string(&gitignore).unwrap();
-    assert!(content.contains("__pycache__"), "should have Python patterns");
+    assert!(
+        content.contains("__pycache__"),
+        "should have Python patterns"
+    );
 }
 
 #[test]
@@ -104,7 +110,10 @@ fn init_with_description() {
 
     let pyproject = temp.path().join("pyproject.toml");
     let content = fs::read_to_string(&pyproject).unwrap();
-    assert!(content.contains("A test project"), "should have description");
+    assert!(
+        content.contains("A test project"),
+        "should have description"
+    );
 }
 
 #[test]
@@ -134,7 +143,10 @@ fn init_package_template_creates_src_layout() {
 
     // Check src directory structure
     let src_dir = temp.path().join("src");
-    assert!(src_dir.exists(), "src/ directory should be created for package template");
+    assert!(
+        src_dir.exists(),
+        "src/ directory should be created for package template"
+    );
 }
 
 #[test]
@@ -168,7 +180,10 @@ fn init_json_output() {
     let json: Value = serde_json::from_str(&stdout).expect("valid JSON output");
 
     assert_eq!(json["status"], "ok");
-    assert!(json["detail"]["files_created"].is_array(), "should list created files");
+    assert!(
+        json["detail"]["files_created"].is_array(),
+        "should list created files"
+    );
 }
 
 #[test]
@@ -182,7 +197,10 @@ fn init_fails_if_pyproject_exists() {
         .args(["init", "-y"])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("already exists").or(predicate::str::contains("pyproject.toml")));
+        .stdout(
+            predicate::str::contains("already exists")
+                .or(predicate::str::contains("pyproject.toml")),
+        );
 }
 
 #[test]
