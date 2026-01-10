@@ -4,7 +4,6 @@ use predicates::prelude::*;
 use std::fs;
 use tempfile::TempDir;
 
-
 fn bin() -> Command {
     cargo_bin_cmd!("pybun")
 }
