@@ -1,12 +1,18 @@
 use assert_cmd::Command;
+use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
 use std::fs;
 use tempfile::TempDir;
 
+
+fn bin() -> Command {
+    cargo_bin_cmd!("pybun")
+}
+
 #[test]
 fn outdated_fails_without_lockfile() {
     let temp = TempDir::new().unwrap();
-    let mut cmd = Command::cargo_bin("pybun").unwrap();
+    let mut cmd = bin();
     cmd.current_dir(&temp)
         .arg("outdated")
         .assert()

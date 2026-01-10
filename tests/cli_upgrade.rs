@@ -1,12 +1,18 @@
 use assert_cmd::Command;
+use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
 use std::fs;
 use tempfile::TempDir;
 
+
+fn bin() -> Command {
+    cargo_bin_cmd!("pybun")
+}
+
 #[test]
 fn upgrade_fails_without_lockfile() {
     let temp = TempDir::new().unwrap();
-    let mut cmd = Command::cargo_bin("pybun").unwrap();
+    let mut cmd = bin();
     cmd.current_dir(&temp)
         .arg("upgrade")
         .assert()
@@ -48,8 +54,8 @@ dependencies = [
     fs::write(&index_path, index_v1).unwrap();
 
     // 3. Install v1.0.0
-    let mut cmd = Command::cargo_bin("pybun").unwrap();
-    cmd.current_dir(&project_root)
+    let mut cmd = bin();
+    cmd.current_dir(project_root)
         .arg("install")
         .arg("--index")
         .arg(&index_path)
@@ -84,8 +90,8 @@ dependencies = [
     fs::write(&index_path, index_v2).unwrap();
 
     // 5. Upgrade
-    let mut cmd = Command::cargo_bin("pybun").unwrap();
-    cmd.current_dir(&project_root)
+    let mut cmd = bin();
+    cmd.current_dir(project_root)
         .arg("upgrade")
         .arg("--index")
         .arg(&index_path)
@@ -130,9 +136,8 @@ dependencies = [
     fs::write(&index_path, index_v1).unwrap();
 
     // 3. Install
-    Command::cargo_bin("pybun")
-        .unwrap()
-        .current_dir(&project_root)
+    bin()
+        .current_dir(project_root)
         .args(["install", "--index", index_path.to_str().unwrap()])
         .assert()
         .success();
@@ -167,9 +172,8 @@ dependencies = [
     fs::write(&index_path, index_v2).unwrap();
 
     // 5. Partial upgrade ONLY pkg-a
-    Command::cargo_bin("pybun")
-        .unwrap()
-        .current_dir(&project_root)
+    bin()
+        .current_dir(project_root)
         .args(["upgrade", "pkg-a", "--index", index_path.to_str().unwrap()])
         .assert()
         .success()
