@@ -101,7 +101,7 @@ impl Requirement {
         }
     }
 
-    fn is_satisfied_by(&self, version: &str) -> bool {
+    pub fn is_satisfied_by(&self, version: &str) -> bool {
         match &self.spec {
             VersionSpec::Exact(v) => v == version,
             VersionSpec::Minimum(min) => compare_versions(version, min) != Ordering::Less,
@@ -198,6 +198,7 @@ impl PackageArtifacts {
             wheels: vec![Wheel {
                 file: format!("{name}-{version}-py3-none-any.whl"),
                 url: None,
+                hash: None,
                 platforms: vec!["any".into()],
             }],
             sdist: None,
@@ -209,6 +210,7 @@ impl PackageArtifacts {
 pub struct Wheel {
     pub file: String,
     pub url: Option<String>,
+    pub hash: Option<String>,
     pub platforms: Vec<String>,
 }
 
@@ -221,6 +223,7 @@ pub struct Resolution {
 pub struct ArtifactSelection {
     pub filename: String,
     pub url: Option<String>,
+    pub hash: Option<String>,
     pub matched_platform: Option<String>,
     pub from_source: bool,
     pub available_wheels: usize,
@@ -311,6 +314,7 @@ pub fn select_artifact_for_platform(
             return ArtifactSelection {
                 filename: wheel.file.clone(),
                 url: wheel.url.clone(),
+                hash: wheel.hash.clone(),
                 matched_platform,
                 from_source: false,
                 available_wheels: pkg.artifacts.wheels.len(),
@@ -334,6 +338,7 @@ pub fn select_artifact_for_platform(
             return ArtifactSelection {
                 filename: wheel.file.clone(),
                 url: wheel.url.clone(),
+                hash: wheel.hash.clone(),
                 matched_platform,
                 from_source: false,
                 available_wheels: pkg.artifacts.wheels.len(),
@@ -345,6 +350,7 @@ pub fn select_artifact_for_platform(
         return ArtifactSelection {
             filename: sdist.clone(),
             url: None,
+            hash: None, // sdist hash not yet tracked in PackageArtifacts struct
             matched_platform: None,
             from_source: true,
             available_wheels: pkg.artifacts.wheels.len(),
@@ -361,6 +367,7 @@ pub fn select_artifact_for_platform(
     ArtifactSelection {
         filename: fallback,
         url: None,
+        hash: None,
         matched_platform: None,
         from_source: pkg.artifacts.wheels.is_empty(),
         available_wheels: pkg.artifacts.wheels.len(),
@@ -674,14 +681,14 @@ fn build_requested_chain(
 }
 
 /// Compare two version strings, returning their ordering.
-fn compare_versions(a: &str, b: &str) -> Ordering {
+pub fn compare_versions(a: &str, b: &str) -> Ordering {
     match (parse_version_relaxed(a), parse_version_relaxed(b)) {
         (Some(left), Some(right)) => left.cmp(&right),
         _ => a.cmp(b),
     }
 }
 
-fn parse_version_relaxed(input: &str) -> Option<Version> {
+pub fn parse_version_relaxed(input: &str) -> Option<Version> {
     if let Ok(v) = Version::parse(input) {
         return Some(v);
     }

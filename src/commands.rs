@@ -1,8 +1,8 @@
 use crate::build::{BuildBackend, BuildCache};
 use crate::cli::{
-    Cli, Commands, LazyImportArgs, LockArgs, McpCommands, ModuleFindArgs, OutputFormat,
-    ProfileArgs, ProgressMode, PythonCommands, SchemaCommands, SelfCommands, TelemetryCommands,
-    WatchArgs,
+    Cli, Commands, InitArgs, InitTemplate, LazyImportArgs, LockArgs, McpCommands, ModuleFindArgs,
+    OutdatedArgs, OutputFormat, ProfileArgs, ProgressMode, PythonCommands, SchemaCommands,
+    SelfCommands, TelemetryCommands, UpgradeArgs, WatchArgs,
 };
 use crate::env::{EnvSource, find_python_env};
 use crate::index::load_index_from_path;
@@ -14,7 +14,10 @@ use crate::progress::{ProgressConfig, ProgressDriver};
 use crate::project::Project;
 use crate::pypi::{PyPiClient, PyPiIndex};
 use crate::release_manifest::{ReleaseManifest, current_release_target};
-use crate::resolver::{Requirement, current_platform_tags, resolve, select_artifact_for_platform};
+use crate::resolver::{
+    PackageIndex, Requirement, compare_versions, current_platform_tags, resolve,
+    select_artifact_for_platform,
+};
 use crate::sandbox;
 use crate::sbom;
 use crate::schema::{Diagnostic, Event, EventCollector, EventType, JsonEnvelope, Status};
@@ -22,9 +25,16 @@ use crate::support_bundle::{BundleContext, BundleReport, build_support_bundle, u
 use crate::wheel_cache::WheelCache;
 use crate::workspace::Workspace;
 use color_eyre::eyre::{Result, eyre};
+use dialoguer::{Input, theme::ColorfulTheme};
+use futures::stream::{self, StreamExt};
+use console::Style;
+use std::collections::HashMap;
+use std::str::FromStr;
+use crate::resolver::parse_version_relaxed;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
+use std::sync::Arc;
 use std::fs;
 use std::io::IsTerminal;
 #[cfg(unix)]
@@ -557,6 +567,60 @@ pub async fn execute(cli: Cli) -> Result<()> {
                     collector.error(e.to_string());
                     (
                         "telemetry".to_string(),
+                        RenderDetail::error(
+                            e.to_string(),
+                            json!({
+                                "error": e.to_string(),
+                            }),
+                        ),
+                    )
+                }
+            }
+        }
+        Commands::Init(args) => {
+            let result = init_project(args);
+            match result {
+                Ok(detail) => ("init".to_string(), detail),
+                Err(e) => {
+                    collector.error(e.to_string());
+                    (
+                        "init".to_string(),
+                        RenderDetail::error(
+                            e.to_string(),
+                            json!({
+                                "error": e.to_string(),
+                            }),
+                        ),
+                    )
+                }
+            }
+        }
+        Commands::Outdated(args) => {
+            let result = run_outdated(args, &mut collector).await;
+            match result {
+                Ok(detail) => ("outdated".to_string(), detail),
+                Err(e) => {
+                    collector.error(e.to_string());
+                    (
+                        "outdated".to_string(),
+                        RenderDetail::error(
+                            e.to_string(),
+                            json!({
+                                "error": e.to_string(),
+                            }),
+                        ),
+                    )
+                }
+            }
+        }
+        Commands::Upgrade(args) => {
+            let result = run_upgrade(args, &mut collector).await;
+            match result {
+                Ok(detail) => ("upgrade".to_string(), detail),
+                Err(e) => {
+                    collector.error(e.to_string());
+                    (
+                        "upgrade".to_string(),
                         RenderDetail::error(
                             e.to_string(),
                             json!({
@@ -4527,6 +4591,567 @@ fn run_tests(args: &crate::cli::TestArgs, collector: &mut EventCollector) -> Res
     } else {
         Ok(RenderDetail::with_json(summary, detail))
     }
+}
+
+// ---------------------------------------------------------------------------
+// pybun init
+// ---------------------------------------------------------------------------
+
+fn sanitize_project_name(name: &str) -> String {
+    let sanitized: String = name.replace([' ', '-'], "_")
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .collect::<String>()
+        .to_lowercase();
+    
+    if sanitized.chars().next().is_some_and(|c| c.is_numeric()) {
+        format!("_{}", sanitized)
+    } else {
+        sanitized
+    }
+}
+
+fn init_project(args: &InitArgs) -> Result<RenderDetail> {
+    let cwd = std::env::current_dir().map_err(|e| eyre!("failed to get current directory: {}", e))?;
+    let pyproject_path = cwd.join("pyproject.toml");
+    let gitignore_path = cwd.join(".gitignore");
+    let readme_path = cwd.join("README.md");
+
+    let default_name = cwd.file_name()
+        .and_then(|n| n.to_str())
+        .map(sanitize_project_name)
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "my_project".to_string());
+
+    // Resolve arguments (interactive or defaults)
+    let (name, description, python, author, template) = if args.yes {
+        (
+            args.name.clone().unwrap_or(default_name),
+            args.description.clone(),
+            args.python.clone().or_else(|| Some("3.12".to_string())), // Default to 3.12 if not specified
+            args.author.clone(),
+            args.template,
+        )
+    } else {
+        // Interactive mode
+        let theme = ColorfulTheme::default();
+        
+        // Name
+        let name: String = if let Some(n) = &args.name {
+            n.clone()
+        } else {
+            Input::with_theme(&theme)
+                .with_prompt("Project name")
+                .default(default_name)
+                .interact_text()?
+        };
+
+        // Description
+        let description: Option<String> = if let Some(d) = &args.description {
+            Some(d.clone())
+        } else {
+            let d: String = Input::with_theme(&theme)
+                .with_prompt("Description")
+                .allow_empty(true)
+                .interact_text()?;
+            if d.is_empty() { None } else { Some(d) }
+        };
+
+        // Python Version
+        let python: Option<String> = if let Some(p) = &args.python {
+            Some(p.clone())
+        } else {
+            let p: String = Input::with_theme(&theme)
+                .with_prompt("Python version")
+                .default("3.12".to_string())
+                .interact_text()?;
+             Some(p)
+        };
+        
+        // Author
+        let author: Option<String> = if let Some(a) = &args.author {
+            Some(a.clone())
+        } else {
+            let a: String = Input::with_theme(&theme)
+                .with_prompt("Author")
+                .allow_empty(true)
+                .interact_text()?;
+            if a.is_empty() { None } else { Some(a) }
+        };
+
+        // Template
+        let template = args.template; // Can also make this interactive later if needed
+        
+        (name, description, python, author, template)
+    };
+    
+    // Check main file existence
+    if pyproject_path.exists() {
+         return Err(eyre!("pyproject.toml already exists at {}", pyproject_path.display()));
+    }
+
+    // Build pyproject.toml content
+    let mut pyproject = String::new();
+    pyproject.push_str("[project]\n");
+    pyproject.push_str(&format!("name = \"{}\"\n", name));
+    pyproject.push_str("version = \"0.1.0\"\n");
+
+    if let Some(desc) = &description {
+        pyproject.push_str(&format!("description = \"{}\"\n", desc));
+    }
+
+    if let Some(py) = &python {
+        pyproject.push_str(&format!("requires-python = \">={}\"\n", py));
+    }
+
+    if let Some(auth) = &author {
+        pyproject.push_str(&format!("authors = [{{ name = \"{}\" }}]\n", auth));
+    }
+
+    pyproject.push_str("dependencies = []\n");
+    pyproject.push_str("\n[build-system]\n");
+    pyproject.push_str("requires = [\"hatchling\"]\n");
+    pyproject.push_str("build-backend = \"hatchling.build\"\n");
+
+    // Write pyproject.toml
+    fs::write(&pyproject_path, &pyproject).map_err(|e| eyre!("failed to write pyproject.toml: {}", e))?;
+    let mut files_created = vec![pyproject_path.display().to_string()];
+    let mut files_skipped = vec![];
+
+    // Create .gitignore (with check)
+    if !gitignore_path.exists() {
+        let gitignore_content = r#"# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# PyBun
+pybun.lockb
+.pybun/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+"#;
+        fs::write(&gitignore_path, gitignore_content).map_err(|e| eyre!("failed to write .gitignore: {}", e))?;
+        files_created.push(gitignore_path.display().to_string());
+    } else {
+        files_skipped.push(gitignore_path.display().to_string());
+    }
+
+    // Create README.md (with check)
+    if !readme_path.exists() {
+        let readme_content = format!("# {}\n\nA Python project.\n", name);
+        fs::write(&readme_path, readme_content).map_err(|e| eyre!("failed to write README.md: {}", e))?;
+        files_created.push(readme_path.display().to_string());
+    } else {
+        files_skipped.push(readme_path.display().to_string());
+    }
+
+    // Create src layout if package template
+    if matches!(template, InitTemplate::Package) {
+        let package_name = sanitize_project_name(&name);
+        let src_dir = cwd.join("src").join(&package_name);
+        fs::create_dir_all(&src_dir).map_err(|e| eyre!("failed to create src directory: {}", e))?;
+
+        let init_path = src_dir.join("__init__.py");
+        // Safe to overwrite empty init or check? Usually safe to check.
+        if !init_path.exists() {
+             fs::write(&init_path, "").map_err(|e| eyre!("failed to write __init__.py: {}", e))?;
+             files_created.push(init_path.display().to_string());
+        } else {
+             files_skipped.push(init_path.display().to_string());
+        }
+    }
+
+    let summary = format!(
+        "Initialized project '{}' with {} files ({} skipped)", 
+        name, files_created.len(), files_skipped.len()
+    );
+
+    Ok(RenderDetail::with_json(
+        summary,
+        json!({
+            "project_name": name,
+            "template": format!("{:?}", template).to_lowercase(),
+            "files_created": files_created,
+            "files_skipped": files_skipped,
+        }),
+    ))
+}
+
+// ---------------------------------------------------------------------------
+// pybun outdated
+// ---------------------------------------------------------------------------
+
+async fn run_outdated(args: &OutdatedArgs, collector: &mut EventCollector) -> Result<RenderDetail> {
+    let cwd = std::env::current_dir().map_err(|e| eyre!("failed to get current directory: {}", e))?;
+    let lock_path = cwd.join("pybun.lockb");
+
+    if !lock_path.exists() {
+        return Err(eyre!("pybun.lockb not found. Run 'pybun install' first."));
+    }
+
+    let lockfile = Lockfile::load_from_path(&lock_path)
+        .map_err(|e| eyre!("failed to load lockfile: {}", e))?;
+
+    // Load constraints for "wanted" logic
+    let constraints = if let Ok(project) = Project::discover(&cwd) {
+        let meta = project.metadata();
+        let mut map = HashMap::new();
+        for dep_str in meta.dependencies {
+            if let Ok(req) = Requirement::from_str(&dep_str) {
+                map.insert(req.name.clone(), req);
+            }
+        }
+        map
+    } else {
+        HashMap::new()
+    };
+
+    collector.event(EventType::ResolveStart);
+
+    let mut outdated_packages = Vec::new();
+    let mut check_errors = Vec::new();
+    let packages_to_check: Vec<(String, Package)> = lockfile.packages.into_iter().collect();
+
+    // Setup client
+    let client = PyPiClient::from_env(args.offline)
+        .map_err(|e| eyre!("failed to create PyPI client: {}", e))?;
+    
+    // Setup local index if needed
+    let local_index = if let Some(path) = &args.index {
+         Some(Arc::new(load_index_from_path(path).map_err(|e| eyre!("{}", e))?))
+    } else {
+         None
+    };
+    
+    // Check versions in parallel
+    let constraints_ref = &constraints;
+    
+    // Use stream buffering for parallel requests
+    let results = stream::iter(packages_to_check)
+        .map(|(name, pkg)| {
+            let client = client.clone();
+            let local_index = local_index.clone();
+            async move {
+                let all_versions_res = if let Some(index) = local_index {
+                     index.all(&name).await
+                } else {
+                     let pypi = PyPiIndex::new(client);
+                     pypi.all(&name).await
+                };
+                (name, pkg, all_versions_res)
+            }
+        })
+        .buffer_unordered(10) // Concurrency limit
+        .collect::<Vec<_>>()
+        .await;
+
+    for (name, pkg, res) in results {
+        match res {
+            Ok(all_versions) => {
+                let latest = all_versions
+                    .iter()
+                    .max_by(|a, b| compare_versions(&a.version, &b.version))
+                    .map(|p| p.version.clone());
+
+                if let Some(latest_version) = latest {
+                    let wanted_version = if let Some(req) = constraints_ref.get(&name) {
+                        all_versions.iter()
+                           .filter(|p| req.is_satisfied_by(&p.version))
+                           .max_by(|a, b| compare_versions(&a.version, &b.version)) // Prefer newest matching
+                           .map(|p| p.version.clone())
+                           .unwrap_or_else(|| latest_version.clone()) // If constraints exclude everything (unlikely if installed), fallback to latest
+                    } else {
+                        latest_version.clone()
+                    };
+
+                    let is_outdated = latest_version != pkg.version;
+                    let is_wanted_outdated = wanted_version != pkg.version;
+
+                    if is_outdated || is_wanted_outdated {
+                        let update_type = classify_update(&pkg.version, &latest_version);
+                        
+                        outdated_packages.push(json!({
+                            "package": name,
+                            "current": pkg.version,
+                            "wanted": wanted_version,
+                            "latest": latest_version,
+                            "type": update_type,
+                        }));
+                    }
+                }
+            }
+            Err(e) => {
+                collector.warning(format!("failed to check {}: {}", name, e));
+                check_errors.push(json!({"package": name, "error": e.to_string()}));
+            }
+        }
+    }
+
+    collector.event(EventType::ResolveComplete);
+
+    // Format output (Table for Summary)
+    let mut summary = String::new();
+    if outdated_packages.is_empty() {
+        summary.push_str("All packages are up to date.");
+    } else {
+        use std::fmt::Write;
+        // Header
+        let _ = writeln!(summary, "{: <20} {: <10} {: <10} {: <10} {: <10}", "Package", "Current", "Wanted", "Latest", "Type");
+        
+        for item in &outdated_packages {
+             let name = item["package"].as_str().unwrap_or("?");
+             let current = item["current"].as_str().unwrap_or("?");
+             let wanted = item["wanted"].as_str().unwrap_or("?");
+             let latest = item["latest"].as_str().unwrap_or("?");
+             let type_str = item["type"].as_str().unwrap_or("?");
+             
+             let color_style = match type_str {
+                 "major" => Style::new().red(),
+                 "minor" => Style::new().yellow(),
+                 "patch" => Style::new().green(),
+                 _ => Style::new().dim(),
+             };
+             
+             let _ = writeln!(summary, "{: <20} {: <10} {: <10} {: <10} {: <10}", 
+                 name, current, wanted, latest, color_style.apply_to(type_str));
+        }
+    }
+
+    Ok(RenderDetail::with_json(
+        summary,
+        json!({
+            "outdated": outdated_packages,
+            "errors": check_errors
+        }),
+    ))
+}
+
+fn classify_update(current: &str, latest: &str) -> &'static str {
+    let cur = parse_version_relaxed(current);
+    let lat = parse_version_relaxed(latest);
+
+    match (cur, lat) {
+        (Some(c), Some(l)) => {
+            if l.major > c.major {
+                "major"
+            } else if l.minor > c.minor {
+                "minor"
+            } else if l.patch > c.patch {
+                "patch"
+            } else {
+                "other"
+            }
+        }
+        _ => "unknown",
+    }
+}
+
+// ---------------------------------------------------------------------------
+// pybun upgrade
+// ---------------------------------------------------------------------------
+
+async fn run_upgrade(args: &UpgradeArgs, collector: &mut EventCollector) -> Result<RenderDetail> {
+    let cwd = std::env::current_dir().map_err(|e| eyre!("failed to get current directory: {}", e))?;
+    let lock_path = if args.lock.is_absolute() {
+        args.lock.clone()
+    } else {
+        cwd.join(&args.lock)
+    };
+
+    if !lock_path.exists() {
+        return Err(eyre!("lockfile not found at {}. Run 'pybun install' first.", lock_path.display()));
+    }
+
+    // Load project to get constraints
+    let project = Project::discover(&cwd)
+        .map_err(|e| eyre!("failed to load project: {}", e))?;
+
+    let dependencies = project.dependencies();
+    if dependencies.is_empty() {
+        return Ok(RenderDetail::with_json(
+            "No dependencies to upgrade",
+            json!({
+                "upgraded": [],
+                "dry_run": args.dry_run,
+            }),
+        ));
+    }
+
+    // Load current lockfile if exists (for partial updates and comparison)
+    let current_lock = Lockfile::load_from_path(&lock_path).ok();
+
+    // Prepare requirements
+    let mut requirements: Vec<Requirement> = Vec::new();
+
+    // Strategy:
+    // 1. If args.packages is empty (upgrade all): Use project dependencies.
+    // 2. If args.packages is distinct:
+    //    - For packages in args.packages: Use project constraints (or Any).
+    //    - For others found in lockfile: Pin to lockfile version (Exact).
+    //    - For others NOT in lockfile (new deps?): Use project constraints.
+    
+    for dep_str in &dependencies {
+        if let Ok(req) = dep_str.parse::<Requirement>() {
+            let is_target = if args.packages.is_empty() {
+                true // Upgrade everything
+            } else {
+                // Check if this requirement matches any targeted package
+                args.packages.iter().any(|p| p.eq_ignore_ascii_case(&req.name))
+            };
+
+            if is_target {
+                 requirements.push(req);
+            } else {
+                // Not targeted. Check if we should pin it.
+                if let Some(lock) = &current_lock {
+                    if let Some(pkg) = lock.packages.get(&req.name) {
+                         // Pin to currently locked version
+                         requirements.push(Requirement::exact(req.name.clone(), &pkg.version));
+                    } else {
+                         // Not locked yet, strict requirement
+                         requirements.push(req);
+                    }
+                } else {
+                    requirements.push(req);
+                }
+            }
+        }
+    }
+
+    collector.event(EventType::ResolveStart);
+
+    // Re-resolve dependencies
+    let resolution = if let Some(index_path) = &args.index {
+        let index = load_index_from_path(index_path)?;
+        resolve(requirements.clone(), &index).await?
+    } else {
+        let pypi_client = PyPiClient::from_env(args.offline)
+            .map_err(|e| eyre!("failed to create PyPI client: {}", e))?;
+        let pypi_index = PyPiIndex::new(pypi_client);
+        resolve(requirements.clone(), &pypi_index).await?
+    };
+
+    collector.event(EventType::ResolveComplete);
+
+    let mut upgraded_packages: Vec<Value> = Vec::new();
+    let platform_tags = current_platform_tags();
+    
+    // Use an empty lockfile if none exists for comparison base
+    let base_lock = current_lock.unwrap_or_else(|| Lockfile::new(vec!["3.12".into()], vec!["any".into()]));
+
+    // Build new lockfile
+    let mut new_lock = Lockfile::new(
+        base_lock.python_versions.clone(),
+        base_lock.platforms.clone(),
+    );
+
+    for (pkg_name, pkg) in &resolution.packages {
+        let selection = select_artifact_for_platform(pkg, &platform_tags);
+        let wheel_name = selection.filename.clone();
+        
+        // Use real hash if available, otherwise placeholder
+        let hash = selection.hash.clone().unwrap_or_else(|| "sha256:placeholder".to_string());
+
+        let new_pkg = Package {
+            name: pkg.name.clone(),
+            version: pkg.version.clone(),
+            source: pkg.source.clone().unwrap_or_else(|| PackageSource::Registry {
+                index: "https://pypi.org/simple".to_string(),
+                url: String::new(),
+            }),
+            wheel: wheel_name,
+            hash,
+            dependencies: pkg.dependencies.iter().map(|r| r.to_string()).collect(),
+        };
+
+        // Track upgrades
+        let from_version = base_lock.packages.get(pkg_name).map(|p| p.version.clone());
+        let is_change = match &from_version {
+            Some(v) => *v != pkg.version,
+            None => true, // New package
+        };
+
+        if is_change {
+             upgraded_packages.push(json!({
+                 "package": pkg_name,
+                 "from": from_version,
+                 "to": pkg.version,
+                 "new": from_version.is_none()
+             }));
+        }
+
+        new_lock.add_package(new_pkg);
+    }
+    
+    // Also track removed packages (if any project dependency was removed/untracked)
+    // Note: Since we start from project dependencies, packages no longer in project deps won't be resolved.
+    for (name, pkg) in &base_lock.packages {
+        if !new_lock.packages.contains_key(name) {
+             upgraded_packages.push(json!({
+                 "package": name,
+                 "from": pkg.version.clone(),
+                 "to": null,
+                 "removed": true
+             }));
+        }
+    }
+
+    // Write lockfile unless dry-run
+    if !args.dry_run {
+        new_lock.save_to_path(&lock_path)
+            .map_err(|e| eyre!("failed to save lockfile: {}", e))?;
+    }
+
+    // Generate Summary
+    let mut summary = String::new();
+    if upgraded_packages.is_empty() {
+        summary.push_str("All packages are already up to date.");
+    } else {
+        use std::fmt::Write;
+        if args.dry_run {
+            writeln!(summary, "Changes (dry-run):")?;
+        } else {
+            writeln!(summary, "Upgraded packages:")?;
+        }
+        
+        for item in &upgraded_packages {
+            let name = item["package"].as_str().unwrap_or("?");
+            let from = item["from"].as_str();
+            let to = item["to"].as_str();
+            
+            if item.get("new").and_then(|v| v.as_bool()).unwrap_or(false) {
+                 writeln!(summary, "  + {} {}", name, to.unwrap_or("?"))?;
+            } else if item.get("removed").and_then(|v| v.as_bool()).unwrap_or(false) {
+                 writeln!(summary, "  - {} {}", name, from.unwrap_or("?"))?;
+            } else {
+                 writeln!(summary, "  {} {} -> {}", name, from.unwrap_or("?"), to.unwrap_or("?"))?;
+            }
+        }
+    }
+
+    Ok(RenderDetail::with_json(
+        summary.trim().to_string(),
+        json!({
+            "upgraded": upgraded_packages,
+            "dry_run": args.dry_run,
+            "lockfile": lock_path.display().to_string(),
+        }),
+    ))
 }
 
 #[cfg(test)]

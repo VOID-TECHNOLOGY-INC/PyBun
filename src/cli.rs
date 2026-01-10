@@ -45,6 +45,8 @@ pub enum ProgressMode {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
+    /// Initialize a new Python project.
+    Init(InitArgs),
     /// Install dependencies from lock or project metadata.
     Install(InstallArgs),
     /// Add a package and update lockfile.
@@ -90,6 +92,10 @@ pub enum Commands {
     /// Manage telemetry settings (opt-in/opt-out).
     #[command(subcommand)]
     Telemetry(TelemetryCommands),
+    /// Check for outdated dependencies.
+    Outdated(OutdatedArgs),
+    /// Upgrade dependencies within constraints.
+    Upgrade(UpgradeArgs),
 }
 
 #[derive(Subcommand, Debug)]
@@ -447,3 +453,63 @@ pub struct ProfileArgs {
     #[arg(long, short = 'o', value_name = "FILE")]
     pub output: Option<std::path::PathBuf>,
 }
+
+#[derive(Args, Debug)]
+pub struct InitArgs {
+    /// Project name (defaults to directory name).
+    #[arg(long)]
+    pub name: Option<String>,
+    /// Project description.
+    #[arg(long)]
+    pub description: Option<String>,
+    /// Python version requirement.
+    #[arg(long)]
+    pub python: Option<String>,
+    /// Author name and email.
+    #[arg(long)]
+    pub author: Option<String>,
+    /// Project template (minimal or package).
+    #[arg(long, value_enum, default_value_t = InitTemplate::Minimal)]
+    pub template: InitTemplate,
+    /// Accept defaults without prompting.
+    #[arg(short = 'y', long)]
+    pub yes: bool,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+pub enum InitTemplate {
+    /// Flat layout with just pyproject.toml.
+    Minimal,
+    /// Source layout with src/<package>/__init__.py.
+    Package,
+}
+
+#[derive(Args, Debug)]
+pub struct OutdatedArgs {
+    /// Path to index JSON (uses PyPI if not specified).
+    #[arg(long)]
+    pub index: Option<std::path::PathBuf>,
+    /// Use offline mode when cache is sufficient.
+    #[arg(long)]
+    pub offline: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct UpgradeArgs {
+    /// Package(s) to upgrade (upgrades all if not specified).
+    #[arg(value_name = "PACKAGE")]
+    pub packages: Vec<String>,
+    /// Path to index JSON (uses PyPI if not specified).
+    #[arg(long)]
+    pub index: Option<std::path::PathBuf>,
+    /// Use offline mode when cache is sufficient.
+    #[arg(long)]
+    pub offline: bool,
+    /// Preview changes without updating lockfile.
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Path to lockfile.
+    #[arg(long, default_value = "pybun.lockb")]
+    pub lock: std::path::PathBuf,
+}
+
