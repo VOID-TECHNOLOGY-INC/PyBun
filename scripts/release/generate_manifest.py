@@ -100,6 +100,15 @@ def main() -> None:
             "url": f"{base_url}/{name}",
             "sha256": digest,
         }
+        # Annotate compatibility hints for shim-side fallback behavior
+        compat = {}
+        if target.endswith("-unknown-linux-musl"):
+            compat = {"libc": "musl"}
+        elif target.endswith("-unknown-linux-gnu"):
+            # Baseline set to Ubuntu 20.04 (glibc 2.31) when built on 20.04 runners
+            compat = {"libc": "glibc", "min_glibc": "2.31"}
+        if compat:
+            asset["compat"] = compat
         if signature_ext:
             sig_path = path.with_name(path.name + signature_ext)
             if sig_path.exists():
