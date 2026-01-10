@@ -1916,7 +1916,7 @@ dependencies = [
 
 [[package]]
 name = "pybun"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "assert_cmd",
  "base64 0.22.1",
