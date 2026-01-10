@@ -37,16 +37,16 @@ jobs:
           - os: macos-latest
             target: aarch64-apple-darwin
             artifact_name: pybun-aarch64-apple-darwin
-          # Linux x86_64 (glibc) — build on 20.04 to target glibc 2.31 baseline
-          - os: ubuntu-20.04
+          # Linux x86_64 (glibc) — build on 22.04 to target glibc 2.35 baseline (20.04 deprecated)
+          - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             artifact_name: pybun-x86_64-unknown-linux-gnu
           # Linux x86_64 (musl - static)
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
             artifact_name: pybun-x86_64-unknown-linux-musl
-          # Linux ARM64 (glibc) — cross on 20.04 to lower glibc baseline
-          - os: ubuntu-20.04
+          # Linux ARM64 (glibc) — cross on 22.04 (20.04 deprecated)
+          - os: ubuntu-22.04
             target: aarch64-unknown-linux-gnu
             artifact_name: pybun-aarch64-unknown-linux-gnu
           # Windows x86_64 (stub for API stability)
