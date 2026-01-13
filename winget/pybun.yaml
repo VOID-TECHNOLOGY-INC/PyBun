@@ -19,7 +19,7 @@ Tags:
 Installers:
   - Architecture: x64
     InstallerUrl: https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.1.12/pybun-x86_64-pc-windows-msvc.zip
-    InstallerSha256: 20b70ed4f96b73d62d55f259dad6f623de0f80bf7b8cda6c6f6f0b3ee05e7a99
+    InstallerSha256: dbab442f34283e34eb09f67155c61e080aba05e264f5a7eb8bc01679eecba71e
     InstallerType: zip
     NestedInstallerType: portable
     NestedInstallerFiles:
