@@ -10,6 +10,7 @@
 </p>
 
 <p align="center">
+  <a href="#video-demo">Video Demo</a> •
   <a href="#quick-start">Quick Start</a> •
   <a href="#why-pybun">Why PyBun?</a> •
   <a href="#mcp-server">MCP Server</a> •
@@ -25,7 +26,19 @@
 
 ---
 
+## Video Demo
+
+<p align="center">
+  <a href="https://www.youtube.com/watch?v=335xndnBOmE">
+    <img src="https://img.youtube.com/vi/335xndnBOmE/0.jpg" alt="PyBun Video Demo" width="600">
+  </a>
+</p>
+
+---
+
 ## Quick Start
+
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/VOID-TECHNOLOGY-INC/PyBun/blob/main/examples/PyBun_Quick_Start.ipynb)
 
 **macOS / Linux:**
 ```bash
