@@ -965,7 +965,7 @@ mod tests {
     #[tokio::test]
     async fn test_notification_handling() {
         let mut server = McpServer::new();
-        
+
         // 1. "initialized" notification (standard) - should return None
         let req1 = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
@@ -1003,4 +1003,3 @@ mod tests {
         assert!(server.handle_request(req4).await.is_none());
     }
 }
-
