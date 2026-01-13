@@ -351,7 +351,48 @@ Operate PyBun as an MCP server for agents/IDEs:
 pybun mcp serve --stdio
 pybun --format=json mcp serve --stdio  # JSON envelope for tooling
 ```
-Tools: `pybun_resolve`, `pybun_install`, `pybun_run`, `pybun_gc`, `pybun_doctor`. Resources: `pybun://cache/info`, `pybun://env/info`. HTTP mode remains TODO; stdio is the GA path.
+Tools: `pybun_resolve`, `pybun_install`, `pybun_run`, `pybun_gc`, `pybun_doctor`. Resources: `pybun://cache/info`, `pybun://env/info`.
+
+### Configuration (Claude Desktop)
+
+Add to your `claude_desktop_config.json`:
+
+#### Option 1: Using `uvx` (No install required)
+```json
+{
+  "mcpServers": {
+    "pybun": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "pybun-cli",
+        "pybun",
+        "mcp",
+        "serve",
+        "--stdio"
+      ]
+    }
+  }
+}
+```
+
+#### Option 2: Using pip install
+Requires `pip install pybun-cli`.
+```json
+{
+  "mcpServers": {
+    "pybun": {
+      "command": "pybun",
+      "args": [
+        "mcp",
+        "serve",
+        "--stdio"
+      ]
+    }
+  }
+}
+```
+*Note: If `pybun` is not in the PATH, provide the absolute path (e.g., `/Users/username/bin/pybun`).*
 
 ## JSON output examples
 
