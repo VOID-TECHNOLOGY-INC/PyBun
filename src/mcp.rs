@@ -123,7 +123,7 @@ impl McpServer {
 
         match request.method.as_str() {
             "initialize" => Some(self.handle_initialize(id, request.params)),
-            "initialized" => {
+            "initialized" | "notifications/initialized" => {
                 // Notification, no response needed
                 None
             }
@@ -135,11 +135,17 @@ impl McpServer {
                 eprintln!("MCP server shutting down");
                 Some(JsonRpcResponse::success(id, json!({})))
             }
-            _ => Some(JsonRpcResponse::error(
-                id,
-                -32601,
-                format!("Method not found: {}", request.method),
-            )),
+            _ => {
+                // Do not respond to notifications (requests without id)
+                if request.id.is_none() {
+                    return None;
+                }
+                Some(JsonRpcResponse::error(
+                    id,
+                    -32601,
+                    format!("Method not found: {}", request.method),
+                ))
+            }
         }
     }
 
