@@ -12,20 +12,20 @@ class Pybun < Formula
     on_macos do
       if Hardware::CPU.arm?
         url "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.1.12/pybun-aarch64-apple-darwin.tar.gz"
-        sha256 "1688afda94d9f58f853caa22b36ea26a276e60a2691f55dae2b22d6c52bd757b"
+        sha256 "e859fb061a41b2936814266ea3f43351d44b4f8eb839bf1e319cd1619ba0337c"
       else
         url "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.1.12/pybun-x86_64-apple-darwin.tar.gz"
-        sha256 "8dc9bf8cbb28d38242d63e9096d2d6c3cf3082fb535747bcaaeba50c7437b401"
+        sha256 "e7261dbf00a448e6757acd91d6c778eb68a6149af31aa9249d07dfd46512ce7c"
       end
     end
 
     on_linux do
       if Hardware::CPU.arm?
         url "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.1.12/pybun-aarch64-unknown-linux-gnu.tar.gz"
-        sha256 "3440240d3db537c18d4ecb5dbdf62b061469c358cc788e059c9b87e9a55584f2"
+        sha256 "ad1310ffce856a73495f1c9a7feadb51c17eb5a6178c8f3fabf18461f2cc3879"
       else
         url "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.1.12/pybun-x86_64-unknown-linux-gnu.tar.gz"
-        sha256 "759c029f93e174a5b3ad6b51945f71b2162faa9e9316093ae89b030478ac56f2"
+        sha256 "15f2b899401c11440c37df1ad5c4ace35866322d0760334eaf10018f78d8d516"
       end
     end
   end
