@@ -1195,7 +1195,7 @@ async fn install(
         let selection = select_artifact_for_platform(pkg, &platform_tags);
         if selection.from_source {
             let message = format!(
-                "no compatible pre-built wheel for {} {} on {}; falling back to source build",
+                "no compatible pre-built wheel for {} {} on {}; source distributions are not supported for install",
                 pkg.name,
                 pkg.version,
                 platform_tags.join(",")
@@ -1211,7 +1211,10 @@ async fn install(
                 url: "https://pypi.org/simple".into(),
             },
             wheel: selection.filename,
-            hash: "sha256:placeholder".into(),
+            hash: selection
+                .hash
+                .clone()
+                .unwrap_or_else(|| "sha256:placeholder".into()),
             dependencies: pkg.dependencies.iter().map(ToString::to_string).collect(),
         });
     }
@@ -1233,9 +1236,8 @@ async fn install(
             // Construct filename from selection
             let filename = PathBuf::from(selection.filename);
             let dest = cache_dir.join(filename);
-            // For now, let's use None for hash to unblock implementation,
-            // as hash is currently hardcoded or heuristic in some places.
-            download_items.push((url, dest, None));
+            // Include hash when available to verify downloads
+            download_items.push((url, dest, selection.hash.clone()));
         } else if selection.from_source {
             // sdist-only package - no wheel available
             sdist_only_packages.push(format!("{}=={}", pkg.name, pkg.version));
@@ -1292,16 +1294,23 @@ async fn install(
             return Err(eyre!("failed to download some artifacts"));
         }
 
+        collector.event_with(EventType::DownloadComplete, |event| {
+            event.message = Some("Downloads complete".to_string());
+            event.progress = Some(70);
+        });
+
         // Install wheels
         let working_dir = std::env::current_dir()?;
-        // We use finding logic from env module
-        // We need to import find_python_env if not already available in this scope, assumed explicit crate::env::find_python_env
         let env = crate::env::find_python_env(&working_dir)?;
 
-        // Warn if installing to system Python
-        if matches!(env.source, crate::env::EnvSource::System) {
-            let warning = "warning: Installing packages to system Python. Consider creating a virtual environment with 'python -m venv .venv'";
+        // Warn if installing to system Python while in a project
+        if matches!(env.source, crate::env::EnvSource::System)
+            && Project::discover(&working_dir).is_ok()
+        {
+            let warning =
+                "warning: PyBun is installing into system Python but a pyproject.toml exists.";
             eprintln!("{}", warning);
+            eprintln!("hint: Create a .venv or set PYBUN_ENV to target a virtual environment.");
             collector.warning(warning.to_string());
         }
 
@@ -1347,11 +1356,6 @@ async fn install(
             event.progress = Some(100);
         });
     }
-
-    collector.event_with(EventType::DownloadComplete, |event| {
-        event.message = Some("Downloads complete".to_string());
-        event.progress = Some(70);
-    });
 
     Ok(InstallOutcome {
         summary: format!(
@@ -1488,7 +1492,10 @@ async fn lock_dependencies(args: &LockArgs, collector: &mut EventCollector) -> R
                 url: "https://pypi.org/simple".into(),
             },
             wheel: selection.filename,
-            hash: "sha256:placeholder".into(),
+            hash: selection
+                .hash
+                .clone()
+                .unwrap_or_else(|| "sha256:placeholder".into()),
             dependencies: pkg.dependencies.iter().map(ToString::to_string).collect(),
         });
     }
@@ -4150,8 +4157,13 @@ fn detect_test_backend(_paths: &[PathBuf]) -> TestBackend {
     // Default to pytest as it's more common
     // Could be enhanced to detect based on imports in test files
 
-    // Check if pytest is available
-    if let Ok(output) = ProcessCommand::new("python3")
+    let python = std::env::current_dir()
+        .ok()
+        .and_then(|cwd| find_python_env(&cwd).ok().map(|env| env.python_path))
+        .unwrap_or_else(|| PathBuf::from("python3"));
+
+    // Check if pytest is available in the selected interpreter
+    if let Ok(output) = ProcessCommand::new(&python)
         .args(["-c", "import pytest"])
         .output()
         && output.status.success()

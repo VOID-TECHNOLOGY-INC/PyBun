@@ -93,24 +93,30 @@ pub fn find_python_env(working_dir: &Path) -> Result<PythonEnv> {
         eprintln!("warning: PYBUN_PYTHON={} not found, ignoring", python_path);
     }
 
-    // Check cache
+    // Load cache (used after checking for a fresh project venv).
     let mut cache = crate::env_cache::EnvCache::load();
+
+    // 3. Check project-local venv (prefer actual venv even if cache is stale)
+    if let Some(project_venv) = find_project_venv(working_dir)
+        && let Some(python) = find_venv_python(&project_venv)
+    {
+        let env = PythonEnv {
+            python_path: python,
+            version: get_python_version_from_venv(&project_venv),
+            source: EnvSource::ProjectLocal,
+        };
+        cache.put(working_dir, &env);
+        let _ = cache.save();
+        return Ok(env);
+    }
+
+    // Check cache after venv detection
     if let Some(env) = cache.get(working_dir) {
         return Ok(env);
     }
 
-    // 3. Check project-local .pybun/venv
-    let discovered = if let Some(project_venv) = find_project_venv(working_dir)
-        && let Some(python) = find_venv_python(&project_venv)
-    {
-        Some(PythonEnv {
-            python_path: python,
-            version: get_python_version_from_venv(&project_venv),
-            source: EnvSource::ProjectLocal,
-        })
-    }
     // 4. Check .python-version file
-    else if let Some((version_file, version)) = find_python_version_file(working_dir) {
+    let discovered = if let Some((version_file, version)) = find_python_version_file(working_dir) {
         if let Some(python) = find_python_for_version(&version) {
             Some(PythonEnv {
                 python_path: python,

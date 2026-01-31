@@ -1,5 +1,6 @@
 use assert_cmd::Command;
 use std::fs;
+use std::path::Path;
 use tempfile::tempdir;
 
 #[allow(deprecated)]
@@ -7,8 +8,25 @@ fn pybun_cmd() -> Command {
     Command::cargo_bin("pybun").unwrap()
 }
 
+fn network_enabled() -> bool {
+    std::env::var_os("PYBUN_E2E_NETWORK").is_some()
+}
+
+fn ensure_venv(project_root: &Path) {
+    let status = std::process::Command::new("python3")
+        .args(["-m", "venv", ".venv"])
+        .current_dir(project_root)
+        .status()
+        .expect("Failed to create venv");
+    assert!(status.success(), "Failed to create venv: {:?}", status);
+}
+
 #[test]
 fn test_workflow_init_add_run() {
+    if !network_enabled() {
+        eprintln!("Skipping test_workflow_init_add_run (PYBUN_E2E_NETWORK not set)");
+        return;
+    }
     let temp = tempdir().unwrap();
     let project_root = temp.path();
 
@@ -30,11 +48,7 @@ fn test_workflow_init_add_run() {
     assert!(project_root.join("pyproject.toml").exists());
 
     // Create a venv
-    std::process::Command::new("python3")
-        .args(["-m", "venv", ".venv"])
-        .current_dir(project_root)
-        .status()
-        .expect("Failed to create venv");
+    ensure_venv(project_root);
 
     // 2. Add requests
     let output = pybun_cmd()
@@ -60,7 +74,7 @@ fn test_workflow_init_add_run() {
     // 3. Run script - verify it uses venv python
     fs::write(
         project_root.join("check_req.py"),
-        "import sys; import requests; print('venv:' + sys.prefix); print('requests imported')",
+        "import requests\nimport sys\nprint('prefix=' + sys.prefix)\nprint('requests imported')\n",
     )
     .unwrap();
 
@@ -78,8 +92,9 @@ fn test_workflow_init_add_run() {
         stdout
     );
     // Verify it used the venv, not system python
+    let expected_prefix = project_root.join(".venv").to_string_lossy().to_string();
     assert!(
-        stdout.contains(".venv") || stdout.contains("venv"),
+        stdout.contains(&expected_prefix),
         "Script did not run with venv: {}",
         stdout
     );
@@ -87,6 +102,10 @@ fn test_workflow_init_add_run() {
 
 #[test]
 fn test_workflow_remove() {
+    if !network_enabled() {
+        eprintln!("Skipping test_workflow_remove (PYBUN_E2E_NETWORK not set)");
+        return;
+    }
     let temp = tempdir().unwrap();
     let project_root = temp.path();
 
@@ -96,11 +115,7 @@ fn test_workflow_remove() {
         .arg("--yes")
         .output()
         .unwrap();
-    std::process::Command::new("python3")
-        .args(["-m", "venv", ".venv"])
-        .current_dir(project_root)
-        .status()
-        .unwrap();
+    ensure_venv(project_root);
     pybun_cmd()
         .current_dir(project_root)
         .arg("add")
@@ -162,6 +177,10 @@ fn test_python_list() {
 
 #[test]
 fn test_x_ad_hoc_run() {
+    if !network_enabled() {
+        eprintln!("Skipping test_x_ad_hoc_run (PYBUN_E2E_NETWORK not set)");
+        return;
+    }
     // This requires network, might be flaky.
     // Use --help or something simpler if we just want to verify 'x' command exists?
     // But E2E implies functionality.
@@ -175,19 +194,7 @@ fn test_x_ad_hoc_run() {
         .output()
         .unwrap();
 
-    if !output.status.success() {
-        eprintln!("X command failed (network?): {:?}", output);
-        // Don't fail the whole suite for network in this environment?
-        // But implementation plan commits to verification.
-        // Let's fail if it's strictly logic error.
-        // If it's resolution error, maybe fine.
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("resolve") || stderr.contains("download") {
-            println!("Network related failure, skipping check.");
-            return;
-        }
-        panic!("X command failed: {:?}", output);
-    }
+    assert!(output.status.success(), "X command failed: {:?}", output);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         stdout.contains("hello") || stdout.contains("cowsay"),
@@ -198,6 +205,10 @@ fn test_x_ad_hoc_run() {
 
 #[test]
 fn test_lock() {
+    if !network_enabled() {
+        eprintln!("Skipping test_lock (PYBUN_E2E_NETWORK not set)");
+        return;
+    }
     let temp = tempdir().unwrap();
     let project_root = temp.path();
 
@@ -208,13 +219,7 @@ fn test_lock() {
         .arg("--yes")
         .output()
         .unwrap();
-
-    // Create venv
-    std::process::Command::new("python3")
-        .args(["-m", "venv", ".venv"])
-        .current_dir(project_root)
-        .status()
-        .unwrap();
+    ensure_venv(project_root);
 
     // Add (generates lockfile)
     pybun_cmd()
@@ -251,6 +256,10 @@ fn test_lock() {
 
 #[test]
 fn test_outdated_upgrade() {
+    if !network_enabled() {
+        eprintln!("Skipping test_outdated_upgrade (PYBUN_E2E_NETWORK not set)");
+        return;
+    }
     let temp = tempdir().unwrap();
     let project_root = temp.path();
 
@@ -261,13 +270,7 @@ fn test_outdated_upgrade() {
         .arg("--yes")
         .output()
         .unwrap();
-
-    // Create venv
-    std::process::Command::new("python3")
-        .args(["-m", "venv", ".venv"])
-        .current_dir(project_root)
-        .status()
-        .unwrap();
+    ensure_venv(project_root);
 
     // Add requests (old version if possible? hard to force old version without specifying)
     // We'll just add requests and check outdated (should be empty or not error)
@@ -297,6 +300,10 @@ fn test_outdated_upgrade() {
 
 #[test]
 fn test_build() {
+    if !network_enabled() {
+        eprintln!("Skipping test_build (PYBUN_E2E_NETWORK not set)");
+        return;
+    }
     let temp = tempdir().unwrap();
     let project_root = temp.path();
 
@@ -309,11 +316,7 @@ fn test_build() {
         .unwrap();
 
     // Create venv
-    std::process::Command::new("python3")
-        .args(["-m", "venv", ".venv"])
-        .current_dir(project_root)
-        .status()
-        .unwrap();
+    ensure_venv(project_root);
 
     // Install build tool
     let output = pybun_cmd()
@@ -379,11 +382,7 @@ fn test_test_runner() {
         .unwrap();
 
     // Create venv for test runner
-    std::process::Command::new("python3")
-        .args(["-m", "venv", ".venv"])
-        .current_dir(project_root)
-        .status()
-        .unwrap();
+    ensure_venv(project_root);
 
     // Create a dummy test file
     let test_dir = project_root.join("tests");
