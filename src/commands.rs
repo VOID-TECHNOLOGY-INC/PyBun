@@ -1223,6 +1223,7 @@ async fn install(
     collector.info(format!("Downloading artifacts to {}", cache_dir.display()));
 
     let mut download_items = Vec::new();
+    let mut sdist_only_packages = Vec::new();
     for pkg in resolution.packages.values() {
         let selection = select_artifact_for_platform(pkg, &platform_tags);
         if let Some(url) = selection.url {
@@ -1232,7 +1233,20 @@ async fn install(
             // For now, let's use None for hash to unblock implementation,
             // as hash is currently hardcoded or heuristic in some places.
             download_items.push((url, dest, None));
+        } else if selection.from_source {
+            // sdist-only package - no wheel available
+            sdist_only_packages.push(format!("{}=={}", pkg.name, pkg.version));
         }
+    }
+
+    // Fail if there are sdist-only packages (source builds not yet supported)
+    if !sdist_only_packages.is_empty() {
+        let message = format!(
+            "The following packages have no pre-built wheel for your platform and require source builds (not yet supported): {}",
+            sdist_only_packages.join(", ")
+        );
+        collector.error(message.clone());
+        return Err(eyre!(message));
     }
 
     collector.event_with(EventType::DownloadStart, |event| {
@@ -1278,6 +1292,13 @@ async fn install(
         // We need to import find_python_env if not already available in this scope, assumed explicit crate::env::find_python_env
         let env = crate::env::find_python_env(&working_dir)?;
         
+        // Warn if installing to system Python
+        if matches!(env.source, crate::env::EnvSource::System) {
+            let warning = "warning: Installing packages to system Python. Consider creating a virtual environment with 'python -m venv .venv'";
+            eprintln!("{}", warning);
+            collector.warning(warning.to_string());
+        }
+        
         collector.info(format!("Installing packages into {}", env.python_path.display()));
 
         // Determine site-packages path
@@ -1295,21 +1316,27 @@ async fn install(
 
         collector.info(format!("Target site-packages: {}", site_packages.display()));
 
+        collector.event_with(EventType::InstallStart, |event| {
+            event.message = Some(format!("Installing {} packages", wheels_to_install.len()));
+            event.progress = Some(85);
+        });
+
         for wheel in wheels_to_install {
             if wheel.exists() {
                  crate::installer::install_wheel(&wheel, &site_packages)
                     .map_err(|e| eyre!("failed to install wheel {}: {}", wheel.display(), e))?;
             }
         }
+
+        collector.event_with(EventType::InstallComplete, |event| {
+            event.message = Some("Installation complete".to_string());
+            event.progress = Some(100);
+        });
     }
 
     collector.event_with(EventType::DownloadComplete, |event| {
         event.message = Some("Downloads complete".to_string());
         event.progress = Some(70);
-    });
-    collector.event_with(EventType::InstallStart, |event| {
-        event.message = Some("Installing packages".to_string());
-        event.progress = Some(85);
     });
 
     Ok(InstallOutcome {
