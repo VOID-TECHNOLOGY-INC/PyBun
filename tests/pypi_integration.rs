@@ -12,6 +12,16 @@ fn bin() -> Command {
     cargo_bin_cmd!("pybun")
 }
 
+fn mock_download(server: &MockServer, filename: &str) {
+    let path = format!("/files/{}", filename);
+    server.mock(move |when, then| {
+        when.method(GET).path(path.as_str());
+        then.status(200)
+            .header("Content-Type", "application/octet-stream")
+            .body("wheel");
+    });
+}
+
 fn setup_package_mocks(server: &MockServer) -> String {
     let base = server.base_url();
 
@@ -24,14 +34,14 @@ fn setup_package_mocks(server: &MockServer) -> String {
                     "packagetype": "bdist_wheel",
                     "url": format!("{}/files/app-1.0.0-py3-none-any.whl", base),
                     "yanked": false,
-                    "digests": { "sha256": "abc" }
+                    "digests": { "sha256": "placeholder" }
                 },
                 {
                     "filename": "app-1.0.0.tar.gz",
                     "packagetype": "sdist",
                     "url": format!("{}/files/app-1.0.0.tar.gz", base),
                     "yanked": false,
-                    "digests": { "sha256": "def" }
+                    "digests": { "sha256": "placeholder" }
                 }
             ]
         }
@@ -71,7 +81,7 @@ fn setup_package_mocks(server: &MockServer) -> String {
                     "packagetype": "bdist_wheel",
                     "url": format!("{}/files/dep-2.0.0-py3-none-any.whl", base),
                     "yanked": false,
-                    "digests": { "sha256": "ghi" }
+                    "digests": { "sha256": "placeholder" }
                 }
             ]
         }
@@ -101,6 +111,9 @@ fn setup_package_mocks(server: &MockServer) -> String {
             .body(dep_meta_body.clone());
     });
 
+    mock_download(server, "app-1.0.0-py3-none-any.whl");
+    mock_download(server, "dep-2.0.0-py3-none-any.whl");
+
     base
 }
 
@@ -120,7 +133,7 @@ async fn concurrent_metadata_fetch_is_deduped() {
                     "packagetype": "bdist_wheel",
                     "url": format!("{}/files/app-1.0.0-py3-none-any.whl", base),
                     "yanked": false,
-                    "digests": { "sha256": "abc" }
+                    "digests": { "sha256": "placeholder" }
                 }
             ]
         }
@@ -201,7 +214,7 @@ fn install_does_not_prefetch_all_version_metadata() {
                     "packagetype": "bdist_wheel",
                     "url": format!("{}/files/app-1.0.0-py3-none-any.whl", base),
                     "yanked": false,
-                    "digests": { "sha256": "abc" }
+                    "digests": { "sha256": "placeholder" }
                 }
             ],
             "2.0.0": [
@@ -210,7 +223,7 @@ fn install_does_not_prefetch_all_version_metadata() {
                     "packagetype": "bdist_wheel",
                     "url": format!("{}/files/app-2.0.0-py3-none-any.whl", base),
                     "yanked": false,
-                    "digests": { "sha256": "def" }
+                    "digests": { "sha256": "placeholder" }
                 }
             ]
         }
@@ -223,6 +236,9 @@ fn install_does_not_prefetch_all_version_metadata() {
             .header("Content-Type", "application/json")
             .body(project_body.clone());
     });
+
+    mock_download(&server, "app-1.0.0-py3-none-any.whl");
+    mock_download(&server, "app-2.0.0-py3-none-any.whl");
 
     server.mock(|when, then| {
         when.method(GET).path("/pypi/app/1.0.0/json");
@@ -385,7 +401,7 @@ fn install_uses_fresh_cache_without_network() {
                     "packagetype": "bdist_wheel",
                     "url": format!("{}/files/app-1.0.0-py3-none-any.whl", base),
                     "yanked": false,
-                    "digests": { "sha256": "abc" }
+                    "digests": { "sha256": "placeholder" }
                 }
             ]
         }
@@ -400,6 +416,8 @@ fn install_uses_fresh_cache_without_network() {
             .header("ETag", "\"v1\"")
             .body(project_body.clone());
     });
+
+    mock_download(&server, "app-1.0.0-py3-none-any.whl");
 
     let meta_mock = server.mock(|when, then| {
         when.method(GET).path("/pypi/app/1.0.0/json");
