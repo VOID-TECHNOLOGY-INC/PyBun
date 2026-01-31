@@ -6,10 +6,46 @@ use pybun::pypi::{PyPiClient, PyPiIndex};
 use pybun::resolver::PackageIndex;
 use serde_json::json;
 use std::fs;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use tempfile::tempdir;
 
 fn bin() -> Command {
     cargo_bin_cmd!("pybun")
+}
+
+fn ensure_venv(project_root: &Path) -> PathBuf {
+    let venv = project_root.join(".venv");
+    if !venv.exists() {
+        let status = std::process::Command::new("python3")
+            .args(["-m", "venv", ".venv"])
+            .current_dir(project_root)
+            .status()
+            .expect("Failed to create venv");
+        assert!(status.success(), "Failed to create venv: {:?}", status);
+    }
+    venv
+}
+
+fn wheel_bytes() -> Vec<u8> {
+    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let options = zip::write::FileOptions::default();
+    zip.start_file("dummy.txt", options)
+        .expect("start wheel entry");
+    zip.write_all(b"ok").expect("write wheel entry");
+    let cursor = zip.finish().expect("finish wheel zip");
+    cursor.into_inner()
+}
+
+fn mock_download(server: &MockServer, filename: &str) {
+    let path = format!("/files/{}", filename);
+    let body = wheel_bytes();
+    server.mock(move |when, then| {
+        when.method(GET).path(path.as_str());
+        then.status(200)
+            .header("Content-Type", "application/octet-stream")
+            .body(body.clone());
+    });
 }
 
 fn setup_package_mocks(server: &MockServer) -> String {
@@ -24,14 +60,14 @@ fn setup_package_mocks(server: &MockServer) -> String {
                     "packagetype": "bdist_wheel",
                     "url": format!("{}/files/app-1.0.0-py3-none-any.whl", base),
                     "yanked": false,
-                    "digests": { "sha256": "abc" }
+                    "digests": { "sha256": "placeholder" }
                 },
                 {
                     "filename": "app-1.0.0.tar.gz",
                     "packagetype": "sdist",
                     "url": format!("{}/files/app-1.0.0.tar.gz", base),
                     "yanked": false,
-                    "digests": { "sha256": "def" }
+                    "digests": { "sha256": "placeholder" }
                 }
             ]
         }
@@ -71,7 +107,7 @@ fn setup_package_mocks(server: &MockServer) -> String {
                     "packagetype": "bdist_wheel",
                     "url": format!("{}/files/dep-2.0.0-py3-none-any.whl", base),
                     "yanked": false,
-                    "digests": { "sha256": "ghi" }
+                    "digests": { "sha256": "placeholder" }
                 }
             ]
         }
@@ -101,6 +137,9 @@ fn setup_package_mocks(server: &MockServer) -> String {
             .body(dep_meta_body.clone());
     });
 
+    mock_download(server, "app-1.0.0-py3-none-any.whl");
+    mock_download(server, "dep-2.0.0-py3-none-any.whl");
+
     base
 }
 
@@ -120,7 +159,7 @@ async fn concurrent_metadata_fetch_is_deduped() {
                     "packagetype": "bdist_wheel",
                     "url": format!("{}/files/app-1.0.0-py3-none-any.whl", base),
                     "yanked": false,
-                    "digests": { "sha256": "abc" }
+                    "digests": { "sha256": "placeholder" }
                 }
             ]
         }
@@ -191,6 +230,7 @@ fn install_does_not_prefetch_all_version_metadata() {
     let cache_dir = temp.path().join("cache");
     let server = MockServer::start();
     let base = server.base_url();
+    let venv = ensure_venv(temp.path());
 
     let project_body = json!({
         "info": { "name": "app", "version": "2.0.0" },
@@ -201,7 +241,7 @@ fn install_does_not_prefetch_all_version_metadata() {
                     "packagetype": "bdist_wheel",
                     "url": format!("{}/files/app-1.0.0-py3-none-any.whl", base),
                     "yanked": false,
-                    "digests": { "sha256": "abc" }
+                    "digests": { "sha256": "placeholder" }
                 }
             ],
             "2.0.0": [
@@ -210,7 +250,7 @@ fn install_does_not_prefetch_all_version_metadata() {
                     "packagetype": "bdist_wheel",
                     "url": format!("{}/files/app-2.0.0-py3-none-any.whl", base),
                     "yanked": false,
-                    "digests": { "sha256": "def" }
+                    "digests": { "sha256": "placeholder" }
                 }
             ]
         }
@@ -223,6 +263,9 @@ fn install_does_not_prefetch_all_version_metadata() {
             .header("Content-Type", "application/json")
             .body(project_body.clone());
     });
+
+    mock_download(&server, "app-1.0.0-py3-none-any.whl");
+    mock_download(&server, "app-2.0.0-py3-none-any.whl");
 
     server.mock(|when, then| {
         when.method(GET).path("/pypi/app/1.0.0/json");
@@ -270,6 +313,7 @@ dependencies = ["app==1.0.0"]
         .current_dir(temp.path())
         .env("PYBUN_PYPI_BASE_URL", base)
         .env("PYBUN_PYPI_CACHE_DIR", cache_dir.to_str().unwrap())
+        .env("PYBUN_ENV", venv.to_str().unwrap())
         .args(["install"])
         .assert()
         .success();
@@ -283,6 +327,7 @@ fn install_defaults_to_pypi_with_dependencies() {
     let cache_dir = temp.path().join("cache");
     let server = MockServer::start();
     let base_url = setup_package_mocks(&server);
+    let venv = ensure_venv(temp.path());
 
     let pyproject = temp.path().join("pyproject.toml");
     fs::write(
@@ -299,6 +344,7 @@ dependencies = ["app==1.0.0"]
         .current_dir(temp.path())
         .env("PYBUN_PYPI_BASE_URL", &base_url)
         .env("PYBUN_PYPI_CACHE_DIR", cache_dir.to_str().unwrap())
+        .env("PYBUN_ENV", venv.to_str().unwrap())
         .args(["install"])
         .assert()
         .success();
@@ -314,6 +360,7 @@ fn install_offline_uses_cached_metadata() {
     let cache_dir = temp.path().join("cache");
     let server = MockServer::start();
     let base_url = setup_package_mocks(&server);
+    let venv = ensure_venv(temp.path());
 
     let pyproject = temp.path().join("pyproject.toml");
     fs::write(
@@ -331,6 +378,7 @@ dependencies = ["app==1.0.0"]
         .current_dir(temp.path())
         .env("PYBUN_PYPI_BASE_URL", &base_url)
         .env("PYBUN_PYPI_CACHE_DIR", cache_dir.to_str().unwrap())
+        .env("PYBUN_ENV", venv.to_str().unwrap())
         .args(["install"])
         .assert()
         .success();
@@ -340,6 +388,7 @@ dependencies = ["app==1.0.0"]
         .current_dir(temp.path())
         .env("PYBUN_PYPI_BASE_URL", "http://127.0.0.1:9") // should not be hit
         .env("PYBUN_PYPI_CACHE_DIR", cache_dir.to_str().unwrap())
+        .env("PYBUN_ENV", venv.to_str().unwrap())
         .args(["install", "--offline"])
         .assert()
         .success();
@@ -349,6 +398,7 @@ dependencies = ["app==1.0.0"]
 fn install_offline_without_cache_fails() {
     let temp = tempdir().unwrap();
     let cache_dir = temp.path().join("cache");
+    let venv = ensure_venv(temp.path());
 
     fs::write(
         temp.path().join("pyproject.toml"),
@@ -364,6 +414,7 @@ dependencies = ["app==1.0.0"]
         .current_dir(temp.path())
         .env("PYBUN_PYPI_BASE_URL", "http://127.0.0.1:9")
         .env("PYBUN_PYPI_CACHE_DIR", cache_dir.to_str().unwrap())
+        .env("PYBUN_ENV", venv.to_str().unwrap())
         .args(["install", "--offline"])
         .assert()
         .failure();
@@ -375,6 +426,7 @@ fn install_uses_fresh_cache_without_network() {
     let cache_dir = temp.path().join("cache");
     let server = MockServer::start();
     let base = server.base_url();
+    let venv = ensure_venv(temp.path());
 
     let project_body = json!({
         "info": { "name": "app", "version": "1.0.0" },
@@ -385,7 +437,7 @@ fn install_uses_fresh_cache_without_network() {
                     "packagetype": "bdist_wheel",
                     "url": format!("{}/files/app-1.0.0-py3-none-any.whl", base),
                     "yanked": false,
-                    "digests": { "sha256": "abc" }
+                    "digests": { "sha256": "placeholder" }
                 }
             ]
         }
@@ -400,6 +452,8 @@ fn install_uses_fresh_cache_without_network() {
             .header("ETag", "\"v1\"")
             .body(project_body.clone());
     });
+
+    mock_download(&server, "app-1.0.0-py3-none-any.whl");
 
     let meta_mock = server.mock(|when, then| {
         when.method(GET).path("/pypi/app/1.0.0/json");
@@ -431,6 +485,7 @@ dependencies = ["app==1.0.0"]
         .current_dir(temp.path())
         .env("PYBUN_PYPI_BASE_URL", &base)
         .env("PYBUN_PYPI_CACHE_DIR", cache_dir.to_str().unwrap())
+        .env("PYBUN_ENV", venv.to_str().unwrap())
         .args(["install"])
         .assert()
         .success();
@@ -439,6 +494,7 @@ dependencies = ["app==1.0.0"]
         .current_dir(temp.path())
         .env("PYBUN_PYPI_BASE_URL", &base)
         .env("PYBUN_PYPI_CACHE_DIR", cache_dir.to_str().unwrap())
+        .env("PYBUN_ENV", venv.to_str().unwrap())
         .args(["install"])
         .assert()
         .success();

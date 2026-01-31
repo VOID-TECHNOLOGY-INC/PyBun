@@ -108,17 +108,50 @@ pub async fn execute(cli: Cli) -> Result<()> {
                     package,
                     version,
                     added_deps,
-                }) => (
-                    "add".to_string(),
-                    RenderDetail::with_json(
-                        summary,
-                        json!({
-                            "package": package,
-                            "version": version,
-                            "added_dependencies": added_deps,
-                        }),
-                    ),
-                ),
+                }) => {
+                    // Chain install to ensure the environment is up-to-date
+                    collector.info(format!("Installing dependencies including {}...", package));
+
+                    let install_args = crate::cli::InstallArgs {
+                        offline: args.offline,
+                        requirements: Vec::new(), // install from pyproject.toml
+                        index: None,
+                        lock: std::path::PathBuf::from("pybun.lockb"),
+                    };
+
+                    match install(&install_args, &mut collector).await {
+                        Ok(_) => (
+                            "add".to_string(),
+                            RenderDetail::with_json(
+                                format!("{} and installed dependencies.", summary),
+                                json!({
+                                    "package": package,
+                                    "version": version,
+                                    "added_dependencies": added_deps,
+                                    "installed": true,
+                                }),
+                            ),
+                        ),
+                        Err(e) => {
+                            let err_msg = format!(
+                                "Added {} to pyproject.toml but failed to install: {}",
+                                package, e
+                            );
+                            collector.error(err_msg.clone());
+                            (
+                                "add".to_string(),
+                                RenderDetail::error(
+                                    err_msg,
+                                    json!({
+                                        "package": package,
+                                        "error": e.to_string(),
+                                        "installed": false,
+                                    }),
+                                ),
+                            )
+                        }
+                    }
+                }
                 Err(e) => {
                     collector.error(e.to_string());
                     (
@@ -863,6 +896,15 @@ fn run_doctor(args: &crate::cli::DoctorArgs, collector: &mut EventCollector) -> 
     let mut all_ok = true;
     let mut bundle_report: Option<BundleReport> = None;
 
+    // Check pybun binary
+    if let Ok(exe) = std::env::current_exe() {
+        checks.push(json!({
+            "name": "pybun_binary",
+            "status": "ok",
+            "path": exe.display().to_string(),
+        }));
+    }
+
     // Check Python availability
     let working_dir = std::env::current_dir().unwrap_or_default();
     match find_python_env(&working_dir) {
@@ -1153,7 +1195,7 @@ async fn install(
         let selection = select_artifact_for_platform(pkg, &platform_tags);
         if selection.from_source {
             let message = format!(
-                "no compatible pre-built wheel for {} {} on {}; falling back to source build",
+                "no compatible pre-built wheel for {} {} on {}; source distributions are not supported for install",
                 pkg.name,
                 pkg.version,
                 platform_tags.join(",")
@@ -1169,7 +1211,10 @@ async fn install(
                 url: "https://pypi.org/simple".into(),
             },
             wheel: selection.filename,
-            hash: "sha256:placeholder".into(),
+            hash: selection
+                .hash
+                .clone()
+                .unwrap_or_else(|| "sha256:placeholder".into()),
             dependencies: pkg.dependencies.iter().map(ToString::to_string).collect(),
         });
     }
@@ -1184,23 +1229,53 @@ async fn install(
     collector.info(format!("Downloading artifacts to {}", cache_dir.display()));
 
     let mut download_items = Vec::new();
+    let mut sdist_only_packages = Vec::new();
     for pkg in resolution.packages.values() {
-        if let Some(source) = &pkg.source
-            && let Some(url) = source.url()
-        {
-            // Construct filename from URL or package info
-            let filename = PathBuf::from(url.rsplit('/').next().unwrap_or("unknown.whl"));
+        let selection = select_artifact_for_platform(pkg, &platform_tags);
+        if let Some(url) = selection.url {
+            // Construct filename from selection
+            let filename = PathBuf::from(selection.filename);
             let dest = cache_dir.join(filename);
-            // For now, let's use None for hash to unblock implementation,
-            // as hash is currently hardcoded or heuristic in some places.
-            download_items.push((url.to_string(), dest, None));
+            // Include hash when available to verify downloads
+            download_items.push((url, dest, selection.hash.clone()));
+        } else if selection.from_source {
+            // sdist-only package - no wheel available
+            sdist_only_packages.push(format!("{}=={}", pkg.name, pkg.version));
         }
+    }
+
+    // Fail if there are sdist-only packages (source builds not yet supported)
+    if !sdist_only_packages.is_empty() {
+        let message = format!(
+            "The following packages have no pre-built wheel for your platform and require source builds (not yet supported): {}",
+            sdist_only_packages.join(", ")
+        );
+        collector.error(message.clone());
+        return Err(eyre!(message));
     }
 
     collector.event_with(EventType::DownloadStart, |event| {
         event.message = Some(format!("Downloading {} artifacts", download_items.len()));
         event.progress = Some(50);
     });
+
+    let outcome = InstallOutcome {
+        summary: format!(
+            "resolved {} packages -> {}",
+            lock.packages.len(),
+            args.lock.display()
+        ),
+        packages: lock.packages.keys().cloned().collect(),
+        lockfile: args.lock.clone(),
+    };
+
+    if download_items.is_empty() {
+        collector.event_with(EventType::InstallStart, |event| {
+            event.message = Some("Installing 0 packages".to_string());
+            event.progress = Some(85);
+        });
+        return Ok(outcome);
+    }
 
     if !download_items.is_empty() {
         use crate::downloader::{DownloadRequest, Downloader};
@@ -1210,6 +1285,12 @@ async fn install(
             "Starting parallel download of {} artifacts...",
             download_items.len()
         ));
+
+        // Keep track of paths to install
+        let wheels_to_install: Vec<PathBuf> = download_items
+            .iter()
+            .map(|(_, path, _)| path.clone())
+            .collect();
 
         let download_requests: Vec<DownloadRequest> =
             download_items.into_iter().map(Into::into).collect();
@@ -1228,29 +1309,73 @@ async fn install(
 
         if failures > 0 {
             collector.warning(format!("{} downloads failed", failures));
-            // We don't hard fail install for now, similar to pip's "best effort" or we could fail.
-            // Let's warn.
+            return Err(eyre!("failed to download some artifacts"));
         }
+
+        collector.event_with(EventType::DownloadComplete, |event| {
+            event.message = Some("Downloads complete".to_string());
+            event.progress = Some(70);
+        });
+
+        // Install wheels
+        let working_dir = std::env::current_dir()?;
+        let env = crate::env::find_python_env(&working_dir)?;
+
+        // Warn if installing to system Python while in a project
+        if matches!(env.source, crate::env::EnvSource::System)
+            && Project::discover(&working_dir).is_ok()
+        {
+            let warning =
+                "warning: PyBun is installing into system Python but a pyproject.toml exists.";
+            eprintln!("{}", warning);
+            eprintln!("hint: Create a .venv or set PYBUN_ENV to target a virtual environment.");
+            collector.warning(warning.to_string());
+        }
+
+        collector.info(format!(
+            "Installing packages into {}",
+            env.python_path.display()
+        ));
+
+        // Determine site-packages path
+        let output = std::process::Command::new(&env.python_path)
+            .args([
+                "-c",
+                "import sysconfig; print(sysconfig.get_paths()['purelib'], end='')",
+            ])
+            .output()
+            .map_err(|e| eyre!("failed to determine site-packages path: {}", e))?;
+
+        if !output.status.success() {
+            return Err(eyre!(
+                "failed to determine site-packages path (python execution failed)"
+            ));
+        }
+        let site_packages_str = String::from_utf8(output.stdout)
+            .map_err(|e| eyre!("invalid utf8 in site-packages path: {}", e))?;
+        let site_packages = PathBuf::from(site_packages_str);
+
+        collector.info(format!("Target site-packages: {}", site_packages.display()));
+
+        collector.event_with(EventType::InstallStart, |event| {
+            event.message = Some(format!("Installing {} packages", wheels_to_install.len()));
+            event.progress = Some(85);
+        });
+
+        for wheel in wheels_to_install {
+            if wheel.exists() {
+                crate::installer::install_wheel(&wheel, &site_packages)
+                    .map_err(|e| eyre!("failed to install wheel {}: {}", wheel.display(), e))?;
+            }
+        }
+
+        collector.event_with(EventType::InstallComplete, |event| {
+            event.message = Some("Installation complete".to_string());
+            event.progress = Some(100);
+        });
     }
 
-    collector.event_with(EventType::DownloadComplete, |event| {
-        event.message = Some("Downloads complete".to_string());
-        event.progress = Some(70);
-    });
-    collector.event_with(EventType::InstallStart, |event| {
-        event.message = Some("Installing packages".to_string());
-        event.progress = Some(85);
-    });
-
-    Ok(InstallOutcome {
-        summary: format!(
-            "resolved {} packages -> {}",
-            lock.packages.len(),
-            args.lock.display()
-        ),
-        packages: lock.packages.keys().cloned().collect(),
-        lockfile: args.lock.clone(),
-    })
+    Ok(outcome)
 }
 
 #[derive(Debug)]
@@ -1377,7 +1502,10 @@ async fn lock_dependencies(args: &LockArgs, collector: &mut EventCollector) -> R
                 url: "https://pypi.org/simple".into(),
             },
             wheel: selection.filename,
-            hash: "sha256:placeholder".into(),
+            hash: selection
+                .hash
+                .clone()
+                .unwrap_or_else(|| "sha256:placeholder".into()),
             dependencies: pkg.dependencies.iter().map(ToString::to_string).collect(),
         });
     }
@@ -2461,6 +2589,17 @@ async fn run_script(
     } else {
         // No PEP 723 dependencies, use system/project Python
         let (python, env_source) = find_python_interpreter()?;
+
+        if matches!(env_source, crate::env::EnvSource::System) {
+            let current_dir = std::env::current_dir()?;
+            if Project::discover(&current_dir).is_ok() {
+                eprintln!("warning: PyBun is using system Python but a pyproject.toml exists.");
+                eprintln!(
+                    "hint: Ensure your virtual environment is at .venv, .pybun/venv, or set PYBUN_ENV."
+                );
+            }
+        }
+
         eprintln!("info: using Python from {}", env_source);
         (RunProgram::Python(python), None, false)
     };
@@ -4028,8 +4167,13 @@ fn detect_test_backend(_paths: &[PathBuf]) -> TestBackend {
     // Default to pytest as it's more common
     // Could be enhanced to detect based on imports in test files
 
-    // Check if pytest is available
-    if let Ok(output) = ProcessCommand::new("python3")
+    let python = std::env::current_dir()
+        .ok()
+        .and_then(|cwd| find_python_env(&cwd).ok().map(|env| env.python_path))
+        .unwrap_or_else(|| PathBuf::from("python3"));
+
+    // Check if pytest is available in the selected interpreter
+    if let Ok(output) = ProcessCommand::new(&python)
         .args(["-c", "import pytest"])
         .output()
         && output.status.success()

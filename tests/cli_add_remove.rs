@@ -8,9 +8,28 @@ fn bin() -> Command {
     cargo_bin_cmd!("pybun")
 }
 
+fn network_enabled() -> bool {
+    std::env::var_os("PYBUN_E2E_NETWORK").is_some()
+}
+
+/// Create a virtual environment in the given directory
+fn create_venv(dir: &std::path::Path) {
+    let status = std::process::Command::new("python3")
+        .args(["-m", "venv", ".venv"])
+        .current_dir(dir)
+        .status()
+        .expect("Failed to create venv");
+    assert!(status.success(), "Failed to create venv: {:?}", status);
+}
+
 #[test]
 fn add_creates_pyproject_if_missing() {
+    if !network_enabled() {
+        eprintln!("Skipping add_creates_pyproject_if_missing (PYBUN_E2E_NETWORK not set)");
+        return;
+    }
     let temp = tempdir().unwrap();
+    create_venv(temp.path());
 
     bin()
         .current_dir(temp.path())
@@ -32,7 +51,12 @@ fn add_creates_pyproject_if_missing() {
 
 #[test]
 fn add_updates_existing_pyproject() {
+    if !network_enabled() {
+        eprintln!("Skipping add_updates_existing_pyproject (PYBUN_E2E_NETWORK not set)");
+        return;
+    }
     let temp = tempdir().unwrap();
+    create_venv(temp.path());
 
     // Create initial pyproject.toml
     let pyproject = r#"[project]
@@ -44,13 +68,13 @@ dependencies = []
 
     bin()
         .current_dir(temp.path())
-        .args(["add", "numpy>=1.24.0"])
+        .args(["add", "click>=2.0.0"])
         .assert()
         .success();
 
     let content = fs::read_to_string(temp.path().join("pyproject.toml")).unwrap();
     assert!(
-        content.contains("numpy>=1.24.0"),
+        content.contains("click>=2.0.0"),
         "should contain the added package"
     );
     assert!(
@@ -61,7 +85,12 @@ dependencies = []
 
 #[test]
 fn add_replaces_existing_version() {
+    if !network_enabled() {
+        eprintln!("Skipping add_replaces_existing_version (PYBUN_E2E_NETWORK not set)");
+        return;
+    }
     let temp = tempdir().unwrap();
+    create_venv(temp.path());
 
     // Create pyproject.toml with existing requests
     let pyproject = r#"[project]
@@ -105,7 +134,7 @@ fn remove_removes_dependency() {
     // Create pyproject.toml with dependencies
     let pyproject = r#"[project]
 name = "test-project"
-dependencies = ["requests>=2.28.0", "numpy>=1.24.0"]
+dependencies = ["requests>=2.28.0", "click>=2.0.0"]
 "#;
     fs::write(temp.path().join("pyproject.toml"), pyproject).unwrap();
 
@@ -121,7 +150,7 @@ dependencies = ["requests>=2.28.0", "numpy>=1.24.0"]
         !content.contains("requests"),
         "should not contain removed package"
     );
-    assert!(content.contains("numpy"), "should keep other packages");
+    assert!(content.contains("click"), "should keep other packages");
 }
 
 #[test]
@@ -156,7 +185,12 @@ fn remove_fails_without_pyproject() {
 
 #[test]
 fn add_json_output() {
+    if !network_enabled() {
+        eprintln!("Skipping add_json_output (PYBUN_E2E_NETWORK not set)");
+        return;
+    }
     let temp = tempdir().unwrap();
+    create_venv(temp.path());
 
     bin()
         .current_dir(temp.path())

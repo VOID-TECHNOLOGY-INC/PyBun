@@ -47,10 +47,18 @@ impl EnvCache {
         if let Some(entry) = self.entries.get(cwd) {
             // Check existence
             if entry.env.python_path.exists() {
-                // Invalidation logic:
-                // If it's cached for more than X time? Maybe 1 hour is fine for non-interactive.
-                // Or just rely on existence.
-                // Let's assume validity for now to maximize speed.
+                // Invalidate cache if a local venv now exists but cached env is System
+                if matches!(entry.env.source, crate::env::EnvSource::System) {
+                    // Check for local venvs that would take priority
+                    let venv_paths = [".pybun/venv", ".venv", "venv"];
+                    for venv_name in &venv_paths {
+                        let venv_path = cwd.join(venv_name);
+                        if venv_path.exists() && venv_path.is_dir() {
+                            // Local venv exists but we have System cached - invalidate
+                            return None;
+                        }
+                    }
+                }
                 return Some(entry.env.clone());
             }
         }
