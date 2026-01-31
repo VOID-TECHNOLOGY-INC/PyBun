@@ -43,6 +43,9 @@
   1) Create tag `vX.Y.Z` (or run `release.yml` workflow).
   2) CI builds artifacts, signs them, and publishes `release-metadata` + GitHub Release assets.
   3) CI opens a package-manager update PR; review/merge it.
+- **Snapshot updates (version-sensitive)**:
+  - Run `PYBUN_UPDATE_SNAPSHOTS=1 cargo test --test compat_snapshots`.
+  - Verify `tests/snapshots/compat/json_self_update_dry_run.json` uses the new `X.Y.Z` values (`current_version`, `latest_version`, `release_url`) and has no trailing newline (snapshot comparisons are exact).
 - **Local-only releases** require building all target artifacts and signatures first; then run:
   - `python scripts/release/generate_manifest.py ...`
   - `python scripts/release/generate_package_managers.py ...`
