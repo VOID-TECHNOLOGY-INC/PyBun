@@ -119,14 +119,22 @@ impl McpServer {
 
     /// Handle a JSON-RPC request
     pub async fn handle_request(&mut self, request: JsonRpcRequest) -> Option<JsonRpcResponse> {
-        let id = request.id.clone().unwrap_or(Value::Null);
+        // Check for notifications that we explicitly handle
+        match request.method.as_str() {
+            "initialized" | "notifications/initialized" => {
+                return None;
+            }
+            _ => {}
+        }
+
+        // For all other methods, if there is no ID, it is a notification and we must not respond
+        let id = match request.id {
+            Some(id) => id,
+            None => return None,
+        };
 
         match request.method.as_str() {
             "initialize" => Some(self.handle_initialize(id, request.params)),
-            "initialized" => {
-                // Notification, no response needed
-                None
-            }
             "tools/list" => Some(self.handle_tools_list(id)),
             "tools/call" => Some(self.handle_tools_call(id, request.params).await),
             "resources/list" => Some(self.handle_resources_list(id)),
@@ -952,5 +960,46 @@ mod tests {
 
         let response = server.handle_request(request).await.unwrap();
         assert!(response.result.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_notification_handling() {
+        let mut server = McpServer::new();
+
+        // 1. "initialized" notification (standard) - should return None
+        let req1 = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: "initialized".to_string(),
+            params: json!({}),
+            id: None,
+        };
+        assert!(server.handle_request(req1).await.is_none());
+
+        // 2. "notifications/initialized" (custom) - should return None
+        let req2 = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: "notifications/initialized".to_string(),
+            params: json!({}),
+            id: None,
+        };
+        assert!(server.handle_request(req2).await.is_none());
+
+        // 3. "tools/list" as notification (missing id) - should return None (spec compliance)
+        let req3 = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: "tools/list".to_string(),
+            params: json!({}),
+            id: None,
+        };
+        assert!(server.handle_request(req3).await.is_none());
+
+        // 4. "unknown/method" as notification (missing id) - should return None (no error)
+        let req4 = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: "unknown/method".to_string(),
+            params: json!({}),
+            id: None,
+        };
+        assert!(server.handle_request(req4).await.is_none());
     }
 }

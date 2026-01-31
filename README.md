@@ -10,6 +10,7 @@
 </p>
 
 <p align="center">
+  <a href="#video-demo">Video Demo</a> •
   <a href="#quick-start">Quick Start</a> •
   <a href="#why-pybun">Why PyBun?</a> •
   <a href="#mcp-server">MCP Server</a> •
@@ -25,7 +26,19 @@
 
 ---
 
+## Video Demo
+
+<p align="center">
+  <a href="https://www.youtube.com/watch?v=335xndnBOmE">
+    <img src="https://img.youtube.com/vi/335xndnBOmE/0.jpg" alt="PyBun Video Demo" width="600">
+  </a>
+</p>
+
+---
+
 ## Quick Start
+
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/VOID-TECHNOLOGY-INC/PyBun/blob/main/examples/PyBun_Quick_Start.ipynb)
 
 **macOS / Linux:**
 ```bash
@@ -338,7 +351,48 @@ Operate PyBun as an MCP server for agents/IDEs:
 pybun mcp serve --stdio
 pybun --format=json mcp serve --stdio  # JSON envelope for tooling
 ```
-Tools: `pybun_resolve`, `pybun_install`, `pybun_run`, `pybun_gc`, `pybun_doctor`. Resources: `pybun://cache/info`, `pybun://env/info`. HTTP mode remains TODO; stdio is the GA path.
+Tools: `pybun_resolve`, `pybun_install`, `pybun_run`, `pybun_gc`, `pybun_doctor`. Resources: `pybun://cache/info`, `pybun://env/info`.
+
+### Configuration (Claude Desktop)
+
+Add to your `claude_desktop_config.json`:
+
+#### Option 1: Using `uvx` (No install required)
+```json
+{
+  "mcpServers": {
+    "pybun": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "pybun-cli",
+        "pybun",
+        "mcp",
+        "serve",
+        "--stdio"
+      ]
+    }
+  }
+}
+```
+
+#### Option 2: Using pip install
+Requires `pip install pybun-cli`.
+```json
+{
+  "mcpServers": {
+    "pybun": {
+      "command": "pybun",
+      "args": [
+        "mcp",
+        "serve",
+        "--stdio"
+      ]
+    }
+  }
+}
+```
+*Note: If `pybun` is not in the PATH, provide the absolute path (e.g., `/Users/username/bin/pybun`).*
 
 ## JSON output examples
 
