@@ -1259,6 +1259,24 @@ async fn install(
         event.progress = Some(50);
     });
 
+    let outcome = InstallOutcome {
+        summary: format!(
+            "resolved {} packages -> {}",
+            lock.packages.len(),
+            args.lock.display()
+        ),
+        packages: lock.packages.keys().cloned().collect(),
+        lockfile: args.lock.clone(),
+    };
+
+    if download_items.is_empty() {
+        collector.event_with(EventType::InstallStart, |event| {
+            event.message = Some("Installing 0 packages".to_string());
+            event.progress = Some(85);
+        });
+        return Ok(outcome);
+    }
+
     if !download_items.is_empty() {
         use crate::downloader::{DownloadRequest, Downloader};
         let downloader = Downloader::new();
@@ -1357,15 +1375,7 @@ async fn install(
         });
     }
 
-    Ok(InstallOutcome {
-        summary: format!(
-            "resolved {} packages -> {}",
-            lock.packages.len(),
-            args.lock.display()
-        ),
-        packages: lock.packages.keys().cloned().collect(),
-        lockfile: args.lock.clone(),
-    })
+    Ok(outcome)
 }
 
 #[derive(Debug)]
