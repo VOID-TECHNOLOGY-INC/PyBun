@@ -2,6 +2,7 @@ use assert_cmd::Command;
 use std::fs;
 use tempfile::tempdir;
 
+#[allow(deprecated)]
 fn pybun_cmd() -> Command {
     Command::cargo_bin("pybun").unwrap()
 }
@@ -30,7 +31,7 @@ fn test_workflow_init_add_run() {
 
     // Create a venv
     std::process::Command::new("python3")
-        .args(&["-m", "venv", ".venv"])
+        .args(["-m", "venv", ".venv"])
         .current_dir(project_root)
         .status()
         .expect("Failed to create venv");
@@ -96,7 +97,7 @@ fn test_workflow_remove() {
         .output()
         .unwrap();
     std::process::Command::new("python3")
-        .args(&["-m", "venv", ".venv"])
+        .args(["-m", "venv", ".venv"])
         .current_dir(project_root)
         .status()
         .unwrap();
@@ -210,7 +211,7 @@ fn test_lock() {
 
     // Create venv
     std::process::Command::new("python3")
-        .args(&["-m", "venv", ".venv"])
+        .args(["-m", "venv", ".venv"])
         .current_dir(project_root)
         .status()
         .unwrap();
@@ -263,7 +264,7 @@ fn test_outdated_upgrade() {
 
     // Create venv
     std::process::Command::new("python3")
-        .args(&["-m", "venv", ".venv"])
+        .args(["-m", "venv", ".venv"])
         .current_dir(project_root)
         .status()
         .unwrap();
@@ -309,7 +310,7 @@ fn test_build() {
 
     // Create venv
     std::process::Command::new("python3")
-        .args(&["-m", "venv", ".venv"])
+        .args(["-m", "venv", ".venv"])
         .current_dir(project_root)
         .status()
         .unwrap();
@@ -379,7 +380,7 @@ fn test_test_runner() {
 
     // Create venv for test runner
     std::process::Command::new("python3")
-        .args(&["-m", "venv", ".venv"])
+        .args(["-m", "venv", ".venv"])
         .current_dir(project_root)
         .status()
         .unwrap();
