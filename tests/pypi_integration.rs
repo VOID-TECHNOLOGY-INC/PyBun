@@ -6,19 +6,31 @@ use pybun::pypi::{PyPiClient, PyPiIndex};
 use pybun::resolver::PackageIndex;
 use serde_json::json;
 use std::fs;
+use std::io::Write;
 use tempfile::tempdir;
 
 fn bin() -> Command {
     cargo_bin_cmd!("pybun")
 }
 
+fn wheel_bytes() -> Vec<u8> {
+    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let options = zip::write::FileOptions::default();
+    zip.start_file("dummy.txt", options)
+        .expect("start wheel entry");
+    zip.write_all(b"ok").expect("write wheel entry");
+    let cursor = zip.finish().expect("finish wheel zip");
+    cursor.into_inner()
+}
+
 fn mock_download(server: &MockServer, filename: &str) {
     let path = format!("/files/{}", filename);
+    let body = wheel_bytes();
     server.mock(move |when, then| {
         when.method(GET).path(path.as_str());
         then.status(200)
             .header("Content-Type", "application/octet-stream")
-            .body("wheel");
+            .body(body.clone());
     });
 }
 
