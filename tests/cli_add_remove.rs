@@ -55,13 +55,13 @@ dependencies = []
 
     bin()
         .current_dir(temp.path())
-        .args(["add", "flask>=2.0.0"])
+        .args(["add", "click>=2.0.0"])
         .assert()
         .success();
 
     let content = fs::read_to_string(temp.path().join("pyproject.toml")).unwrap();
     assert!(
-        content.contains("flask>=2.0.0"),
+        content.contains("click>=2.0.0"),
         "should contain the added package"
     );
     assert!(
@@ -117,7 +117,7 @@ fn remove_removes_dependency() {
     // Create pyproject.toml with dependencies
     let pyproject = r#"[project]
 name = "test-project"
-dependencies = ["requests>=2.28.0", "flask>=2.0.0"]
+dependencies = ["requests>=2.28.0", "click>=2.0.0"]
 "#;
     fs::write(temp.path().join("pyproject.toml"), pyproject).unwrap();
 
@@ -133,7 +133,7 @@ dependencies = ["requests>=2.28.0", "flask>=2.0.0"]
         !content.contains("requests"),
         "should not contain removed package"
     );
-    assert!(content.contains("flask"), "should keep other packages");
+    assert!(content.contains("click"), "should keep other packages");
 }
 
 #[test]
