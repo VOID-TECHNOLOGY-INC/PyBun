@@ -1,5 +1,4 @@
 use assert_cmd::Command;
-use predicates::prelude::*;
 use std::fs;
 use tempfile::tempdir;
 
@@ -46,8 +45,8 @@ fn test_workflow_init_add_run() {
     let pyproject = fs::read_to_string(project_root.join("pyproject.toml")).unwrap();
     assert!(pyproject.contains("requests"), "pyproject.toml missing requests");
 
-    // 3. Run script
-    fs::write(project_root.join("check_req.py"), "import requests; print('requests imported')").unwrap();
+    // 3. Run script - verify it uses venv python
+    fs::write(project_root.join("check_req.py"), "import sys; import requests; print('venv:' + sys.prefix); print('requests imported')").unwrap();
 
     let output = pybun_cmd()
         .current_dir(project_root)
@@ -58,6 +57,8 @@ fn test_workflow_init_add_run() {
     assert!(output.status.success(), "Run failed: {:?}", output);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("requests imported"), "Run output missing string: {}", stdout);
+    // Verify it used the venv, not system python
+    assert!(stdout.contains(".venv") || stdout.contains("venv"), "Script did not run with venv: {}", stdout);
 }
 
 #[test]
@@ -152,6 +153,9 @@ fn test_lock() {
 
     // Init
     pybun_cmd().current_dir(project_root).arg("init").arg("--yes").output().unwrap();
+
+    // Create venv
+    std::process::Command::new("python3").args(&["-m", "venv", ".venv"]).current_dir(project_root).status().unwrap();
     
     // Add (generates lockfile)
     pybun_cmd().current_dir(project_root).arg("add").arg("requests").output().unwrap();
@@ -180,6 +184,9 @@ fn test_outdated_upgrade() {
 
     // Init
     pybun_cmd().current_dir(project_root).arg("init").arg("--yes").output().unwrap();
+
+    // Create venv
+    std::process::Command::new("python3").args(&["-m", "venv", ".venv"]).current_dir(project_root).status().unwrap();
     
     // Add requests (old version if possible? hard to force old version without specifying)
     // We'll just add requests and check outdated (should be empty or not error)
@@ -261,10 +268,12 @@ fn test_test_runner() {
     fs::write(test_dir.join("__init__.py"), "").unwrap(); // Ensure package
     fs::write(test_dir.join("test_sample.py"), "import unittest\nclass TestSample(unittest.TestCase):\n    def test_pass(self):\n        assert True\n").unwrap();
 
-    // Run test
+    // Run test with explicit backend
     let output = pybun_cmd()
         .current_dir(project_root)
         .arg("test")
+        .arg("--backend")
+        .arg("unittest")
         .output()
         .unwrap();
     
