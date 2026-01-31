@@ -7,10 +7,24 @@ use pybun::resolver::PackageIndex;
 use serde_json::json;
 use std::fs;
 use std::io::Write;
+use std::path::{Path, PathBuf};
 use tempfile::tempdir;
 
 fn bin() -> Command {
     cargo_bin_cmd!("pybun")
+}
+
+fn ensure_venv(project_root: &Path) -> PathBuf {
+    let venv = project_root.join(".venv");
+    if !venv.exists() {
+        let status = std::process::Command::new("python3")
+            .args(["-m", "venv", ".venv"])
+            .current_dir(project_root)
+            .status()
+            .expect("Failed to create venv");
+        assert!(status.success(), "Failed to create venv: {:?}", status);
+    }
+    venv
 }
 
 fn wheel_bytes() -> Vec<u8> {
@@ -216,6 +230,7 @@ fn install_does_not_prefetch_all_version_metadata() {
     let cache_dir = temp.path().join("cache");
     let server = MockServer::start();
     let base = server.base_url();
+    let venv = ensure_venv(temp.path());
 
     let project_body = json!({
         "info": { "name": "app", "version": "2.0.0" },
@@ -298,6 +313,7 @@ dependencies = ["app==1.0.0"]
         .current_dir(temp.path())
         .env("PYBUN_PYPI_BASE_URL", base)
         .env("PYBUN_PYPI_CACHE_DIR", cache_dir.to_str().unwrap())
+        .env("PYBUN_ENV", venv.to_str().unwrap())
         .args(["install"])
         .assert()
         .success();
@@ -311,6 +327,7 @@ fn install_defaults_to_pypi_with_dependencies() {
     let cache_dir = temp.path().join("cache");
     let server = MockServer::start();
     let base_url = setup_package_mocks(&server);
+    let venv = ensure_venv(temp.path());
 
     let pyproject = temp.path().join("pyproject.toml");
     fs::write(
@@ -327,6 +344,7 @@ dependencies = ["app==1.0.0"]
         .current_dir(temp.path())
         .env("PYBUN_PYPI_BASE_URL", &base_url)
         .env("PYBUN_PYPI_CACHE_DIR", cache_dir.to_str().unwrap())
+        .env("PYBUN_ENV", venv.to_str().unwrap())
         .args(["install"])
         .assert()
         .success();
@@ -342,6 +360,7 @@ fn install_offline_uses_cached_metadata() {
     let cache_dir = temp.path().join("cache");
     let server = MockServer::start();
     let base_url = setup_package_mocks(&server);
+    let venv = ensure_venv(temp.path());
 
     let pyproject = temp.path().join("pyproject.toml");
     fs::write(
@@ -359,6 +378,7 @@ dependencies = ["app==1.0.0"]
         .current_dir(temp.path())
         .env("PYBUN_PYPI_BASE_URL", &base_url)
         .env("PYBUN_PYPI_CACHE_DIR", cache_dir.to_str().unwrap())
+        .env("PYBUN_ENV", venv.to_str().unwrap())
         .args(["install"])
         .assert()
         .success();
@@ -368,6 +388,7 @@ dependencies = ["app==1.0.0"]
         .current_dir(temp.path())
         .env("PYBUN_PYPI_BASE_URL", "http://127.0.0.1:9") // should not be hit
         .env("PYBUN_PYPI_CACHE_DIR", cache_dir.to_str().unwrap())
+        .env("PYBUN_ENV", venv.to_str().unwrap())
         .args(["install", "--offline"])
         .assert()
         .success();
@@ -377,6 +398,7 @@ dependencies = ["app==1.0.0"]
 fn install_offline_without_cache_fails() {
     let temp = tempdir().unwrap();
     let cache_dir = temp.path().join("cache");
+    let venv = ensure_venv(temp.path());
 
     fs::write(
         temp.path().join("pyproject.toml"),
@@ -392,6 +414,7 @@ dependencies = ["app==1.0.0"]
         .current_dir(temp.path())
         .env("PYBUN_PYPI_BASE_URL", "http://127.0.0.1:9")
         .env("PYBUN_PYPI_CACHE_DIR", cache_dir.to_str().unwrap())
+        .env("PYBUN_ENV", venv.to_str().unwrap())
         .args(["install", "--offline"])
         .assert()
         .failure();
@@ -403,6 +426,7 @@ fn install_uses_fresh_cache_without_network() {
     let cache_dir = temp.path().join("cache");
     let server = MockServer::start();
     let base = server.base_url();
+    let venv = ensure_venv(temp.path());
 
     let project_body = json!({
         "info": { "name": "app", "version": "1.0.0" },
@@ -461,6 +485,7 @@ dependencies = ["app==1.0.0"]
         .current_dir(temp.path())
         .env("PYBUN_PYPI_BASE_URL", &base)
         .env("PYBUN_PYPI_CACHE_DIR", cache_dir.to_str().unwrap())
+        .env("PYBUN_ENV", venv.to_str().unwrap())
         .args(["install"])
         .assert()
         .success();
@@ -469,6 +494,7 @@ dependencies = ["app==1.0.0"]
         .current_dir(temp.path())
         .env("PYBUN_PYPI_BASE_URL", &base)
         .env("PYBUN_PYPI_CACHE_DIR", cache_dir.to_str().unwrap())
+        .env("PYBUN_ENV", venv.to_str().unwrap())
         .args(["install"])
         .assert()
         .success();
