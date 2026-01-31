@@ -4,17 +4,17 @@
     "buildDefinition": {
       "buildType": "https://github.com/VOID-TECHNOLOGY-INC/PyBun/.github/workflows/release.yml",
       "externalParameters": {
-        "ref": "refs/tags/v0.1.12",
-        "sha": "34d951bf30c2e3f32b608fe31a10580d6420ebc6",
+        "ref": "refs/tags/v0.1.13",
+        "sha": "e9998d6352a73f9e20f0c8bc9663bd382463356b",
         "workflow": "Release Build"
       },
       "internalParameters": {},
       "resolvedDependencies": [
         {
           "digest": {
-            "sha1": "34d951bf30c2e3f32b608fe31a10580d6420ebc6"
+            "sha1": "e9998d6352a73f9e20f0c8bc9663bd382463356b"
           },
-          "uri": "git+https://github.com/VOID-TECHNOLOGY-INC/PyBun@34d951bf30c2e3f32b608fe31a10580d6420ebc6"
+          "uri": "git+https://github.com/VOID-TECHNOLOGY-INC/PyBun@e9998d6352a73f9e20f0c8bc9663bd382463356b"
         }
       ]
     },
@@ -23,10 +23,10 @@
         "id": "https://github.com/VOID-TECHNOLOGY-INC/PyBun/.github/workflows/release.yml"
       },
       "metadata": {
-        "finishedOn": "2026-01-13T14:28:29Z",
-        "invocationId": "https://github.com/VOID-TECHNOLOGY-INC/PyBun/actions/runs/20960180174",
+        "finishedOn": "2026-01-31T06:49:30Z",
+        "invocationId": "https://github.com/VOID-TECHNOLOGY-INC/PyBun/actions/runs/21540451499",
         "runAttempt": "1",
-        "startedOn": "2026-01-13T14:28:29Z"
+        "startedOn": "2026-01-31T06:49:30Z"
       }
     }
   },
@@ -34,37 +34,37 @@
   "subject": [
     {
       "digest": {
-        "sha256": "e859fb061a41b2936814266ea3f43351d44b4f8eb839bf1e319cd1619ba0337c"
+        "sha256": "fae2007a578393c4c11017b1af67120b90003c0518f25691bb8683896c56e0cb"
       },
       "name": "pybun-aarch64-apple-darwin.tar.gz"
     },
     {
       "digest": {
-        "sha256": "ad1310ffce856a73495f1c9a7feadb51c17eb5a6178c8f3fabf18461f2cc3879"
+        "sha256": "3b45c04cd00839113eb5652c7748d2faef1f8bf1ad736bf4959e6d27775f7e0a"
       },
       "name": "pybun-aarch64-unknown-linux-gnu.tar.gz"
     },
     {
       "digest": {
-        "sha256": "15f2b899401c11440c37df1ad5c4ace35866322d0760334eaf10018f78d8d516"
+        "sha256": "2a3596c0df656a4f1ad4e4c1dcd4d554177230410004e1dc11f90285ce610ec6"
       },
       "name": "pybun-x86_64-unknown-linux-gnu.tar.gz"
     },
     {
       "digest": {
-        "sha256": "e7261dbf00a448e6757acd91d6c778eb68a6149af31aa9249d07dfd46512ce7c"
+        "sha256": "734a750dae77d3ed5a5afca7bfa096a9201f7f9327e73fcf3f8c9da09170326c"
       },
       "name": "pybun-x86_64-apple-darwin.tar.gz"
     },
     {
       "digest": {
-        "sha256": "dbab442f34283e34eb09f67155c61e080aba05e264f5a7eb8bc01679eecba71e"
+        "sha256": "be340799bec261d72c6821eb06b35ed67bde33445e4f54cef8f7c594b9f60712"
       },
       "name": "pybun-x86_64-pc-windows-msvc.zip"
     },
     {
       "digest": {
-        "sha256": "cf4812349b9a4f41ba2393e6a31b3070f140c0a7bf27ac788a2d4f91f245b93b"
+        "sha256": "971ead680aa2259ed93da3fb5645b7e743ec5350292bc1ff495e2807bff60d39"
       },
       "name": "pybun-x86_64-unknown-linux-musl.tar.gz"
     }
