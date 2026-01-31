@@ -28,7 +28,7 @@ pub fn should_install_color_eyre(cli: &Cli) -> bool {
 pub fn requires_tokio_runtime(cli: &Cli) -> bool {
     matches!(
         cli.command,
-        Commands::Install(_) | Commands::Lock(_) | Commands::Mcp(_) | Commands::Add(_)
+        Commands::Install(_) | Commands::Lock(_) | Commands::Mcp(_) | Commands::Add(_) | Commands::Outdated(_) | Commands::Upgrade(_) | Commands::Build(_)
     )
 }
 
