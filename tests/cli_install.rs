@@ -526,7 +526,7 @@ fn install_prefers_prebuilt_wheel_for_platform() {
 }
 
 #[test]
-fn install_warns_and_falls_back_to_source_when_no_wheel_matches() {
+fn install_warns_and_errors_when_no_wheel_matches() {
     let temp = tempdir().unwrap();
     let lock_path = temp.path().join("pybun.lockb");
     let index = index_wheels_path();
@@ -546,22 +546,33 @@ fn install_warns_and_falls_back_to_source_when_no_wheel_matches() {
         .expect("command runs");
 
     assert!(
-        output.status.success(),
-        "install should succeed even when building from source"
+        !output.status.success(),
+        "install should fail when source builds are required"
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let json: Value = serde_json::from_str(&stdout).expect("valid json output");
+    assert_eq!(json["status"], "error");
     let diagnostics = json["diagnostics"].as_array().cloned().unwrap_or_default();
     assert!(
         diagnostics.iter().any(|d| {
             d["level"] == "warning"
                 && d["message"]
                     .as_str()
-                    .map(|m| m.contains("source-only") && m.contains("source build"))
+                    .map(|m| m.contains("source-only") && m.contains("source distributions"))
                     .unwrap_or(false)
         }),
-        "should emit warning diagnostic about source build fallback: {stdout}"
+        "should emit warning diagnostic about source build limitation: {stdout}"
+    );
+    assert!(
+        diagnostics.iter().any(|d| {
+            d["level"] == "error"
+                && d["message"]
+                    .as_str()
+                    .map(|m| m.contains("require source builds"))
+                    .unwrap_or(false)
+        }),
+        "should emit error diagnostic about missing wheels: {stdout}"
     );
 
     let lock = Lockfile::load_from_path(&lock_path).expect("lock loads");
