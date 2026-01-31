@@ -43,7 +43,7 @@ impl std::fmt::Display for EnvSource {
         match self {
             EnvSource::PybunEnv => write!(f, "PYBUN_ENV"),
             EnvSource::PybunPython => write!(f, "PYBUN_PYTHON"),
-            EnvSource::ProjectLocal => write!(f, "project-local (.pybun/venv)"),
+            EnvSource::ProjectLocal => write!(f, "project-local venv"),
             EnvSource::PythonVersionFile(p) => write!(f, ".python-version ({})", p.display()),
             EnvSource::System => write!(f, "system PATH"),
         }
@@ -183,15 +183,25 @@ fn get_python_version_from_venv(venv_path: &Path) -> Option<String> {
 fn find_project_venv(start_dir: &Path) -> Option<PathBuf> {
     let mut current = start_dir;
     loop {
-        let venv_path = current.join(".pybun").join("venv");
-        if venv_path.is_dir() {
-            return Some(venv_path);
+        // Check for standard venv names
+        for name in [".pybun/venv", ".venv", "venv"] {
+            // Special handling for .pybun/venv (nested path)
+            let venv_path = if name == ".pybun/venv" {
+                current.join(".pybun").join("venv")
+            } else {
+                current.join(name)
+            };
+
+            if venv_path.is_dir() && find_venv_python(&venv_path).is_some() {
+                return Some(venv_path);
+            }
         }
 
         // Also check for pyproject.toml as project root marker
         let pyproject = current.join("pyproject.toml");
         if pyproject.exists() {
-            // If we found pyproject.toml but no .pybun/venv, stop searching
+            // If we found pyproject.toml but no venv in this dir,
+            // we stop searching up, assuming this is the project root.
             return None;
         }
 
