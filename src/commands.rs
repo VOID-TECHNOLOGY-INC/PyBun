@@ -133,7 +133,10 @@ pub async fn execute(cli: Cli) -> Result<()> {
                             ),
                         ),
                         Err(e) => {
-                            let err_msg = format!("Added {} to pyproject.toml but failed to install: {}", package, e);
+                            let err_msg = format!(
+                                "Added {} to pyproject.toml but failed to install: {}",
+                                package, e
+                            );
                             collector.error(err_msg.clone());
                             (
                                 "add".to_string(),
@@ -895,11 +898,11 @@ fn run_doctor(args: &crate::cli::DoctorArgs, collector: &mut EventCollector) -> 
 
     // Check pybun binary
     if let Ok(exe) = std::env::current_exe() {
-         checks.push(json!({
-             "name": "pybun_binary",
-             "status": "ok",
-             "path": exe.display().to_string(),
-         }));
+        checks.push(json!({
+            "name": "pybun_binary",
+            "status": "ok",
+            "path": exe.display().to_string(),
+        }));
     }
 
     // Check Python availability
@@ -1264,7 +1267,10 @@ async fn install(
         ));
 
         // Keep track of paths to install
-        let wheels_to_install: Vec<PathBuf> = download_items.iter().map(|(_, path, _)| path.clone()).collect();
+        let wheels_to_install: Vec<PathBuf> = download_items
+            .iter()
+            .map(|(_, path, _)| path.clone())
+            .collect();
 
         let download_requests: Vec<DownloadRequest> =
             download_items.into_iter().map(Into::into).collect();
@@ -1291,24 +1297,32 @@ async fn install(
         // We use finding logic from env module
         // We need to import find_python_env if not already available in this scope, assumed explicit crate::env::find_python_env
         let env = crate::env::find_python_env(&working_dir)?;
-        
+
         // Warn if installing to system Python
         if matches!(env.source, crate::env::EnvSource::System) {
             let warning = "warning: Installing packages to system Python. Consider creating a virtual environment with 'python -m venv .venv'";
             eprintln!("{}", warning);
             collector.warning(warning.to_string());
         }
-        
-        collector.info(format!("Installing packages into {}", env.python_path.display()));
+
+        collector.info(format!(
+            "Installing packages into {}",
+            env.python_path.display()
+        ));
 
         // Determine site-packages path
         let output = std::process::Command::new(&env.python_path)
-            .args(["-c", "import sysconfig; print(sysconfig.get_paths()['purelib'], end='')"])
+            .args([
+                "-c",
+                "import sysconfig; print(sysconfig.get_paths()['purelib'], end='')",
+            ])
             .output()
             .map_err(|e| eyre!("failed to determine site-packages path: {}", e))?;
 
         if !output.status.success() {
-             return Err(eyre!("failed to determine site-packages path (python execution failed)"));
+            return Err(eyre!(
+                "failed to determine site-packages path (python execution failed)"
+            ));
         }
         let site_packages_str = String::from_utf8(output.stdout)
             .map_err(|e| eyre!("invalid utf8 in site-packages path: {}", e))?;
@@ -1323,7 +1337,7 @@ async fn install(
 
         for wheel in wheels_to_install {
             if wheel.exists() {
-                 crate::installer::install_wheel(&wheel, &site_packages)
+                crate::installer::install_wheel(&wheel, &site_packages)
                     .map_err(|e| eyre!("failed to install wheel {}: {}", wheel.display(), e))?;
             }
         }
@@ -2558,13 +2572,15 @@ async fn run_script(
     } else {
         // No PEP 723 dependencies, use system/project Python
         let (python, env_source) = find_python_interpreter()?;
-        
+
         if matches!(env_source, crate::env::EnvSource::System) {
-             let current_dir = std::env::current_dir()?;
-             if Project::discover(&current_dir).is_ok() {
-                  eprintln!("warning: PyBun is using system Python but a pyproject.toml exists.");
-                  eprintln!("hint: Ensure your virtual environment is at .venv, .pybun/venv, or set PYBUN_ENV.");
-             }
+            let current_dir = std::env::current_dir()?;
+            if Project::discover(&current_dir).is_ok() {
+                eprintln!("warning: PyBun is using system Python but a pyproject.toml exists.");
+                eprintln!(
+                    "hint: Ensure your virtual environment is at .venv, .pybun/venv, or set PYBUN_ENV."
+                );
+            }
         }
 
         eprintln!("info: using Python from {}", env_source);

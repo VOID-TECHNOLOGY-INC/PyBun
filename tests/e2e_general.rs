@@ -20,7 +20,11 @@ fn test_workflow_init_add_run() {
         .unwrap();
     assert!(output.status.success(), "Init failed: {:?}", output);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Initialized project"), "Init output missing string: {}", stdout);
+    assert!(
+        stdout.contains("Initialized project"),
+        "Init output missing string: {}",
+        stdout
+    );
 
     assert!(project_root.join("pyproject.toml").exists());
 
@@ -40,13 +44,24 @@ fn test_workflow_init_add_run() {
         .unwrap();
     assert!(output.status.success(), "Add failed: {:?}", output);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.to_lowercase().contains("installed dependencies"), "Add output missing 'installed dependencies': {}", stdout);
+    assert!(
+        stdout.to_lowercase().contains("installed dependencies"),
+        "Add output missing 'installed dependencies': {}",
+        stdout
+    );
 
     let pyproject = fs::read_to_string(project_root.join("pyproject.toml")).unwrap();
-    assert!(pyproject.contains("requests"), "pyproject.toml missing requests");
+    assert!(
+        pyproject.contains("requests"),
+        "pyproject.toml missing requests"
+    );
 
     // 3. Run script - verify it uses venv python
-    fs::write(project_root.join("check_req.py"), "import sys; import requests; print('venv:' + sys.prefix); print('requests imported')").unwrap();
+    fs::write(
+        project_root.join("check_req.py"),
+        "import sys; import requests; print('venv:' + sys.prefix); print('requests imported')",
+    )
+    .unwrap();
 
     let output = pybun_cmd()
         .current_dir(project_root)
@@ -56,9 +71,17 @@ fn test_workflow_init_add_run() {
         .unwrap();
     assert!(output.status.success(), "Run failed: {:?}", output);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("requests imported"), "Run output missing string: {}", stdout);
+    assert!(
+        stdout.contains("requests imported"),
+        "Run output missing string: {}",
+        stdout
+    );
     // Verify it used the venv, not system python
-    assert!(stdout.contains(".venv") || stdout.contains("venv"), "Script did not run with venv: {}", stdout);
+    assert!(
+        stdout.contains(".venv") || stdout.contains("venv"),
+        "Script did not run with venv: {}",
+        stdout
+    );
 }
 
 #[test]
@@ -66,9 +89,23 @@ fn test_workflow_remove() {
     let temp = tempdir().unwrap();
     let project_root = temp.path();
 
-    pybun_cmd().current_dir(project_root).arg("init").arg("--yes").output().unwrap();
-    std::process::Command::new("python3").args(&["-m", "venv", ".venv"]).current_dir(project_root).status().unwrap();
-    pybun_cmd().current_dir(project_root).arg("add").arg("requests").output().unwrap();
+    pybun_cmd()
+        .current_dir(project_root)
+        .arg("init")
+        .arg("--yes")
+        .output()
+        .unwrap();
+    std::process::Command::new("python3")
+        .args(&["-m", "venv", ".venv"])
+        .current_dir(project_root)
+        .status()
+        .unwrap();
+    pybun_cmd()
+        .current_dir(project_root)
+        .arg("add")
+        .arg("requests")
+        .output()
+        .unwrap();
 
     let output = pybun_cmd()
         .current_dir(project_root)
@@ -78,7 +115,11 @@ fn test_workflow_remove() {
         .unwrap();
     assert!(output.status.success(), "Remove failed: {:?}", output);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.to_lowercase().contains("removed requests"), "Remove output missing string: {}", stdout);
+    assert!(
+        stdout.to_lowercase().contains("removed requests"),
+        "Remove output missing string: {}",
+        stdout
+    );
 
     let pyproject = fs::read_to_string(project_root.join("pyproject.toml")).unwrap();
     assert!(!pyproject.contains("requests ="));
@@ -93,11 +134,15 @@ fn test_doctor() {
         .arg("--format=json")
         .output()
         .unwrap();
-    
+
     // Doctor technically might return non-zero if issues found, but generally should run.
     // Let's print output if it fails to parse json.
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("\"status\":"), "Doctor JSON output missing status: {}", stdout);
+    assert!(
+        stdout.contains("\"status\":"),
+        "Doctor JSON output missing status: {}",
+        stdout
+    );
 }
 
 #[test]
@@ -128,7 +173,7 @@ fn test_x_ad_hoc_run() {
         .arg("hello")
         .output()
         .unwrap();
-    
+
     if !output.status.success() {
         eprintln!("X command failed (network?): {:?}", output);
         // Don't fail the whole suite for network in this environment?
@@ -143,7 +188,11 @@ fn test_x_ad_hoc_run() {
         panic!("X command failed: {:?}", output);
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("hello") || stdout.contains("cowsay"), "X output missing string: {}", stdout);
+    assert!(
+        stdout.contains("hello") || stdout.contains("cowsay"),
+        "X output missing string: {}",
+        stdout
+    );
 }
 
 #[test]
@@ -152,17 +201,35 @@ fn test_lock() {
     let project_root = temp.path();
 
     // Init
-    pybun_cmd().current_dir(project_root).arg("init").arg("--yes").output().unwrap();
+    pybun_cmd()
+        .current_dir(project_root)
+        .arg("init")
+        .arg("--yes")
+        .output()
+        .unwrap();
 
     // Create venv
-    std::process::Command::new("python3").args(&["-m", "venv", ".venv"]).current_dir(project_root).status().unwrap();
-    
+    std::process::Command::new("python3")
+        .args(&["-m", "venv", ".venv"])
+        .current_dir(project_root)
+        .status()
+        .unwrap();
+
     // Add (generates lockfile)
-    pybun_cmd().current_dir(project_root).arg("add").arg("requests").output().unwrap();
-    
+    pybun_cmd()
+        .current_dir(project_root)
+        .arg("add")
+        .arg("requests")
+        .output()
+        .unwrap();
+
     // Lock explicit
     // Create a script with pep723 deps to lock
-    fs::write(project_root.join("script.py"), "# /// script\n# dependencies = [\"flask\"]\n# ///\nprint('hello')").unwrap();
+    fs::write(
+        project_root.join("script.py"),
+        "# /// script\n# dependencies = [\"flask\"]\n# ///\nprint('hello')",
+    )
+    .unwrap();
 
     let output = pybun_cmd()
         .current_dir(project_root)
@@ -173,7 +240,11 @@ fn test_lock() {
         .unwrap();
 
     assert!(output.status.success(), "Lock failed: {:?}", output);
-    assert!(project_root.join("script.lockb").exists() || project_root.join("script.py.lock").exists() || project_root.join("script.lock").exists()); 
+    assert!(
+        project_root.join("script.lockb").exists()
+            || project_root.join("script.py.lock").exists()
+            || project_root.join("script.lock").exists()
+    );
     // exact name depends on implementation, usually script.lock or script.py.lock for pep723
 }
 
@@ -183,24 +254,38 @@ fn test_outdated_upgrade() {
     let project_root = temp.path();
 
     // Init
-    pybun_cmd().current_dir(project_root).arg("init").arg("--yes").output().unwrap();
+    pybun_cmd()
+        .current_dir(project_root)
+        .arg("init")
+        .arg("--yes")
+        .output()
+        .unwrap();
 
     // Create venv
-    std::process::Command::new("python3").args(&["-m", "venv", ".venv"]).current_dir(project_root).status().unwrap();
-    
+    std::process::Command::new("python3")
+        .args(&["-m", "venv", ".venv"])
+        .current_dir(project_root)
+        .status()
+        .unwrap();
+
     // Add requests (old version if possible? hard to force old version without specifying)
     // We'll just add requests and check outdated (should be empty or not error)
-    pybun_cmd().current_dir(project_root).arg("add").arg("requests").output().unwrap();
+    pybun_cmd()
+        .current_dir(project_root)
+        .arg("add")
+        .arg("requests")
+        .output()
+        .unwrap();
 
     let output = pybun_cmd()
         .current_dir(project_root)
         .arg("outdated")
         .output()
         .unwrap();
-    
+
     assert!(output.status.success(), "Outdated failed: {:?}", output);
     // As we added latest, outdated might be empty or show nothing.
-    
+
     let output = pybun_cmd()
         .current_dir(project_root)
         .arg("upgrade")
@@ -214,26 +299,48 @@ fn test_build() {
     let temp = tempdir().unwrap();
     let project_root = temp.path();
 
-    // Init 
-    pybun_cmd().current_dir(project_root).arg("init").arg("--yes").output().unwrap();
+    // Init
+    pybun_cmd()
+        .current_dir(project_root)
+        .arg("init")
+        .arg("--yes")
+        .output()
+        .unwrap();
 
     // Create venv
-    std::process::Command::new("python3").args(&["-m", "venv", ".venv"]).current_dir(project_root).status().unwrap();
-    
+    std::process::Command::new("python3")
+        .args(&["-m", "venv", ".venv"])
+        .current_dir(project_root)
+        .status()
+        .unwrap();
+
     // Install build tool
-    let output = pybun_cmd().current_dir(project_root).arg("add").arg("build").output().unwrap();
+    let output = pybun_cmd()
+        .current_dir(project_root)
+        .arg("add")
+        .arg("build")
+        .output()
+        .unwrap();
     assert!(output.status.success(), "Add build failed: {:?}", output);
-    
+
     // Create package structure for hatchling
-    let project_name = project_root.file_name().unwrap().to_string_lossy().to_lowercase().replace('.', "_");
+    let project_name = project_root
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .to_lowercase()
+        .replace('.', "_");
     let src_dir = project_root.join("src").join(&project_name);
     fs::create_dir_all(&src_dir).unwrap();
     fs::write(src_dir.join("__init__.py"), "").unwrap();
-    
+
     // Add hatch build config to pyproject.toml
     let pyproject_path = project_root.join("pyproject.toml");
     let mut pyproject = fs::read_to_string(&pyproject_path).unwrap();
-    pyproject.push_str(&format!("\n[tool.hatch.build.targets.wheel]\npackages = [\"src/{}\"]\n", project_name));
+    pyproject.push_str(&format!(
+        "\n[tool.hatch.build.targets.wheel]\npackages = [\"src/{}\"]\n",
+        project_name
+    ));
     fs::write(&pyproject_path, pyproject).unwrap();
 
     // Build
@@ -246,9 +353,15 @@ fn test_build() {
     if !output.status.success() {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
-        panic!("Build failed. Status: {:?}\nStdout: {}\nStderr: {}", output.status, stdout, stderr);
+        panic!(
+            "Build failed. Status: {:?}\nStdout: {}\nStderr: {}",
+            output.status, stdout, stderr
+        );
     }
-    assert!(project_root.join("dist").exists(), "dist directory not created");
+    assert!(
+        project_root.join("dist").exists(),
+        "dist directory not created"
+    );
 }
 
 #[test]
@@ -257,10 +370,19 @@ fn test_test_runner() {
     let project_root = temp.path();
 
     // Init
-    pybun_cmd().current_dir(project_root).arg("init").arg("--yes").output().unwrap();
+    pybun_cmd()
+        .current_dir(project_root)
+        .arg("init")
+        .arg("--yes")
+        .output()
+        .unwrap();
 
     // Create venv for test runner
-    std::process::Command::new("python3").args(&["-m", "venv", ".venv"]).current_dir(project_root).status().unwrap();
+    std::process::Command::new("python3")
+        .args(&["-m", "venv", ".venv"])
+        .current_dir(project_root)
+        .status()
+        .unwrap();
 
     // Create a dummy test file
     let test_dir = project_root.join("tests");
@@ -276,12 +398,19 @@ fn test_test_runner() {
         .arg("unittest")
         .output()
         .unwrap();
-    
+
     if !output.status.success() {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
-        panic!("Test runner failed. Status: {:?}\nStdout: {}\nStderr: {}", output.status, stdout, stderr);
+        panic!(
+            "Test runner failed. Status: {:?}\nStdout: {}\nStderr: {}",
+            output.status, stdout, stderr
+        );
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("passed") || stdout.contains("collected") || stdout.contains("OK"), "Test output missing success indicator: {}", stdout);
+    assert!(
+        stdout.contains("passed") || stdout.contains("collected") || stdout.contains("OK"),
+        "Test output missing success indicator: {}",
+        stdout
+    );
 }
