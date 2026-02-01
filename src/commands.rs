@@ -4646,8 +4646,14 @@ fn run_tests(args: &crate::cli::TestArgs, collector: &mut EventCollector) -> Res
             if args.paths.is_empty() {
                 cmd.arg("discover");
             } else {
-                for path in &args.paths {
-                    cmd.arg(path);
+                // If the first path is a directory, assume the user wants discovery in that dir
+                // This fixes "pybun test optimizer/tests" failing to find tests
+                if args.paths.len() == 1 && args.paths[0].is_dir() {
+                    cmd.arg("discover").arg("-s").arg(&args.paths[0]);
+                } else {
+                    for path in &args.paths {
+                        cmd.arg(path);
+                    }
                 }
             }
 
