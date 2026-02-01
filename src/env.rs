@@ -41,11 +41,13 @@ pub enum EnvSource {
 impl std::fmt::Display for EnvSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            EnvSource::PybunEnv => write!(f, "PYBUN_ENV"),
-            EnvSource::PybunPython => write!(f, "PYBUN_PYTHON"),
-            EnvSource::ProjectLocal => write!(f, "project-local venv"),
-            EnvSource::PythonVersionFile(p) => write!(f, ".python-version ({})", p.display()),
-            EnvSource::System => write!(f, "system PATH"),
+            EnvSource::PybunEnv => write!(f, "PYBUN_ENV (LOCAL)"),
+            EnvSource::PybunPython => write!(f, "PYBUN_PYTHON (LOCAL)"),
+            EnvSource::ProjectLocal => write!(f, "project-local venv (LOCAL)"),
+            EnvSource::PythonVersionFile(p) => {
+                write!(f, ".python-version ({}, LOCAL)", p.display())
+            }
+            EnvSource::System => write!(f, "system PATH (GLOBAL)"),
         }
     }
 }
@@ -465,9 +467,12 @@ mod tests {
 
     #[test]
     fn test_env_source_display() {
-        assert_eq!(format!("{}", EnvSource::PybunEnv), "PYBUN_ENV");
-        assert_eq!(format!("{}", EnvSource::PybunPython), "PYBUN_PYTHON");
-        assert_eq!(format!("{}", EnvSource::System), "system PATH");
+        assert_eq!(format!("{}", EnvSource::PybunEnv), "PYBUN_ENV (LOCAL)");
+        assert_eq!(
+            format!("{}", EnvSource::PybunPython),
+            "PYBUN_PYTHON (LOCAL)"
+        );
+        assert_eq!(format!("{}", EnvSource::System), "system PATH (GLOBAL)");
     }
 
     #[test]

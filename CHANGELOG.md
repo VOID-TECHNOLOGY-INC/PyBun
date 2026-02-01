@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.1.15
+
+### Fixes
+- fix(test): support `pybun test <directory>` (automatically discover tests in directory)
+- fix(cli): clarify active Python context in logs (GLOBAL vs LOCAL)
+
 ## v0.1.14
 
 ### Fixes
