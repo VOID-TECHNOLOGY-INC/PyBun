@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.1.14
+
+### Fixes
+- fix: correct environment detection for venvs with only `python3` binary (no `python` symlink) (#issue-fix-env-detection)
+- fix: ensure `pybun add` and `install` target the correct environment
+
 ## v0.1.7
 
 ### Fixes
