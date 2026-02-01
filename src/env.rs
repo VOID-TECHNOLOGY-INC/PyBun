@@ -160,6 +160,12 @@ fn find_venv_python(venv_path: &Path) -> Option<PathBuf> {
         return Some(unix_python);
     }
 
+    // Unix: venv/bin/python3 (fallback if python symlink is missing)
+    let unix_python3 = venv_path.join("bin").join("python3");
+    if unix_python3.exists() {
+        return Some(unix_python3);
+    }
+
     // Windows: venv/Scripts/python.exe
     let windows_python = venv_path.join("Scripts").join("python.exe");
     if windows_python.exists() {
