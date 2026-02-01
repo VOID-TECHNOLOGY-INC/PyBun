@@ -401,6 +401,19 @@ mod tests {
     }
 
     #[test]
+    fn test_find_venv_python_unix_python3_fallback() {
+        let temp = TempDir::new().unwrap();
+        let venv = temp.path().join("venv");
+        let bin = venv.join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        // Create only python3, no python
+        let python3 = bin.join("python3");
+        fs::write(&python3, "fake python3").unwrap();
+
+        assert_eq!(find_venv_python(&venv), Some(python3));
+    }
+
+    #[test]
     fn test_python_version_file_parsing() {
         let temp = TempDir::new().unwrap();
         let version_file = temp.path().join(".python-version");
