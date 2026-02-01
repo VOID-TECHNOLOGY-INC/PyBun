@@ -160,6 +160,12 @@ fn find_venv_python(venv_path: &Path) -> Option<PathBuf> {
         return Some(unix_python);
     }
 
+    // Unix: venv/bin/python3 (fallback if python symlink is missing)
+    let unix_python3 = venv_path.join("bin").join("python3");
+    if unix_python3.exists() {
+        return Some(unix_python3);
+    }
+
     // Windows: venv/Scripts/python.exe
     let windows_python = venv_path.join("Scripts").join("python.exe");
     if windows_python.exists() {
@@ -392,6 +398,19 @@ mod tests {
         fs::write(&python, "fake python").unwrap();
 
         assert_eq!(find_venv_python(&venv), Some(python));
+    }
+
+    #[test]
+    fn test_find_venv_python_unix_python3_fallback() {
+        let temp = TempDir::new().unwrap();
+        let venv = temp.path().join("venv");
+        let bin = venv.join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        // Create only python3, no python
+        let python3 = bin.join("python3");
+        fs::write(&python3, "fake python3").unwrap();
+
+        assert_eq!(find_venv_python(&venv), Some(python3));
     }
 
     #[test]
