@@ -54,7 +54,7 @@ fn test_detects_python3_only_venv() {
 
     let output = bin()
         .current_dir(temp.path())
-        .env("PYBUN_TRACE", "1") // Disable color eyre usually
+        .env("PYBUN_TRACE", "1") // Enable trace logging for debugging failures
         .env_remove("PYBUN_ENV") // Ensure hermeticity
         .env_remove("PYBUN_PYTHON") // Ensure hermeticity
         .arg("run")
