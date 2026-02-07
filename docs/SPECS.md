@@ -157,6 +157,16 @@ graph TD
   - `pybun outdated`: ロックファイルとインデックスを照合し、SemVer 互換範囲内および範囲外の更新を表示。`--format=json` 対応。
   - `pybun upgrade`: `pyproject.toml` の制約内でパッケージを安全に更新。`--interactive` で TUI 選択更新（段階導入）。
 
+### 4.8 データ連携・バックテスト拡張 (Market Data & Backtest Extension)
+
+PyBun 本体の Python ツールチェーンを補完する任意拡張として、データ駆動開発（定量分析/バックテスト）のワークフローを定義する。
+
+- **Exchange Connector 抽象化:** 取引所ごとの差分を `connector` 層で吸収し、`spot/futures` と `klines/trades/funding/open-interest` を共通スキーマで扱う。初期 stable 実装は Binance を第一対象とする。
+- **データカタログ:** `exchange/symbol/interval/date` パーティションでローカル保存（Parquet + メタデータ）し、`source`, `fetched_at`, `checksum` を保持して再現性を担保。
+- **インクリメンタル同期:** `--since/--until` で差分取得、途中失敗時の再開、欠損区間検知と修復（gap fill）をサポート。
+- **再現可能バックテスト:** 実行時に戦略設定・データスナップショット・実行環境を `manifest` 化し、同一入力で結果を再現可能にする。
+- **AIフレンドリー出力:** データ取得件数、欠損補完、コスト/手数料モデル、結果指標（PnL, Sharpe, MaxDD）を JSON で返し、エージェントからの自動評価を容易化。
+
 -----
 
 ## 5\. AI エージェント最適化 (AI Integration)
@@ -208,6 +218,8 @@ Bun の UX を踏襲し、短く直感的なコマンド体系とする。
 | `pybun doctor` | 環境・依存関係の診断（AI向け出力対応） | - |
 | `pybun self update` | バイナリアップデート（署名検証付） | - |
 | `pybun mcp serve` | MCP サーバーとして待受（stdio先行、HTTPは段階導入） | - |
+| `pybun data sync` | 取引所データを差分同期してカタログ化 | custom |
+| `pybun backtest run` | 戦略バックテスト実行（再現用 manifest 付き） | custom |
 | `pybun init` | プロジェクト初期化（pyproject.toml生成） | `npm init` / `bun init` |
 | `pybun outdated` | 更新可能な依存パッケージの一覧表示 | `npm outdated` / `pip list -o` |
 | `pybun upgrade` | 依存パッケージの更新 | `npm update` / `bun update` |
@@ -256,6 +268,7 @@ Bun の UX を踏襲し、短く直感的なコマンド体系とする。
       * JSON-RPC Error Reporting
       * MCP Server implementation
       * C/C++ Build Caching (Ninja integration)
+      * Exchange connector + data catalog (Binance first)
       * Plugins for VSCode / Cursor
 
 ### Phase 4: Reliability & Enterprise (Month 12+)
@@ -265,6 +278,7 @@ Bun の UX を踏襲し、短く直感的なコマンド体系とする。
       * 署名付きバイナリ/インデックスミラー + SBOM/SLSA provenance 出力
       * Remote Cache サーバー（CI とローカル共有）
       * 大規模モノレポ向けワークスペース（複数 `pyproject` の統合解決）
+      * Backtest reproducibility（manifest/snapshot/report の固定化）
       * プラグインAPI（フック/サブコマンド拡張）
 
 -----
@@ -284,6 +298,7 @@ Bun の UX を踏襲し、短く直感的なコマンド体系とする。
 - **サンドボックス実行:** `pybun run --sandbox` で subprocess を seccomp/JobObject 制限下に実行（Linux/macOS/Windows で同等機能）。
 - **サプライチェーン:** `pybun build` は SBOM (CycloneDX) を生成し、lock と一緒に保存。`pybun install --verify` でハッシュ検証を強制。
 - **資格情報管理:** プライベートリポジトリは OS キーチェーンまたは `.netrc` を使用。環境変数は `--redact` でログからマスク。
+- **取引所APIキー管理:** API キーは OS キーチェーン/環境変数から読み込み、JSON/text ログでは必ずマスク。読み取り専用キーを推奨し、取引権限付きキーは既定拒否。
 
 ## 11\. ログ・オブザーバビリティ (Logging & Observability)
 
