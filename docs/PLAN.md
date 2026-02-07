@@ -279,7 +279,7 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
     - Template: "Minimal" (flat layout) / "Package" (src layout).
     - JSON出力は生成されたファイルリストを返す。
   - Tests: E2E test with/without TTY, JSON output checks.
-- PR8.2: `pybun outdated` (Depedency Freshness)
+- PR8.2: `pybun outdated` (Dependency Freshness)
   - Goal: `pybun.lockb` 内のバージョンと最新インデックスを比較し、更新可能なパッケージを一覧表示。
   - Specs:
     - Columns: Package, Current, Wanted (semver-compatible), Latest (semver-breaking), Type (std/dev).
@@ -318,6 +318,41 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
   - Goal: B3.2 cold start を uv 並み（~850ms）に近づける。現状 ~2400ms から 50% 以上改善を目指す。
   - Current: Rust ネイティブの `WheelCache` と `Installer` を実装し、並列インストールに対応。B3.2 Cold Start で **~850ms**（uv比 +10%程度）を達成。
   - Tests: `cargo test` (wheel_cache, installer), `bench.py -s run` (B3.2).
+
+### M9: Quant Data & Backtest Workflow (Optional Extension)
+- PR9.1: Exchange connector abstraction + Binance first-party connector
+  - Goal: 取引所ごとの差分を吸収する `DataConnector` を定義し、Binance Spot/Futures の初期コネクタを提供。
+  - Specs:
+    - Endpoints: klines, aggTrades, funding rate, open interest（優先順）。
+    - Throttling: 取引所の weight 制限を考慮したレート制御 + リトライ/バックオフ。
+    - Auth: 公開APIはキー不要、非公開APIは読み取り専用キーのみ許可（trade権限キーは既定拒否）。
+  - Tests: モックHTTPサーバーでページング/429/再試行を検証する統合テスト。
+- PR9.2: Data catalog + incremental sync CLI (`pybun data sync/list/verify`)
+  - Goal: 取得データを再利用可能なローカルカタログとして管理し、差分同期で運用コストを抑える。
+  - Specs:
+    - Layout: `~/.cache/pybun/data/{exchange}/{symbol}/{interval}/dt=YYYY-MM-DD/*.parquet`
+    - Metadata: `source`, `fetched_at`, `checksum`, `row_count`, `time_range` を sidecar に保持。
+    - Gap handling: 欠損区間の検知、`pybun data verify --repair` で再取得。
+  - Tests: sync 冪等性、gap repair、`--offline` 失敗時の診断JSONを E2E で検証。
+- PR9.3: Backtest runner UX (`pybun backtest run/sweep/report`)
+  - Goal: バックテストを CLI 1本で回し、パラメータ探索とレポート出力まで完結させる。
+  - Specs:
+    - `run`: 単発実行（strategy + dataset + fees/slippage + seed）。
+    - `sweep`: パラメータグリッド探索（並列実行、top-N結果表示）。
+    - `report`: PnL, Sharpe, Max Drawdown, win-rate を text/json/markdown で出力。
+  - Tests: fixture データで deterministic replay（同一 seed で同一結果）を検証。
+- PR9.4: Reproducibility manifest + experiment tracking
+  - Goal: 再現可能性を保証するため、実行時の入力を `manifest` に固定化。
+  - Specs:
+    - 保存項目: strategy hash, dataset checksum, config, runtime version, command args。
+    - `pybun backtest run --manifest-out <file>` と `--replay <file>` を追加。
+  - Tests: replay 実行が同一結果になること、入力差分時に warning diagnostic を出すことを検証。
+- PR9.5: MCP tools for data/backtest
+  - Goal: AI エージェントから data sync/backtest を直接呼び出せるようにする。
+  - Specs:
+    - Tools: `pybun_data_sync`, `pybun_data_verify`, `pybun_backtest_run`, `pybun_backtest_report`。
+    - `--format=json` と同じ envelope で events/diagnostics を返す。
+  - Tests: MCP E2E で tools/list + tools/call + エラー時diagnosticsを検証。
 
 ### Benchmark Analysis & Optimization Roadmap
 
@@ -502,6 +537,7 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
   - `pybun x` single-file tool exec.
   - Sandboxed `pybun run --sandbox` forbids fork/exec of disallowed binaries.
   - Self-update dry-run against local feed.
+  - `pybun data sync --dry-run` + `pybun backtest run --manifest-out` smoke（fixtureデータ）。
 - **Performance checks:** Benchmark harness gated (not per-PR), tracked in nightly; fail on >10% regression vs baseline.
 - **Artifacts:** Upload lockfile/trace logs on CI failure for debugging; code coverage trend (not gate initially).
 
@@ -513,6 +549,7 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
 - M5 exit: C extension build cache works; SBOM generated; self-update succeeds in controlled test; sandbox mode blocks unsafe syscalls.
 - M6 exit: Workspace resolution works; GC reliable; telemetry opt-out verified; Windows arm64/mac arm64 artifacts produced.
 - M8 exit: DX commands (`init`, `outdated`, `upgrade`) fully implemented and tested.
+- M9 exit: Binance connector + data catalog + reproducible backtest manifest が E2E/MCP で安定。
 
 ## Parallelization Notes
 - PR0.3, PR1.4, PR1.5 can proceed in parallel once CLI skeleton exists.  
@@ -521,3 +558,4 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
 - Builder/security (PR5.x) mostly independent from runtime; blocked only on installer/cache foundations.  
 - Release hardening (PR6.x) is parallelizable once cache + resolver APIs are stable.  
 - Windows enablement tasks can trail by one milestone using shared abstractions; keep stubs/tests to avoid drift.
+- Data/backtest (PR9.x) can progress in parallel with remaining DX work once JSON schema (PR4.1) and cache layout (PR6.1) are stable.
