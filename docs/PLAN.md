@@ -11,10 +11,46 @@
 直近の実装状況（`src/commands.rs`, `src/hot_reload.rs`, `src/mcp.rs`）に照らすと、次のフォローアップが必要です（= **大きな設計変更は不要だが、実装を"本物"にする段階**）。
 
 - **Installer/Lock**: ✅ `pybun install` は `pyproject.toml` から依存関係を読み込む通常フローに対応。`--require` と `--index` も引き続き使用可能（`--require` 指定時はpyprojectより優先）。lockfileの `wheel/hash` は placeholder が残っており、将来の `--verify`/再現性の前提が未整備。
-- **Runner (PEP 723)**: ✅ dependencies を解析し、**自動インストール→隔離環境実行**を実装済み。一時venv作成→pip install→スクリプト実行→自動クリーンアップの流れ。
-- **Hot Reload**: 設定・外部ウォッチャーコマンド生成はあるが、**ネイティブ監視（notify等）**は stub。
-- **Tester / Builder**: `pybun test` と `pybun build` は CLI はあるが、実装は stub（not implemented yet）。
-- **MCP**: `mcp serve --stdio` は動作するが、`tools/call` の tool 実行は “Would ...” のスタブ実装。HTTP mode は未実装（CLI側で明示）。
+- **Runner (PEP 723)**: ✅ dependencies 解析・自動インストール・cache 再利用を実装。`uv run` 委譲とネイティブ経路を切替可能。`run` 側の `--offline` 経路は今後の拡張余地あり。
+- **Hot Reload**: ✅ `native-watch` feature 有効時は macOS/Linux でネイティブ監視が実動。標準ビルド（feature無効）では preview 表示が中心で、fallback 監視実装が未完。
+- **Tester**: ⚠️ AST discovery/診断は実装済みだが、実行本体は現状 pytest/unittest ラッパー中心。`test_executor` / `snapshot` はモジュールとして存在するが CLI 本線への統合が未完。
+- **Builder**: ✅ `pybun build` は `python -m build` ラッパー + キャッシュで実動。完全隔離（環境汚染を防ぐ実行基盤）としては段階導入の途中。
+- **MCP**: ✅ `mcp serve --stdio` と主要 tools は動作。ただし CLI と独立した実装経路が残り、挙動差（lock 拡張子・index 選択など）がある。HTTP mode は未実装。
+- **Self Update**: ⚠️ マニフェスト読込・更新判定・dry-run は実装済みだが、非 dry-run での実バイナリ置換（download/verify/swap）は未実装。
+
+## Audit Follow-up Tracks (2026-02-08)
+
+### P0 (Release Blocking)
+- PR-A1: Self-update の実更新実装（download + verify + atomic swap + rollback）
+  - Goal: `pybun self update` 非 dry-run で実際に更新を完了できるようにする（現状は “Would update”）。
+  - Depends on: PR6.5（manifest/signature metadata）。
+  - Tests: ローカル manifest を使った E2E（成功系/署名不一致/置換失敗時のロールバック）。
+- PR-A2: lock/hash の完全性担保と `--verify` 強制モード
+  - Goal: `sha256:placeholder` を lock 生成経路から排除し、検証不能 artifact を受け入れない。
+  - Depends on: PR1.2/PR5.3（artifact metadata と downloader）。
+  - Tests: hash欠落時の失敗、改ざん検知、`install/lock/upgrade` 全経路で実hash生成。
+
+### P1 (GA Hardening)
+- PR-A3: MCP と CLI の実処理統一
+  - Goal: `mcp` tools を command 層へ寄せ、`pybun.lockb` を含め CLI と同一挙動へ統一。
+  - Tests: 同一入力で CLI と MCP の detail JSON 差分がないことを比較する互換テスト。
+- PR-A4: `test_executor` / `snapshot` の CLI 統合（`--backend=pybun`）
+  - Goal: 既存 pytest/unittest fallback を維持しつつ、ネイティブ実行経路を正式提供。
+  - Tests: 並列・fail-fast・shard・snapshot update の E2E + JSON schema互換。
+- PR-A5: 依存入力範囲の拡張（`optional-dependencies`/dependency groups/workspace globs）
+  - Goal: `install/outdated/upgrade` が `[project.dependencies]` 以外も一貫して扱えるようにする。
+  - Tests: optional/group/workspace fixture を追加し、resolve/upgradeの期待結果を固定化。
+- PR-A6: `pybun watch` の標準ビルド fallback 監視
+  - Goal: `native-watch` 無効でも poll-based で監視再実行できるようにする。
+  - Tests: feature無効CIで実監視E2E（previewではなく変更検知→再実行）。
+- PR-A7: install の安全な既定ターゲット（プロジェクト隔離環境）
+  - Goal: プロジェクト検出時に system Python へ直接入る経路を避け、`.pybun/venv` を既定化。
+  - Tests: 既存venv無しプロジェクトでの install E2E（system汚染しないことを確認）。
+
+### P2 (Post-GA Improvement)
+- PR-A8: Runtime catalog hardening（実チェックサム管理 + 3.13 preview）
+  - Goal: 埋め込み runtime metadata の完全性・更新性を強化し、3.13 preview を段階導入。
+  - Tests: runtime metadata 検証テスト、3.13 install/list の互換テスト。
 
 ## Milestones & PR Tracks
 Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; parallelizable items marked (||).
@@ -110,6 +146,7 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
 - [DONE] PR3.2: Parallel executor + shard/fail-fast; snapshot testing primitives.  
   - Depends on: PR3.1.  
   - Current: `src/test_executor.rs` implements parallel test execution with worker threads, work stealing, and configurable worker count. `src/snapshot.rs` implements snapshot testing primitives with SnapshotFile (JSON-based storage), SnapshotManager (session management), comparison/update modes, and diff generation. CLI enhancements: `--snapshot` enables snapshot testing, `--update-snapshots` updates snapshots, `--snapshot-dir` configures snapshot directory. Sharding uses deterministic distribution (sorted by name, round-robin assignment). Fail-fast stops all workers on first failure via shared atomic flag.
+  - Note: 現在の `pybun test` 本線は pytest/unittest ラッパー経路が中心で、ネイティブ executor/snapshot は PR-A4 で統合予定。
   - Tests: 15 unit tests (shard validation, distribution correctness, executor config, outcome serialization); 13 E2E tests (shard correctness, deterministic distribution, no overlap, parallel+shard combination, snapshot flags).
 - [DONE] PR3.3: `--pytest-compat` mode warnings (JSON + text) with structured diagnostics.  
   - Depends on: PR3.2.  
@@ -133,6 +170,7 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
   - Goal: `pybun_install/pybun_run/pybun_resolve` が CLI と同等の実処理を呼ぶ（少なくとも install/run/gc/doctor）。  
   - Notes: まず stdio のみでOK。HTTP mode は別PRで。
   - Current: `pybun_resolve` はパッケージインデックスからの依存解決を実行。`pybun_install` は依存解決→lockfile生成を実行。`pybun_run` はPythonスクリプト/インラインコードを実行し、stdout/stderr/exit_codeを返却。`pybun_doctor` は環境診断（Python, cache, project, lockfile）を実行。`pybun_gc` は既に実動。
+  - Note: 実装経路はまだ CLI と一部独立しており、挙動統一は PR-A3 の対象。
   - Tests: 4つのE2Eテスト追加（tools/call doctor, run inline code, gc dry-run, resolve no-index）。
 - PR4.3c: MCP HTTP mode（任意）  
   - Goal: `pybun mcp serve --port` を実装（現状は未実装の明示あり）。  
@@ -160,13 +198,13 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
   - Depends on: PR5.1.  
   - Current: Downloader now enforces SHA-256 plus ed25519 signature verification (tampered artifacts are removed). `pybun build --sbom` emits real CycloneDX SBOMs with tool metadata and per-artifact SHA-256 hashes instead of stubs. Shared security helpers for hash/signature validation.  
   - Tests: `cargo test` (all), `cargo clippy --all-targets --all-features -D warnings`; new SBOM integration + signature verification/tamper detection tests.
-- [DONE] PR5.4: Self-update mechanism (download, signature check, atomic swap) + `pybun doctor` bundle.  
+- [DONE] PR5.4: Self-update 基盤（manifest 読込/更新判定/dry-run） + `pybun doctor` bundle.  
   - Depends on: M0 CI signing hooks.  
-  - Current: `pybun self update` with `--channel` (stable/nightly) and `--dry-run` flags. Version check logic implemented. `pybun doctor` enhanced with environment checks (Python, cache, project). JSON output with detailed check results.
+  - Current: `pybun self update` は `--channel` / `--dry-run` を備え、manifest から更新判定を返す。実更新（download/verify/swap）は未実装で PR-A1 へ継続。`pybun doctor` は環境チェックを実装済み。
   - Tests: 9 self_update E2E tests (help, version info, dry-run, channels, doctor checks).
-- [DONE] PR5.5: Sandboxed execution (`pybun run --sandbox` using seccomp/JobObject) with escape hatches.  
+- [DONE] PR5.5: Sandboxed execution（`sitecustomize` ベースの preview）with escape hatches.  
   - Depends on: PR2 runtime; PR5.3 security primitives.  
-  - Current: `pybun run --sandbox` injects a Python `sitecustomize` shim that blocks subprocess creation and socket APIs by default, with `--allow-network`/`PYBUN_SANDBOX_ALLOW_NETWORK=1` as an escape hatch. JSON output now reports sandbox policy metadata. Inline `-c` runs are also sandbox-aware.  
+  - Current: `pybun run --sandbox` injects a Python `sitecustomize` shim that blocks subprocess creation and socket APIs by default, with `--allow-network`/`PYBUN_SANDBOX_ALLOW_NETWORK=1` as an escape hatch. JSON output now reports sandbox policy metadata. Inline `-c` runs are also sandbox-aware。OSネイティブ制御（seccomp/JobObject）は今後の強化項目。  
   - Tests: `tests/sandbox.rs` (blocks subprocess spawn, network opt-in), `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test --test '*'`.
 
 ### M6: Release Hardening (Phase 4)
