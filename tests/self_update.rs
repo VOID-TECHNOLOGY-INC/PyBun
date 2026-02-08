@@ -2,7 +2,13 @@
 //!
 //! PR5.4: Self-update mechanism (download, signature check, atomic swap)
 
+use base64::Engine;
+use ed25519_dalek::{Signer, SigningKey};
+use sha2::{Digest, Sha256};
 use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use pybun::release_manifest::current_release_target;
@@ -10,6 +16,114 @@ use tempfile::tempdir;
 
 fn pybun_bin() -> Command {
     Command::new(env!("CARGO_BIN_EXE_pybun"))
+}
+
+fn release_binary_name() -> &'static str {
+    if cfg!(windows) { "pybun.exe" } else { "pybun" }
+}
+
+fn make_executable(path: &Path) {
+    #[cfg(unix)]
+    {
+        let mut perms = fs::metadata(path).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(path, perms).unwrap();
+    }
+}
+
+fn file_url(path: &Path) -> String {
+    let mut value = path
+        .canonicalize()
+        .expect("canonical path")
+        .to_string_lossy()
+        .replace('\\', "/");
+    if !value.starts_with('/') {
+        value.insert(0, '/');
+    }
+    format!("file://{value}")
+}
+
+fn create_release_archive(root: &Path, target: &str, binary_bytes: &[u8]) -> PathBuf {
+    let extracted_dir = root.join(format!("pybun-{target}"));
+    fs::create_dir_all(&extracted_dir).unwrap();
+    let binary_path = extracted_dir.join(release_binary_name());
+    fs::write(&binary_path, binary_bytes).unwrap();
+    make_executable(&binary_path);
+
+    if target.contains("windows") {
+        let archive_path = root.join(format!("pybun-{target}.zip"));
+        let file = fs::File::create(&archive_path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let options = zip::write::FileOptions::default();
+        let member = format!("pybun-{target}/{}", release_binary_name());
+        zip.start_file(member, options).unwrap();
+        use std::io::Write;
+        zip.write_all(binary_bytes).unwrap();
+        zip.finish().unwrap();
+        archive_path
+    } else {
+        let archive_path = root.join(format!("pybun-{target}.tar.gz"));
+        let status = Command::new("tar")
+            .arg("-czf")
+            .arg(&archive_path)
+            .arg("-C")
+            .arg(root)
+            .arg(format!("pybun-{target}"))
+            .status()
+            .unwrap();
+        assert!(status.success(), "failed to create tar archive");
+        archive_path
+    }
+}
+
+fn archive_sha256(path: &Path) -> String {
+    let bytes = fs::read(path).unwrap();
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+fn sign_payload(payload: &[u8]) -> (String, String) {
+    let signing_key = SigningKey::from_bytes(&[7u8; 32]);
+    let signature = signing_key.sign(payload);
+    (
+        base64::engine::general_purpose::STANDARD.encode(signature.to_bytes()),
+        base64::engine::general_purpose::STANDARD.encode(signing_key.verifying_key().to_bytes()),
+    )
+}
+
+fn write_manifest(
+    path: &Path,
+    target: &str,
+    version: &str,
+    asset_url: &str,
+    sha256: &str,
+    signature: &str,
+    public_key: &str,
+) {
+    let archive_ext = if target.contains("windows") {
+        "zip"
+    } else {
+        "tar.gz"
+    };
+    let asset_name = format!("pybun-{}.{}", target, archive_ext);
+    let manifest = serde_json::json!({
+        "version": version,
+        "channel": "stable",
+        "published_at": "2025-01-01T00:00:00Z",
+        "assets": [
+            {
+                "name": asset_name,
+                "target": target,
+                "url": asset_url,
+                "sha256": sha256,
+                "signature": {
+                    "type": "ed25519",
+                    "value": signature,
+                    "public_key": public_key
+                }
+            }
+        ]
+    });
+    fs::write(path, serde_json::to_string_pretty(&manifest).unwrap()).unwrap();
 }
 
 #[test]
@@ -287,4 +401,133 @@ fn self_update_dry_run_reads_manifest() {
         detail["manifest"]["asset"]["sha256"].as_str(),
         Some("deadbeef")
     );
+}
+
+#[test]
+fn self_update_applies_update_from_local_manifest() {
+    let temp = tempdir().unwrap();
+    let target = current_release_target().expect("supported release target");
+    let manifest_path = temp.path().join("pybun-release.json");
+    let current_binary = temp.path().join(release_binary_name());
+    fs::write(&current_binary, b"old-version-binary").unwrap();
+    make_executable(&current_binary);
+
+    let archive_path = create_release_archive(temp.path(), &target, b"new-version-binary");
+    let sha256 = archive_sha256(&archive_path);
+    let archive_bytes = fs::read(&archive_path).unwrap();
+    let (signature, public_key) = sign_payload(&archive_bytes);
+    write_manifest(
+        &manifest_path,
+        &target,
+        "9.9.9",
+        &file_url(&archive_path),
+        &sha256,
+        &signature,
+        &public_key,
+    );
+
+    let output = pybun_bin()
+        .env("PYBUN_SELF_UPDATE_MANIFEST", &manifest_path)
+        .env("PYBUN_SELF_UPDATE_BIN", &current_binary)
+        .args(["--format=json", "self", "update"])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "self update should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let updated = fs::read(&current_binary).unwrap();
+    assert_eq!(updated, b"new-version-binary");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    assert_eq!(json["status"], "ok");
+    assert_eq!(json["detail"]["update_applied"].as_bool(), Some(true));
+}
+
+#[test]
+fn self_update_rejects_signature_mismatch() {
+    let temp = tempdir().unwrap();
+    let target = current_release_target().expect("supported release target");
+    let manifest_path = temp.path().join("pybun-release.json");
+    let current_binary = temp.path().join(release_binary_name());
+    fs::write(&current_binary, b"old-version-binary").unwrap();
+    make_executable(&current_binary);
+
+    let archive_path = create_release_archive(temp.path(), &target, b"new-version-binary");
+    let sha256 = archive_sha256(&archive_path);
+    let (signature, public_key) = sign_payload(b"this-is-not-the-archive");
+    write_manifest(
+        &manifest_path,
+        &target,
+        "9.9.9",
+        &file_url(&archive_path),
+        &sha256,
+        &signature,
+        &public_key,
+    );
+
+    let output = pybun_bin()
+        .env("PYBUN_SELF_UPDATE_MANIFEST", &manifest_path)
+        .env("PYBUN_SELF_UPDATE_BIN", &current_binary)
+        .args(["--format=json", "self", "update"])
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success(), "self update should fail");
+    let current = fs::read(&current_binary).unwrap();
+    assert_eq!(current, b"old-version-binary");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    assert_eq!(json["status"], "error");
+    assert_eq!(json["detail"]["update_applied"].as_bool(), Some(false));
+    let error = json["detail"]["error"].as_str().unwrap_or_default();
+    assert!(
+        error.contains("signature"),
+        "expected signature error, got: {error}"
+    );
+}
+
+#[test]
+fn self_update_rolls_back_when_swap_fails() {
+    let temp = tempdir().unwrap();
+    let target = current_release_target().expect("supported release target");
+    let manifest_path = temp.path().join("pybun-release.json");
+    let current_binary = temp.path().join(release_binary_name());
+    fs::write(&current_binary, b"old-version-binary").unwrap();
+    make_executable(&current_binary);
+
+    let archive_path = create_release_archive(temp.path(), &target, b"new-version-binary");
+    let sha256 = archive_sha256(&archive_path);
+    let archive_bytes = fs::read(&archive_path).unwrap();
+    let (signature, public_key) = sign_payload(&archive_bytes);
+    write_manifest(
+        &manifest_path,
+        &target,
+        "9.9.9",
+        &file_url(&archive_path),
+        &sha256,
+        &signature,
+        &public_key,
+    );
+
+    let output = pybun_bin()
+        .env("PYBUN_SELF_UPDATE_MANIFEST", &manifest_path)
+        .env("PYBUN_SELF_UPDATE_BIN", &current_binary)
+        .env("PYBUN_SELF_UPDATE_TEST_FAIL_SWAP", "1")
+        .args(["--format=json", "self", "update"])
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success(), "self update should fail");
+    let current = fs::read(&current_binary).unwrap();
+    assert_eq!(current, b"old-version-binary");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    assert_eq!(json["status"], "error");
+    assert_eq!(json["detail"]["rollback_performed"].as_bool(), Some(true));
 }

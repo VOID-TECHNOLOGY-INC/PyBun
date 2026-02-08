@@ -21,10 +21,11 @@
 ## Audit Follow-up Tracks (2026-02-08)
 
 ### P0 (Release Blocking)
-- PR-A1: Self-update の実更新実装（download + verify + atomic swap + rollback）
+- [DONE] PR-A1: Self-update の実更新実装（download + verify + atomic swap + rollback）
   - Goal: `pybun self update` 非 dry-run で実際に更新を完了できるようにする（現状は “Would update”）。
   - Depends on: PR6.5（manifest/signature metadata）。
-  - Tests: ローカル manifest を使った E2E（成功系/署名不一致/置換失敗時のロールバック）。
+  - Current: `src/self_update.rs` を追加し、asset download / checksum+signature verify（ed25519 + minisign）/ archive extract / atomic binary swap / rollback を実装。`src/commands.rs` の `self update` 非 dry-run 経路を実更新へ切り替え、JSON detail に `update_applied` / `rollback_performed` / `install_path` / `error` を追加。テスト用に `PYBUN_SELF_UPDATE_BIN`（更新対象バイナリ上書き）と `PYBUN_SELF_UPDATE_TEST_FAIL_SWAP`（ロールバック検証用 failpoint）を導入。
+  - Tests: `cargo test --test self_update`（13件, 成功系/署名不一致/swap失敗ロールバックを含む）、`cargo test --test e2e_general --test self_update`、`cargo test --test json_schema self_update_stub_json`、`cargo test --lib self_update::tests::`、`cargo clippy --all-targets --all-features -- -D warnings`、`cargo fmt -- --check`、`cargo build --release`、`PATH=$(pwd)/target/release:$PATH python3 scripts/benchmark/bench.py -s run --format markdown`。
 - PR-A2: lock/hash の完全性担保と `--verify` 強制モード
   - Goal: `sha256:placeholder` を lock 生成経路から排除し、検証不能 artifact を受け入れない。
   - Depends on: PR1.2/PR5.3（artifact metadata と downloader）。

@@ -31,6 +31,7 @@ pub mod sbom;
 pub mod schema;
 pub mod security;
 pub mod self_heal;
+pub mod self_update;
 pub mod snapshot;
 pub mod support_bundle;
 pub mod telemetry;
