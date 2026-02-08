@@ -1,12 +1,12 @@
 {
-  "version": "0.1.14",
+  "version": "0.1.15",
   "description": "Rust-based single-binary Python toolchain.",
   "homepage": "https://github.com/VOID-TECHNOLOGY-INC/PyBun",
   "license": "MIT",
   "architecture": {
     "64bit": {
-      "url": "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.1.14/pybun-x86_64-pc-windows-msvc.zip",
-      "hash": "120ca24a3987db1ff6e55b5dd4ed2453453cdb46da5a8a80a72efb7ae45adef9"
+      "url": "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.1.15/pybun-x86_64-pc-windows-msvc.zip",
+      "hash": "64fbc042b2bf7b71777a5727feeda6ec959cf2acb2c6182662972e0ab7482b18"
     }
   },
   "bin": [
