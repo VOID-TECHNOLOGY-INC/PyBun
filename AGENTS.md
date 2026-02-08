@@ -26,6 +26,10 @@
 - Use Conventional Commits: `feat(scope): ...`, `fix(ci): ...`, `docs: ...`, `chore: ...`, `test: ...`. Keep messages imperative and scoped.
 - PRs must: describe changes, link issues (`Fixes #123`), note breaking changes, and include tests/docs updates. Use the template in `.github/PULL_REQUEST_TEMPLATE.md`.
 - Before pushing: `cargo fmt -- --check && cargo clippy --all-targets --all-features -- -D warnings && cargo test` (or `make check`).
+- CI recurrence prevention (security-audit):
+  - Run `cargo audit` before pushing, even for docs-focused PRs.
+  - If RustSec flags a transitive crate in `Cargo.lock`, update lockfile immediately (example: `cargo update -p <crate> --precise <patched_version>`), then rerun `cargo audit` and `cargo test`.
+  - Commit `Cargo.lock` updates together with the PR to keep local checks and CI aligned.
 
 ## Security & Configuration Tips
 - Run `cargo audit` and `cargo deny check licenses`; Python deps: `pip-audit .`. See `SECURITY.md`.

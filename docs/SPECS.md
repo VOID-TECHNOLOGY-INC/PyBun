@@ -18,6 +18,7 @@
 
 本ドキュメント（SPECS）は最終的な到達点（製品仕様）を定義する。一方で実装は段階的に投入されるため、機能には成熟度を設ける。
 実装計画と現状は `docs/PLAN.md` を正とし、本仕様と矛盾しない範囲で段階導入を許容する。
+CLI 記述は原則として到達仕様を示し、現状との差分や暫定挙動は `docs/PLAN.md` で管理する（必要に応じて本仕様側にも「現状」注記を併記する）。
 
 ### 成熟度レベル
 
@@ -30,6 +31,20 @@
 - **Tester/Builder は bootstrap → ネイティブ実装へ**: まず薄いラッパーで CLI/JSON/exit-code 等の外形を固め、後から内部エンジンを差し替える。
 - **MCP は stdio を先行**: `--stdio` は実装済みで安定動作する。HTTP mode（`--port`）は運用・セキュリティ要件を詰めてから追加する。
 - **Hot Reload は外部ウォッチャーとネイティブ監視を併用**: macOS/Linux は `notify` クレートによるネイティブ監視を実装済み（プレビュー）。Windows はまだスタブ。
+
+---
+
+## 0.2 実装監査で見えた追加要件 (2026-02-08)
+
+実装（`src/commands.rs` / `src/mcp.rs` / `src/test_executor.rs` / `src/project.rs` など）を監査した結果、次を追加改善テーマとして定義する。
+
+- **Self Update を実更新まで完成**: 現在は更新チェック中心で、非 `--dry-run` でも実バイナリ置換は未完。署名検証 + アトミック差し替え + ロールバックを stable 要件化。
+- **Lock/Verify の厳密化**: lock 内 `hash` に `sha256:placeholder` が残る経路があり、再現性/検証強度が不足。`install/lock/upgrade` で実ハッシュ必須化し `--verify` を既定運用に近づける。
+- **Tester ネイティブ実行統合**: `test_executor` と `snapshot` は実装済みだが `pybun test` 本線未接続。`--backend=pybun` を追加して段階移行する。
+- **MCP と CLI の実処理整合**: MCP 側に独自実装が残り、CLI と挙動差（lock拡張子・index選択・run機能差）がある。内部 command レイヤ再利用で同一挙動に統一。
+- **依存入力範囲の拡張**: 現在主に `[project.dependencies]` 中心。`optional-dependencies`・dependency groups・workspace member グロブに対応する。
+- **Watch のデフォルト実行性**: `native-watch` 無効ビルドでは preview 止まり。ポーリング fallback を追加し、標準ビルドでも監視実行可能にする。
+- **Install の隔離強化**: venv 未指定時に system Python へ直接入る経路がある。プロジェクト隔離環境の自動作成/利用を既定化する。
 
 ---
 
@@ -145,7 +160,7 @@ graph TD
 
 ### 4.6 設定ファイル/レイアウト
 
-- **ロックファイル:** `pybun.lockb`（バイナリ形式）。Pythonバージョン、プラットフォームタグ、wheelハッシュ、解決グラフを格納。`pybun lock --json` でデコード可。
+- **ロックファイル:** プロジェクト依存は `pybun.lockb`（バイナリ形式）を使用。PEP 723 スクリプト依存は `<script>.lock`（同フォーマット）を使用。Pythonバージョン、プラットフォームタグ、wheelハッシュ、解決グラフを格納し、機械可読出力は `pybun --format=json ...` で取得する。
 - **プロジェクト設定:** `pyproject.toml` の `[tool.pybun]` + `.pybun/config.toml`（後者が優先）。実行時オプションは CLI > 環境変数 > 設定ファイル。
 - **キャッシュ構造:** `packages/`（wheel）、`envs/`（仮想環境）、`build/`（オブジェクトキャッシュ）、`logs/`（実行ログ/構造化イベント）。
 - **クリーンアップ:** `pybun gc` で LRU ベースのキャッシュ削除、`--max-size` 指定で上限管理。
@@ -202,11 +217,20 @@ Bun の UX を踏襲し、短く直感的なコマンド体系とする。
 | `pybun install` | 依存関係のインストール | `pip install -r ...` |
 | `pybun add <pkg>` | パッケージ追加 & ロックファイル更新 | `poetry add` |
 | `pybun remove <pkg>` | パッケージ削除 | `poetry remove` |
+| `pybun lock --script <file.py>` | PEP 723 スクリプト依存を `<file.py>.lock` に lock 化 | `uv lock --script` |
 | `pybun test` | 高速テスト実行 | `pytest` |
 | `pybun build` | 配布用パッケージ/バイナリのビルド | `python -m build` |
 | `pybun x <pkg>` | ツールの一時実行（PEP 723対応） | `pipx run` / `uvx` |
 | `pybun doctor` | 環境・依存関係の診断（AI向け出力対応） | - |
+| `pybun gc` | キャッシュのGC/LRU削除 | - |
 | `pybun self update` | バイナリアップデート（署名検証付） | - |
+| `pybun python list/install/remove/which` | Python ランタイム管理 | `pyenv` |
+| `pybun module-find` | Rust製モジュール探索 | - |
+| `pybun lazy-import` | Lazy Import 設定/コード生成 | - |
+| `pybun watch` | ファイル監視 & 再実行 | `watchfiles` / `nodemon` |
+| `pybun profile` | 実行プロファイル比較/表示 | - |
+| `pybun schema print/check` | JSON スキーマ出力/互換検証 | - |
+| `pybun telemetry status/enable/disable` | テレメトリー設定管理 | - |
 | `pybun mcp serve` | MCP サーバーとして待受（stdio先行、HTTPは段階導入） | - |
 | `pybun init` | プロジェクト初期化（pyproject.toml生成） | `npm init` / `bun init` |
 | `pybun outdated` | 更新可能な依存パッケージの一覧表示 | `npm outdated` / `pip list -o` |
@@ -281,8 +305,8 @@ Bun の UX を踏襲し、短く直感的なコマンド体系とする。
 ## 10\. セキュリティ・安全性 (Security & Safety)
 
 - **署名検証:** バイナリ・CPython アーカイブ・インデックスメタデータに署名を付与し、更新時に検証。
-- **サンドボックス実行:** `pybun run --sandbox` で subprocess を seccomp/JobObject 制限下に実行（Linux/macOS/Windows で同等機能）。
-- **サプライチェーン:** `pybun build` は SBOM (CycloneDX) を生成し、lock と一緒に保存。`pybun install --verify` でハッシュ検証を強制。
+- **サンドボックス実行:** 現行プレビューは Python `sitecustomize` による subprocess/socket 制限。最終到達点は `seccomp`/`JobObject` などOSネイティブ制御での同等機能。
+- **サプライチェーン:** `pybun build` は SBOM (CycloneDX) を生成し、lock と一緒に保存。`pybun install --verify` は実ハッシュ必須（placeholder 禁止）を stable 条件とする。
 - **資格情報管理:** プライベートリポジトリは OS キーチェーンまたは `.netrc` を使用。環境変数は `--redact` でログからマスク。
 
 ## 11\. ログ・オブザーバビリティ (Logging & Observability)
