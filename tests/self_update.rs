@@ -90,35 +90,83 @@ fn sign_payload(payload: &[u8]) -> (String, String) {
     )
 }
 
-fn write_manifest(
-    path: &Path,
-    target: &str,
-    version: &str,
-    asset_url: &str,
-    sha256: &str,
-    signature: &str,
-    public_key: &str,
-) {
-    let archive_ext = if target.contains("windows") {
+fn minisign_available() -> bool {
+    Command::new("minisign").arg("-v").output().is_ok()
+}
+
+fn sign_archive_with_minisign(archive_path: &Path) -> (String, String) {
+    let key_dir = tempdir().expect("temp dir for minisign keys");
+    let public_key_path = key_dir.path().join("pybun-test.pub");
+    let secret_key_path = key_dir.path().join("pybun-test.key");
+
+    let generate = Command::new("minisign")
+        .arg("-G")
+        .arg("-W")
+        .arg("-p")
+        .arg(&public_key_path)
+        .arg("-s")
+        .arg(&secret_key_path)
+        .arg("-c")
+        .arg("pybun test key")
+        .output()
+        .expect("generate minisign key");
+    assert!(
+        generate.status.success(),
+        "minisign key generation failed: {}",
+        String::from_utf8_lossy(&generate.stderr)
+    );
+
+    let sign = Command::new("minisign")
+        .arg("-Sm")
+        .arg(archive_path)
+        .arg("-s")
+        .arg(&secret_key_path)
+        .output()
+        .expect("sign archive with minisign");
+    assert!(
+        sign.status.success(),
+        "minisign signing failed: {}",
+        String::from_utf8_lossy(&sign.stderr)
+    );
+
+    let signature_path = PathBuf::from(format!("{}.minisig", archive_path.display()));
+    let signature_value = fs::read_to_string(&signature_path).expect("read minisign signature");
+    let public_key = fs::read_to_string(&public_key_path).expect("read minisign public key");
+
+    (signature_value, public_key)
+}
+
+struct ManifestAsset<'a> {
+    target: &'a str,
+    version: &'a str,
+    asset_url: &'a str,
+    sha256: &'a str,
+    signature_type: &'a str,
+    signature: &'a str,
+    public_key: &'a str,
+}
+
+fn write_manifest(path: &Path, asset: ManifestAsset<'_>) {
+    let archive_ext = if asset.target.contains("windows") {
         "zip"
     } else {
         "tar.gz"
     };
-    let asset_name = format!("pybun-{}.{}", target, archive_ext);
+    let asset_name = format!("pybun-{}.{}", asset.target, archive_ext);
     let manifest = serde_json::json!({
-        "version": version,
+        "version": asset.version,
         "channel": "stable",
         "published_at": "2025-01-01T00:00:00Z",
         "assets": [
             {
                 "name": asset_name,
-                "target": target,
-                "url": asset_url,
-                "sha256": sha256,
+                "target": asset.target,
+                "url": asset.asset_url,
+                "sha256": asset.sha256,
                 "signature": {
-                    "type": "ed25519",
-                    "value": signature,
-                    "public_key": public_key
+                    "type": asset.signature_type,
+                    "value": asset.signature,
+                    "public_key": asset.public_key
                 }
             }
         ]
@@ -418,12 +466,15 @@ fn self_update_applies_update_from_local_manifest() {
     let (signature, public_key) = sign_payload(&archive_bytes);
     write_manifest(
         &manifest_path,
-        &target,
-        "9.9.9",
-        &file_url(&archive_path),
-        &sha256,
-        &signature,
-        &public_key,
+        ManifestAsset {
+            target: &target,
+            version: "9.9.9",
+            asset_url: &file_url(&archive_path),
+            sha256: &sha256,
+            signature_type: "ed25519",
+            signature: &signature,
+            public_key: &public_key,
+        },
     );
 
     let output = pybun_bin()
@@ -435,7 +486,8 @@ fn self_update_applies_update_from_local_manifest() {
 
     assert!(
         output.status.success(),
-        "self update should succeed: {}",
+        "self update should succeed. stdout: {} stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
     let updated = fs::read(&current_binary).unwrap();
@@ -461,12 +513,15 @@ fn self_update_rejects_signature_mismatch() {
     let (signature, public_key) = sign_payload(b"this-is-not-the-archive");
     write_manifest(
         &manifest_path,
-        &target,
-        "9.9.9",
-        &file_url(&archive_path),
-        &sha256,
-        &signature,
-        &public_key,
+        ManifestAsset {
+            target: &target,
+            version: "9.9.9",
+            asset_url: &file_url(&archive_path),
+            sha256: &sha256,
+            signature_type: "ed25519",
+            signature: &signature,
+            public_key: &public_key,
+        },
     );
 
     let output = pybun_bin()
@@ -506,12 +561,15 @@ fn self_update_rolls_back_when_swap_fails() {
     let (signature, public_key) = sign_payload(&archive_bytes);
     write_manifest(
         &manifest_path,
-        &target,
-        "9.9.9",
-        &file_url(&archive_path),
-        &sha256,
-        &signature,
-        &public_key,
+        ManifestAsset {
+            target: &target,
+            version: "9.9.9",
+            asset_url: &file_url(&archive_path),
+            sha256: &sha256,
+            signature_type: "ed25519",
+            signature: &signature,
+            public_key: &public_key,
+        },
     );
 
     let output = pybun_bin()
@@ -530,4 +588,55 @@ fn self_update_rolls_back_when_swap_fails() {
     let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
     assert_eq!(json["status"], "error");
     assert_eq!(json["detail"]["rollback_performed"].as_bool(), Some(true));
+}
+
+#[test]
+fn self_update_applies_update_with_minisign_signature() {
+    if !minisign_available() {
+        eprintln!("Skipping minisign self-update test: minisign command not found");
+        return;
+    }
+
+    let temp = tempdir().unwrap();
+    let target = current_release_target().expect("supported release target");
+    let manifest_path = temp.path().join("pybun-release.json");
+    let current_binary = temp.path().join(release_binary_name());
+    fs::write(&current_binary, b"old-version-binary").unwrap();
+    make_executable(&current_binary);
+
+    let archive_path = create_release_archive(temp.path(), &target, b"new-version-binary");
+    let sha256 = archive_sha256(&archive_path);
+    let (signature, public_key) = sign_archive_with_minisign(&archive_path);
+    write_manifest(
+        &manifest_path,
+        ManifestAsset {
+            target: &target,
+            version: "9.9.9",
+            asset_url: &file_url(&archive_path),
+            sha256: &sha256,
+            signature_type: "minisign",
+            signature: &signature,
+            public_key: &public_key,
+        },
+    );
+
+    let output = pybun_bin()
+        .env("PYBUN_SELF_UPDATE_MANIFEST", &manifest_path)
+        .env("PYBUN_SELF_UPDATE_BIN", &current_binary)
+        .args(["--format=json", "self", "update"])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "self update should succeed. stdout: {} stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(fs::read(&current_binary).unwrap(), b"new-version-binary");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    assert_eq!(json["status"], "ok");
+    assert_eq!(json["detail"]["update_applied"].as_bool(), Some(true));
 }
