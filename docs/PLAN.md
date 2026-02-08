@@ -32,7 +32,9 @@
 
 ### P1 (GA Hardening)
 - PR-A3: MCP と CLI の実処理統一
-  - Goal: `mcp` tools を command 層へ寄せ、`pybun.lockb` を含め CLI と同一挙動へ統一。
+  - Goal: `mcp` tools を command 層へ寄せ、CLI と同一挙動へ統一する。
+    - lockfile 互換方針: project lock は `pybun.lockb`、script lock は `<script>.lock` を現行仕様として維持し、MCP でも同じ命名/更新規則に合わせる。
+    - 非目標: A3 では lockfile 命名変更（例: script lock の `*.lockb` 化）は行わない。命名変更は互換計画（移行/警告期間）を伴う別PRで扱う。
   - Tests: 同一入力で CLI と MCP の detail JSON 差分がないことを比較する互換テスト。
 - PR-A4: `test_executor` / `snapshot` の CLI 統合（`--backend=pybun`）
   - Goal: 既存 pytest/unittest fallback を維持しつつ、ネイティブ実行経路を正式提供。

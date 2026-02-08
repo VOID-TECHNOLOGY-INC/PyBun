@@ -18,6 +18,7 @@
 
 本ドキュメント（SPECS）は最終的な到達点（製品仕様）を定義する。一方で実装は段階的に投入されるため、機能には成熟度を設ける。
 実装計画と現状は `docs/PLAN.md` を正とし、本仕様と矛盾しない範囲で段階導入を許容する。
+CLI 記述は原則として到達仕様を示し、現状との差分や暫定挙動は `docs/PLAN.md` で管理する（必要に応じて本仕様側にも「現状」注記を併記する）。
 
 ### 成熟度レベル
 
@@ -159,7 +160,7 @@ graph TD
 
 ### 4.6 設定ファイル/レイアウト
 
-- **ロックファイル:** `pybun.lockb`（バイナリ形式）。Pythonバージョン、プラットフォームタグ、wheelハッシュ、解決グラフを格納。`pybun lock --json` でデコード可。
+- **ロックファイル:** プロジェクト依存は `pybun.lockb`（バイナリ形式）を使用。PEP 723 スクリプト依存は `<script>.lock`（同フォーマット）を使用。Pythonバージョン、プラットフォームタグ、wheelハッシュ、解決グラフを格納し、機械可読出力は `pybun --format=json ...` で取得する。
 - **プロジェクト設定:** `pyproject.toml` の `[tool.pybun]` + `.pybun/config.toml`（後者が優先）。実行時オプションは CLI > 環境変数 > 設定ファイル。
 - **キャッシュ構造:** `packages/`（wheel）、`envs/`（仮想環境）、`build/`（オブジェクトキャッシュ）、`logs/`（実行ログ/構造化イベント）。
 - **クリーンアップ:** `pybun gc` で LRU ベースのキャッシュ削除、`--max-size` 指定で上限管理。
@@ -216,7 +217,7 @@ Bun の UX を踏襲し、短く直感的なコマンド体系とする。
 | `pybun install` | 依存関係のインストール | `pip install -r ...` |
 | `pybun add <pkg>` | パッケージ追加 & ロックファイル更新 | `poetry add` |
 | `pybun remove <pkg>` | パッケージ削除 | `poetry remove` |
-| `pybun lock --script <file.py>` | PEP 723 スクリプト依存を lock 化 | `uv lock --script` |
+| `pybun lock --script <file.py>` | PEP 723 スクリプト依存を `<file.py>.lock` に lock 化 | `uv lock --script` |
 | `pybun test` | 高速テスト実行 | `pytest` |
 | `pybun build` | 配布用パッケージ/バイナリのビルド | `python -m build` |
 | `pybun x <pkg>` | ツールの一時実行（PEP 723対応） | `pipx run` / `uvx` |
