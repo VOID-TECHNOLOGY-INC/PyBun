@@ -17,6 +17,16 @@ jobs:
         rust: [stable]
     steps:
       - uses: actions/checkout@v4
+      - name: Install minisign
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            sudo apt-get update
+            sudo apt-get install -y minisign
+          else
+            brew install minisign
+          fi
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:

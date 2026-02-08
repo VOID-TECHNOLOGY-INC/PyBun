@@ -4,11 +4,16 @@
     "channel": "stable",
     "current_version": "0.1.15",
     "dry_run": true,
+    "error": null,
+    "install_path": null,
     "latest_version": "0.1.15",
     "manifest": null,
     "manifest_error": null,
     "manifest_source": "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/latest/download/pybun-release.json",
     "release_url": "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/tag/v0.1.15",
+    "rollback_performed": false,
+    "target": "<target>",
+    "update_applied": false,
     "update_available": false
   },
   "diagnostics": [

@@ -22,6 +22,7 @@ use crate::resolver::{
 use crate::sandbox;
 use crate::sbom;
 use crate::schema::{Diagnostic, Event, EventCollector, EventType, JsonEnvelope, Status};
+use crate::self_update::apply_update_for_asset;
 use crate::support_bundle::{BundleContext, BundleReport, build_support_bundle, upload_bundle};
 use crate::wheel_cache::WheelCache;
 use crate::workspace::Workspace;
@@ -3177,8 +3178,9 @@ fn run_self_update(
     let manifest_source = manifest_source_env
         .clone()
         .unwrap_or_else(|| default_manifest_url.clone());
-    let should_fetch_manifest =
-        manifest_source_env.is_some() || std::env::var("PYBUN_SELF_UPDATE_FETCH").is_ok();
+    let should_fetch_manifest = !args.dry_run
+        || manifest_source_env.is_some()
+        || std::env::var("PYBUN_SELF_UPDATE_FETCH").is_ok();
     let manifest_result = if should_fetch_manifest {
         Some(ReleaseManifest::load(&manifest_source))
     } else {
@@ -3188,8 +3190,14 @@ fn run_self_update(
     let mut latest_version = current_version.to_string();
     let mut update_available = false;
     let mut release_url = release_url_for_version(current_version);
+    let target = current_release_target();
+    let mut selected_asset = None;
     let mut manifest_detail = None;
     let mut manifest_error = None;
+    let mut update_applied = false;
+    let mut rollback_performed = false;
+    let mut install_path = None;
+    let mut update_error = None;
 
     match manifest_result {
         Some(Ok(manifest)) => {
@@ -3203,11 +3211,12 @@ fn run_self_update(
                 .clone()
                 .unwrap_or_else(|| release_url_for_version(&manifest.version));
 
-            let target = current_release_target();
-            let asset = target
+            selected_asset = target
                 .as_deref()
-                .and_then(|target| manifest.select_asset(target));
-            let asset_json = asset
+                .and_then(|target| manifest.select_asset(target))
+                .cloned();
+            let asset_json = selected_asset
+                .as_ref()
                 .map(|asset| serde_json::to_value(asset).unwrap_or_else(|_| json!({})))
                 .unwrap_or(Value::Null);
 
@@ -3231,6 +3240,64 @@ fn run_self_update(
         None => {}
     }
 
+    if !args.dry_run {
+        if let Some(error) = manifest_error.as_deref() {
+            update_error = Some(format!("failed to load release manifest: {error}"));
+        } else if update_available {
+            let Some(asset) = selected_asset else {
+                let target_text = target
+                    .as_deref()
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "unknown".to_string());
+                update_error = Some(format!("no release asset found for target {target_text}"));
+                let summary = "Update failed: no release asset found".to_string();
+                let json_detail = json!({
+                    "current_version": current_version,
+                    "latest_version": latest_version,
+                    "channel": channel,
+                    "update_available": update_available,
+                    "release_url": release_url,
+                    "dry_run": args.dry_run,
+                    "target": target,
+                    "manifest": manifest_detail,
+                    "manifest_error": manifest_error,
+                    "manifest_source": manifest_source_env.or(Some(default_manifest_url)),
+                    "update_applied": false,
+                    "rollback_performed": false,
+                    "install_path": Value::Null,
+                    "error": update_error,
+                });
+                return RenderDetail::error(summary, json_detail);
+            };
+            let install_override = std::env::var("PYBUN_SELF_UPDATE_BIN")
+                .ok()
+                .map(PathBuf::from);
+            let fail_swap_for_test = std::env::var("PYBUN_SELF_UPDATE_TEST_FAIL_SWAP").is_ok();
+            let target_name = target
+                .as_deref()
+                .unwrap_or(asset.target.as_str())
+                .to_string();
+
+            match apply_update_for_asset(&asset, &target_name, install_override, fail_swap_for_test)
+            {
+                Ok(outcome) => {
+                    update_applied = true;
+                    rollback_performed = outcome.rollback_performed;
+                    install_path = Some(outcome.install_path.display().to_string());
+                    collector.info(format!(
+                        "Updated binary at {}",
+                        outcome.install_path.display()
+                    ));
+                }
+                Err(error) => {
+                    rollback_performed = error.rollback_performed;
+                    update_error = Some(error.to_string());
+                    collector.error(error.to_string());
+                }
+            }
+        }
+    }
+
     let summary = if args.dry_run {
         if update_available {
             format!(
@@ -3245,12 +3312,12 @@ fn run_self_update(
                 current_version, channel
             )
         }
+    } else if let Some(error) = update_error.as_deref() {
+        format!("Update failed: {error}")
+    } else if update_available && update_applied {
+        format!("Updated: {} -> {}", current_version, latest_version)
     } else if update_available {
-        // Would perform actual update here
-        format!(
-            "Would update: {} -> {} (update not yet implemented)",
-            current_version, latest_version
-        )
+        format!("Update failed: {} -> {}", current_version, latest_version)
     } else {
         format!(
             "Already up to date: {} (channel: {})",
@@ -3265,12 +3332,21 @@ fn run_self_update(
         "update_available": update_available,
         "release_url": release_url,
         "dry_run": args.dry_run,
+        "target": target,
         "manifest": manifest_detail,
         "manifest_error": manifest_error,
         "manifest_source": manifest_source_env.or(Some(default_manifest_url)),
+        "update_applied": update_applied,
+        "rollback_performed": rollback_performed,
+        "install_path": install_path,
+        "error": update_error,
     });
 
-    RenderDetail::with_json(summary, json_detail)
+    if !args.dry_run && update_error.is_some() {
+        RenderDetail::error(summary, json_detail)
+    } else {
+        RenderDetail::with_json(summary, json_detail)
+    }
 }
 
 fn default_manifest_url(channel: &str) -> String {

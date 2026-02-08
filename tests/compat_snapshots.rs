@@ -53,6 +53,29 @@ fn normalize_envelope(mut value: Value) -> Value {
                 }
             }
         }
+
+        if let Some(detail) = obj.get_mut("detail").and_then(|v| v.as_object_mut()) {
+            if let Some(target) = detail.get_mut("target")
+                && target.is_string()
+            {
+                *target = json!("<target>");
+            }
+
+            if let Some(manifest) = detail.get_mut("manifest").and_then(|v| v.as_object_mut()) {
+                if let Some(target) = manifest.get_mut("target")
+                    && target.is_string()
+                {
+                    *target = json!("<target>");
+                }
+
+                if let Some(asset) = manifest.get_mut("asset").and_then(|v| v.as_object_mut())
+                    && let Some(target) = asset.get_mut("target")
+                    && target.is_string()
+                {
+                    *target = json!("<target>");
+                }
+            }
+        }
     }
 
     value

@@ -380,7 +380,7 @@ if __name__ == "__main__":
     #[test]
     fn self_update_stub_json() {
         let output = Command::new(env!("CARGO_BIN_EXE_pybun"))
-            .args(["--format=json", "self", "update"])
+            .args(["--format=json", "self", "update", "--dry-run"])
             .output()
             .expect("failed to execute pybun");
 
