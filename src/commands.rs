@@ -1221,11 +1221,17 @@ async fn install(
     }
     lock.save_to_path(&args.lock)?;
 
-    // Download artifacts in parallel
-    let cache_dir = dirs::cache_dir()
-        .ok_or_else(|| eyre!("failed to determine cache directory"))?
-        .join("pybun")
-        .join("artifacts");
+    // Download artifacts in parallel.
+    // Respect PYBUN_PYPI_CACHE_DIR when present so tests and callers can
+    // isolate both index metadata and downloaded wheel artifacts together.
+    let cache_dir = if let Ok(dir) = std::env::var("PYBUN_PYPI_CACHE_DIR") {
+        PathBuf::from(dir).join("artifacts")
+    } else {
+        dirs::cache_dir()
+            .ok_or_else(|| eyre!("failed to determine cache directory"))?
+            .join("pybun")
+            .join("artifacts")
+    };
 
     collector.info(format!("Downloading artifacts to {}", cache_dir.display()));
 
