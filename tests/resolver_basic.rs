@@ -258,7 +258,6 @@ async fn resolves_dependencies_fetched_after_selection() {
             name: "app".to_string(),
             version: "1.0.0".to_string(),
             dependencies: Vec::new(),
-            optional_dependencies: Default::default(),
             source: None,
             artifacts: PackageArtifacts::default(),
         }],
@@ -269,7 +268,6 @@ async fn resolves_dependencies_fetched_after_selection() {
             name: "dep".to_string(),
             version: "1.0.0".to_string(),
             dependencies: Vec::new(),
-            optional_dependencies: Default::default(),
             source: None,
             artifacts: PackageArtifacts::default(),
         }],
@@ -282,7 +280,6 @@ async fn resolves_dependencies_fetched_after_selection() {
             name: "app".to_string(),
             version: "1.0.0".to_string(),
             dependencies: vec![Requirement::exact("dep", "1.0.0")],
-            optional_dependencies: Default::default(),
             source: None,
             artifacts: PackageArtifacts::default(),
         },
@@ -322,9 +319,4 @@ fn parses_all_specifier_types_from_string() {
 
     let any: Requirement = "pkg".parse().unwrap();
     assert_eq!(any.name, "pkg");
-
-    let extras: Requirement = "pkg[foo,bar]>=1.0.0".parse().unwrap();
-    assert_eq!(extras.name, "pkg");
-    assert_eq!(extras.extras, vec!["bar".to_string(), "foo".to_string()]);
-    assert_eq!(extras.to_string(), "pkg[bar,foo]>=1.0.0");
 }
