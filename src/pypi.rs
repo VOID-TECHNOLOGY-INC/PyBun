@@ -1,10 +1,12 @@
 use crate::lockfile::PackageSource;
 use crate::once_map::OnceMap;
-use crate::resolver::{PackageArtifacts, PackageIndex, Requirement, ResolvedPackage, Wheel};
+use crate::resolver::{
+    PackageArtifacts, PackageIndex, Requirement, ResolvedPackage, SourceDist, Wheel,
+};
 use dashmap::DashMap;
 use reqwest::{StatusCode, Url, header};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -76,17 +78,18 @@ impl PackageIndex for PyPiIndex {
             if cached.is_none() {
                 return Ok(None);
             }
-            let dependencies = this
-                .client
+            this.client
                 .ensure_dependencies(&name, &version, &this.memory)
                 .await
                 .map_err(|e| crate::resolver::ResolveError::Io(e.to_string()))?;
             let source = this.client.package_source();
-            Ok(Some(this.client.build_resolved(
-                cached.expect("checked"),
-                &dependencies,
-                &source,
-            )))
+            let refreshed = this
+                .memory
+                .get(&name)
+                .and_then(|packages| packages.iter().find(|pkg| pkg.version == version).cloned())
+                .or_else(|| packages.iter().find(|pkg| pkg.version == version).cloned())
+                .expect("checked");
+            Ok(Some(this.client.build_resolved(&refreshed, &source)))
         }
     }
 
@@ -107,13 +110,7 @@ impl PackageIndex for PyPiIndex {
             let source = this.client.package_source();
             Ok(cached
                 .iter()
-                .map(|pkg| {
-                    this.client.build_resolved(
-                        pkg,
-                        pkg.dependencies.as_deref().unwrap_or(&[]),
-                        &source,
-                    )
-                })
+                .map(|pkg| this.client.build_resolved(pkg, &source))
                 .collect())
         }
     }
@@ -126,7 +123,7 @@ pub struct PyPiClient {
     http: reqwest::Client,
     offline: bool,
     package_once: Arc<OnceMap<String, Vec<CachedPackage>>>,
-    deps_once: Arc<OnceMap<String, Vec<String>>>,
+    deps_once: Arc<OnceMap<String, ()>>,
 }
 
 impl PyPiClient {
@@ -238,13 +235,27 @@ impl PyPiClient {
                     .collect::<HashMap<_, _>>()
             })
             .unwrap_or_default();
+        let cached_optional_deps = cached_entry
+            .as_ref()
+            .map(|entry| {
+                entry
+                    .packages
+                    .iter()
+                    .map(|pkg| (pkg.version.clone(), pkg.optional_dependencies.clone()))
+                    .collect::<HashMap<_, _>>()
+            })
+            .unwrap_or_default();
 
         let body_bytes = body.to_vec();
         let body_bytes_for_parse = body_bytes.clone();
         let packages = tokio::task::spawn_blocking(move || {
             let parsed: ProjectResponse = serde_json::from_slice(&body_bytes_for_parse)
                 .map_err(|e| PyPiError::Parse(format!("json decode error: {}", e)))?;
-            Ok::<_, PyPiError>(build_cached_packages(parsed, &cached_deps))
+            Ok::<_, PyPiError>(build_cached_packages(
+                parsed,
+                &cached_deps,
+                &cached_optional_deps,
+            ))
         })
         .await
         .map_err(|e| PyPiError::Parse(format!("cache parse join error: {}", e)))??;
@@ -266,17 +277,19 @@ impl PyPiClient {
         &self,
         name: &str,
         version: &str,
-    ) -> Result<Vec<String>, PyPiError> {
+    ) -> Result<ParsedDependencies, PyPiError> {
         let url = self
             .base
             .join(&format!("pypi/{}/{}/json", name, version))
             .map_err(|e| PyPiError::Parse(e.to_string()))?;
         let resp = self.http.get(url).send().await?;
         if !resp.status().is_success() {
-            return Ok(Vec::new());
+            return Ok(ParsedDependencies::default());
         }
         let body: VersionResponse = resp.json().await?;
-        Ok(body.info.requires_dist.unwrap_or_default())
+        Ok(parse_requires_dist_list(
+            body.info.requires_dist.unwrap_or_default(),
+        ))
     }
 
     fn cache_path(&self, name: &str) -> PathBuf {
@@ -310,16 +323,26 @@ impl PyPiClient {
         }
     }
 
-    fn build_resolved(
-        &self,
-        pkg: &CachedPackage,
-        dependencies: &[String],
-        source: &PackageSource,
-    ) -> ResolvedPackage {
-        let deps = dependencies
+    fn build_resolved(&self, pkg: &CachedPackage, source: &PackageSource) -> ResolvedPackage {
+        let deps = pkg
+            .dependencies
+            .clone()
+            .unwrap_or_default()
             .iter()
             .filter_map(|d| Requirement::from_str(d).ok())
             .collect::<Vec<_>>();
+        let optional_dependencies = pkg
+            .optional_dependencies
+            .iter()
+            .map(|(extra, deps)| {
+                (
+                    extra.clone(),
+                    deps.iter()
+                        .filter_map(|d| Requirement::from_str(d).ok())
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
         let artifacts = PackageArtifacts {
             wheels: pkg
                 .wheels
@@ -341,6 +364,7 @@ impl PyPiClient {
             name: pkg.name.clone(),
             version: pkg.version.clone(),
             dependencies: deps,
+            optional_dependencies,
             source: Some(source.clone()),
             artifacts,
         }
@@ -351,17 +375,16 @@ impl PyPiClient {
         name: &str,
         version: &str,
         memory: &Arc<DashMap<String, Vec<CachedPackage>>>,
-    ) -> Result<Vec<String>, PyPiError> {
-        if let Some(deps) = self.cached_dependencies(name, version, memory).await {
-            return Ok(deps);
+    ) -> Result<(), PyPiError> {
+        if self.cached_dependencies(name, version, memory).await {
+            return Ok(());
         }
 
         let key = format!("{}=={}", name, version);
         let memory = Arc::clone(memory);
         let name_owned = name.to_string();
         let version_owned = version.to_string();
-        let deps = self
-            .deps_once
+        self.deps_once
             .get_or_try_init(key, || {
                 let client = self.clone();
                 let memory = Arc::clone(&memory);
@@ -376,24 +399,14 @@ impl PyPiClient {
                     let raw_deps = client
                         .fetch_requires_dist(&name_owned, &version_owned)
                         .await?;
-                    let deps = raw_deps
-                        .into_iter()
-                        .filter_map(parse_requires_dist)
-                        .map(|req| req.to_string())
-                        .collect::<Vec<_>>();
                     client
-                        .update_cached_dependencies(
-                            &name_owned,
-                            &version_owned,
-                            deps.clone(),
-                            &memory,
-                        )
+                        .update_cached_dependencies(&name_owned, &version_owned, raw_deps, &memory)
                         .await?;
-                    Ok::<Vec<String>, PyPiError>(deps)
+                    Ok::<(), PyPiError>(())
                 }
             })
             .await?;
-        Ok(deps)
+        Ok(())
     }
 
     async fn cached_dependencies(
@@ -401,31 +414,34 @@ impl PyPiClient {
         name: &str,
         version: &str,
         memory: &Arc<DashMap<String, Vec<CachedPackage>>>,
-    ) -> Option<Vec<String>> {
+    ) -> bool {
         memory.get(name).and_then(|packages| {
             packages
                 .iter()
                 .find(|pkg| pkg.version == version)
-                .and_then(|pkg| pkg.dependencies.clone())
-        })
+                .and_then(|pkg| pkg.dependencies.as_ref())
+                .map(|_| true)
+        }) == Some(true)
     }
 
     async fn update_cached_dependencies(
         &self,
         name: &str,
         version: &str,
-        deps: Vec<String>,
+        deps: ParsedDependencies,
         memory: &Arc<DashMap<String, Vec<CachedPackage>>>,
     ) -> Result<(), PyPiError> {
         if let Some(mut packages) = memory.get_mut(name)
             && let Some(pkg) = packages.iter_mut().find(|pkg| pkg.version == version)
         {
-            pkg.dependencies = Some(deps.clone());
+            pkg.dependencies = Some(deps.base.clone());
+            pkg.optional_dependencies = deps.optional.clone();
         }
 
         if let Some(mut entry) = self.load_cache(name).await? {
             if let Some(pkg) = entry.packages.iter_mut().find(|pkg| pkg.version == version) {
-                pkg.dependencies = Some(deps);
+                pkg.dependencies = Some(deps.base);
+                pkg.optional_dependencies = deps.optional;
             }
             if !entry.policy.no_store {
                 self.save_cache(name, entry).await?;
@@ -483,9 +499,17 @@ struct CachedPackage {
     version: String,
     #[serde(default)]
     dependencies: Option<Vec<String>>,
+    #[serde(default)]
+    optional_dependencies: BTreeMap<String, Vec<String>>,
     wheels: Vec<CachedWheel>,
     #[serde(default)]
-    sdist: Option<String>,
+    sdist: Option<SourceDist>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ParsedDependencies {
+    base: Vec<String>,
+    optional: BTreeMap<String, Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -572,40 +596,43 @@ fn normalize_base(input: &str) -> Result<Url, PyPiError> {
     Url::parse(normalized).map_err(|_| PyPiError::InvalidBaseUrl(input.to_string()))
 }
 
-fn parse_requires_dist(raw: String) -> Option<Requirement> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParsedRequirement {
+    requirement: Requirement,
+    marker_extras: BTreeSet<String>,
+}
+
+fn parse_requires_dist(raw: String) -> Option<ParsedRequirement> {
     let py_version = std::env::var("PYBUN_PYPI_PYTHON_VERSION").unwrap_or_else(|_| "3.11".into());
 
     // Split marker and requirement
     let mut iter = raw.splitn(2, ';');
     let req_part = iter.next()?.trim();
-    if iter
-        .next()
-        .is_some_and(|marker| !marker_allows(marker, &py_version))
-    {
+    let marker = iter.next().map(str::trim);
+    if marker.is_some_and(|m| !marker_allows(m, &py_version)) {
         return None;
     }
+    let marker_extras = marker.map(extract_marker_extras).unwrap_or_default();
 
-    let without_extras = req_part.split('[').next().unwrap_or("").trim();
-
-    if let Some((name, rest)) = without_extras.split_once('(') {
+    let requirement = if let Some((name, rest)) = req_part.split_once('(') {
         let spec = rest.trim_end_matches(')').trim();
         let first_spec = spec.split(',').next().unwrap_or("").trim();
         let normalized = format!("{}{}", name.trim(), first_spec.replace(' ', ""));
-        Requirement::from_str(&normalized).ok()
+        Requirement::from_str(&normalized).ok()?
     } else {
-        let normalized = without_extras.replace(' ', "");
+        let normalized = req_part.replace(' ', "");
         let first = normalized.split(',').next().unwrap_or("").trim();
-        Requirement::from_str(first).ok()
-    }
+        Requirement::from_str(first).ok()?
+    };
+
+    Some(ParsedRequirement {
+        requirement,
+        marker_extras,
+    })
 }
 
 fn marker_allows(marker: &str, py_version: &str) -> bool {
     let marker = marker.to_lowercase();
-
-    // Skip extras we didn't request
-    if marker.contains("extra ==") || marker.contains("extra==") || marker.contains("extra===") {
-        return false;
-    }
 
     // Handle simple python_version comparisons; if parsing fails, allow by default
     if marker.contains("python_version")
@@ -615,6 +642,38 @@ fn marker_allows(marker: &str, py_version: &str) -> bool {
     }
 
     true
+}
+
+fn extract_marker_extras(marker: &str) -> BTreeSet<String> {
+    let normalized = marker.to_ascii_lowercase();
+    let mut extras = BTreeSet::new();
+    let mut rest = normalized.as_str();
+
+    while let Some(idx) = rest.find("extra") {
+        rest = &rest[idx + "extra".len()..];
+        let trimmed = rest.trim_start();
+        let Some(after_op) = trimmed
+            .strip_prefix("===")
+            .or_else(|| trimmed.strip_prefix("=="))
+        else {
+            continue;
+        };
+        let after_op = after_op.trim_start();
+        let Some(quote) = after_op.chars().next().filter(|c| *c == '"' || *c == '\'') else {
+            continue;
+        };
+        let after_quote = &after_op[quote.len_utf8()..];
+        let Some(end) = after_quote.find(quote) else {
+            break;
+        };
+        let extra = after_quote[..end].trim();
+        if !extra.is_empty() {
+            extras.insert(extra.to_string());
+        }
+        rest = &after_quote[end + quote.len_utf8()..];
+    }
+
+    extras
 }
 
 fn eval_python_version_marker(marker: &str, py_version: &str) -> Option<bool> {
@@ -657,6 +716,37 @@ fn version_tuple(s: &str) -> (u64, u64, u64) {
         parts.push(0);
     }
     (parts[0], parts[1], parts[2])
+}
+
+fn parse_requires_dist_list(raw_requirements: Vec<String>) -> ParsedDependencies {
+    let mut parsed = ParsedDependencies::default();
+
+    for raw in raw_requirements {
+        let Some(entry) = parse_requires_dist(raw) else {
+            continue;
+        };
+        if entry.marker_extras.is_empty() {
+            parsed.base.push(entry.requirement.to_string());
+        } else {
+            let rendered = entry.requirement.to_string();
+            for extra in entry.marker_extras {
+                parsed
+                    .optional
+                    .entry(extra)
+                    .or_default()
+                    .push(rendered.clone());
+            }
+        }
+    }
+
+    parsed.base.sort();
+    parsed.base.dedup();
+    for deps in parsed.optional.values_mut() {
+        deps.sort();
+        deps.dedup();
+    }
+
+    parsed
 }
 
 fn wheel_platforms(filename: &str) -> Vec<String> {
@@ -744,6 +834,7 @@ fn save_cache_to_path(path: &Path, entry: &CacheEntry) -> Result<(), PyPiError> 
 fn build_cached_packages(
     body: ProjectResponse,
     cached_deps: &HashMap<String, Option<Vec<String>>>,
+    cached_optional_deps: &HashMap<String, BTreeMap<String, Vec<String>>>,
 ) -> Vec<CachedPackage> {
     let mut packages = Vec::new();
     for (version, files) in body.releases {
@@ -777,7 +868,16 @@ fn build_cached_packages(
                     });
                 }
                 "sdist" => {
-                    sdist = Some(file.filename.clone());
+                    let hash = file
+                        .digests
+                        .as_ref()
+                        .and_then(|d| d.get("sha256"))
+                        .map(|h| format!("sha256:{}", h));
+                    sdist = Some(SourceDist {
+                        file: file.filename.clone(),
+                        url: Some(file.url.clone()),
+                        hash,
+                    });
                 }
                 _ => {}
             }
@@ -786,8 +886,12 @@ fn build_cached_packages(
         let dependencies = cached_deps.get(&version).cloned().unwrap_or(None);
         packages.push(CachedPackage {
             name: body.info.name.clone(),
-            version,
+            version: version.clone(),
             dependencies,
+            optional_dependencies: cached_optional_deps
+                .get(&version)
+                .cloned()
+                .unwrap_or_default(),
             wheels,
             sdist,
         });
@@ -801,14 +905,32 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn marker_rejects_extra() {
-        assert!(!marker_allows(r#"extra == "cffi""#, "3.11"));
+    fn marker_collects_extras() {
+        assert!(marker_allows(r#"extra == "cffi""#, "3.11"));
+        assert_eq!(
+            extract_marker_extras(r#"extra == "cffi" or extra == 'speedups'"#)
+                .into_iter()
+                .collect::<Vec<_>>(),
+            vec!["cffi".to_string(), "speedups".to_string()]
+        );
     }
 
     #[test]
     fn marker_respects_python_version() {
         assert!(!marker_allows(r#"python_version >= "3.14""#, "3.11"));
         assert!(marker_allows(r#"python_version < "3.14""#, "3.11"));
+    }
+
+    #[test]
+    fn parse_requires_dist_preserves_requirement_extras() {
+        let parsed =
+            parse_requires_dist(r#"requests[socks]>=2.0; extra == "http""#.to_string()).unwrap();
+        assert_eq!(parsed.requirement.name, "requests");
+        assert_eq!(parsed.requirement.extras, vec!["socks".to_string()]);
+        assert_eq!(
+            parsed.marker_extras.into_iter().collect::<Vec<_>>(),
+            vec!["http".to_string()]
+        );
     }
 
     #[test]

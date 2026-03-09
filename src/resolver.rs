@@ -1,7 +1,8 @@
 use crate::lockfile::PackageSource;
 use semver::Version;
+use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::str::FromStr;
 
@@ -28,6 +29,7 @@ pub enum VersionSpec {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Requirement {
     pub name: String,
+    pub extras: Vec<String>,
     pub spec: VersionSpec,
 }
 
@@ -35,6 +37,7 @@ impl Requirement {
     pub fn exact(name: impl Into<String>, version: impl Into<String>) -> Self {
         Self {
             name: name.into(),
+            extras: Vec::new(),
             spec: VersionSpec::Exact(version.into()),
         }
     }
@@ -42,6 +45,7 @@ impl Requirement {
     pub fn minimum(name: impl Into<String>, version: impl Into<String>) -> Self {
         Self {
             name: name.into(),
+            extras: Vec::new(),
             spec: VersionSpec::Minimum(version.into()),
         }
     }
@@ -49,6 +53,7 @@ impl Requirement {
     pub fn minimum_exclusive(name: impl Into<String>, version: impl Into<String>) -> Self {
         Self {
             name: name.into(),
+            extras: Vec::new(),
             spec: VersionSpec::MinimumExclusive(version.into()),
         }
     }
@@ -56,6 +61,7 @@ impl Requirement {
     pub fn maximum_inclusive(name: impl Into<String>, version: impl Into<String>) -> Self {
         Self {
             name: name.into(),
+            extras: Vec::new(),
             spec: VersionSpec::MaximumInclusive(version.into()),
         }
     }
@@ -63,6 +69,7 @@ impl Requirement {
     pub fn maximum(name: impl Into<String>, version: impl Into<String>) -> Self {
         Self {
             name: name.into(),
+            extras: Vec::new(),
             spec: VersionSpec::Maximum(version.into()),
         }
     }
@@ -70,6 +77,7 @@ impl Requirement {
     pub fn not_equal(name: impl Into<String>, version: impl Into<String>) -> Self {
         Self {
             name: name.into(),
+            extras: Vec::new(),
             spec: VersionSpec::NotEqual(version.into()),
         }
     }
@@ -77,6 +85,7 @@ impl Requirement {
     pub fn compatible(name: impl Into<String>, version: impl Into<String>) -> Self {
         Self {
             name: name.into(),
+            extras: Vec::new(),
             spec: VersionSpec::Compatible(version.into()),
         }
     }
@@ -84,7 +93,25 @@ impl Requirement {
     pub fn any(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
+            extras: Vec::new(),
             spec: VersionSpec::Any,
+        }
+    }
+
+    pub fn with_extras(mut self, extras: Vec<String>) -> Self {
+        self.extras = normalize_extras(extras);
+        self
+    }
+
+    pub fn extras_set(&self) -> BTreeSet<String> {
+        self.extras.iter().cloned().collect()
+    }
+
+    pub fn extras_suffix(&self) -> String {
+        if self.extras.is_empty() {
+            String::new()
+        } else {
+            format!("[{}]", self.extras.join(","))
         }
     }
 
@@ -122,14 +149,20 @@ impl Requirement {
 impl fmt::Display for Requirement {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.spec {
-            VersionSpec::Exact(v) => write!(f, "{}=={}", self.name, v),
-            VersionSpec::Minimum(v) => write!(f, "{}>={}", self.name, v),
-            VersionSpec::MinimumExclusive(v) => write!(f, "{}>{}", self.name, v),
-            VersionSpec::MaximumInclusive(v) => write!(f, "{}<={}", self.name, v),
-            VersionSpec::Maximum(v) => write!(f, "{}<{}", self.name, v),
-            VersionSpec::NotEqual(v) => write!(f, "{}!={}", self.name, v),
-            VersionSpec::Compatible(v) => write!(f, "{}~={}", self.name, v),
-            VersionSpec::Any => write!(f, "{}", self.name),
+            VersionSpec::Exact(v) => write!(f, "{}{}=={}", self.name, self.extras_suffix(), v),
+            VersionSpec::Minimum(v) => write!(f, "{}{}>={}", self.name, self.extras_suffix(), v),
+            VersionSpec::MinimumExclusive(v) => {
+                write!(f, "{}{}>{}", self.name, self.extras_suffix(), v)
+            }
+            VersionSpec::MaximumInclusive(v) => {
+                write!(f, "{}{}<={}", self.name, self.extras_suffix(), v)
+            }
+            VersionSpec::Maximum(v) => write!(f, "{}{}<{}", self.name, self.extras_suffix(), v),
+            VersionSpec::NotEqual(v) => write!(f, "{}{}!={}", self.name, self.extras_suffix(), v),
+            VersionSpec::Compatible(v) => {
+                write!(f, "{}{}~={}", self.name, self.extras_suffix(), v)
+            }
+            VersionSpec::Any => write!(f, "{}{}", self.name, self.extras_suffix()),
         }
     }
 }
@@ -143,37 +176,49 @@ impl FromStr for Requirement {
             return Err("requirement cannot be empty".into());
         }
 
+        let build_requirement =
+            |name_part: &str, spec: VersionSpec| -> Result<Requirement, String> {
+                let (name, extras) = parse_name_and_extras(name_part)?;
+                Ok(Requirement { name, extras, spec })
+            };
+
         // Parse operators in order of specificity (longer operators first)
         // ~= must come before other operators
         if let Some((name, version)) = normalized.split_once("~=") {
-            return Ok(Requirement::compatible(name.trim(), version.trim()));
+            return build_requirement(name.trim(), VersionSpec::Compatible(version.trim().into()));
         }
         // == exact match
         if let Some((name, version)) = normalized.split_once("==") {
-            return Ok(Requirement::exact(name.trim(), version.trim()));
+            return build_requirement(name.trim(), VersionSpec::Exact(version.trim().into()));
         }
         // != not equal
         if let Some((name, version)) = normalized.split_once("!=") {
-            return Ok(Requirement::not_equal(name.trim(), version.trim()));
+            return build_requirement(name.trim(), VersionSpec::NotEqual(version.trim().into()));
         }
         // >= minimum inclusive (must come before >)
         if let Some((name, version)) = normalized.split_once(">=") {
-            return Ok(Requirement::minimum(name.trim(), version.trim()));
+            return build_requirement(name.trim(), VersionSpec::Minimum(version.trim().into()));
         }
         // <= maximum inclusive (must come before <)
         if let Some((name, version)) = normalized.split_once("<=") {
-            return Ok(Requirement::maximum_inclusive(name.trim(), version.trim()));
+            return build_requirement(
+                name.trim(),
+                VersionSpec::MaximumInclusive(version.trim().into()),
+            );
         }
         // > minimum exclusive
         if let Some((name, version)) = normalized.split_once('>') {
-            return Ok(Requirement::minimum_exclusive(name.trim(), version.trim()));
+            return build_requirement(
+                name.trim(),
+                VersionSpec::MinimumExclusive(version.trim().into()),
+            );
         }
         // < maximum exclusive
         if let Some((name, version)) = normalized.split_once('<') {
-            return Ok(Requirement::maximum(name.trim(), version.trim()));
+            return build_requirement(name.trim(), VersionSpec::Maximum(version.trim().into()));
         }
         // No operator - any version
-        Ok(Requirement::any(normalized))
+        build_requirement(normalized, VersionSpec::Any)
     }
 }
 
@@ -182,14 +227,37 @@ pub struct ResolvedPackage {
     pub name: String,
     pub version: String,
     pub dependencies: Vec<Requirement>,
+    pub optional_dependencies: BTreeMap<String, Vec<Requirement>>,
     pub source: Option<PackageSource>,
     pub artifacts: PackageArtifacts,
+}
+
+impl ResolvedPackage {
+    pub fn dependencies_for_extras(&self, extras: &BTreeSet<String>) -> Vec<Requirement> {
+        let mut deps = self.dependencies.clone();
+        for extra in extras {
+            if let Some(optional) = self.optional_dependencies.get(extra) {
+                deps.extend(optional.clone());
+            }
+        }
+        deps
+    }
+
+    pub fn optional_dependencies_for_extras(&self, extras: &BTreeSet<String>) -> Vec<Requirement> {
+        let mut deps = Vec::new();
+        for extra in extras {
+            if let Some(optional) = self.optional_dependencies.get(extra) {
+                deps.extend(optional.clone());
+            }
+        }
+        deps
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PackageArtifacts {
     pub wheels: Vec<Wheel>,
-    pub sdist: Option<String>,
+    pub sdist: Option<SourceDist>,
 }
 
 impl PackageArtifacts {
@@ -206,6 +274,13 @@ impl PackageArtifacts {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceDist {
+    pub file: String,
+    pub url: Option<String>,
+    pub hash: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Wheel {
     pub file: String,
@@ -217,6 +292,7 @@ pub struct Wheel {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Resolution {
     pub packages: BTreeMap<String, ResolvedPackage>,
+    pub requested_extras: BTreeMap<String, BTreeSet<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -348,9 +424,9 @@ pub fn select_artifact_for_platform(
 
     if let Some(sdist) = &pkg.artifacts.sdist {
         return ArtifactSelection {
-            filename: sdist.clone(),
-            url: None,
-            hash: None, // sdist hash not yet tracked in PackageArtifacts struct
+            filename: sdist.file.clone(),
+            url: sdist.url.clone(),
+            hash: sdist.hash.clone(),
             matched_platform: None,
             from_source: true,
             available_wheels: pkg.artifacts.wheels.len(),
@@ -418,6 +494,8 @@ pub async fn resolve(
 ) -> Result<Resolution, ResolveError> {
     let mut resolved: BTreeMap<String, ResolvedPackage> = BTreeMap::new();
     let mut constraints: BTreeMap<String, Vec<Requirement>> = BTreeMap::new();
+    let mut requested_extras: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut applied_extras: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
 
     // Requirements to process: (Requirement, RequestedBy)
     let mut pending: Vec<(Requirement, Option<String>)> =
@@ -470,6 +548,10 @@ pub async fn resolve(
                 .entry(req.name.clone())
                 .or_default()
                 .push(req.clone());
+            requested_extras
+                .entry(req.name.clone())
+                .or_default()
+                .extend(req.extras_set());
 
             // Check if already resolved
             if let Some(existing) = resolved.get(&req.name) {
@@ -487,9 +569,11 @@ pub async fn resolve(
                         }
                         resolved.insert(req.name.clone(), pkg.clone());
                         // push dependencies of the newly selected package
-                        for dep in &pkg.dependencies {
+                        let extras = requested_extras.get(&req.name).cloned().unwrap_or_default();
+                        for dep in pkg.dependencies_for_extras(&extras) {
                             next_batch.push((dep.clone(), Some(pkg.name.clone())));
                         }
+                        applied_extras.insert(req.name.clone(), extras);
                         parents.insert(req.name.clone(), requested_by.clone());
                     } else {
                         let existing_chain = build_chain(&parents, &req.name);
@@ -502,6 +586,20 @@ pub async fn resolve(
                             existing_chain,
                             requested_chain,
                         });
+                    }
+                } else {
+                    let applied = applied_extras.get(&req.name).cloned().unwrap_or_default();
+                    let extras = requested_extras.get(&req.name).cloned().unwrap_or_default();
+                    let new_extras: BTreeSet<String> =
+                        extras.difference(&applied).cloned().collect();
+                    if !new_extras.is_empty() {
+                        for dep in existing.optional_dependencies_for_extras(&new_extras) {
+                            next_batch.push((dep, Some(existing.name.clone())));
+                        }
+                        applied_extras
+                            .entry(req.name.clone())
+                            .or_default()
+                            .extend(new_extras);
                     }
                 }
                 continue;
@@ -529,10 +627,12 @@ pub async fn resolve(
             }
 
             // Add dependencies to next batch
-            for dep in &pkg.dependencies {
-                next_batch.push((dep.clone(), Some(pkg.name.clone())));
+            let extras = requested_extras.get(&req.name).cloned().unwrap_or_default();
+            for dep in pkg.dependencies_for_extras(&extras) {
+                next_batch.push((dep, Some(pkg.name.clone())));
             }
 
+            applied_extras.insert(req.name.clone(), extras);
             resolved.insert(req.name.clone(), pkg);
             parents.insert(req.name.clone(), requested_by);
         }
@@ -540,7 +640,10 @@ pub async fn resolve(
         pending = next_batch;
     }
 
-    Ok(Resolution { packages: resolved })
+    Ok(Resolution {
+        packages: resolved,
+        requested_extras,
+    })
 }
 
 fn select_with_constraints(
@@ -611,6 +714,7 @@ impl InMemoryIndex {
             name: name.clone(),
             version: version.clone(),
             dependencies: deps,
+            optional_dependencies: BTreeMap::new(),
             source: None,
             artifacts,
         };
@@ -648,6 +752,43 @@ impl PackageIndex for InMemoryIndex {
 
 fn parse_req(input: &str) -> Requirement {
     Requirement::from_str(input).unwrap_or_else(|_| Requirement::any(input.trim()))
+}
+
+fn parse_name_and_extras(input: &str) -> Result<(String, Vec<String>), String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err("requirement name cannot be empty".into());
+    }
+
+    if let Some(start) = trimmed.find('[') {
+        let end = trimmed[start + 1..]
+            .find(']')
+            .map(|idx| start + idx + 1)
+            .ok_or_else(|| format!("invalid extras syntax in requirement: {}", trimmed))?;
+        let name = trimmed[..start].trim();
+        if name.is_empty() {
+            return Err(format!("invalid requirement name: {}", trimmed));
+        }
+        let extras = trimmed[start + 1..end]
+            .split(',')
+            .map(str::trim)
+            .filter(|extra| !extra.is_empty())
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        return Ok((name.to_string(), normalize_extras(extras)));
+    }
+
+    Ok((trimmed.to_string(), Vec::new()))
+}
+
+fn normalize_extras(extras: Vec<String>) -> Vec<String> {
+    extras
+        .into_iter()
+        .map(|extra| extra.trim().to_ascii_lowercase())
+        .filter(|extra| !extra.is_empty())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 fn version_cmp(a: &str, b: &str) -> Ordering {

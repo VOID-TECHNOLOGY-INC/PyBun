@@ -1194,9 +1194,14 @@ async fn install(
     );
     for pkg in resolution.packages.values() {
         let selection = select_artifact_for_platform(pkg, &platform_tags);
+        let requested_extras = resolution
+            .requested_extras
+            .get(&pkg.name)
+            .cloned()
+            .unwrap_or_default();
         if selection.from_source {
             let message = format!(
-                "no compatible pre-built wheel for {} {} on {}; source distributions are not supported for install",
+                "no compatible pre-built wheel for {} {} on {}; falling back to source build",
                 pkg.name,
                 pkg.version,
                 platform_tags.join(",")
@@ -1216,7 +1221,11 @@ async fn install(
                 .hash
                 .clone()
                 .unwrap_or_else(|| "sha256:placeholder".into()),
-            dependencies: pkg.dependencies.iter().map(ToString::to_string).collect(),
+            dependencies: pkg
+                .dependencies_for_extras(&requested_extras)
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
         });
     }
     lock.save_to_path(&args.lock)?;
@@ -1244,17 +1253,26 @@ async fn install(
             let filename = PathBuf::from(selection.filename);
             let dest = cache_dir.join(filename);
             // Include hash when available to verify downloads
-            download_items.push((url, dest, selection.hash.clone()));
+            download_items.push(DownloadArtifact {
+                package: pkg.name.clone(),
+                url,
+                dest,
+                hash: selection.hash.clone(),
+                kind: if selection.from_source {
+                    InstallArtifactKind::SourceDist
+                } else {
+                    InstallArtifactKind::Wheel
+                },
+            });
         } else if selection.from_source {
-            // sdist-only package - no wheel available
+            // Source build requested, but no artifact URL is available (e.g. local fixture index).
             sdist_only_packages.push(format!("{}=={}", pkg.name, pkg.version));
         }
     }
 
-    // Fail if there are sdist-only packages (source builds not yet supported)
     if !sdist_only_packages.is_empty() {
         let message = format!(
-            "The following packages have no pre-built wheel for your platform and require source builds (not yet supported): {}",
+            "The following packages require source builds but no source artifact URL is available: {}",
             sdist_only_packages.join(", ")
         );
         collector.error(message.clone());
@@ -1294,13 +1312,21 @@ async fn install(
         ));
 
         // Keep track of paths to install
-        let wheels_to_install: Vec<PathBuf> = download_items
+        let artifacts_to_install: Vec<DownloadedArtifact> = download_items
             .iter()
-            .map(|(_, path, _)| path.clone())
+            .map(|item| DownloadedArtifact {
+                package: item.package.clone(),
+                path: item.dest.clone(),
+                kind: item.kind,
+            })
             .collect();
 
-        let download_requests: Vec<DownloadRequest> =
-            download_items.into_iter().map(Into::into).collect();
+        let download_requests: Vec<DownloadRequest> = download_items
+            .iter()
+            .map(|item| {
+                DownloadRequest::from((item.url.clone(), item.dest.clone(), item.hash.clone()))
+            })
+            .collect();
         let results = downloader
             .download_parallel(download_requests, concurrency)
             .await;
@@ -1324,7 +1350,7 @@ async fn install(
             event.progress = Some(70);
         });
 
-        // Install wheels
+        // Install artifacts into the selected Python environment.
         let working_dir = std::env::current_dir()?;
         let env = crate::env::find_python_env(&working_dir)?;
 
@@ -1365,14 +1391,34 @@ async fn install(
         collector.info(format!("Target site-packages: {}", site_packages.display()));
 
         collector.event_with(EventType::InstallStart, |event| {
-            event.message = Some(format!("Installing {} packages", wheels_to_install.len()));
+            event.message = Some(format!(
+                "Installing {} packages",
+                artifacts_to_install.len()
+            ));
             event.progress = Some(85);
         });
 
-        for wheel in wheels_to_install {
-            if wheel.exists() {
-                crate::installer::install_wheel(&wheel, &site_packages)
-                    .map_err(|e| eyre!("failed to install wheel {}: {}", wheel.display(), e))?;
+        for artifact in artifacts_to_install {
+            if !artifact.path.exists() {
+                continue;
+            }
+            match artifact.kind {
+                InstallArtifactKind::Wheel => {
+                    crate::installer::install_wheel(&artifact.path, &site_packages).map_err(
+                        |e| eyre!("failed to install wheel {}: {}", artifact.path.display(), e),
+                    )?;
+                }
+                InstallArtifactKind::SourceDist => {
+                    install_source_distribution(&env.python_path, &artifact.path, args.offline)
+                        .map_err(|e| {
+                            eyre!(
+                                "failed to build/install source distribution {} ({}): {}",
+                                artifact.path.display(),
+                                artifact.package,
+                                e
+                            )
+                        })?;
+                }
             }
         }
 
@@ -1390,6 +1436,49 @@ struct InstallOutcome {
     summary: String,
     packages: Vec<String>,
     lockfile: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InstallArtifactKind {
+    Wheel,
+    SourceDist,
+}
+
+#[derive(Debug, Clone)]
+struct DownloadArtifact {
+    package: String,
+    url: String,
+    dest: PathBuf,
+    hash: Option<String>,
+    kind: InstallArtifactKind,
+}
+
+#[derive(Debug, Clone)]
+struct DownloadedArtifact {
+    package: String,
+    path: PathBuf,
+    kind: InstallArtifactKind,
+}
+
+fn install_source_distribution(
+    python_path: &Path,
+    artifact_path: &Path,
+    offline: bool,
+) -> Result<()> {
+    let mut cmd = ProcessCommand::new(python_path);
+    cmd.args(["-m", "pip", "install", "--quiet", "--no-deps"]);
+    if offline {
+        cmd.arg("--no-index");
+    }
+    cmd.arg(artifact_path);
+
+    let status = cmd
+        .status()
+        .map_err(|e| eyre!("failed to invoke pip for source build: {}", e))?;
+    if !status.success() {
+        return Err(eyre!("pip failed while building source distribution"));
+    }
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -1491,6 +1580,11 @@ async fn lock_dependencies(args: &LockArgs, collector: &mut EventCollector) -> R
 
     for pkg in resolution.packages.values() {
         let selection = select_artifact_for_platform(pkg, &platform_tags);
+        let requested_extras = resolution
+            .requested_extras
+            .get(&pkg.name)
+            .cloned()
+            .unwrap_or_default();
         if selection.from_source {
             let message = format!(
                 "no compatible pre-built wheel for {} {} on {}; falling back to source build",
@@ -1513,7 +1607,11 @@ async fn lock_dependencies(args: &LockArgs, collector: &mut EventCollector) -> R
                 .hash
                 .clone()
                 .unwrap_or_else(|| "sha256:placeholder".into()),
-            dependencies: pkg.dependencies.iter().map(ToString::to_string).collect(),
+            dependencies: pkg
+                .dependencies_for_extras(&requested_extras)
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
         });
     }
 
@@ -5284,7 +5382,10 @@ async fn run_upgrade(args: &UpgradeArgs, collector: &mut EventCollector) -> Resu
                 if let Some(lock) = &current_lock {
                     if let Some(pkg) = lock.packages.get(&req.name) {
                         // Pin to currently locked version
-                        requirements.push(Requirement::exact(req.name.clone(), &pkg.version));
+                        requirements.push(
+                            Requirement::exact(req.name.clone(), &pkg.version)
+                                .with_extras(req.extras.clone()),
+                        );
                     } else {
                         // Not locked yet, strict requirement
                         requirements.push(req);
@@ -5325,6 +5426,11 @@ async fn run_upgrade(args: &UpgradeArgs, collector: &mut EventCollector) -> Resu
     );
 
     for (pkg_name, pkg) in &resolution.packages {
+        let requested_extras = resolution
+            .requested_extras
+            .get(pkg_name)
+            .cloned()
+            .unwrap_or_default();
         let selection = select_artifact_for_platform(pkg, &platform_tags);
         let wheel_name = selection.filename.clone();
 
@@ -5346,7 +5452,11 @@ async fn run_upgrade(args: &UpgradeArgs, collector: &mut EventCollector) -> Resu
                 }),
             wheel: wheel_name,
             hash,
-            dependencies: pkg.dependencies.iter().map(|r| r.to_string()).collect(),
+            dependencies: pkg
+                .dependencies_for_extras(&requested_extras)
+                .iter()
+                .map(|r| r.to_string())
+                .collect(),
         };
 
         // Track upgrades
