@@ -401,15 +401,10 @@ impl McpServer {
                         .packages
                         .values()
                         .map(|pkg| {
-                            let requested_extras = resolution
-                                .requested_extras
-                                .get(&pkg.name)
-                                .cloned()
-                                .unwrap_or_default();
                             json!({
                                 "name": pkg.name,
                                 "version": pkg.version,
-                                "dependencies": pkg.dependencies_for_extras(&requested_extras).iter().map(|d| d.to_string()).collect::<Vec<_>>(),
+                                "dependencies": pkg.dependencies.iter().map(|d| d.to_string()).collect::<Vec<_>>(),
                             })
                         })
                         .collect();
@@ -530,11 +525,6 @@ impl McpServer {
 
         let mut lock = Lockfile::new(vec!["3.11".into()], vec!["unknown".into()]);
         for pkg in resolution.packages.values() {
-            let requested_extras = resolution
-                .requested_extras
-                .get(&pkg.name)
-                .cloned()
-                .unwrap_or_default();
             lock.add_package(Package {
                 name: pkg.name.clone(),
                 version: pkg.version.clone(),
@@ -544,11 +534,7 @@ impl McpServer {
                 },
                 wheel: format!("{}-{}-py3-none-any.whl", pkg.name, pkg.version),
                 hash: "sha256:placeholder".into(),
-                dependencies: pkg
-                    .dependencies_for_extras(&requested_extras)
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect(),
+                dependencies: pkg.dependencies.iter().map(ToString::to_string).collect(),
             });
         }
 

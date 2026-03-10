@@ -559,22 +559,20 @@ fn install_warns_and_errors_when_no_wheel_matches() {
             d["level"] == "warning"
                 && d["message"]
                     .as_str()
-                    .map(|m| {
-                        m.contains("source-only") && m.contains("falling back to source build")
-                    })
+                    .map(|m| m.contains("source-only") && m.contains("source distributions"))
                     .unwrap_or(false)
         }),
-        "should emit warning diagnostic about source build fallback: {stdout}"
+        "should emit warning diagnostic about source build limitation: {stdout}"
     );
     assert!(
         diagnostics.iter().any(|d| {
             d["level"] == "error"
                 && d["message"]
                     .as_str()
-                    .map(|m| m.contains("source artifact URL"))
+                    .map(|m| m.contains("require source builds"))
                     .unwrap_or(false)
         }),
-        "should emit error diagnostic about missing source artifact URL: {stdout}"
+        "should emit error diagnostic about missing wheels: {stdout}"
     );
 
     let lock = Lockfile::load_from_path(&lock_path).expect("lock loads");

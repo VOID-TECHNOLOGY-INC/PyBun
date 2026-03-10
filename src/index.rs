@@ -1,4 +1,4 @@
-use crate::resolver::{InMemoryIndex, PackageArtifacts, SourceDist, Wheel};
+use crate::resolver::{InMemoryIndex, PackageArtifacts, Wheel};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -73,11 +73,7 @@ fn build_index(packages: Vec<IndexPackage>) -> InMemoryIndex {
                 .collect();
             PackageArtifacts {
                 wheels,
-                sdist: pkg.sdist.clone().map(|file| SourceDist {
-                    file,
-                    url: None,
-                    hash: None,
-                }),
+                sdist: pkg.sdist.clone(),
             }
         };
         index.add_with_artifacts(pkg.name, pkg.version, pkg.dependencies, artifacts);
