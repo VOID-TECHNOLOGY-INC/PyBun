@@ -1,5 +1,5 @@
 PackageIdentifier: PyBun.PyBun
-PackageVersion: 0.1.15
+PackageVersion: 0.1.16
 PackageLocale: en-US
 Publisher: VOID TECHNOLOGY INC
 PublisherUrl: https://github.com/VOID-TECHNOLOGY-INC/PyBun
@@ -18,8 +18,8 @@ Tags:
   - package-manager
 Installers:
   - Architecture: x64
-    InstallerUrl: https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.1.15/pybun-x86_64-pc-windows-msvc.zip
-    InstallerSha256: 64fbc042b2bf7b71777a5727feeda6ec959cf2acb2c6182662972e0ab7482b18
+    InstallerUrl: https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.1.16/pybun-x86_64-pc-windows-msvc.zip
+    InstallerSha256: c342733218b03ee8d9f53f26bc71ced4d666d5253d86e19a438afc611f106b81
     InstallerType: zip
     NestedInstallerType: portable
     NestedInstallerFiles:
