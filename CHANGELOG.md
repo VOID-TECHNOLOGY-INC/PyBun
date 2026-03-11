@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.1.16
+
+### Features
+- feat(self-update): harden self-update with atomic swap and rollback support
+
+### Fixes
+- fix(ci): respect `PYBUN_PYPI_CACHE_DIR` for install artifacts
+
+### Security
+- chore(deps): update `quinn-proto` for `cargo audit`
+
 ## v0.1.15
 
 ### Fixes
