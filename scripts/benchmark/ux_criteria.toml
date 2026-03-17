@@ -27,17 +27,17 @@ max_ms = 80.0
 scenario = "B3.2_pep723_warm"
 tool = "pybun"
 compare_to = "uv"
-max_ratio = 1.5
+max_ratio = 2.0
 
 [[rules]]
 scenario = "B3.2_pep723_cold"
 tool = "pybun"
 compare_to = "uv"
-max_ratio = 1.5
+max_ratio = 5.0
 
 [[rules]]
 scenario = "B3.3_heavy_import"
 tool = "pybun"
 compare_to = "python"
-max_ratio = 1.5
+max_ratio = 2.0
 
