@@ -380,8 +380,5 @@ fn parses_pep508_marker_format() {
         .unwrap();
     assert_eq!(req.name, "package");
     assert!(req.marker.is_some());
-    assert_eq!(
-        req.marker.as_ref().unwrap(),
-        "platform_machine == 'x86_64'"
-    );
+    assert_eq!(req.marker.as_ref().unwrap(), "platform_machine == 'x86_64'");
 }
