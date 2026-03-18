@@ -3667,7 +3667,9 @@ fn run_module_find(args: &ModuleFindArgs, collector: &mut EventCollector) -> Res
 #[cfg(feature = "native-watch")]
 use crate::hot_reload::run_native_watch_loop;
 use crate::hot_reload::{HotReloadConfig, HotReloadWatcher, generate_shell_watcher_command};
-use crate::lazy_import::{LazyImportConfig, LazyImportDecision, generate_lazy_import_python_code};
+use crate::lazy_import::{
+    LazyImportConfig, LazyImportDecision, generate_lazy_import_python_code_with_module_name,
+};
 
 fn run_lazy_import(args: &LazyImportArgs, collector: &mut EventCollector) -> Result<RenderDetail> {
     // Build configuration
@@ -3740,7 +3742,18 @@ fn run_lazy_import(args: &LazyImportArgs, collector: &mut EventCollector) -> Res
 
     // Handle --generate mode
     if args.generate {
-        let code = generate_lazy_import_python_code(&config);
+        // Extract module name from output path to add to denylist
+        // This prevents recursion when the generated module imports itself (Issue #101)
+        let output_module_name = args.output.as_ref().and_then(|path| {
+            path.file_stem()
+                .and_then(|stem| stem.to_str())
+                .map(|s| s.to_string())
+        });
+
+        let code = generate_lazy_import_python_code_with_module_name(
+            &config,
+            output_module_name.as_deref(),
+        );
 
         if let Some(output_path) = &args.output {
             std::fs::write(output_path, &code)
@@ -3753,6 +3766,7 @@ fn run_lazy_import(args: &LazyImportArgs, collector: &mut EventCollector) -> Res
                 text,
                 json!({
                     "output_file": output_path.display().to_string(),
+                    "output_module": output_module_name,
                     "code_length": code.len(),
                     "denylist_count": config.denylist.len(),
                     "allowlist_count": config.allowlist.len(),
