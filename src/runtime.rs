@@ -172,23 +172,23 @@ pub fn supported_versions() -> Vec<PythonVersion> {
             checksums: [
                 (
                     "macos_arm64",
-                    "c14b8b5b8c1eff1cccd66f876a36f89a168a49fc2ccdc9a9de8b37884e64fb3e",
+                    "4c18852bf9c1a11b56f21bcf0df1946f7e98ee43e9e4c0c5374b2b3765cf9508",
                 ),
                 (
                     "macos_x64",
-                    "a7c57d2f70e7d5b09ac9d95a7b80cfd2089cb9b6c0a1e93f89d4c5a8f7e8b9c1",
+                    "60c5271e7edc3c2ab47440b7abf4ed50fbc693880b474f74f05768f5b657045a",
                 ),
                 (
                     "linux_x64_gnu",
-                    "b2fa54c42e9c0e4c7c7b52e9c8e5f6a5b3d4c5e6f7a8b9c0d1e2f3a4b5c6d7e8",
+                    "43576f7db1033dd57b900307f09c2e86f371152ac8a2607133afa51cbfc36064",
                 ),
                 (
                     "linux_arm64_gnu",
-                    "c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4",
+                    "bba3c6be6153f715f2941da34f3a6a69c2d0035c9c5396bc5bb68c6d2bd1065a",
                 ),
                 (
                     "windows_x64",
-                    "d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5",
+                    "f05531bff16fa77b53be0776587b97b466070e768e6d5920894de988bdcd547a",
                 ),
             ]
             .iter()
@@ -201,23 +201,23 @@ pub fn supported_versions() -> Vec<PythonVersion> {
             checksums: [
                 (
                     "macos_arm64",
-                    "e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6",
+                    "5a69382da99c4620690643517ca1f1f53772331b347e75f536088c42a4cf6620",
                 ),
                 (
                     "macos_x64",
-                    "f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7",
+                    "1e23ffe5bc473e1323ab8f51464da62d77399afb423babf67f8e13c82b69c674",
                 ),
                 (
                     "linux_x64_gnu",
-                    "a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8",
+                    "8b50a442b04724a24c1eebb65a36a0c0e833d35374dbdf9c9470d8a97b164cd9",
                 ),
                 (
                     "linux_arm64_gnu",
-                    "b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9",
+                    "803e49259280af0f5466d32829cd9d65a302b0226e424b3f0b261f9daf6aee8f",
                 ),
                 (
                     "windows_x64",
-                    "c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0",
+                    "647b66ff4552e70aec3bf634dd470891b4a2b291e8e8715b3bdb162f577d4c55",
                 ),
             ]
             .iter()
@@ -230,23 +230,23 @@ pub fn supported_versions() -> Vec<PythonVersion> {
             checksums: [
                 (
                     "macos_arm64",
-                    "d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1",
+                    "f64776f455a44c24d50f947c813738cfb7b9ac43732c44891bc831fa7940a33c",
                 ),
                 (
                     "macos_x64",
-                    "e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2",
+                    "90b46dfb1abd98d45663c7a2a8c45d3047a59391d8586d71b459cec7b75f662b",
                 ),
                 (
                     "linux_x64_gnu",
-                    "f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3",
+                    "3db2171e03c1a7acdc599fba583c1b92306d3788b375c9323077367af1e9d9de",
                 ),
                 (
                     "linux_arm64_gnu",
-                    "a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4",
+                    "eb58581f85fde83d1f3e8e1f8c6f5a15c7ae4fdbe3b1d1083931f9167fdd8dbc",
                 ),
                 (
                     "windows_x64",
-                    "b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5",
+                    "e48952619796c66ec9719867b87be97edca791c2ef7fbf87d42c417c3331609e",
                 ),
             ]
             .iter()
@@ -259,23 +259,23 @@ pub fn supported_versions() -> Vec<PythonVersion> {
             checksums: [
                 (
                     "macos_arm64",
-                    "c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6",
+                    "34ab2bc4c51502145e1a624b4e4ea06877e3d1934a88cc73ac2e0fd5fd439b75",
                 ),
                 (
                     "macos_x64",
-                    "d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7",
+                    "193dc7f0284e4917d52b17a077924474882ee172872f2257cfe3375d6d468ed9",
                 ),
                 (
                     "linux_x64_gnu",
-                    "e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8",
+                    "c20ee831f7f46c58fa57919b75a40eb2b6a31e03fd29aaa4e8dab4b9c4b60d5d",
                 ),
                 (
                     "linux_arm64_gnu",
-                    "f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9",
+                    "1e486c054a4e86666cf24e04f5e29456324ba9c2b95bf1cae1805be90d3da154",
                 ),
                 (
                     "windows_x64",
-                    "a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+                    "5069008a237b90f6f7a86956903f2a0221b90d471daa6e4a94831eaa399e3993",
                 ),
             ]
             .iter()
@@ -747,5 +747,18 @@ mod tests {
         assert_eq!(version_cmp("3.11.1", "3.11.0"), std::cmp::Ordering::Greater);
         assert_eq!(version_cmp("3.10.0", "3.11.0"), std::cmp::Ordering::Less);
         assert_eq!(version_cmp("3.12.0", "3.9.0"), std::cmp::Ordering::Greater);
+    }
+
+    /// Test that ensure_version successfully downloads and verifies a Python runtime.
+    /// This validates that checksums are correct and the download/verification flow works.
+    #[test]
+    #[ignore = "requires network access"]
+    fn test_ensure_version_success() {
+        let temp = TempDir::new().unwrap();
+        let cache = Cache::with_root(temp.path());
+        let manager = RuntimeManager::new(cache);
+
+        let result = manager.ensure_version("3.12.7");
+        assert!(result.is_ok(), "ensure_version failed: {:?}", result.err());
     }
 }
