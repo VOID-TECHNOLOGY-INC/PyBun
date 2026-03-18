@@ -961,13 +961,13 @@ mod tests {
         let req_32bit =
             Requirement::from_str("polars-runtime-32==1.39.2 ; platform_machine == 'i386'")
                 .unwrap();
-        let req_arm64 =
-            Requirement::from_str("polars-runtime-64==1.39.2 ; platform_machine == 'arm64'")
-                .unwrap();
 
         // On macOS arm64, only the arm64 requirement should apply
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
+            let req_arm64 =
+                Requirement::from_str("polars-runtime-64==1.39.2 ; platform_machine == 'arm64'")
+                    .unwrap();
             assert!(!req_32bit.marker_applies());
             assert!(req_arm64.marker_applies());
         }
