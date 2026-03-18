@@ -6,7 +6,7 @@
   "architecture": {
     "64bit": {
       "url": "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.1.17/pybun-x86_64-pc-windows-msvc.zip",
-      "hash": "c342733218b03ee8d9f53f26bc71ced4d666d5253d86e19a438afc611f106b81"
+      "hash": "d063df4beb6ca99867c19185f9ae00f4204dead58b624fce6ad8722510af78e8"
     }
   },
   "bin": [
