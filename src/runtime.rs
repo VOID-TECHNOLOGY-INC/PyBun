@@ -749,7 +749,10 @@ mod tests {
         assert_eq!(version_cmp("3.12.0", "3.9.0"), std::cmp::Ordering::Greater);
     }
 
+    /// Test that ensure_version successfully downloads and verifies a Python runtime.
+    /// This validates that checksums are correct and the download/verification flow works.
     #[test]
+    #[ignore = "requires network access"]
     fn test_ensure_version_success() {
         let temp = TempDir::new().unwrap();
         let cache = Cache::with_root(temp.path());
