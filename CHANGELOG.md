@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.1.17
+
+### Fixes
+- fix(lazy-import): prevent RecursionError by adding output module to denylist
+
+### Refactor
+- refactor(lazy-import): improve code style and documentation
+
 ## v0.1.16
 
 ### Features

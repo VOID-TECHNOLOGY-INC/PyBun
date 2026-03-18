@@ -4,7 +4,7 @@
     "buildDefinition": {
       "buildType": "https://github.com/VOID-TECHNOLOGY-INC/PyBun/.github/workflows/release.yml",
       "externalParameters": {
-        "ref": "refs/tags/v0.1.16",
+        "ref": "refs/tags/v0.1.17",
         "sha": "7dcb05debf2a14225085f7e0c6efd675d4ce9337",
         "workflow": "Release Build"
       },
