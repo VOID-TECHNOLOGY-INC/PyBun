@@ -320,3 +320,65 @@ fn parses_all_specifier_types_from_string() {
     let any: Requirement = "pkg".parse().unwrap();
     assert_eq!(any.name, "pkg");
 }
+
+#[tokio::test]
+async fn filters_dependencies_with_non_matching_markers() {
+    // Test that dependencies with environment markers that don't match the current
+    // platform are filtered out during resolution (Issue #102)
+    let mut index = InMemoryIndex::default();
+
+    // Add a package with multiple platform-specific dependencies
+    // Only one should be included based on the current platform
+    index.add(
+        "polars",
+        "1.39.2",
+        [
+            "polars-runtime-32==1.39.2 ; platform_machine == 'i386'",
+            "polars-runtime-64==1.39.2 ; platform_machine == 'x86_64'",
+            "polars-runtime-arm==1.39.2 ; platform_machine == 'arm64'",
+        ],
+    );
+    index.add("polars-runtime-32", "1.39.2", Vec::<&str>::new());
+    index.add("polars-runtime-64", "1.39.2", Vec::<&str>::new());
+    index.add("polars-runtime-arm", "1.39.2", Vec::<&str>::new());
+
+    let resolution = resolve(vec![Requirement::exact("polars", "1.39.2")], &index)
+        .await
+        .unwrap();
+
+    // polars itself should be resolved
+    assert!(resolution.packages.contains_key("polars"));
+
+    // On macOS arm64, only polars-runtime-arm should be included
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        assert!(resolution.packages.contains_key("polars-runtime-arm"));
+        assert!(!resolution.packages.contains_key("polars-runtime-32"));
+        assert!(!resolution.packages.contains_key("polars-runtime-64"));
+    }
+
+    // On Linux/macOS x86_64, only polars-runtime-64 should be included
+    #[cfg(target_arch = "x86_64")]
+    {
+        assert!(resolution.packages.contains_key("polars-runtime-64"));
+        assert!(!resolution.packages.contains_key("polars-runtime-32"));
+        assert!(!resolution.packages.contains_key("polars-runtime-arm"));
+    }
+
+    // The 32-bit runtime should never be included on 64-bit systems
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    {
+        assert!(!resolution.packages.contains_key("polars-runtime-32"));
+    }
+}
+
+#[test]
+fn parses_pep508_marker_format() {
+    // Test parsing PEP 508 format with parentheses and markers
+    let req: Requirement = "package (>=1.0) ; platform_machine == 'x86_64'"
+        .parse()
+        .unwrap();
+    assert_eq!(req.name, "package");
+    assert!(req.marker.is_some());
+    assert_eq!(req.marker.as_ref().unwrap(), "platform_machine == 'x86_64'");
+}

@@ -29,6 +29,7 @@ pub enum VersionSpec {
 pub struct Requirement {
     pub name: String,
     pub spec: VersionSpec,
+    pub marker: Option<String>,
 }
 
 impl Requirement {
@@ -36,6 +37,7 @@ impl Requirement {
         Self {
             name: name.into(),
             spec: VersionSpec::Exact(version.into()),
+            marker: None,
         }
     }
 
@@ -43,6 +45,7 @@ impl Requirement {
         Self {
             name: name.into(),
             spec: VersionSpec::Minimum(version.into()),
+            marker: None,
         }
     }
 
@@ -50,6 +53,7 @@ impl Requirement {
         Self {
             name: name.into(),
             spec: VersionSpec::MinimumExclusive(version.into()),
+            marker: None,
         }
     }
 
@@ -57,6 +61,7 @@ impl Requirement {
         Self {
             name: name.into(),
             spec: VersionSpec::MaximumInclusive(version.into()),
+            marker: None,
         }
     }
 
@@ -64,6 +69,7 @@ impl Requirement {
         Self {
             name: name.into(),
             spec: VersionSpec::Maximum(version.into()),
+            marker: None,
         }
     }
 
@@ -71,6 +77,7 @@ impl Requirement {
         Self {
             name: name.into(),
             spec: VersionSpec::NotEqual(version.into()),
+            marker: None,
         }
     }
 
@@ -78,6 +85,7 @@ impl Requirement {
         Self {
             name: name.into(),
             spec: VersionSpec::Compatible(version.into()),
+            marker: None,
         }
     }
 
@@ -85,6 +93,7 @@ impl Requirement {
         Self {
             name: name.into(),
             spec: VersionSpec::Any,
+            marker: None,
         }
     }
 
@@ -117,6 +126,17 @@ impl Requirement {
             VersionSpec::Any => true,
         }
     }
+
+    /// Evaluate if the environment marker applies to the current platform.
+    /// Returns true if no marker is present or if the marker matches the current environment.
+    pub fn marker_applies(&self) -> bool {
+        let Some(marker) = &self.marker else {
+            // No marker means requirement always applies
+            return true;
+        };
+
+        evaluate_marker(marker)
+    }
 }
 
 impl fmt::Display for Requirement {
@@ -143,37 +163,74 @@ impl FromStr for Requirement {
             return Err("requirement cannot be empty".into());
         }
 
-        // Parse operators in order of specificity (longer operators first)
-        // ~= must come before other operators
-        if let Some((name, version)) = normalized.split_once("~=") {
-            return Ok(Requirement::compatible(name.trim(), version.trim()));
-        }
-        // == exact match
-        if let Some((name, version)) = normalized.split_once("==") {
-            return Ok(Requirement::exact(name.trim(), version.trim()));
-        }
-        // != not equal
-        if let Some((name, version)) = normalized.split_once("!=") {
-            return Ok(Requirement::not_equal(name.trim(), version.trim()));
-        }
-        // >= minimum inclusive (must come before >)
-        if let Some((name, version)) = normalized.split_once(">=") {
-            return Ok(Requirement::minimum(name.trim(), version.trim()));
-        }
-        // <= maximum inclusive (must come before <)
-        if let Some((name, version)) = normalized.split_once("<=") {
-            return Ok(Requirement::maximum_inclusive(name.trim(), version.trim()));
-        }
-        // > minimum exclusive
-        if let Some((name, version)) = normalized.split_once('>') {
-            return Ok(Requirement::minimum_exclusive(name.trim(), version.trim()));
-        }
-        // < maximum exclusive
-        if let Some((name, version)) = normalized.split_once('<') {
-            return Ok(Requirement::maximum(name.trim(), version.trim()));
-        }
-        // No operator - any version
-        Ok(Requirement::any(normalized))
+        // Split by ';' to separate requirement from marker (PEP 508)
+        let (requirement_part, marker_part) = if let Some(idx) = normalized.find(';') {
+            let (req, marker) = normalized.split_at(idx);
+            (req.trim(), Some(marker[1..].trim().to_string()))
+        } else {
+            (normalized, None)
+        };
+
+        // Parse version spec (handle "package (>=1.0)" format)
+        // First, try to split by space to separate name from version spec in parentheses
+        let (name_part, version_part) = if let Some(idx) = requirement_part.find('(') {
+            // Format: "package (>=1.0)" or "package(>=1.0)"
+            let name = requirement_part[..idx].trim();
+            let version_with_parens = requirement_part[idx..].trim();
+            let version = version_with_parens
+                .trim_start_matches('(')
+                .trim_end_matches(')')
+                .trim();
+            (name, version)
+        } else {
+            // Format: "package>=1.0" (no space, no parentheses)
+            (requirement_part, requirement_part)
+        };
+
+        // Parse version spec operators in order of specificity (longer operators first)
+        let mut req = if let Some((name, version)) = version_part.split_once("~=") {
+            Requirement::compatible(
+                if name.is_empty() { name_part } else { name },
+                version.trim(),
+            )
+        } else if let Some((name, version)) = version_part.split_once("==") {
+            Requirement::exact(
+                if name.is_empty() { name_part } else { name },
+                version.trim(),
+            )
+        } else if let Some((name, version)) = version_part.split_once("!=") {
+            Requirement::not_equal(
+                if name.is_empty() { name_part } else { name },
+                version.trim(),
+            )
+        } else if let Some((name, version)) = version_part.split_once(">=") {
+            Requirement::minimum(
+                if name.is_empty() { name_part } else { name },
+                version.trim(),
+            )
+        } else if let Some((name, version)) = version_part.split_once("<=") {
+            Requirement::maximum_inclusive(
+                if name.is_empty() { name_part } else { name },
+                version.trim(),
+            )
+        } else if let Some((name, version)) = version_part.split_once('>') {
+            Requirement::minimum_exclusive(
+                if name.is_empty() { name_part } else { name },
+                version.trim(),
+            )
+        } else if let Some((name, version)) = version_part.split_once('<') {
+            Requirement::maximum(
+                if name.is_empty() { name_part } else { name },
+                version.trim(),
+            )
+        } else {
+            // No operator - any version
+            Requirement::any(name_part)
+        };
+
+        // Attach marker if present
+        req.marker = marker_part;
+        Ok(req)
     }
 }
 
@@ -606,6 +663,7 @@ impl InMemoryIndex {
         let deps = deps
             .into_iter()
             .map(|d| parse_req(d.as_ref()))
+            .filter(|req| req.marker_applies()) // Filter out non-applicable markers
             .collect::<Vec<_>>();
         let pkg = ResolvedPackage {
             name: name.clone(),
@@ -726,6 +784,116 @@ pub fn parse_version_relaxed(input: &str) -> Option<Version> {
     Version::parse(&semver_str).ok()
 }
 
+/// Evaluate a PEP 508 environment marker against the current platform.
+/// This is a simplified implementation that supports basic marker evaluation.
+fn evaluate_marker(marker: &str) -> bool {
+    let marker = marker.trim();
+
+    // Get current environment values
+    let platform_machine = get_platform_machine();
+    let sys_platform = get_sys_platform();
+    let platform_system = get_platform_system();
+
+    // Handle 'or' operator - split and check if any condition matches
+    if marker.contains(" or ") {
+        return marker
+            .split(" or ")
+            .any(|part| evaluate_marker(part.trim()));
+    }
+
+    // Handle 'and' operator - split and check if all conditions match
+    if marker.contains(" and ") {
+        return marker
+            .split(" and ")
+            .all(|part| evaluate_marker(part.trim()));
+    }
+
+    // Remove parentheses if present
+    let marker = marker.trim_start_matches('(').trim_end_matches(')').trim();
+
+    // Parse simple comparison: variable == 'value' or variable != 'value'
+    if let Some(idx) = marker.find("==") {
+        let (var, val) = marker.split_at(idx);
+        let var = var.trim();
+        let val = val[2..].trim().trim_matches('\'').trim_matches('"');
+
+        return match var {
+            "platform_machine" => platform_machine == val,
+            "sys_platform" => sys_platform == val,
+            "platform_system" => platform_system == val,
+            _ => false, // Unknown marker variable - conservatively return false
+        };
+    }
+
+    if let Some(idx) = marker.find("!=") {
+        let (var, val) = marker.split_at(idx);
+        let var = var.trim();
+        let val = val[2..].trim().trim_matches('\'').trim_matches('"');
+
+        return match var {
+            "platform_machine" => platform_machine != val,
+            "sys_platform" => sys_platform != val,
+            "platform_system" => platform_system != val,
+            _ => true, // Unknown marker variable - conservatively return true
+        };
+    }
+
+    // If we can't parse the marker, conservatively return false
+    false
+}
+
+/// Get the platform machine architecture (e.g., 'x86_64', 'arm64', 'i386').
+fn get_platform_machine() -> &'static str {
+    #[cfg(target_arch = "x86_64")]
+    return "x86_64";
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        // Python on macOS reports aarch64 as 'arm64'
+        #[cfg(target_os = "macos")]
+        return "arm64";
+
+        #[cfg(not(target_os = "macos"))]
+        return "aarch64";
+    }
+
+    #[cfg(target_arch = "x86")]
+    return "i386";
+
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "x86")))]
+    return "unknown";
+}
+
+/// Get the system platform (e.g., 'darwin', 'linux', 'win32').
+fn get_sys_platform() -> &'static str {
+    #[cfg(target_os = "macos")]
+    return "darwin";
+
+    #[cfg(target_os = "linux")]
+    return "linux";
+
+    #[cfg(target_os = "windows")]
+    return "win32";
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    return "unknown";
+}
+
+/// Get the platform system (e.g., 'Darwin', 'Linux', 'Windows').
+fn get_platform_system() -> &'static str {
+    #[cfg(target_os = "macos")]
+    return "Darwin";
+
+    #[cfg(target_os = "linux")]
+    return "Linux";
+
+    #[cfg(target_os = "windows")]
+    return "Windows";
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    return "Unknown";
+}
+
 /// Check if a version satisfies the compatible release constraint (~=).
 fn is_compatible_release(version: &str, base: &str) -> bool {
     // First check if version meets the minimum
@@ -759,5 +927,71 @@ fn is_compatible_release(version: &str, base: &str) -> bool {
         compare_versions(version, base) != Ordering::Less
     } else {
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_requirement_with_marker() {
+        // Test parsing PEP 508 requirement with environment marker
+        let req_str = "polars-runtime-32 (==1.39.2) ; platform_machine == 'i386'";
+        let req = Requirement::from_str(req_str).unwrap();
+
+        assert_eq!(req.name, "polars-runtime-32");
+        assert_eq!(req.spec, VersionSpec::Exact("1.39.2".to_string()));
+        assert_eq!(req.marker, Some("platform_machine == 'i386'".to_string()));
+    }
+
+    #[test]
+    fn test_parse_requirement_without_marker() {
+        let req_str = "requests>=2.28.0";
+        let req = Requirement::from_str(req_str).unwrap();
+
+        assert_eq!(req.name, "requests");
+        assert_eq!(req.spec, VersionSpec::Minimum("2.28.0".to_string()));
+        assert_eq!(req.marker, None);
+    }
+
+    #[test]
+    fn test_marker_evaluation_platform_machine() {
+        // Test that marker evaluation correctly filters based on platform_machine
+        let req_32bit =
+            Requirement::from_str("polars-runtime-32==1.39.2 ; platform_machine == 'i386'")
+                .unwrap();
+
+        // On macOS arm64, only the arm64 requirement should apply
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            let req_arm64 =
+                Requirement::from_str("polars-runtime-64==1.39.2 ; platform_machine == 'arm64'")
+                    .unwrap();
+            assert!(!req_32bit.marker_applies());
+            assert!(req_arm64.marker_applies());
+        }
+
+        // On Linux x86_64, neither should apply (unless we add x86_64 markers)
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        {
+            assert!(!req_32bit.marker_applies());
+        }
+    }
+
+    #[test]
+    fn test_marker_evaluation_no_marker_always_applies() {
+        let req = Requirement::from_str("requests>=2.28.0").unwrap();
+        assert!(req.marker_applies()); // No marker means always applies
+    }
+
+    #[test]
+    fn test_complex_marker_with_parentheses() {
+        let req_str =
+            "package (>=1.0) ; (platform_machine == 'x86_64' or platform_machine == 'arm64')";
+        let req = Requirement::from_str(req_str).unwrap();
+
+        assert_eq!(req.name, "package");
+        assert!(req.marker.is_some());
     }
 }
