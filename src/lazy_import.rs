@@ -246,13 +246,24 @@ impl LazyImportStats {
     }
 }
 
-/// Generate Python code for lazy import injection.
+/// Generate Python code for lazy import injection with an optional module name.
 ///
 /// This generates a Python module that can be imported early in the Python
 /// startup to enable lazy imports.
-pub fn generate_lazy_import_python_code(config: &LazyImportConfig) -> String {
-    let denylist_py: String = config
-        .denylist
+///
+/// If `output_module_name` is provided, it will be automatically added to the
+/// denylist to prevent recursion when the generated module imports itself.
+pub fn generate_lazy_import_python_code_with_module_name(
+    config: &LazyImportConfig,
+    output_module_name: Option<&str>,
+) -> String {
+    // Clone the denylist and add the output module name if provided
+    let mut denylist = config.denylist.clone();
+    if let Some(module_name) = output_module_name {
+        denylist.insert(module_name.to_string());
+    }
+
+    let denylist_py: String = denylist
         .iter()
         .map(|m| format!("    \"{}\",", m))
         .collect::<Vec<_>>()
@@ -299,19 +310,19 @@ _ALLOWLIST = {allowlist_py}
 
 class LazyModule:
     """A proxy object that defers module import until first attribute access."""
-    
+
     __slots__ = ('_name', '_module', '_loading')
-    
+
     def __init__(self, name):
         object.__setattr__(self, '_name', name)
         object.__setattr__(self, '_module', None)
         object.__setattr__(self, '_loading', False)
-    
+
     def _load(self):
         if object.__getattribute__(self, '_loading'):
             # Prevent infinite recursion
             raise ImportError(f"Circular lazy import detected for {{self._name}}")
-        
+
         object.__setattr__(self, '_loading', True)
         try:
             if _LOG_IMPORTS:
@@ -321,13 +332,13 @@ class LazyModule:
             return module
         finally:
             object.__setattr__(self, '_loading', False)
-    
+
     def __getattr__(self, name):
         module = object.__getattribute__(self, '_module')
         if module is None:
             module = self._load()
         return getattr(module, name)
-    
+
     def __setattr__(self, name, value):
         if name in ('_name', '_module', '_loading'):
             object.__setattr__(self, name, value)
@@ -336,7 +347,7 @@ class LazyModule:
             if module is None:
                 module = self._load()
             setattr(module, name, value)
-    
+
     def __repr__(self):
         module = object.__getattribute__(self, '_module')
         if module is None:
@@ -346,22 +357,22 @@ class LazyModule:
 
 class LazyFinder(importlib.abc.MetaPathFinder):
     """Meta path finder that returns lazy loaders for eligible modules."""
-    
+
     def find_spec(self, fullname, path, target=None):
         if not _ENABLED:
             return None
-        
+
         # Check denylist
         if fullname in _DENYLIST:
             return None
-        
+
         # Check parent modules in denylist
         parts = fullname.split('.')
         for i in range(1, len(parts)):
             parent = '.'.join(parts[:i])
             if parent in _DENYLIST:
                 return None
-        
+
         # Check allowlist if specified
         if _ALLOWLIST is not None:
             if fullname not in _ALLOWLIST:
@@ -374,7 +385,7 @@ class LazyFinder(importlib.abc.MetaPathFinder):
                         break
                 if not allowed:
                     return None
-        
+
         # Create a lazy loader spec
         return importlib.machinery.ModuleSpec(
             fullname,
@@ -385,13 +396,13 @@ class LazyFinder(importlib.abc.MetaPathFinder):
 
 class LazyLoader(importlib.abc.Loader):
     """Loader that creates lazy module proxies."""
-    
+
     def __init__(self, name):
         self.name = name
-    
+
     def create_module(self, spec):
         return LazyModule(self.name)
-    
+
     def exec_module(self, module):
         # Lazy modules don't execute until accessed
         pass
@@ -432,6 +443,14 @@ install()
         denylist_py = denylist_py,
         allowlist_py = allowlist_py,
     )
+}
+
+/// Generate Python code for lazy import injection.
+///
+/// This generates a Python module that can be imported early in the Python
+/// startup to enable lazy imports.
+pub fn generate_lazy_import_python_code(config: &LazyImportConfig) -> String {
+    generate_lazy_import_python_code_with_module_name(config, None)
 }
 
 #[cfg(test)]
@@ -610,5 +629,54 @@ mod tests {
 
         config.deny("dangerous_module");
         assert!(config.denylist.contains("dangerous_module"));
+    }
+
+    #[test]
+    fn test_generate_with_output_module_name_in_denylist() {
+        // Test that when an output module name is provided,
+        // it's automatically added to the denylist to prevent recursion
+        let config = LazyImportConfig::with_defaults();
+        let code = generate_lazy_import_python_code_with_module_name(&config, Some("lazy_setup"));
+
+        // The generated code should include lazy_setup in the denylist
+        assert!(code.contains("lazy_setup"));
+        assert!(code.contains("_DENYLIST"));
+
+        // Verify it's in the denylist section, not just in comments
+        let denylist_section_start = code.find("_DENYLIST = {").unwrap();
+        let denylist_section_end = code[denylist_section_start..]
+            .find('}')
+            .map(|i| denylist_section_start + i)
+            .unwrap();
+        let denylist_section = &code[denylist_section_start..denylist_section_end];
+        assert!(denylist_section.contains("lazy_setup"));
+    }
+
+    #[test]
+    fn test_generate_without_output_module_name() {
+        // Test that when no output module name is provided,
+        // the denylist is the same as the config
+        let config = LazyImportConfig::with_defaults();
+        let code1 = generate_lazy_import_python_code(&config);
+        let code2 = generate_lazy_import_python_code_with_module_name(&config, None);
+
+        assert_eq!(code1, code2);
+    }
+
+    #[test]
+    fn test_prevent_self_import_recursion() {
+        // Simulate the scenario described in Issue #101:
+        // When the generated module (e.g., lazy_setup) is imported,
+        // it should not try to lazily import itself
+        let config = LazyImportConfig::with_defaults();
+        let code = generate_lazy_import_python_code_with_module_name(&config, Some("lazy_setup"));
+
+        // The code should have lazy_setup in denylist
+        assert!(code.contains("\"lazy_setup\""));
+
+        // Verify the LazyFinder.find_spec will skip lazy_setup
+        // This is verified by checking the denylist check is present
+        assert!(code.contains("if fullname in _DENYLIST:"));
+        assert!(code.contains("return None"));
     }
 }
