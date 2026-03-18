@@ -196,7 +196,7 @@ Features are implemented in stages (see `docs/PLAN.md` and `docs/SPECS.md`):
 - **preview**: Works but limited OS support, feature flags, or known issues
 - **stable**: Production-ready, full compatibility, CI coverage
 
-**Current Status** (as of v0.1.16):
+**Current Status** (as of v0.1.17):
 - ✅ Stable: `pybun install`, `pybun add/remove`, `pybun x` (with uv), `pybun run` (PEP 723 with auto-install)
 - 🟡 Preview: `pybun watch` (requires `native-watch` feature), `pybun test` (wrapper mode), Windows support
 - 🔴 Stub: `pybun build` (partial), `pybun mcp serve --http` (only stdio works)
