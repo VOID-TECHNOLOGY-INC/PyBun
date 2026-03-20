@@ -22,7 +22,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
@@ -81,6 +81,117 @@ pub struct Resource {
     pub description: Option<String>,
     #[serde(rename = "mimeType", skip_serializing_if = "Option::is_none")]
     pub mime_type: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ToolRunner {
+    program: PathBuf,
+    base_args: Vec<String>,
+}
+
+impl ToolRunner {
+    fn new(program: impl Into<PathBuf>) -> Self {
+        Self {
+            program: program.into(),
+            base_args: Vec::new(),
+        }
+    }
+
+    fn python_module(python_path: impl Into<PathBuf>, module: &str) -> Self {
+        Self {
+            program: python_path.into(),
+            base_args: vec!["-m".to_string(), module.to_string()],
+        }
+    }
+
+    fn command(&self) -> ProcessCommand {
+        let mut cmd = ProcessCommand::new(&self.program);
+        cmd.args(&self.base_args);
+        cmd
+    }
+}
+
+fn current_working_dir() -> Result<PathBuf, String> {
+    std::env::current_dir().map_err(|e| e.to_string())
+}
+
+fn valid_ruff_status(status: &std::process::ExitStatus) -> bool {
+    matches!(status.code(), Some(0 | 1))
+}
+
+fn ruff_failure_message(action: &str, stdout: &str, stderr: &str) -> String {
+    let detail = if stderr.trim().is_empty() {
+        stdout.trim()
+    } else {
+        stderr.trim()
+    };
+    if detail.is_empty() {
+        format!("ruff {action} failed")
+    } else {
+        format!("ruff {action} failed: {detail}")
+    }
+}
+
+fn parse_ruff_violations(stdout: &str) -> Result<Vec<Value>, String> {
+    if stdout.trim().is_empty() {
+        return Ok(vec![]);
+    }
+
+    serde_json::from_str::<Vec<Value>>(stdout)
+        .map_err(|e| format!("Failed to parse ruff JSON output: {e}"))
+}
+
+fn find_env_executable(python_path: &Path, tool_name: &str) -> Option<PathBuf> {
+    let bin_dir = python_path.parent()?;
+    let candidates: Vec<String> = if cfg!(windows) {
+        vec![
+            format!("{tool_name}.exe"),
+            format!("{tool_name}.cmd"),
+            format!("{tool_name}.bat"),
+            tool_name.to_string(),
+        ]
+    } else {
+        vec![tool_name.to_string()]
+    };
+
+    candidates
+        .iter()
+        .map(|candidate| bin_dir.join(candidate))
+        .find(|candidate| candidate.is_file())
+}
+
+fn resolve_ruff_runner(working_dir: &Path) -> Result<Option<ToolRunner>, String> {
+    use crate::env::find_python_env;
+
+    if let Ok(env) = find_python_env(working_dir) {
+        if let Some(ruff_path) = find_env_executable(&env.python_path, "ruff") {
+            return Ok(Some(ToolRunner::new(ruff_path)));
+        }
+
+        let module_runner = ToolRunner::python_module(env.python_path, "ruff");
+        if module_runner
+            .command()
+            .arg("--version")
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false)
+        {
+            return Ok(Some(module_runner));
+        }
+    }
+
+    let global_runner = ToolRunner::new("ruff");
+    if global_runner
+        .command()
+        .arg("--version")
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+    {
+        return Ok(Some(global_runner));
+    }
+
+    Ok(None)
 }
 
 impl JsonRpcResponse {
@@ -258,6 +369,93 @@ impl McpServer {
                     }
                 }),
             },
+            Tool {
+                name: "pybun_lint".to_string(),
+                description: "Run linting on Python code and return structured violations. Uses ruff if available.".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "script": {
+                            "type": "string",
+                            "description": "Path to Python file or directory to lint"
+                        },
+                        "code": {
+                            "type": "string",
+                            "description": "Inline Python code to lint (written to a temp file)"
+                        },
+                        "select": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Rule codes to enable (e.g. ['E501', 'F401'])"
+                        }
+                    }
+                }),
+            },
+            Tool {
+                name: "pybun_type_check".to_string(),
+                description: "Run type checking on Python code using mypy. Returns structured type errors with hints.".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "script": {
+                            "type": "string",
+                            "description": "Path to Python file or directory to type-check"
+                        },
+                        "code": {
+                            "type": "string",
+                            "description": "Inline Python code to type-check"
+                        },
+                        "strict": {
+                            "type": "boolean",
+                            "description": "Enable strict mypy mode"
+                        }
+                    }
+                }),
+            },
+            Tool {
+                name: "pybun_profile".to_string(),
+                description: "Profile a Python script using cProfile and return performance hotspots.".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "script": {
+                            "type": "string",
+                            "description": "Path to Python script to profile"
+                        },
+                        "code": {
+                            "type": "string",
+                            "description": "Inline Python code to profile"
+                        },
+                        "top_n": {
+                            "type": "integer",
+                            "description": "Number of top hotspots to return (default: 10)"
+                        }
+                    }
+                }),
+            },
+            Tool {
+                name: "pybun_fix".to_string(),
+                description: "Auto-fix lint violations in a Python file using ruff. Returns a summary of applied fixes.".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "script": {
+                            "type": "string",
+                            "description": "Path to Python file to fix (required)"
+                        },
+                        "select": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Rule codes to fix (default: all auto-fixable)"
+                        },
+                        "unsafe_fixes": {
+                            "type": "boolean",
+                            "description": "Apply unsafe fixes (default: false)"
+                        }
+                    },
+                    "required": ["script"]
+                }),
+            },
         ];
 
         JsonRpcResponse::success(id, json!({ "tools": tools }))
@@ -273,6 +471,10 @@ impl McpServer {
             "pybun_run" => self.call_run(tool_args),
             "pybun_gc" => self.call_gc(tool_args),
             "pybun_doctor" => self.call_doctor(tool_args),
+            "pybun_lint" => self.call_lint(tool_args),
+            "pybun_type_check" => self.call_type_check(tool_args),
+            "pybun_profile" => self.call_profile(tool_args),
+            "pybun_fix" => self.call_fix(tool_args),
             _ => Err(format!("Unknown tool: {}", tool_name)),
         };
 
@@ -771,6 +973,483 @@ impl McpServer {
             "checks": checks,
             "verbose": verbose,
             "message": summary,
+        })
+        .to_string())
+    }
+
+    fn call_lint(&self, args: Value) -> Result<String, String> {
+        use crate::env::find_python_env;
+
+        let script = args.get("script").and_then(|s| s.as_str());
+        let code = args.get("code").and_then(|c| c.as_str());
+        let select: Vec<String> = args
+            .get("select")
+            .and_then(|s| s.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Determine target path (script or temp file for inline code)
+        let (target_path, _temp_file) = match (script, code) {
+            (Some(p), _) => (p.to_string(), None::<tempfile::NamedTempFile>),
+            (None, Some(inline)) => {
+                let mut tmp = tempfile::Builder::new()
+                    .suffix(".py")
+                    .tempfile()
+                    .map_err(|e| format!("Failed to create temp file: {}", e))?;
+                use std::io::Write;
+                write!(tmp, "{}", inline).map_err(|e| e.to_string())?;
+                let path = tmp.path().to_string_lossy().to_string();
+                (path, Some(tmp))
+            }
+            _ => return Err("Either 'script' or 'code' must be provided".to_string()),
+        };
+
+        let target_display = if script.is_none() {
+            "inline_code"
+        } else {
+            &target_path
+        };
+
+        let working_dir = current_working_dir()?;
+
+        if let Some(ruff_runner) = resolve_ruff_runner(&working_dir)? {
+            let mut cmd = ruff_runner.command();
+            cmd.args(["check", "--output-format=json"]);
+            if !select.is_empty() {
+                cmd.arg("--select");
+                cmd.arg(select.join(","));
+            }
+            cmd.arg(&target_path);
+
+            let output = cmd
+                .output()
+                .map_err(|e| format!("Failed to run ruff: {}", e))?;
+            let stdout_str = String::from_utf8_lossy(&output.stdout).to_string();
+            let stderr_str = String::from_utf8_lossy(&output.stderr).to_string();
+
+            if !valid_ruff_status(&output.status) {
+                return Err(ruff_failure_message("check", &stdout_str, &stderr_str));
+            }
+
+            let violations: Vec<Value> = parse_ruff_violations(&stdout_str)?
+                .into_iter()
+                .map(|v| {
+                    json!({
+                        "file": v.get("filename").and_then(|f| f.as_str()).unwrap_or(&target_path),
+                        "line": v.get("location").and_then(|l| l.get("row")).and_then(|r| r.as_u64()).unwrap_or(0),
+                        "column": v.get("location").and_then(|l| l.get("column")).and_then(|c| c.as_u64()).unwrap_or(0),
+                        "code": v.get("code").and_then(|c| c.as_str()).unwrap_or(""),
+                        "message": v.get("message").and_then(|m| m.as_str()).unwrap_or(""),
+                        "fix_available": v.get("fix").is_some(),
+                    })
+                })
+                .collect();
+
+            Ok(json!({
+                "status": "lint_complete",
+                "tool": "ruff",
+                "target": target_display,
+                "violations": violations,
+                "violation_count": violations.len(),
+                "clean": violations.is_empty(),
+                "diagnostics": violations.iter().filter_map(|v| {
+                    let msg = v.get("message")?.as_str()?;
+                    let code = v.get("code")?.as_str()?;
+                    Some(json!({
+                        "kind": code,
+                        "message": msg,
+                        "hint": if v.get("fix_available").and_then(|f| f.as_bool()).unwrap_or(false) {
+                            format!("Auto-fixable with pybun_fix. Code: {}", code)
+                        } else {
+                            format!("Manual fix required. Code: {}", code)
+                        }
+                    }))
+                }).collect::<Vec<_>>(),
+            })
+            .to_string())
+        } else {
+            // Fall back to python -m py_compile for basic syntax check
+            let env = find_python_env(&working_dir).map_err(|e| e.to_string())?;
+            let python_path = env.python_path.to_string_lossy().to_string();
+
+            let output = ProcessCommand::new(&python_path)
+                .args(["-m", "py_compile", &target_path])
+                .output()
+                .map_err(|e| format!("Failed to run py_compile: {}", e))?;
+
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            Ok(json!({
+                "status": "lint_complete",
+                "tool": "py_compile",
+                "tool_not_available": "ruff",
+                "hint": "Install ruff for full linting: pybun add ruff",
+                "violations": [],
+                "syntax_ok": output.status.success(),
+                "stderr": stderr,
+                "target": target_display,
+            })
+            .to_string())
+        }
+    }
+
+    fn call_type_check(&self, args: Value) -> Result<String, String> {
+        use crate::env::find_python_env;
+
+        let script = args.get("script").and_then(|s| s.as_str());
+        let code = args.get("code").and_then(|c| c.as_str());
+        let strict = args
+            .get("strict")
+            .and_then(|s| s.as_bool())
+            .unwrap_or(false);
+
+        let working_dir = std::env::current_dir().map_err(|e| e.to_string())?;
+        let env = find_python_env(&working_dir).map_err(|e| e.to_string())?;
+        let python_path = env.python_path.to_string_lossy().to_string();
+
+        // Determine target (script or temp file for inline code)
+        let (target_path, _temp_file) = match (script, code) {
+            (Some(p), _) => (p.to_string(), None::<tempfile::NamedTempFile>),
+            (None, Some(inline)) => {
+                let mut tmp = tempfile::Builder::new()
+                    .suffix(".py")
+                    .tempfile()
+                    .map_err(|e| format!("Failed to create temp file: {}", e))?;
+                use std::io::Write;
+                write!(tmp, "{}", inline).map_err(|e| e.to_string())?;
+                let path = tmp.path().to_string_lossy().to_string();
+                (path, Some(tmp))
+            }
+            _ => return Err("Either 'script' or 'code' must be provided".to_string()),
+        };
+
+        // Check if mypy is available
+        let mypy_check = ProcessCommand::new(&python_path)
+            .args(["-m", "mypy", "--version"])
+            .output();
+
+        if mypy_check.is_err() || !mypy_check.unwrap().status.success() {
+            return Ok(json!({
+                "status": "type_check_complete",
+                "tool_not_available": "mypy",
+                "hint": "Install mypy for type checking: pybun add mypy",
+                "errors": [],
+                "target": target_path,
+            })
+            .to_string());
+        }
+
+        // Run mypy
+        let mut cmd = ProcessCommand::new(&python_path);
+        cmd.args(["-m", "mypy", "--show-error-codes", "--no-color-output"]);
+        if strict {
+            cmd.arg("--strict");
+        }
+        cmd.arg(&target_path);
+
+        let output = cmd
+            .output()
+            .map_err(|e| format!("Failed to run mypy: {}", e))?;
+
+        let stdout_str = String::from_utf8_lossy(&output.stdout).to_string();
+
+        // Parse mypy output (line format: "file:line: severity: message  [code]")
+        let errors: Vec<Value> = stdout_str
+            .lines()
+            .filter(|line| line.contains(": error:") || line.contains(": warning:") || line.contains(": note:"))
+            .filter_map(|line| {
+                // Parse: path:line:col: severity: message  [error-code]
+                let parts: Vec<&str> = line.splitn(4, ':').collect();
+                if parts.len() < 4 {
+                    return None;
+                }
+                let file = parts[0];
+                let line_num: u64 = parts[1].trim().parse().unwrap_or(0);
+                let rest = parts[3];
+                let (severity, message) = if let Some(idx) = rest.find(": ") {
+                    let sev = rest[..idx].trim();
+                    let msg = rest[idx + 2..].trim();
+                    (sev, msg)
+                } else {
+                    ("error", rest.trim())
+                };
+                // Extract error code if present: "message  [error-code]"
+                let (msg_clean, error_code) = if let (Some(start), Some(end)) = (message.rfind('['), message.rfind(']')) {
+                    let code = &message[start + 1..end];
+                    let msg = message[..start].trim();
+                    (msg, code.to_string())
+                } else {
+                    (message, String::new())
+                };
+
+                Some(json!({
+                    "file": file,
+                    "line": line_num,
+                    "severity": severity.trim(),
+                    "message": msg_clean,
+                    "code": error_code,
+                    "hint": format!("See https://mypy.readthedocs.io/en/stable/error_codes.html#{}", error_code.to_lowercase()),
+                }))
+            })
+            .collect();
+
+        let target_display = if script.is_none() {
+            "inline_code"
+        } else {
+            &target_path
+        };
+
+        Ok(json!({
+            "status": "type_check_complete",
+            "tool": "mypy",
+            "target": target_display,
+            "strict": strict,
+            "success": output.status.success(),
+            "errors": errors,
+            "error_count": errors.len(),
+            "clean": errors.is_empty(),
+            "raw_output": stdout_str,
+        })
+        .to_string())
+    }
+
+    fn call_profile(&self, args: Value) -> Result<String, String> {
+        use crate::env::find_python_env;
+
+        let script = args.get("script").and_then(|s| s.as_str());
+        let code = args.get("code").and_then(|c| c.as_str());
+        let top_n = args.get("top_n").and_then(|n| n.as_u64()).unwrap_or(10) as usize;
+
+        let working_dir = std::env::current_dir().map_err(|e| e.to_string())?;
+        let env = find_python_env(&working_dir).map_err(|e| e.to_string())?;
+        let python_path = env.python_path.to_string_lossy().to_string();
+
+        // Resolve target: write inline code to temp file if needed
+        let (_temp_target, target_path_str): (Option<tempfile::NamedTempFile>, String) =
+            match (script, code) {
+                (Some(p), _) => {
+                    let path = PathBuf::from(p);
+                    if !path.exists() {
+                        return Err(format!("Script not found: {}", p));
+                    }
+                    (None, p.to_string())
+                }
+                (None, Some(inline)) => {
+                    let mut tmp = tempfile::Builder::new()
+                        .suffix(".py")
+                        .tempfile()
+                        .map_err(|e| format!("Failed to create temp file: {}", e))?;
+                    use std::io::Write as _;
+                    write!(tmp, "{}", inline).map_err(|e| e.to_string())?;
+                    let p = tmp.path().to_string_lossy().to_string();
+                    (Some(tmp), p)
+                }
+                _ => return Err("Either 'script' or 'code' must be provided".to_string()),
+            };
+
+        // Write profiler runner to a temp file to avoid format-string escaping issues
+        // with Python dict literals inside Rust format! macros.
+        let profiler_src = [
+            "import cProfile, pstats, io, json, os, re, sys",
+            &format!(
+                "_target = {}",
+                serde_json::to_string(&target_path_str).unwrap_or_default()
+            ),
+            &format!("_top_n = {}", top_n),
+            "_globals = {'__name__': '__main__', '__file__': _target, '__package__': None, '__cached__': None}",
+            "_argv = list(sys.argv)",
+            "_path = list(sys.path)",
+            "_script_dir = os.path.dirname(_target)",
+            "if _script_dir:",
+            "    sys.path.insert(0, _script_dir)",
+            "sys.argv = [_target]",
+            "pr = cProfile.Profile()",
+            "try:",
+            "    pr.enable()",
+            "    with open(_target) as _f:",
+            "        exec(compile(_f.read(), _target, 'exec'), _globals)",
+            "finally:",
+            "    pr.disable()",
+            "    sys.argv = _argv",
+            "    sys.path[:] = _path",
+            "s = io.StringIO()",
+            "ps = pstats.Stats(pr, stream=s).sort_stats('cumulative')",
+            "ps.print_stats(_top_n)",
+            "raw = s.getvalue()",
+            "hotspots = []",
+            "for line in raw.strip().split('\\n'):",
+            "    parts = line.split()",
+            "    if len(parts) >= 6 and parts[0].replace('.','',1).isdigit():",
+            "        try:",
+            "            hotspots.append({'ncalls': parts[0], 'tottime': float(parts[1]),",
+            "                'percall_tot': float(parts[2]), 'cumtime': float(parts[3]),",
+            "                'percall_cum': float(parts[4]), 'location': ' '.join(parts[5:])})",
+            "        except (ValueError, IndexError):",
+            "            pass",
+            "total_match = re.search(r'(\\d+\\.\\d+) seconds', raw)",
+            "total_time = float(total_match.group(1)) if total_match else 0.0",
+            "calls_match = re.search(r'(\\d+) function calls', raw)",
+            "total_calls = int(calls_match.group(1)) if calls_match else 0",
+            "print(json.dumps({'total_time_s': total_time, 'total_calls': total_calls,",
+            "    'hotspots': hotspots[:_top_n], 'status': 'profile_complete'}))",
+        ]
+        .join("\n");
+
+        let mut runner_tmp = tempfile::Builder::new()
+            .suffix(".py")
+            .tempfile()
+            .map_err(|e| format!("Failed to create profiler script: {}", e))?;
+        {
+            use std::io::Write as _;
+            write!(runner_tmp, "{}", profiler_src).map_err(|e| e.to_string())?;
+        }
+
+        let profile_script_path = runner_tmp.path().to_string_lossy().to_string();
+
+        let output = ProcessCommand::new(&python_path)
+            .arg(&profile_script_path)
+            .output()
+            .map_err(|e| format!("Failed to run profiler: {}", e))?;
+
+        let stdout_str = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr_str = String::from_utf8_lossy(&output.stderr).to_string();
+
+        if !output.status.success() {
+            return Err(format!(
+                "Profiler failed: {}",
+                if stderr_str.is_empty() {
+                    &stdout_str
+                } else {
+                    &stderr_str
+                }
+            ));
+        }
+
+        // Parse the JSON output from the profiler script
+        let result: Value = serde_json::from_str(stdout_str.trim()).unwrap_or_else(|_| {
+            json!({
+                "status": "profile_complete",
+                "raw": stdout_str,
+            })
+        });
+
+        let target_display = script.unwrap_or("inline_code");
+        let mut out = result.as_object().cloned().unwrap_or_default();
+        out.insert("target".to_string(), json!(target_display));
+        out.insert("top_n".to_string(), json!(top_n));
+
+        serde_json::to_string(&out).map_err(|e| e.to_string())
+    }
+
+    fn call_fix(&self, args: Value) -> Result<String, String> {
+        let script = args
+            .get("script")
+            .and_then(|s| s.as_str())
+            .ok_or_else(|| "'script' is required for pybun_fix".to_string())?;
+
+        let select: Vec<String> = args
+            .get("select")
+            .and_then(|s| s.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let unsafe_fixes = args
+            .get("unsafe_fixes")
+            .and_then(|u| u.as_bool())
+            .unwrap_or(false);
+
+        let path = PathBuf::from(script);
+        if !path.exists() {
+            return Err(format!("Script not found: {}", script));
+        }
+
+        let working_dir = current_working_dir()?;
+        let Some(ruff_runner) = resolve_ruff_runner(&working_dir)? else {
+            return Ok(json!({
+                "status": "fix_complete",
+                "tool_not_available": "ruff",
+                "hint": "Install ruff for auto-fixing: pybun add ruff",
+                "fixes_applied": 0,
+                "target": script,
+            })
+            .to_string());
+        };
+
+        // Run ruff check --fix to get count of fixable violations before
+        let mut check_cmd = ruff_runner.command();
+        check_cmd.args(["check", "--output-format=json"]);
+        if !select.is_empty() {
+            check_cmd.arg("--select");
+            check_cmd.arg(select.join(","));
+        }
+        check_cmd.arg(script);
+        let before_output = check_cmd.output().map_err(|e| e.to_string())?;
+        let before_str = String::from_utf8_lossy(&before_output.stdout).to_string();
+        let before_stderr = String::from_utf8_lossy(&before_output.stderr).to_string();
+        if !valid_ruff_status(&before_output.status) {
+            return Err(ruff_failure_message("check", &before_str, &before_stderr));
+        }
+        let before_count = parse_ruff_violations(&before_str)?.len();
+
+        // Apply fixes
+        let mut fix_cmd = ruff_runner.command();
+        fix_cmd.args(["check", "--fix"]);
+        if unsafe_fixes {
+            fix_cmd.arg("--unsafe-fixes");
+        }
+        if !select.is_empty() {
+            fix_cmd.arg("--select");
+            fix_cmd.arg(select.join(","));
+        }
+        fix_cmd.arg(script);
+
+        let fix_output = fix_cmd
+            .output()
+            .map_err(|e| format!("Failed to run ruff fix: {}", e))?;
+        let fix_stdout = String::from_utf8_lossy(&fix_output.stdout).to_string();
+        let fix_stderr = String::from_utf8_lossy(&fix_output.stderr).to_string();
+        if !valid_ruff_status(&fix_output.status) {
+            return Err(ruff_failure_message(
+                "check --fix",
+                &fix_stdout,
+                &fix_stderr,
+            ));
+        }
+
+        // Count remaining violations
+        let mut recheck_cmd = ruff_runner.command();
+        recheck_cmd.args(["check", "--output-format=json"]);
+        if !select.is_empty() {
+            recheck_cmd.arg("--select");
+            recheck_cmd.arg(select.join(","));
+        }
+        recheck_cmd.arg(script);
+        let after_output = recheck_cmd.output().map_err(|e| e.to_string())?;
+        let after_str = String::from_utf8_lossy(&after_output.stdout).to_string();
+        let after_stderr = String::from_utf8_lossy(&after_output.stderr).to_string();
+        if !valid_ruff_status(&after_output.status) {
+            return Err(ruff_failure_message("check", &after_str, &after_stderr));
+        }
+        let after_count = parse_ruff_violations(&after_str)?.len();
+
+        let fixes_applied = before_count.saturating_sub(after_count);
+
+        Ok(json!({
+            "status": "fix_complete",
+            "tool": "ruff",
+            "target": script,
+            "fixes_applied": fixes_applied,
+            "violations_before": before_count,
+            "violations_after": after_count,
+            "unsafe_fixes": unsafe_fixes,
+            "stderr": fix_stderr,
         })
         .to_string())
     }
