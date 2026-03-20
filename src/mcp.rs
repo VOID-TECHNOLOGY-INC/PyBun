@@ -22,7 +22,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
@@ -81,6 +81,117 @@ pub struct Resource {
     pub description: Option<String>,
     #[serde(rename = "mimeType", skip_serializing_if = "Option::is_none")]
     pub mime_type: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ToolRunner {
+    program: PathBuf,
+    base_args: Vec<String>,
+}
+
+impl ToolRunner {
+    fn new(program: impl Into<PathBuf>) -> Self {
+        Self {
+            program: program.into(),
+            base_args: Vec::new(),
+        }
+    }
+
+    fn python_module(python_path: impl Into<PathBuf>, module: &str) -> Self {
+        Self {
+            program: python_path.into(),
+            base_args: vec!["-m".to_string(), module.to_string()],
+        }
+    }
+
+    fn command(&self) -> ProcessCommand {
+        let mut cmd = ProcessCommand::new(&self.program);
+        cmd.args(&self.base_args);
+        cmd
+    }
+}
+
+fn current_working_dir() -> Result<PathBuf, String> {
+    std::env::current_dir().map_err(|e| e.to_string())
+}
+
+fn valid_ruff_status(status: &std::process::ExitStatus) -> bool {
+    matches!(status.code(), Some(0 | 1))
+}
+
+fn ruff_failure_message(action: &str, stdout: &str, stderr: &str) -> String {
+    let detail = if stderr.trim().is_empty() {
+        stdout.trim()
+    } else {
+        stderr.trim()
+    };
+    if detail.is_empty() {
+        format!("ruff {action} failed")
+    } else {
+        format!("ruff {action} failed: {detail}")
+    }
+}
+
+fn parse_ruff_violations(stdout: &str) -> Result<Vec<Value>, String> {
+    if stdout.trim().is_empty() {
+        return Ok(vec![]);
+    }
+
+    serde_json::from_str::<Vec<Value>>(stdout)
+        .map_err(|e| format!("Failed to parse ruff JSON output: {e}"))
+}
+
+fn find_env_executable(python_path: &Path, tool_name: &str) -> Option<PathBuf> {
+    let bin_dir = python_path.parent()?;
+    let candidates: Vec<String> = if cfg!(windows) {
+        vec![
+            format!("{tool_name}.exe"),
+            format!("{tool_name}.cmd"),
+            format!("{tool_name}.bat"),
+            tool_name.to_string(),
+        ]
+    } else {
+        vec![tool_name.to_string()]
+    };
+
+    candidates
+        .iter()
+        .map(|candidate| bin_dir.join(candidate))
+        .find(|candidate| candidate.is_file())
+}
+
+fn resolve_ruff_runner(working_dir: &Path) -> Result<Option<ToolRunner>, String> {
+    use crate::env::find_python_env;
+
+    if let Ok(env) = find_python_env(working_dir) {
+        if let Some(ruff_path) = find_env_executable(&env.python_path, "ruff") {
+            return Ok(Some(ToolRunner::new(ruff_path)));
+        }
+
+        let module_runner = ToolRunner::python_module(env.python_path, "ruff");
+        if module_runner
+            .command()
+            .arg("--version")
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false)
+        {
+            return Ok(Some(module_runner));
+        }
+    }
+
+    let global_runner = ToolRunner::new("ruff");
+    if global_runner
+        .command()
+        .arg("--version")
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+    {
+        return Ok(Some(global_runner));
+    }
+
+    Ok(None)
 }
 
 impl JsonRpcResponse {
@@ -897,58 +1008,34 @@ impl McpServer {
             _ => return Err("Either 'script' or 'code' must be provided".to_string()),
         };
 
-        // Check if ruff is available
-        let ruff_available = ProcessCommand::new("ruff")
-            .arg("--version")
-            .output()
-            .is_ok();
-
-        if !ruff_available {
-            // Fall back to python -m py_compile for basic syntax check
-            let working_dir = std::env::current_dir().map_err(|e| e.to_string())?;
-            let env = find_python_env(&working_dir).map_err(|e| e.to_string())?;
-            let python_path = env.python_path.to_string_lossy().to_string();
-
-            let output = ProcessCommand::new(&python_path)
-                .args(["-m", "py_compile", &target_path])
-                .output()
-                .map_err(|e| format!("Failed to run py_compile: {}", e))?;
-
-            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-            return Ok(json!({
-                "status": "lint_complete",
-                "tool": "py_compile",
-                "tool_not_available": "ruff",
-                "hint": "Install ruff for full linting: pybun add ruff",
-                "violations": [],
-                "syntax_ok": output.status.success(),
-                "stderr": stderr,
-                "target": target_path,
-            })
-            .to_string());
-        }
-
-        // Run ruff check --output-format=json
-        let mut cmd = ProcessCommand::new("ruff");
-        cmd.args(["check", "--output-format=json"]);
-        if !select.is_empty() {
-            cmd.arg("--select");
-            cmd.arg(select.join(","));
-        }
-        cmd.arg(&target_path);
-
-        let output = cmd
-            .output()
-            .map_err(|e| format!("Failed to run ruff: {}", e))?;
-
-        let stdout_str = String::from_utf8_lossy(&output.stdout).to_string();
-
-        // Parse ruff JSON output
-        let violations: Vec<Value> = if stdout_str.trim().is_empty() {
-            vec![]
+        let target_display = if script.is_none() {
+            "inline_code"
         } else {
-            serde_json::from_str::<Vec<Value>>(&stdout_str)
-                .unwrap_or_default()
+            &target_path
+        };
+
+        let working_dir = current_working_dir()?;
+
+        if let Some(ruff_runner) = resolve_ruff_runner(&working_dir)? {
+            let mut cmd = ruff_runner.command();
+            cmd.args(["check", "--output-format=json"]);
+            if !select.is_empty() {
+                cmd.arg("--select");
+                cmd.arg(select.join(","));
+            }
+            cmd.arg(&target_path);
+
+            let output = cmd
+                .output()
+                .map_err(|e| format!("Failed to run ruff: {}", e))?;
+            let stdout_str = String::from_utf8_lossy(&output.stdout).to_string();
+            let stderr_str = String::from_utf8_lossy(&output.stderr).to_string();
+
+            if !valid_ruff_status(&output.status) {
+                return Err(ruff_failure_message("check", &stdout_str, &stderr_str));
+            }
+
+            let violations: Vec<Value> = parse_ruff_violations(&stdout_str)?
                 .into_iter()
                 .map(|v| {
                     json!({
@@ -960,38 +1047,53 @@ impl McpServer {
                         "fix_available": v.get("fix").is_some(),
                     })
                 })
-                .collect()
-        };
+                .collect();
 
-        // Write temp file content for display if inline
-        let target_display = if script.is_none() {
-            "inline_code"
+            Ok(json!({
+                "status": "lint_complete",
+                "tool": "ruff",
+                "target": target_display,
+                "violations": violations,
+                "violation_count": violations.len(),
+                "clean": violations.is_empty(),
+                "diagnostics": violations.iter().filter_map(|v| {
+                    let msg = v.get("message")?.as_str()?;
+                    let code = v.get("code")?.as_str()?;
+                    Some(json!({
+                        "kind": code,
+                        "message": msg,
+                        "hint": if v.get("fix_available").and_then(|f| f.as_bool()).unwrap_or(false) {
+                            format!("Auto-fixable with pybun_fix. Code: {}", code)
+                        } else {
+                            format!("Manual fix required. Code: {}", code)
+                        }
+                    }))
+                }).collect::<Vec<_>>(),
+            })
+            .to_string())
         } else {
-            &target_path
-        };
+            // Fall back to python -m py_compile for basic syntax check
+            let env = find_python_env(&working_dir).map_err(|e| e.to_string())?;
+            let python_path = env.python_path.to_string_lossy().to_string();
 
-        Ok(json!({
-            "status": "lint_complete",
-            "tool": "ruff",
-            "target": target_display,
-            "violations": violations,
-            "violation_count": violations.len(),
-            "clean": violations.is_empty(),
-            "diagnostics": violations.iter().filter_map(|v| {
-                let msg = v.get("message")?.as_str()?;
-                let code = v.get("code")?.as_str()?;
-                Some(json!({
-                    "kind": code,
-                    "message": msg,
-                    "hint": if v.get("fix_available").and_then(|f| f.as_bool()).unwrap_or(false) {
-                        format!("Auto-fixable with pybun_fix. Code: {}", code)
-                    } else {
-                        format!("Manual fix required. Code: {}", code)
-                    }
-                }))
-            }).collect::<Vec<_>>(),
-        })
-        .to_string())
+            let output = ProcessCommand::new(&python_path)
+                .args(["-m", "py_compile", &target_path])
+                .output()
+                .map_err(|e| format!("Failed to run py_compile: {}", e))?;
+
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            Ok(json!({
+                "status": "lint_complete",
+                "tool": "py_compile",
+                "tool_not_available": "ruff",
+                "hint": "Install ruff for full linting: pybun add ruff",
+                "violations": [],
+                "syntax_ok": output.status.success(),
+                "stderr": stderr,
+                "target": target_display,
+            })
+            .to_string())
+        }
     }
 
     fn call_type_check(&self, args: Value) -> Result<String, String> {
@@ -1151,17 +1253,28 @@ impl McpServer {
         // Write profiler runner to a temp file to avoid format-string escaping issues
         // with Python dict literals inside Rust format! macros.
         let profiler_src = [
-            "import cProfile, pstats, io, json, re, sys",
+            "import cProfile, pstats, io, json, os, re, sys",
             &format!(
                 "_target = {}",
                 serde_json::to_string(&target_path_str).unwrap_or_default()
             ),
             &format!("_top_n = {}", top_n),
+            "_globals = {'__name__': '__main__', '__file__': _target, '__package__': None, '__cached__': None}",
+            "_argv = list(sys.argv)",
+            "_path = list(sys.path)",
+            "_script_dir = os.path.dirname(_target)",
+            "if _script_dir:",
+            "    sys.path.insert(0, _script_dir)",
+            "sys.argv = [_target]",
             "pr = cProfile.Profile()",
-            "pr.enable()",
-            "with open(_target) as _f:",
-            "    exec(compile(_f.read(), _target, 'exec'), {'__name__': '__main__'})",
-            "pr.disable()",
+            "try:",
+            "    pr.enable()",
+            "    with open(_target) as _f:",
+            "        exec(compile(_f.read(), _target, 'exec'), _globals)",
+            "finally:",
+            "    pr.disable()",
+            "    sys.argv = _argv",
+            "    sys.path[:] = _path",
             "s = io.StringIO()",
             "ps = pstats.Stats(pr, stream=s).sort_stats('cumulative')",
             "ps.print_stats(_top_n)",
@@ -1257,13 +1370,8 @@ impl McpServer {
             return Err(format!("Script not found: {}", script));
         }
 
-        // Check if ruff is available
-        let ruff_available = ProcessCommand::new("ruff")
-            .arg("--version")
-            .output()
-            .is_ok();
-
-        if !ruff_available {
+        let working_dir = current_working_dir()?;
+        let Some(ruff_runner) = resolve_ruff_runner(&working_dir)? else {
             return Ok(json!({
                 "status": "fix_complete",
                 "tool_not_available": "ruff",
@@ -1272,10 +1380,10 @@ impl McpServer {
                 "target": script,
             })
             .to_string());
-        }
+        };
 
         // Run ruff check --fix to get count of fixable violations before
-        let mut check_cmd = ProcessCommand::new("ruff");
+        let mut check_cmd = ruff_runner.command();
         check_cmd.args(["check", "--output-format=json"]);
         if !select.is_empty() {
             check_cmd.arg("--select");
@@ -1284,12 +1392,14 @@ impl McpServer {
         check_cmd.arg(script);
         let before_output = check_cmd.output().map_err(|e| e.to_string())?;
         let before_str = String::from_utf8_lossy(&before_output.stdout).to_string();
-        let before_count = serde_json::from_str::<Vec<Value>>(&before_str)
-            .map(|v| v.len())
-            .unwrap_or(0);
+        let before_stderr = String::from_utf8_lossy(&before_output.stderr).to_string();
+        if !valid_ruff_status(&before_output.status) {
+            return Err(ruff_failure_message("check", &before_str, &before_stderr));
+        }
+        let before_count = parse_ruff_violations(&before_str)?.len();
 
         // Apply fixes
-        let mut fix_cmd = ProcessCommand::new("ruff");
+        let mut fix_cmd = ruff_runner.command();
         fix_cmd.args(["check", "--fix"]);
         if unsafe_fixes {
             fix_cmd.arg("--unsafe-fixes");
@@ -1303,9 +1413,18 @@ impl McpServer {
         let fix_output = fix_cmd
             .output()
             .map_err(|e| format!("Failed to run ruff fix: {}", e))?;
+        let fix_stdout = String::from_utf8_lossy(&fix_output.stdout).to_string();
+        let fix_stderr = String::from_utf8_lossy(&fix_output.stderr).to_string();
+        if !valid_ruff_status(&fix_output.status) {
+            return Err(ruff_failure_message(
+                "check --fix",
+                &fix_stdout,
+                &fix_stderr,
+            ));
+        }
 
         // Count remaining violations
-        let mut recheck_cmd = ProcessCommand::new("ruff");
+        let mut recheck_cmd = ruff_runner.command();
         recheck_cmd.args(["check", "--output-format=json"]);
         if !select.is_empty() {
             recheck_cmd.arg("--select");
@@ -1314,12 +1433,13 @@ impl McpServer {
         recheck_cmd.arg(script);
         let after_output = recheck_cmd.output().map_err(|e| e.to_string())?;
         let after_str = String::from_utf8_lossy(&after_output.stdout).to_string();
-        let after_count = serde_json::from_str::<Vec<Value>>(&after_str)
-            .map(|v| v.len())
-            .unwrap_or(0);
+        let after_stderr = String::from_utf8_lossy(&after_output.stderr).to_string();
+        if !valid_ruff_status(&after_output.status) {
+            return Err(ruff_failure_message("check", &after_str, &after_stderr));
+        }
+        let after_count = parse_ruff_violations(&after_str)?.len();
 
         let fixes_applied = before_count.saturating_sub(after_count);
-        let fix_stderr = String::from_utf8_lossy(&fix_output.stderr).to_string();
 
         Ok(json!({
             "status": "fix_complete",

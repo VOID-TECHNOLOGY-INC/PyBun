@@ -2,7 +2,9 @@
 //!
 //! PR4.3: MCP server `pybun mcp serve` with RPC endpoints
 
+use std::ffi::OsString;
 use std::io::Write;
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 use tempfile::tempdir;
@@ -270,14 +272,21 @@ fn mcp_tools_call_gc() {
 /// Helper: send requests to MCP server and collect output
 fn mcp_call(requests: &[&str]) -> String {
     let temp = tempdir().unwrap();
+    mcp_call_in(requests, temp.path(), &[])
+}
+
+/// Helper: send requests to MCP server from a specific cwd/environment.
+fn mcp_call_in(requests: &[&str], current_dir: &Path, envs: &[(&str, OsString)]) -> String {
+    let temp = tempdir().unwrap();
 
     let mut child = pybun_bin()
         .env("PYBUN_HOME", temp.path())
-        .current_dir(temp.path())
+        .current_dir(current_dir)
         .args(["mcp", "serve", "--stdio"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
+        .envs(envs.iter().map(|(key, value)| (*key, value)))
         .spawn()
         .expect("failed to start MCP server");
 
@@ -380,6 +389,30 @@ fn mcp_tools_call_profile_inline_code() {
 }
 
 #[test]
+fn mcp_tools_call_profile_script_preserves_execution_context() {
+    let project = tempdir().unwrap();
+    std::fs::write(project.path().join("helper.py"), "VALUE = 41\n").unwrap();
+    std::fs::write(
+        project.path().join("main.py"),
+        "from pathlib import Path\nfrom helper import VALUE\nassert Path(__file__).name == 'main.py'\nprint(VALUE + 1)\n",
+    )
+    .unwrap();
+
+    let script = project.path().join("main.py");
+    let call_req = format!(
+        r#"{{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{{"name":"pybun_profile","arguments":{{"script":"{}","top_n":5}}}}}}"#,
+        script.display()
+    );
+    let stdout = mcp_call(&[call_req.as_str()]);
+
+    assert!(
+        stdout.contains("profile_complete") && !stdout.contains("\"isError\":true"),
+        "pybun_profile should emulate normal script execution context. Got: {}",
+        stdout
+    );
+}
+
+#[test]
 fn mcp_tools_call_fix_requires_script() {
     // pybun_fix without script should return an error
     let call_req = r#"{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_fix","arguments":{}}}"#;
@@ -400,6 +433,99 @@ fn mcp_tools_call_unknown_tool_returns_error() {
     assert!(
         stdout.contains("Unknown tool") || stdout.contains("isError"),
         "Unknown tool should return error. Got: {}",
+        stdout
+    );
+}
+
+#[test]
+fn mcp_tools_call_lint_uses_project_env_ruff() {
+    let project = tempdir().unwrap();
+    let venv_root = project.path().join("venv");
+    let venv_bin = if cfg!(windows) {
+        venv_root.join("Scripts")
+    } else {
+        venv_root.join("bin")
+    };
+    std::fs::create_dir_all(&venv_bin).unwrap();
+    let python_name = if cfg!(windows) {
+        "python.exe"
+    } else {
+        "python"
+    };
+    let ruff_name = if cfg!(windows) { "ruff.cmd" } else { "ruff" };
+    #[cfg(unix)]
+    std::os::unix::fs::symlink("/usr/bin/env", venv_bin.join(python_name)).unwrap();
+    #[cfg(windows)]
+    std::fs::write(venv_bin.join(python_name), "").unwrap();
+    std::fs::write(venv_bin.join(ruff_name), if cfg!(windows) {
+        "@echo off\r\nif \"%1\"==\"check\" (\r\n  echo []\r\n  exit /b 0\r\n)\r\nif \"%1\"==\"--version\" (\r\n  echo ruff 0.0-test\r\n  exit /b 0\r\n)\r\nexit /b 2\r\n"
+    } else {
+        "#!/bin/sh\nif [ \"$1\" = \"check\" ]; then\n  echo '[]'\n  exit 0\nfi\nif [ \"$1\" = \"--version\" ]; then\n  echo 'ruff 0.0-test'\n  exit 0\nfi\nexit 2\n"
+    }).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(venv_bin.join(ruff_name))
+            .unwrap()
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(venv_bin.join(ruff_name), perms).unwrap();
+    }
+
+    let envs = vec![("PYBUN_ENV", venv_root.into_os_string())];
+    let call_req = r#"{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_lint","arguments":{"code":"x = 1\n"}}}"#;
+    let stdout = mcp_call_in(&[call_req], project.path(), &envs);
+
+    assert!(
+        stdout.contains(r#"\"tool\":\"ruff\""#) && !stdout.contains("tool_not_available"),
+        "pybun_lint should prefer ruff from the selected env. Got: {}",
+        stdout
+    );
+}
+
+#[test]
+fn mcp_tools_call_fix_surfaces_ruff_failures() {
+    let project = tempdir().unwrap();
+    let fake_bin = project.path().join("bin");
+    std::fs::create_dir_all(&fake_bin).unwrap();
+    std::fs::write(project.path().join("test.py"), "import os\n").unwrap();
+    let ruff_name = if cfg!(windows) { "ruff.cmd" } else { "ruff" };
+    std::fs::write(
+        fake_bin.join(ruff_name),
+        if cfg!(windows) {
+            "@echo off\r\nif \"%1\"==\"--version\" (\r\n  echo ruff 0.0-test\r\n  exit /b 0\r\n)\r\necho bad rule 1>&2\r\nexit /b 2\r\n"
+        } else {
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  echo 'ruff 0.0-test'\n  exit 0\nfi\necho 'bad rule' >&2\nexit 2\n"
+        },
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(fake_bin.join(ruff_name))
+            .unwrap()
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(fake_bin.join(ruff_name), perms).unwrap();
+    }
+
+    let separator = if cfg!(windows) { ';' } else { ':' };
+    let path = format!(
+        "{}{}{}",
+        fake_bin.display(),
+        separator,
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let envs = vec![("PATH", OsString::from(path))];
+    let call_req = format!(
+        r#"{{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{{"name":"pybun_fix","arguments":{{"script":"{}","select":["BAD"]}}}}}}"#,
+        project.path().join("test.py").display()
+    );
+    let stdout = mcp_call_in(&[call_req.as_str()], project.path(), &envs);
+
+    assert!(
+        stdout.contains("\"isError\":true") && stdout.contains("ruff check failed"),
+        "pybun_fix should surface ruff execution failures. Got: {}",
         stdout
     );
 }
