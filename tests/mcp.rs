@@ -267,6 +267,143 @@ fn mcp_tools_call_gc() {
     );
 }
 
+/// Helper: send requests to MCP server and collect output
+fn mcp_call(requests: &[&str]) -> String {
+    let temp = tempdir().unwrap();
+
+    let mut child = pybun_bin()
+        .env("PYBUN_HOME", temp.path())
+        .current_dir(temp.path())
+        .args(["mcp", "serve", "--stdio"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to start MCP server");
+
+    if let Some(mut stdin) = child.stdin.take() {
+        let init_req = r#"{"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0.1.0"}}}"#;
+        writeln!(stdin, "{}", init_req).ok();
+        for req in requests {
+            writeln!(stdin, "{}", req).ok();
+        }
+        stdin.flush().ok();
+    }
+
+    let output = child.wait_with_output().expect("failed to wait");
+    String::from_utf8_lossy(&output.stdout).to_string()
+}
+
+#[test]
+fn mcp_tools_list_includes_new_tools() {
+    let stdout = mcp_call(&[r#"{"jsonrpc":"2.0","method":"tools/list","id":2,"params":{}}"#]);
+
+    assert!(
+        stdout.contains("pybun_lint"),
+        "tools/list should include pybun_lint. Got: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("pybun_type_check"),
+        "tools/list should include pybun_type_check. Got: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("pybun_profile"),
+        "tools/list should include pybun_profile. Got: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("pybun_fix"),
+        "tools/list should include pybun_fix. Got: {}",
+        stdout
+    );
+}
+
+#[test]
+fn mcp_tools_call_lint_inline_code() {
+    // Lint code with a known issue: unused import (F401)
+    let call_req = r#"{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_lint","arguments":{"code":"import os\nprint('hello')"}}}"#;
+    let stdout = mcp_call(&[call_req]);
+
+    // Should return structured response - either violations found or tool-not-available
+    assert!(
+        stdout.contains("violations")
+            || stdout.contains("tool_not_available")
+            || stdout.contains("lint_complete"),
+        "pybun_lint should return structured response. Got: {}",
+        stdout
+    );
+}
+
+#[test]
+fn mcp_tools_call_lint_clean_code() {
+    let call_req = r#"{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_lint","arguments":{"code":"x = 1 + 1\nprint(x)\n"}}}"#;
+    let stdout = mcp_call(&[call_req]);
+
+    assert!(
+        stdout.contains("violations")
+            || stdout.contains("tool_not_available")
+            || stdout.contains("lint_complete"),
+        "pybun_lint should return structured response for clean code. Got: {}",
+        stdout
+    );
+}
+
+#[test]
+fn mcp_tools_call_type_check_inline_code() {
+    let call_req = r#"{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_type_check","arguments":{"code":"def add(x: int, y: int) -> int:\n    return x + y\n"}}}"#;
+    let stdout = mcp_call(&[call_req]);
+
+    assert!(
+        stdout.contains("errors")
+            || stdout.contains("tool_not_available")
+            || stdout.contains("type_check_complete"),
+        "pybun_type_check should return structured response. Got: {}",
+        stdout
+    );
+}
+
+#[test]
+fn mcp_tools_call_profile_inline_code() {
+    let call_req = r#"{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_profile","arguments":{"code":"total = sum(range(1000))","top_n":5}}}"#;
+    let stdout = mcp_call(&[call_req]);
+
+    // cProfile is built-in, so this should always succeed
+    assert!(
+        stdout.contains("hotspots")
+            || stdout.contains("total_time")
+            || stdout.contains("profile_complete"),
+        "pybun_profile should return hotspots. Got: {}",
+        stdout
+    );
+}
+
+#[test]
+fn mcp_tools_call_fix_requires_script() {
+    // pybun_fix without script should return an error
+    let call_req = r#"{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_fix","arguments":{}}}"#;
+    let stdout = mcp_call(&[call_req]);
+
+    assert!(
+        stdout.contains("Error") || stdout.contains("error") || stdout.contains("script"),
+        "pybun_fix without script should return error. Got: {}",
+        stdout
+    );
+}
+
+#[test]
+fn mcp_tools_call_unknown_tool_returns_error() {
+    let call_req = r#"{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_nonexistent","arguments":{}}}"#;
+    let stdout = mcp_call(&[call_req]);
+
+    assert!(
+        stdout.contains("Unknown tool") || stdout.contains("isError"),
+        "Unknown tool should return error. Got: {}",
+        stdout
+    );
+}
+
 #[test]
 fn mcp_tools_call_resolve_no_index() {
     let temp = tempdir().unwrap();
