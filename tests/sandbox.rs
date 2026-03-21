@@ -113,6 +113,37 @@ fn sandbox_allow_read_blocks_unauthorized_path() {
 }
 
 #[test]
+fn sandbox_allow_read_blocks_sibling_prefix_bypass() {
+    let temp = tempdir().unwrap();
+    let allowed_dir = temp.path().join("allowed");
+    let sibling_dir = temp.path().join("allowed_evil");
+    fs::create_dir_all(&allowed_dir).unwrap();
+    fs::create_dir_all(&sibling_dir).unwrap();
+
+    let secret_file = sibling_dir.join("secret.txt");
+    fs::write(&secret_file, "top secret").unwrap();
+
+    let script = temp.path().join("read_prefix_bypass.py");
+    let secret_path = secret_file.to_str().unwrap().replace('\\', "/");
+    fs::write(
+        &script,
+        format!("open({path:?}).read()\n", path = secret_path),
+    )
+    .unwrap();
+
+    run_sandbox(&[
+        "--format=json",
+        "run",
+        "--sandbox",
+        &format!("--allow-read={}", allowed_dir.display()),
+        script.to_str().unwrap(),
+    ])
+    .success()
+    .stdout(predicate::str::contains("\"exit_code\":1"))
+    .stdout(predicate::str::contains("\"blocked_file_reads\":"));
+}
+
+#[test]
 fn sandbox_allow_read_permits_allowed_path() {
     let temp = tempdir().unwrap();
 
@@ -140,6 +171,37 @@ fn sandbox_allow_read_permits_allowed_path() {
     ])
     .success()
     .stdout(predicate::str::contains("\"exit_code\":0"));
+}
+
+#[test]
+fn sandbox_allow_read_blocks_update_mode_bypass() {
+    let temp = tempdir().unwrap();
+    let allowed_dir = tempdir().unwrap();
+    let secret_dir = tempdir().unwrap();
+    let secret_file = secret_dir.path().join("secret.txt");
+    fs::write(&secret_file, "top secret").unwrap();
+
+    let script = temp.path().join("read_update_mode.py");
+    let secret_path = secret_file.to_str().unwrap().replace('\\', "/");
+    fs::write(
+        &script,
+        format!(
+            "handle = open({path:?}, 'r+')\nprint(handle.read())\n",
+            path = secret_path
+        ),
+    )
+    .unwrap();
+
+    run_sandbox(&[
+        "--format=json",
+        "run",
+        "--sandbox",
+        &format!("--allow-read={}", allowed_dir.path().display()),
+        script.to_str().unwrap(),
+    ])
+    .success()
+    .stdout(predicate::str::contains("\"exit_code\":1"))
+    .stdout(predicate::str::contains("\"blocked_file_reads\":"));
 }
 
 #[test]

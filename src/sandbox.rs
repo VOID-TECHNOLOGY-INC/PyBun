@@ -4,6 +4,10 @@ use std::path::PathBuf;
 use std::process::Command;
 use tempfile::TempDir;
 
+fn serialize_policy_paths(paths: &[String]) -> Result<String> {
+    serde_json::to_string(paths).map_err(|e| eyre!("failed to serialize sandbox policy paths: {e}"))
+}
+
 /// Configuration for a sandboxed Python process.
 #[derive(Debug, Clone, Default)]
 pub struct SandboxConfig {
@@ -80,12 +84,19 @@ pub fn apply_python_sandbox(cmd: &mut Command, config: SandboxConfig) -> Result<
         cmd.env_remove("PYBUN_SANDBOX_ALLOW_NETWORK");
     }
 
-    // Pass filesystem policies as colon-separated path lists.
-    cmd.env("PYBUN_SANDBOX_ALLOW_READ", config.allow_read.join(":"));
-    cmd.env("PYBUN_SANDBOX_ALLOW_WRITE", config.allow_write.join(":"));
+    // Pass filesystem policies as JSON arrays so path separators remain portable.
+    cmd.env(
+        "PYBUN_SANDBOX_ALLOW_READ",
+        serialize_policy_paths(&config.allow_read)?,
+    );
+    cmd.env(
+        "PYBUN_SANDBOX_ALLOW_WRITE",
+        serialize_policy_paths(&config.allow_write)?,
+    );
 
     // Tell the sitecustomize where to write the audit JSON.
     cmd.env("PYBUN_SANDBOX_AUDIT_FILE", audit_file.as_os_str());
+    cmd.env("PYBUN_SANDBOX_HELPER_DIR", tempdir.path().as_os_str());
 
     Ok(SandboxGuard {
         _tempdir: tempdir,
@@ -110,12 +121,33 @@ import builtins
 _orig_open = builtins.open  # save before any patching
 
 ALLOW_NETWORK = os.environ.get("PYBUN_SANDBOX_ALLOW_NETWORK") == "1"
-_ALLOW_READ_RAW = os.environ.get("PYBUN_SANDBOX_ALLOW_READ", "")
-_ALLOW_WRITE_RAW = os.environ.get("PYBUN_SANDBOX_ALLOW_WRITE", "")
 _AUDIT_FILE = os.environ.get("PYBUN_SANDBOX_AUDIT_FILE", "")
+_HELPER_DIR = os.environ.get("PYBUN_SANDBOX_HELPER_DIR", "")
 
-_ALLOW_READ = [p for p in _ALLOW_READ_RAW.split(":") if p]
-_ALLOW_WRITE = [p for p in _ALLOW_WRITE_RAW.split(":") if p]
+
+def _load_policy_paths(name):
+    raw = os.environ.get(name, "")
+    if not raw:
+        return []
+    value = json.loads(raw)
+    if not isinstance(value, list):
+        raise ValueError("{} must decode to a list".format(name))
+    return [entry for entry in value if isinstance(entry, str)]
+
+
+def _normalize_path(path):
+    return os.path.realpath(os.path.abspath(path))
+
+
+def _path_within(path, allowed_root):
+    try:
+        return os.path.commonpath([path, allowed_root]) == allowed_root
+    except ValueError:
+        return False
+
+
+_ALLOW_READ = [_normalize_path(p) for p in _load_policy_paths("PYBUN_SANDBOX_ALLOW_READ")]
+_ALLOW_WRITE = [_normalize_path(p) for p in _load_policy_paths("PYBUN_SANDBOX_ALLOW_WRITE")]
 _HAS_READ_POLICY = bool(_ALLOW_READ)
 _HAS_WRITE_POLICY = bool(_ALLOW_WRITE)
 
@@ -124,9 +156,13 @@ _SYS_PREFIXES = []
 for _attr in ("prefix", "exec_prefix", "base_prefix"):
     _v = getattr(sys, _attr, None)
     if _v:
-        _SYS_PREFIXES.append(os.path.abspath(_v))
+        _SYS_PREFIXES.append(_normalize_path(_v))
 if hasattr(sys, "real_prefix"):
-    _SYS_PREFIXES.append(os.path.abspath(sys.real_prefix))
+    _SYS_PREFIXES.append(_normalize_path(sys.real_prefix))
+
+_ALWAYS_ALLOW_READ = list(_SYS_PREFIXES)
+if _HELPER_DIR:
+    _ALWAYS_ALLOW_READ.append(_normalize_path(_HELPER_DIR))
 
 _audit = {
     "blocked_subprocesses": 0,
@@ -145,17 +181,20 @@ def _deny(reason, audit_key=None):
 def _is_allowed(path, allowed_paths):
     """Return True if path is under any of the allowed directories or sys prefixes."""
     try:
-        abs_path = os.path.abspath(str(path))
-        # Python internals are always allowed.
-        if any(abs_path.startswith(p) for p in _SYS_PREFIXES):
+        normalized_path = _normalize_path(os.fsdecode(os.fspath(path)))
+        if any(_path_within(normalized_path, p) for p in _ALWAYS_ALLOW_READ):
             return True
-        # PYTHONPATH entries are always allowed (needed for sitecustomize dir itself).
-        for pp in os.environ.get("PYTHONPATH", "").split(":"):
-            if pp and abs_path.startswith(os.path.abspath(pp)):
-                return True
-        return any(abs_path.startswith(os.path.abspath(p)) for p in allowed_paths)
+        return any(_path_within(normalized_path, p) for p in allowed_paths)
     except Exception:
-        return True  # don't block on path resolution errors
+        return False
+
+
+def _mode_needs_read(mode):
+    return "+" in mode or not any(flag in mode for flag in "wxa")
+
+
+def _mode_needs_write(mode):
+    return any(flag in mode for flag in "wxa+")
 
 
 def _block_subprocesses():
@@ -192,14 +231,13 @@ def _patch_filesystem():
         # File objects (e.g. from io) pass through unchanged.
         if not isinstance(file, (str, bytes, os.PathLike)):
             return _orig_open(file, mode, *args, **kwargs)
-        path = str(file)
-        is_write = any(c in mode for c in "wxa+")
-        if is_write and _HAS_WRITE_POLICY:
-            if not _is_allowed(path, _ALLOW_WRITE):
-                _deny("write to " + path, "blocked_file_writes")
-        elif not is_write and _HAS_READ_POLICY:
+        path = os.fsdecode(os.fspath(file))
+        if _HAS_READ_POLICY and _mode_needs_read(mode):
             if not _is_allowed(path, _ALLOW_READ):
                 _deny("read from " + path, "blocked_file_reads")
+        if _HAS_WRITE_POLICY and _mode_needs_write(mode):
+            if not _is_allowed(path, _ALLOW_WRITE):
+                _deny("write to " + path, "blocked_file_writes")
         return _orig_open(file, mode, *args, **kwargs)
 
     builtins.open = _checked_open
