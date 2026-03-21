@@ -281,13 +281,14 @@ impl Project {
     }
 }
 
-/// Extract package name from a dependency specifier.
+/// Extract package name from a dependency specifier (PEP 508).
 /// e.g., "requests>=2.28.0" -> "requests"
+/// e.g., "requests; python_version < '4.0'" -> "requests"
 pub(crate) fn extract_package_name(dep: &str) -> &str {
     let dep = dep.trim();
-    // Find first version specifier character
+    // Find first version specifier or marker character (PEP 508: ';' starts environment markers)
     let end = dep
-        .find(['=', '>', '<', '!', '~', '['])
+        .find(['=', '>', '<', '!', '~', '[', ';'])
         .unwrap_or(dep.len());
     dep[..end].trim()
 }
@@ -304,6 +305,67 @@ mod tests {
         assert_eq!(extract_package_name("requests==2.28.0"), "requests");
         assert_eq!(extract_package_name("requests[socks]>=2.28.0"), "requests");
         assert_eq!(extract_package_name("  numpy  "), "numpy");
+    }
+
+    #[test]
+    fn extract_package_name_strips_pep508_markers() {
+        // Marker without version spec
+        assert_eq!(
+            extract_package_name("requests; python_version < '4.0'"),
+            "requests"
+        );
+        // Marker with version spec
+        assert_eq!(
+            extract_package_name("requests>=2.28.0; python_version >= '3.8'"),
+            "requests"
+        );
+        // Marker with sys_platform
+        assert_eq!(
+            extract_package_name("numpy; sys_platform == 'linux'"),
+            "numpy"
+        );
+        // Marker with space around semicolon
+        assert_eq!(
+            extract_package_name("flask ; python_version < '4.0'"),
+            "flask"
+        );
+    }
+
+    #[test]
+    fn has_dependency_with_marker() {
+        let temp = tempdir().unwrap();
+        let mut project = Project::new(temp.path().join("pyproject.toml"));
+
+        project.add_dependency("requests; python_version < '4.0'");
+        // has_dependency should match by package name, ignoring the marker
+        assert!(project.has_dependency("requests"));
+        assert!(!project.has_dependency("numpy"));
+    }
+
+    #[test]
+    fn remove_dependency_with_marker() {
+        let temp = tempdir().unwrap();
+        let mut project = Project::new(temp.path().join("pyproject.toml"));
+
+        project.add_dependency("requests; python_version < '4.0'");
+        project.add_dependency("numpy>=1.24.0");
+
+        assert!(project.remove_dependency("requests"));
+        assert!(!project.has_dependency("requests"));
+        assert!(project.has_dependency("numpy"));
+    }
+
+    #[test]
+    fn add_dependency_replaces_existing_with_marker() {
+        let temp = tempdir().unwrap();
+        let mut project = Project::new(temp.path().join("pyproject.toml"));
+
+        project.add_dependency("requests; python_version < '4.0'");
+        project.add_dependency("requests>=2.28.0");
+
+        let deps = project.dependencies();
+        assert_eq!(deps.len(), 1, "should deduplicate by package name");
+        assert_eq!(deps[0], "requests>=2.28.0");
     }
 
     #[test]
