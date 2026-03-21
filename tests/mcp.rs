@@ -14,29 +14,6 @@ fn pybun_bin() -> Command {
 }
 
 /// Helper: send requests to MCP server and collect stdout
-fn mcp_call(requests: &[&str]) -> String {
-    let temp = tempdir().unwrap();
-    let mut child = pybun_bin()
-        .env("PYBUN_HOME", temp.path())
-        .current_dir(temp.path())
-        .args(["mcp", "serve", "--stdio"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("failed to start MCP server");
-    if let Some(mut stdin) = child.stdin.take() {
-        let init_req = r#"{"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0.1.0"}}}"#;
-        writeln!(stdin, "{}", init_req).ok();
-        for req in requests {
-            writeln!(stdin, "{}", req).ok();
-        }
-        stdin.flush().ok();
-    }
-    let output = child.wait_with_output().expect("failed to wait");
-    String::from_utf8_lossy(&output.stdout).to_string()
-}
-
 #[test]
 fn mcp_serve_help_shows_port_option() {
     let output = pybun_bin()
@@ -293,7 +270,7 @@ fn mcp_tools_call_gc() {
     );
 }
 
-/// Helper: send requests to MCP server and collect output
+/// Helper: send requests to MCP server and collect output.
 fn mcp_call(requests: &[&str]) -> String {
     let temp = tempdir().unwrap();
     mcp_call_in(requests, temp.path(), &[])
