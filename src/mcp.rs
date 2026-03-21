@@ -319,7 +319,7 @@ impl McpServer {
             },
             Tool {
                 name: "pybun_run".to_string(),
-                description: "Run a Python script".to_string(),
+                description: "Run a Python script, optionally inside a sandbox.".to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -335,6 +335,26 @@ impl McpServer {
                             "type": "array",
                             "items": {"type": "string"},
                             "description": "Arguments to pass to the script"
+                        },
+                        "sandbox_policy": {
+                            "type": "object",
+                            "description": "Enable sandboxed execution with optional policy",
+                            "properties": {
+                                "allow_network": {
+                                    "type": "boolean",
+                                    "description": "Allow network access (default: false)"
+                                },
+                                "allow_read": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": "Paths allowed for reading (empty = no restriction)"
+                                },
+                                "allow_write": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": "Paths allowed for writing (empty = no restriction)"
+                                }
+                            }
                         }
                     }
                 }),
@@ -756,6 +776,7 @@ impl McpServer {
 
     fn call_run(&self, args: Value) -> Result<String, String> {
         use crate::env::find_python_env;
+        use crate::sandbox::{SandboxConfig, apply_python_sandbox};
 
         let script = args.get("script").and_then(|s| s.as_str());
         let code = args.get("code").and_then(|c| c.as_str());
@@ -769,68 +790,88 @@ impl McpServer {
             })
             .unwrap_or_default();
 
+        // Parse optional sandbox_policy
+        let sandbox_policy = args.get("sandbox_policy");
+        let use_sandbox = sandbox_policy.is_some();
+        let sandbox_config = sandbox_policy.map(|p| SandboxConfig {
+            allow_network: p
+                .get("allow_network")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            allow_read: p
+                .get("allow_read")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            allow_write: p
+                .get("allow_write")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default(),
+        });
+
         // Find Python interpreter
         let working_dir = std::env::current_dir().map_err(|e| e.to_string())?;
         let env = find_python_env(&working_dir).map_err(|e| e.to_string())?;
         let python_path = env.python_path.to_string_lossy().to_string();
 
+        let build_result = |mut cmd: ProcessCommand,
+                            target: &str,
+                            config: Option<SandboxConfig>|
+         -> Result<String, String> {
+            for arg in &run_args {
+                cmd.arg(arg);
+            }
+            let guard = config
+                .map(|c| apply_python_sandbox(&mut cmd, c).map_err(|e| e.to_string()))
+                .transpose()?;
+
+            let output = cmd
+                .output()
+                .map_err(|e| format!("Failed to execute: {}", e))?;
+
+            let audit = guard.as_ref().map(|g| g.read_audit());
+            drop(guard);
+
+            let exit_code = output.status.code().unwrap_or(-1);
+            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+            Ok(json!({
+                "status": if output.status.success() { "success" } else { "error" },
+                "target": target,
+                "exit_code": exit_code,
+                "stdout": stdout,
+                "stderr": stderr,
+                "python": python_path,
+                "sandboxed": use_sandbox,
+                "audit": audit,
+            })
+            .to_string())
+        };
+
         match (script, code) {
             (Some(script_path), _) => {
-                // Execute a script file
                 let path = PathBuf::from(script_path);
                 if !path.exists() {
                     return Err(format!("Script not found: {}", script_path));
                 }
-
                 let mut cmd = ProcessCommand::new(&python_path);
                 cmd.arg(&path);
-                for arg in &run_args {
-                    cmd.arg(arg);
-                }
-
-                let output = cmd
-                    .output()
-                    .map_err(|e| format!("Failed to execute: {}", e))?;
-
-                let exit_code = output.status.code().unwrap_or(-1);
-                let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-
-                Ok(json!({
-                    "status": if output.status.success() { "success" } else { "error" },
-                    "target": script_path,
-                    "exit_code": exit_code,
-                    "stdout": stdout,
-                    "stderr": stderr,
-                    "python": python_path,
-                })
-                .to_string())
+                build_result(cmd, script_path, sandbox_config)
             }
             (_, Some(inline_code)) => {
-                // Execute inline code
                 let mut cmd = ProcessCommand::new(&python_path);
                 cmd.arg("-c").arg(inline_code);
-                for arg in &run_args {
-                    cmd.arg(arg);
-                }
-
-                let output = cmd
-                    .output()
-                    .map_err(|e| format!("Failed to execute: {}", e))?;
-
-                let exit_code = output.status.code().unwrap_or(-1);
-                let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-
-                Ok(json!({
-                    "status": if output.status.success() { "success" } else { "error" },
-                    "target": "inline_code",
-                    "exit_code": exit_code,
-                    "stdout": stdout,
-                    "stderr": stderr,
-                    "python": python_path,
-                })
-                .to_string())
+                build_result(cmd, "inline_code", sandbox_config)
             }
             _ => Err("Either 'script' or 'code' must be provided".to_string()),
         }

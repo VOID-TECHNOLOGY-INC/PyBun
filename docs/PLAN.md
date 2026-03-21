@@ -36,6 +36,10 @@
   - Goal: Add `pybun_lint`, `pybun_type_check`, `pybun_profile`, `pybun_fix` tools to the MCP server to support full AI-assisted development loop.
   - Current: Implemented in `src/mcp.rs`. `pybun_lint` uses ruff (graceful fallback to py_compile if unavailable). `pybun_type_check` uses mypy (graceful fallback with install hint). `pybun_profile` uses Python's built-in cProfile (always available). `pybun_fix` uses ruff --fix. All tools return structured JSON with `diagnostics` arrays containing `kind`/`message`/`hint` fields. Error responses include `tool_not_available` + `hint` for missing tools.
   - Tests: 7 new tests in `tests/mcp.rs` — tools/list coverage for new tools, lint (with violations / clean code), type_check, profile, fix (missing script error), unknown tool error.
+- [DONE] PR-A3c: Sandbox filesystem policy + audit + MCP sandbox_policy (Issue #109)
+  - Goal: Extend `pybun run --sandbox` with `--allow-read`/`--allow-write` path policies and execution audit; expose via MCP `pybun_run` `sandbox_policy` parameter.
+  - Current: `src/sandbox.rs` — `SandboxConfig` gains `allow_read`/`allow_write`; `SandboxGuard` gains `read_audit()` returning `SandboxAudit` (blocked counts); sitecustomize.py patches `builtins.open` with path enforcement; sys.prefix always whitelisted. `src/cli.rs` — `--allow-read <PATH>` and `--allow-write <PATH>` flags. `src/mcp.rs` — `pybun_run` accepts `sandbox_policy` and returns `sandboxed`/`audit`. `src/commands.rs` — JSON output includes allow_read, allow_write, audit.
+  - Tests: 8 sandbox integration tests + 3 MCP tests. Snapshot updated.
 - PR-A3: MCP と CLI の実処理統一
   - Goal: `mcp` tools を command 層へ寄せ、CLI と同一挙動へ統一する。
     - lockfile 互換方針: project lock は `pybun.lockb`、script lock は `<script>.lock` を現行仕様として維持し、MCP でも同じ命名/更新規則に合わせる。
