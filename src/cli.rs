@@ -188,6 +188,14 @@ pub struct RunArgs {
     /// Allow network access inside the sandbox (escape hatch).
     #[arg(long)]
     pub allow_network: bool,
+    /// Allow reading from a path inside the sandbox (can be specified multiple times).
+    /// When set, reads outside these paths are blocked. Python stdlib is always allowed.
+    #[arg(long, value_name = "PATH")]
+    pub allow_read: Vec<String>,
+    /// Allow writing to a path inside the sandbox (can be specified multiple times).
+    /// When set, writes outside these paths are blocked.
+    #[arg(long, value_name = "PATH")]
+    pub allow_write: Vec<String>,
     /// Optional profile (dev/prod/benchmark).
     #[arg(long, default_value = "dev")]
     pub profile: String,

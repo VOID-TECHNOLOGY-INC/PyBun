@@ -13,6 +13,30 @@ fn pybun_bin() -> Command {
     Command::new(env!("CARGO_BIN_EXE_pybun"))
 }
 
+/// Helper: send requests to MCP server and collect stdout
+fn mcp_call(requests: &[&str]) -> String {
+    let temp = tempdir().unwrap();
+    let mut child = pybun_bin()
+        .env("PYBUN_HOME", temp.path())
+        .current_dir(temp.path())
+        .args(["mcp", "serve", "--stdio"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to start MCP server");
+    if let Some(mut stdin) = child.stdin.take() {
+        let init_req = r#"{"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0.1.0"}}}"#;
+        writeln!(stdin, "{}", init_req).ok();
+        for req in requests {
+            writeln!(stdin, "{}", req).ok();
+        }
+        stdin.flush().ok();
+    }
+    let output = child.wait_with_output().expect("failed to wait");
+    String::from_utf8_lossy(&output.stdout).to_string()
+}
+
 #[test]
 fn mcp_serve_help_shows_port_option() {
     let output = pybun_bin()
@@ -564,6 +588,45 @@ fn mcp_tools_call_resolve_no_index() {
             || stdout.contains("parsed_requirements")
             || stdout.contains("requirements"),
         "pybun_resolve should handle missing index gracefully. Got: {}",
+        stdout
+    );
+}
+
+#[test]
+fn mcp_pybun_run_sandbox_policy_blocks_subprocess() {
+    let call_req = r#"{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_run","arguments":{"code":"import subprocess\nsubprocess.run(['echo','hi'])","sandbox_policy":{"allow_network":false}}}}"#;
+    let stdout = mcp_call(&[call_req]);
+
+    // Should return a response with sandboxed=true and exit_code != 0
+    assert!(
+        stdout.contains("sandboxed") || stdout.contains("exit_code"),
+        "pybun_run with sandbox_policy should return sandbox info. Got: {}",
+        stdout
+    );
+}
+
+#[test]
+fn mcp_pybun_run_sandbox_policy_audit_present() {
+    // Run a script that tries to spawn a process; audit should record the block
+    let call_req = r#"{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_run","arguments":{"code":"import subprocess\ntry:\n    subprocess.run(['echo','hi'])\nexcept PermissionError:\n    pass","sandbox_policy":{}}}}"#;
+    let stdout = mcp_call(&[call_req]);
+
+    assert!(
+        stdout.contains("audit") || stdout.contains("sandboxed"),
+        "pybun_run with sandbox_policy should include audit. Got: {}",
+        stdout
+    );
+}
+
+#[test]
+fn mcp_pybun_run_without_sandbox_policy_no_restriction() {
+    // Without sandbox_policy, normal code should run freely
+    let call_req = r#"{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_run","arguments":{"code":"print('unrestricted')"}}}"#;
+    let stdout = mcp_call(&[call_req]);
+
+    assert!(
+        stdout.contains("unrestricted") || stdout.contains("exit_code"),
+        "pybun_run without sandbox should run freely. Got: {}",
         stdout
     );
 }

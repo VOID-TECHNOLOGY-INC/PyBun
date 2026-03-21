@@ -252,7 +252,10 @@ pub async fn execute(cli: Cli) -> Result<()> {
                         json!({
                             "enabled": s.enabled,
                             "allow_network": s.allow_network,
+                            "allow_read": s.allow_read,
+                            "allow_write": s.allow_write,
                             "enforcement": s.enforcement,
+                            "audit": s.audit,
                         })
                     });
                     (
@@ -1893,7 +1896,10 @@ struct RunOutcome {
 struct SandboxInfo {
     enabled: bool,
     allow_network: bool,
+    allow_read: Vec<String>,
+    allow_write: Vec<String>,
     enforcement: String,
+    audit: Option<sandbox::SandboxAudit>,
 }
 
 #[derive(Debug)]
@@ -2657,12 +2663,21 @@ async fn run_script(
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                 .unwrap_or(false);
         collector.info(format!("sandbox enabled (allow_network={})", allow_network));
-        let guard =
-            sandbox::apply_python_sandbox(&mut cmd, sandbox::SandboxConfig { allow_network })?;
+        let guard = sandbox::apply_python_sandbox(
+            &mut cmd,
+            sandbox::SandboxConfig {
+                allow_network,
+                allow_read: args.allow_read.clone(),
+                allow_write: args.allow_write.clone(),
+            },
+        )?;
         sandbox_info = Some(SandboxInfo {
             enabled: true,
             allow_network,
+            allow_read: args.allow_read.clone(),
+            allow_write: args.allow_write.clone(),
             enforcement: guard.enforcement().to_string(),
+            audit: None,
         });
         sandbox_guard = Some(guard);
     }
@@ -2696,7 +2711,10 @@ async fn run_script(
             None,
         ),
     };
-    // Drop guard after process exit to cleanup temporary sitecustomize dir.
+    // Read audit before dropping the guard (guard keeps the audit file alive).
+    if let (Some(guard), Some(info)) = (&sandbox_guard, &mut sandbox_info) {
+        info.audit = Some(guard.read_audit());
+    }
     drop(sandbox_guard);
 
     let exit_code = status.code().unwrap_or(-1);
@@ -2771,12 +2789,21 @@ fn run_python_code(
             "sandbox enabled for inline code (allow_network={})",
             allow_network
         ));
-        let guard =
-            sandbox::apply_python_sandbox(&mut cmd, sandbox::SandboxConfig { allow_network })?;
+        let guard = sandbox::apply_python_sandbox(
+            &mut cmd,
+            sandbox::SandboxConfig {
+                allow_network,
+                allow_read: args.allow_read.clone(),
+                allow_write: args.allow_write.clone(),
+            },
+        )?;
         sandbox_info = Some(SandboxInfo {
             enabled: true,
             allow_network,
+            allow_read: args.allow_read.clone(),
+            allow_write: args.allow_write.clone(),
             enforcement: guard.enforcement().to_string(),
+            audit: None,
         });
         sandbox_guard = Some(guard);
     }
@@ -2810,6 +2837,9 @@ fn run_python_code(
             None,
         ),
     };
+    if let (Some(guard), Some(info)) = (&sandbox_guard, &mut sandbox_info) {
+        info.audit = Some(guard.read_audit());
+    }
     drop(sandbox_guard);
 
     let exit_code = status.code().unwrap_or(-1);

@@ -242,6 +242,8 @@ mod tests {
                 target: Some("script.py".to_string()),
                 sandbox: false,
                 allow_network: false,
+                allow_read: Vec::new(),
+                allow_write: Vec::new(),
                 profile: "dev".to_string(),
                 passthrough: Vec::new(),
             }),

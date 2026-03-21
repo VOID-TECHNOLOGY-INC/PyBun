@@ -11,6 +11,8 @@ Options:
       --sandbox              Run in sandboxed mode for untrusted code
       --allow-network        Allow network access inside the sandbox (escape hatch)
       --progress <PROGRESS>  Progress UI mode (auto hides on non-TTY) [env: PYBUN_PROGRESS=] [default: auto] [possible values: auto, always, never]
+      --allow-read <PATH>    Allow reading from a path inside the sandbox (can be specified multiple times). When set, reads outside these paths are blocked. Python stdlib is always allowed
       --no-progress          Disable progress UI
+      --allow-write <PATH>   Allow writing to a path inside the sandbox (can be specified multiple times). When set, writes outside these paths are blocked
       --profile <PROFILE>    Optional profile (dev/prod/benchmark) [default: dev]
   -h, --help                 Print help
