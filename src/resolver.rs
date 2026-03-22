@@ -4,6 +4,7 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::str::FromStr;
+use std::sync::OnceLock;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VersionSpec {
@@ -128,7 +129,16 @@ impl Requirement {
     }
 
     /// Evaluate if the environment marker applies to the current platform.
-    /// Returns true if no marker is present or if the marker matches the current environment.
+    ///
+    /// Returns `true` if no marker is present or if the marker matches the current environment.
+    ///
+    /// # Inclusive fallback
+    ///
+    /// When a marker expression cannot be evaluated (unknown variable, unsupported operator
+    /// such as `in`/`not in`, or Python version detection failure), this method returns `true`
+    /// so that packages are never silently dropped. Callers should treat `true` as "may apply"
+    /// rather than "definitely applies" for unknown expressions.
+    #[must_use]
     pub fn marker_applies(&self) -> bool {
         let Some(marker) = &self.marker else {
             // No marker means requirement always applies
@@ -477,8 +487,12 @@ pub async fn resolve(
     let mut constraints: BTreeMap<String, Vec<Requirement>> = BTreeMap::new();
 
     // Requirements to process: (Requirement, RequestedBy)
-    let mut pending: Vec<(Requirement, Option<String>)> =
-        requirements.into_iter().map(|r| (r, None)).collect();
+    // Filter out top-level requirements whose environment markers don't apply.
+    let mut pending: Vec<(Requirement, Option<String>)> = requirements
+        .into_iter()
+        .filter(|r| r.marker_applies())
+        .map(|r| (r, None))
+        .collect();
 
     // Track parent relationships for conflict error messages
     let mut parents: BTreeMap<String, Option<String>> = BTreeMap::new();
@@ -585,8 +599,9 @@ pub async fn resolve(
                 pkg = fetched;
             }
 
-            // Add dependencies to next batch
-            for dep in &pkg.dependencies {
+            // Add dependencies to next batch, filtering by environment markers at resolve time
+            // so the index retains the full dependency list for potential reuse.
+            for dep in pkg.dependencies.iter().filter(|d| d.marker_applies()) {
                 next_batch.push((dep.clone(), Some(pkg.name.clone())));
             }
 
@@ -663,7 +678,6 @@ impl InMemoryIndex {
         let deps = deps
             .into_iter()
             .map(|d| parse_req(d.as_ref()))
-            .filter(|req| req.marker_applies()) // Filter out non-applicable markers
             .collect::<Vec<_>>();
         let pkg = ResolvedPackage {
             name: name.clone(),
@@ -794,14 +808,17 @@ fn evaluate_marker(marker: &str) -> bool {
     let sys_platform = get_sys_platform();
     let platform_system = get_platform_system();
 
-    // Handle 'or' operator - split and check if any condition matches
+    // Handle 'or' operator - split and check if any condition matches.
+    // TODO(pep508): this naive split does not respect quoted values (e.g. extra == 'foo-or-bar').
+    // For now, real-world marker values (win32, darwin, 3.11, …) never contain " or "/" and ".
     if marker.contains(" or ") {
         return marker
             .split(" or ")
             .any(|part| evaluate_marker(part.trim()));
     }
 
-    // Handle 'and' operator - split and check if all conditions match
+    // Handle 'and' operator - split and check if all conditions match.
+    // TODO(pep508): same quote-unaware limitation as the 'or' branch above.
     if marker.contains(" and ") {
         return marker
             .split(" and ")
@@ -811,35 +828,82 @@ fn evaluate_marker(marker: &str) -> bool {
     // Remove parentheses if present
     let marker = marker.trim_start_matches('(').trim_end_matches(')').trim();
 
-    // Parse simple comparison: variable == 'value' or variable != 'value'
-    if let Some(idx) = marker.find("==") {
-        let (var, val) = marker.split_at(idx);
+    // Parse comparisons with two-character operators first (!=, ==, >=, <=)
+    // then single-character operators (>, <).
+    for op in &["==", "!=", ">=", "<=", ">", "<"] {
+        let Some(idx) = marker.find(op) else {
+            continue;
+        };
+        let (var, rest) = marker.split_at(idx);
         let var = var.trim();
-        let val = val[2..].trim().trim_matches('\'').trim_matches('"');
+        let val = rest[op.len()..].trim().trim_matches('\'').trim_matches('"');
 
-        return match var {
-            "platform_machine" => platform_machine == val,
-            "sys_platform" => sys_platform == val,
-            "platform_system" => platform_system == val,
-            _ => false, // Unknown marker variable - conservatively return false
+        return match (var, *op) {
+            ("platform_machine", "==") => platform_machine == val,
+            ("platform_machine", "!=") => platform_machine != val,
+            ("sys_platform", "==") => sys_platform == val,
+            ("sys_platform", "!=") => sys_platform != val,
+            ("platform_system", "==") => platform_system == val,
+            ("platform_system", "!=") => platform_system != val,
+            // python_version: compare detected runtime version (MAJOR.MINOR, e.g. "3.11").
+            // Falls back to inclusive true if Python cannot be detected.
+            ("python_version", op) => {
+                let detected = get_python_version();
+                match op {
+                    "==" => detected == val,
+                    "!=" => detected != val,
+                    ">=" => compare_versions(detected, val) != Ordering::Less,
+                    "<=" => compare_versions(detected, val) != Ordering::Greater,
+                    ">" => compare_versions(detected, val) == Ordering::Greater,
+                    "<" => compare_versions(detected, val) == Ordering::Less,
+                    // Unknown operator → be inclusive
+                    _ => true,
+                }
+            }
+            // TODO(pep508): 'in' and 'not in' operators are not yet implemented — returns true
+            // (inclusive). Example: `python_version in "2.7, 3.6"`.
+            // Unknown variable with == / != → we don't know → be inclusive
+            (_, "==") | (_, "!=") => true,
+            // Unknown variable with ordering operator → be inclusive
+            _ => true,
         };
     }
 
-    if let Some(idx) = marker.find("!=") {
-        let (var, val) = marker.split_at(idx);
-        let var = var.trim();
-        let val = val[2..].trim().trim_matches('\'').trim_matches('"');
+    // If we can't parse the marker at all, be inclusive (don't silently drop packages)
+    true
+}
 
-        return match var {
-            "platform_machine" => platform_machine != val,
-            "sys_platform" => sys_platform != val,
-            "platform_system" => platform_system != val,
-            _ => true, // Unknown marker variable - conservatively return true
-        };
-    }
-
-    // If we can't parse the marker, conservatively return false
-    false
+/// Detect the runtime Python version as a MAJOR.MINOR string (e.g. `"3.11"`).
+///
+/// The result is cached in a `OnceLock` so the subprocess is only spawned once per process.
+/// If Python cannot be detected, returns `"3.0"` as a conservative inclusive fallback.
+fn get_python_version() -> &'static str {
+    static PYTHON_VERSION: OnceLock<String> = OnceLock::new();
+    PYTHON_VERSION.get_or_init(|| {
+        for cmd in &["python3", "python"] {
+            let Ok(output) = std::process::Command::new(cmd).arg("--version").output() else {
+                continue;
+            };
+            if !output.status.success() {
+                continue;
+            }
+            // Python 2 prints to stderr; Python 3 prints to stdout.
+            let raw = if output.stdout.is_empty() {
+                output.stderr
+            } else {
+                output.stdout
+            };
+            let text = String::from_utf8_lossy(&raw);
+            if let Some(ver) = text.trim().strip_prefix("Python ") {
+                let parts: Vec<&str> = ver.split('.').collect();
+                if parts.len() >= 2 {
+                    return format!("{}.{}", parts[0], parts[1]);
+                }
+            }
+        }
+        // Fallback: inclusive — do not silently drop packages.
+        "3.0".to_string()
+    })
 }
 
 /// Get the platform machine architecture (e.g., 'x86_64', 'arm64', 'i386').
@@ -993,5 +1057,87 @@ mod tests {
 
         assert_eq!(req.name, "package");
         assert!(req.marker.is_some());
+    }
+
+    #[test]
+    fn test_parse_requirement_plain_marker_no_version() {
+        // "requests; python_version < '4.0'" — no version spec, just a marker
+        let req = Requirement::from_str("requests; python_version < '4.0'").unwrap();
+        assert_eq!(req.name, "requests");
+        assert_eq!(req.spec, VersionSpec::Any);
+        assert_eq!(req.marker, Some("python_version < '4.0'".to_string()));
+    }
+
+    #[test]
+    fn test_python_version_marker_applies() {
+        // python_version < '4.0' should apply (Python 4 doesn't exist yet)
+        let req = Requirement::from_str("requests; python_version < '4.0'").unwrap();
+        assert!(
+            req.marker_applies(),
+            "python_version < '4.0' should apply since Python 4 does not exist"
+        );
+
+        // python_version >= '3.0' should apply (we're always on Python 3+)
+        let req2 = Requirement::from_str("requests; python_version >= '3.0'").unwrap();
+        assert!(
+            req2.marker_applies(),
+            "python_version >= '3.0' should apply"
+        );
+
+        // python_version < '2.0' should NOT apply (Python 2 is ancient; detected version is 3.x+)
+        let req3 = Requirement::from_str("requests; python_version < '2.0'").unwrap();
+        assert!(
+            !req3.marker_applies(),
+            "python_version < '2.0' should not apply on any supported Python 3.x host"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_resolve_skips_non_applicable_platform_markers() {
+        let mut index = InMemoryIndex::default();
+        index.add("requests", "2.28.0", Vec::<String>::new());
+
+        // A requirement targeting a fake arch that never matches
+        let req =
+            Requirement::from_str("requests; platform_machine == 'nonexistent_arch_xyz'").unwrap();
+        assert!(!req.marker_applies(), "sanity: marker must not apply");
+
+        let resolution = resolve(vec![req], &index).await.unwrap();
+        assert!(
+            resolution.packages.is_empty(),
+            "packages with non-applicable markers should not be resolved; got: {:?}",
+            resolution.packages.keys().collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_resolve_includes_applicable_markers() {
+        let mut index = InMemoryIndex::default();
+        index.add("requests", "2.28.0", Vec::<String>::new());
+
+        // No marker — always included
+        let req = Requirement::from_str("requests>=2.0").unwrap();
+        assert!(req.marker_applies());
+
+        let resolution = resolve(vec![req], &index).await.unwrap();
+        assert!(
+            resolution.packages.contains_key("requests"),
+            "requirements without markers must be resolved"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_resolve_python_version_marker_inclusive() {
+        let mut index = InMemoryIndex::default();
+        index.add("requests", "2.28.0", Vec::<String>::new());
+
+        // python_version < '4.0' applies on all current Python hosts (Python 4 does not exist)
+        let req = Requirement::from_str("requests; python_version < '4.0'").unwrap();
+
+        let resolution = resolve(vec![req], &index).await.unwrap();
+        assert!(
+            resolution.packages.contains_key("requests"),
+            "requests with python_version < '4.0' marker should be resolved"
+        );
     }
 }

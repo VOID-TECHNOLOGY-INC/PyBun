@@ -319,7 +319,6 @@ impl PyPiClient {
         let deps = dependencies
             .iter()
             .filter_map(|d| Requirement::from_str(d).ok())
-            .filter(|req| req.marker_applies()) // Filter out dependencies with non-matching markers
             .collect::<Vec<_>>();
         let artifacts = PackageArtifacts {
             wheels: pkg
