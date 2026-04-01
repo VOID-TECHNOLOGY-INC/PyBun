@@ -81,3 +81,42 @@ async fn download_detects_signature_mismatch_even_when_checksum_matches() {
         "tampered file should be removed after verification failure"
     );
 }
+
+#[tokio::test]
+async fn download_rejects_placeholder_checksum() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut buf = [0u8; 1024];
+        let _ = socket.read(&mut buf).await;
+        let body = b"placeholder";
+        let response = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len());
+        socket.write_all(response.as_bytes()).await.unwrap();
+        socket.write_all(body).await.unwrap();
+    });
+
+    let temp = tempdir().unwrap();
+    let dest = temp.path().join("artifact.whl");
+
+    let downloader = Downloader::new();
+    let result = downloader
+        .download_file(
+            &format!("http://{}", addr),
+            &dest,
+            Some("sha256:placeholder"),
+        )
+        .await;
+    server.abort();
+    let _ = server.await;
+
+    let error = result.expect_err("placeholder checksum should be rejected");
+    assert!(
+        matches!(error, DownloadError::MissingChecksum { .. }),
+        "expected missing checksum failure, got {error:?}"
+    );
+    assert!(
+        !dest.exists(),
+        "placeholder checksum should not leave downloaded file behind"
+    );
+}

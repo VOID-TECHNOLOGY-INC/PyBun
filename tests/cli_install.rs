@@ -111,6 +111,14 @@ fn index_wheels_path() -> std::path::PathBuf {
         .join("index_wheels.json")
 }
 
+fn index_missing_hash_path() -> std::path::PathBuf {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("manifest dir");
+    std::path::Path::new(&manifest_dir)
+        .join("tests")
+        .join("fixtures")
+        .join("index_missing_hash.json")
+}
+
 fn expected_native_wheel() -> String {
     if cfg!(target_os = "macos") && cfg!(target_arch = "aarch64") {
         "native-wheels-1.0.0-cp311-cp311-macosx_11_0_arm64.whl".into()
@@ -254,6 +262,32 @@ fn install_with_compatible_release_specifier() {
     let lock = Lockfile::load_from_path(&lock_path).expect("lock loads");
     let lib = lock.packages.get("lib").expect("lib entry");
     assert_eq!(lib.version, "1.4.5", "~=1.4.0 should select 1.4.5");
+}
+
+#[test]
+fn install_fails_when_selected_artifact_is_missing_hash() {
+    let temp = tempdir().unwrap();
+    let lock_path = temp.path().join("pybun.lockb");
+    let index = index_missing_hash_path();
+
+    bin()
+        .args([
+            "install",
+            "--index",
+            index.to_str().unwrap(),
+            "--require",
+            "app==1.0.0",
+            "--lock",
+            lock_path.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stdout(predicates::str::contains("missing sha256"));
+
+    assert!(
+        !lock_path.exists(),
+        "install should fail before writing an unverifiable lockfile"
+    );
 }
 
 #[test]
@@ -567,18 +601,17 @@ fn install_warns_and_errors_when_no_wheel_matches() {
     assert!(
         diagnostics.iter().any(|d| {
             d["level"] == "error"
+                && d["code"] == "E_VERIFY_MISSING_HASH"
                 && d["message"]
                     .as_str()
-                    .map(|m| m.contains("require source builds"))
+                    .map(|m| m.contains("missing sha256"))
                     .unwrap_or(false)
         }),
-        "should emit error diagnostic about missing wheels: {stdout}"
+        "should emit error diagnostic about unverifiable source artifact: {stdout}"
     );
 
-    let lock = Lockfile::load_from_path(&lock_path).expect("lock loads");
-    let pkg = lock.packages.get("source-only").expect("entry exists");
     assert!(
-        pkg.wheel.ends_with(".tar.gz"),
-        "fallback should lock to source artifact"
+        !lock_path.exists(),
+        "install should fail before writing an unverifiable source artifact lockfile"
     );
 }

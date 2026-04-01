@@ -50,3 +50,36 @@ print("hello")
     assert!(lock.packages.contains_key("lib-b"));
     assert!(lock.packages.contains_key("lib-c"));
 }
+
+#[test]
+fn lock_script_fails_when_selected_artifact_is_missing_hash() {
+    let temp = tempdir().unwrap();
+    let script = temp.path().join("example.py");
+    let content = r#"# /// script
+# dependencies = ["app==1.0.0"]
+# ///
+print("hello")
+"#;
+    fs::write(&script, content).unwrap();
+
+    let index_path = PathBuf::from("tests/fixtures/index_missing_hash.json");
+    let lock_path = script_lock_path(&script);
+
+    bin()
+        .args([
+            "--format=json",
+            "lock",
+            "--script",
+            script.to_str().unwrap(),
+            "--index",
+            index_path.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("missing sha256"));
+
+    assert!(
+        !lock_path.exists(),
+        "lock should fail before writing an unverifiable lockfile"
+    );
+}

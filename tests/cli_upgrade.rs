@@ -179,3 +179,86 @@ dependencies = [
         .stdout(predicate::str::contains("pkg-a 1.0.0 -> 2.0.0"))
         .stdout(predicate::str::contains("pkg-b").not()); // pkg-b should NOT be mentioned/upgraded
 }
+
+#[test]
+fn upgrade_fails_when_new_artifact_is_missing_hash() {
+    let temp = TempDir::new().unwrap();
+    let project_root = temp.path();
+
+    fs::write(
+        project_root.join("pyproject.toml"),
+        r#"
+[project]
+name = "test-project"
+version = "0.1.0"
+dependencies = [
+    "pkg-a>=1.0.0"
+]
+"#,
+    )
+    .unwrap();
+
+    let index_v1 = r#"[
+  {
+    "name": "pkg-a",
+    "version": "1.0.0",
+    "dependencies": [],
+    "wheels": [
+      {
+        "file": "pkg_a-1.0.0-py3-none-any.whl",
+        "hash": "sha256:hash1"
+      }
+    ]
+  }
+]"#;
+    let index_path = project_root.join("index.json");
+    fs::write(&index_path, index_v1).unwrap();
+
+    bin()
+        .current_dir(project_root)
+        .arg("install")
+        .arg("--index")
+        .arg(&index_path)
+        .assert()
+        .success();
+
+    let before = fs::read(project_root.join("pybun.lockb")).unwrap();
+
+    let index_v2_missing_hash = r#"[
+  {
+    "name": "pkg-a",
+    "version": "1.0.0",
+    "dependencies": [],
+    "wheels": [
+      {
+        "file": "pkg_a-1.0.0-py3-none-any.whl",
+        "hash": "sha256:hash1"
+      }
+    ]
+  },
+  {
+    "name": "pkg-a",
+    "version": "2.0.0",
+    "dependencies": [],
+    "wheels": [
+      {
+        "file": "pkg_a-2.0.0-py3-none-any.whl"
+      }
+    ]
+  }
+]"#;
+    fs::write(&index_path, index_v2_missing_hash).unwrap();
+
+    bin()
+        .current_dir(project_root)
+        .args(["upgrade", "--index", index_path.to_str().unwrap()])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("missing sha256"));
+
+    let after = fs::read(project_root.join("pybun.lockb")).unwrap();
+    assert_eq!(
+        before, after,
+        "upgrade should keep the existing lockfile when verification fails"
+    );
+}
