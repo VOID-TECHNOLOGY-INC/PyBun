@@ -1,6 +1,7 @@
 use assert_cmd::Command;
 use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
+use pybun::lockfile::{Lockfile, PackageSource};
 use std::fs;
 use tempfile::TempDir;
 
@@ -178,6 +179,96 @@ dependencies = [
         .success()
         .stdout(predicate::str::contains("pkg-a 1.0.0 -> 2.0.0"))
         .stdout(predicate::str::contains("pkg-b").not()); // pkg-b should NOT be mentioned/upgraded
+}
+
+#[test]
+fn upgrade_with_local_index_preserves_registry_source_url() {
+    let temp = TempDir::new().unwrap();
+    let project_root = temp.path();
+
+    fs::write(
+        project_root.join("pyproject.toml"),
+        r#"
+[project]
+name = "test-project"
+version = "0.1.0"
+dependencies = [
+    "pkg-a>=1.0.0"
+]
+"#,
+    )
+    .unwrap();
+
+    let index_path = project_root.join("index.json");
+    fs::write(
+        &index_path,
+        r#"[
+  {
+    "name": "pkg-a",
+    "version": "1.0.0",
+    "dependencies": [],
+    "wheels": [
+      {
+        "file": "pkg_a-1.0.0-py3-none-any.whl",
+        "hash": "sha256:hash1"
+      }
+    ]
+  }
+]"#,
+    )
+    .unwrap();
+
+    bin()
+        .current_dir(project_root)
+        .args(["install", "--index", index_path.to_str().unwrap()])
+        .assert()
+        .success();
+
+    fs::write(
+        &index_path,
+        r#"[
+  {
+    "name": "pkg-a",
+    "version": "1.0.0",
+    "dependencies": [],
+    "wheels": [
+      {
+        "file": "pkg_a-1.0.0-py3-none-any.whl",
+        "hash": "sha256:hash1"
+      }
+    ]
+  },
+  {
+    "name": "pkg-a",
+    "version": "2.0.0",
+    "dependencies": [],
+    "wheels": [
+      {
+        "file": "pkg_a-2.0.0-py3-none-any.whl",
+        "hash": "sha256:hash2"
+      }
+    ]
+  }
+]"#,
+    )
+    .unwrap();
+
+    bin()
+        .current_dir(project_root)
+        .args(["upgrade", "--index", index_path.to_str().unwrap()])
+        .assert()
+        .success();
+
+    let lock = Lockfile::load_from_path(project_root.join("pybun.lockb")).unwrap();
+    let pkg = lock.packages.get("pkg-a").expect("pkg-a in lockfile");
+    assert_eq!(pkg.version, "2.0.0");
+    match &pkg.source {
+        PackageSource::Registry { index, url } => {
+            assert_eq!(index, "pypi");
+            assert_eq!(url, &index_path.display().to_string());
+        }
+        other => panic!("expected registry source, got {other:?}"),
+    }
 }
 
 #[test]

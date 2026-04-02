@@ -1226,10 +1226,7 @@ async fn install(
         lock.add_package(Package {
             name: pkg.name.clone(),
             version: pkg.version.clone(),
-            source: PackageSource::Registry {
-                index: "pypi".into(),
-                url: "https://pypi.org/simple".into(),
-            },
+            source: registry_source_for_index(&source_index_url),
             wheel: selection.filename,
             hash: verified_hash,
             dependencies: pkg.dependencies.iter().map(ToString::to_string).collect(),
@@ -1423,13 +1420,15 @@ struct LockOutcome {
 
 fn is_missing_sha256(hash: Option<&str>) -> bool {
     match hash {
-        Some(value) => {
-            let normalized = value.trim();
-            normalized.is_empty()
-                || normalized == "placeholder"
-                || normalized == "sha256:placeholder"
-        }
+        Some(value) => crate::security::is_placeholder_hash(value),
         None => true,
+    }
+}
+
+fn registry_source_for_index(index_url: &str) -> PackageSource {
+    PackageSource::Registry {
+        index: "pypi".into(),
+        url: index_url.to_string(),
     }
 }
 
@@ -1653,10 +1652,7 @@ async fn lock_dependencies(args: &LockArgs, collector: &mut EventCollector) -> R
         lock.add_package(Package {
             name: pkg.name.clone(),
             version: pkg.version.clone(),
-            source: PackageSource::Registry {
-                index: "pypi".into(),
-                url: "https://pypi.org/simple".into(),
-            },
+            source: registry_source_for_index(&source_index_url),
             wheel: selection.filename,
             hash: verified_hash,
             dependencies: pkg.dependencies.iter().map(ToString::to_string).collect(),
@@ -5535,10 +5531,7 @@ async fn run_upgrade(args: &UpgradeArgs, collector: &mut EventCollector) -> Resu
             source: pkg
                 .source
                 .clone()
-                .unwrap_or_else(|| PackageSource::Registry {
-                    index: "https://pypi.org/simple".to_string(),
-                    url: String::new(),
-                }),
+                .unwrap_or_else(|| registry_source_for_index(&source_index_url)),
             wheel: wheel_name,
             hash,
             dependencies: pkg.dependencies.iter().map(|r| r.to_string()).collect(),

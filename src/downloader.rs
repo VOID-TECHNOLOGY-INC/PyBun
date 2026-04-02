@@ -129,7 +129,7 @@ impl Downloader {
         signature: Option<&SignatureSpec>,
     ) -> Result<PathBuf, DownloadError> {
         if let Some(expected) = checksum
-            && checksum_is_missing(expected)
+            && crate::security::is_placeholder_hash(expected)
         {
             let _ = tokio::fs::remove_file(destination).await;
             return Err(DownloadError::MissingChecksum {
@@ -213,7 +213,7 @@ impl Downloader {
     }
 
     async fn verify_checksum(&self, path: &Path, expected: &str) -> Result<(), DownloadError> {
-        if checksum_is_missing(expected) {
+        if crate::security::is_placeholder_hash(expected) {
             let _ = fs::remove_file(path).await;
             return Err(DownloadError::MissingChecksum {
                 path: path.to_path_buf(),
@@ -303,9 +303,4 @@ impl Downloader {
 
         stream.buffer_unordered(concurrency).collect().await
     }
-}
-
-fn checksum_is_missing(expected: &str) -> bool {
-    let normalized = expected.trim();
-    normalized.is_empty() || normalized == "placeholder" || normalized == "sha256:placeholder"
 }
