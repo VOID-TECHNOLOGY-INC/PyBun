@@ -92,7 +92,7 @@ class TestStrings:
 def create_test_suite(tmp: Path, num_files: int = 10, tests_per_file: int = 10) -> Path:
     """Create a test suite with specified number of files and tests."""
     tests_dir = tmp / "tests"
-    tests_dir.mkdir(exist_ok=True)
+    tests_dir.mkdir(parents=True, exist_ok=True)
     
     for i in range(num_files):
         test_file = tests_dir / f"test_module_{i:03d}.py"
@@ -227,6 +227,7 @@ def test_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
                 result.tool = "pytest"
                 results.append(result)
                 print(f"  pytest: {result.duration_ms:.2f}ms")
+
         
         # unittest
         if python_path:
