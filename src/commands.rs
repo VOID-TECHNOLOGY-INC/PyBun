@@ -228,7 +228,9 @@ pub async fn execute(cli: Cli) -> Result<()> {
                     )
                 }
                 Err(e) => {
-                    collector.error(e.to_string());
+                    if !collector.has_diagnostics() {
+                        collector.error(e.to_string());
+                    }
                     (
                         "lock".to_string(),
                         RenderDetail::error(

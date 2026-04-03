@@ -151,6 +151,7 @@ fn install_conflict_outputs_conflict_tree_diagnostics_in_json() {
 
     assert_eq!(parsed["status"], "error");
     let diags = parsed["diagnostics"].as_array().expect("diagnostics array");
+    assert_eq!(diags.len(), 1, "expected one structured diagnostic");
     assert!(
         diags
             .iter()

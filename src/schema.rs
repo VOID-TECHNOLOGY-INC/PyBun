@@ -439,6 +439,10 @@ impl EventCollector {
         self.diagnostics.push(Diagnostic::warning(message));
     }
 
+    pub fn has_diagnostics(&self) -> bool {
+        !self.diagnostics.is_empty()
+    }
+
     /// Record an info diagnostic
     pub fn info(&mut self, message: impl Into<String>) {
         self.diagnostics.push(Diagnostic::info(message));
