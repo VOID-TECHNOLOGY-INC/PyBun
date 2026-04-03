@@ -1542,10 +1542,18 @@ fn emit_lockfile_verification_drift(lockfile: &Lockfile, collector: &mut EventCo
 }
 
 async fn lock_dependencies(args: &LockArgs, collector: &mut EventCollector) -> Result<LockOutcome> {
-    let script_path = args
-        .script
-        .as_ref()
-        .ok_or_else(|| eyre!("--script is required for locking"))?;
+    let Some(script_path) = args.script.as_ref() else {
+        collector.diagnostic(Diagnostic {
+            level: crate::schema::DiagnosticLevel::Error,
+            code: Some("E_LOCK_SCRIPT_REQUIRED".to_string()),
+            message: "--script is required for locking".to_string(),
+            file: None,
+            line: None,
+            suggestion: Some("Usage: pybun lock --script <path/to/script.py>".to_string()),
+            context: None,
+        });
+        return Err(eyre!("--script is required for locking"));
+    };
 
     if !script_path.exists() {
         return Err(eyre!("script not found: {}", script_path.display()));

@@ -213,6 +213,40 @@ fn install_missing_hash_outputs_verification_diagnostic_in_json() {
 }
 
 #[test]
+fn lock_missing_script_outputs_diagnostics_in_json() {
+    let output = bin()
+        .args(["--format=json", "lock"])
+        .assert()
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+
+    let stdout = String::from_utf8(output).expect("utf8");
+    let parsed: Value = serde_json::from_str(&stdout).expect("json output");
+
+    assert_eq!(parsed["status"], "error");
+    assert_eq!(
+        parsed["detail"]["error"],
+        "--script is required for locking"
+    );
+    let diags = parsed["diagnostics"].as_array().expect("diagnostics array");
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.get("code") == Some(&Value::from("E_LOCK_SCRIPT_REQUIRED"))),
+        "expected E_LOCK_SCRIPT_REQUIRED diagnostic code"
+    );
+    assert!(
+        diags.iter().any(|d| d
+            .get("suggestion")
+            .and_then(Value::as_str)
+            .is_some_and(|hint| hint.contains("--script"))),
+        "expected usage suggestion for missing --script"
+    );
+}
+
+#[test]
 fn upgrade_outputs_drift_warning_for_placeholder_hash_lockfiles() {
     let temp = tempdir().unwrap();
     let index_path = temp.path().join("index.json");
