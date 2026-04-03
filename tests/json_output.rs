@@ -226,7 +226,10 @@ fn lock_missing_script_outputs_diagnostics_in_json() {
     let parsed: Value = serde_json::from_str(&stdout).expect("json output");
 
     assert_eq!(parsed["status"], "error");
-    assert_eq!(parsed["detail"]["error"], "--script is required for locking");
+    assert_eq!(
+        parsed["detail"]["error"],
+        "--script is required for locking"
+    );
     let diags = parsed["diagnostics"].as_array().expect("diagnostics array");
     assert!(
         diags
