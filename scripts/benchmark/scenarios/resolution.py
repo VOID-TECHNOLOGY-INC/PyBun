@@ -122,6 +122,55 @@ dependencies = [
 '''
 
 
+def extract_dependencies(pyproject_content: str) -> list[str]:
+    """Extract project dependencies from the benchmark pyproject fixture."""
+    lines: list[str] = []
+    in_deps = False
+    for line in pyproject_content.split("\n"):
+        if "dependencies = [" in line:
+            in_deps = True
+            continue
+        if in_deps:
+            if "]" in line:
+                break
+            dep = line.strip().strip('",')
+            if dep:
+                lines.append(dep)
+    return lines
+
+
+def write_resolution_script(tmp: Path, pyproject_content: str) -> Path:
+    """Create a PEP 723 script that resolves dependencies without install work."""
+    script_path = tmp / "benchmark.py"
+    dependencies = extract_dependencies(pyproject_content)
+    dependency_lines = "\n".join(f'#   "{dependency}",' for dependency in dependencies)
+    script_path.write_text(
+        "\n".join(
+            [
+                "# /// script",
+                '# requires-python = ">=3.9"',
+                "# dependencies = [",
+                dependency_lines,
+                "# ]",
+                "# ///",
+                'print("benchmark")',
+                "",
+            ]
+        )
+    )
+    return script_path
+
+
+def build_pybun_resolution_command(
+    pybun_path: str,
+    tmp: Path,
+    pyproject_content: str,
+) -> list[str]:
+    """Return the closest valid public PyBun command for B1 resolution timing."""
+    script_path = write_resolution_script(tmp, pyproject_content)
+    return [pybun_path, "lock", "--script", str(script_path), "--format=json"]
+
+
 def resolution_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
     """Run dependency resolution benchmarks."""
     results: list[BenchResult] = []
@@ -161,7 +210,7 @@ def resolution_benchmark(config: dict, scenario_config: dict, base_dir: Path) ->
             
             # PyBun resolve
             if pybun_path:
-                cmd = [pybun_path, "install", "--dry-run", "--format=json"]
+                cmd = build_pybun_resolution_command(pybun_path, tmp, pyproject_content)
                 if dry_run:
                     print(f"  Would run: {' '.join(cmd)}")
                 else:
@@ -184,21 +233,7 @@ def resolution_benchmark(config: dict, scenario_config: dict, base_dir: Path) ->
             if uv_path:
                 # Create requirements.in for uv
                 req_in = tmp / "requirements.in"
-                # Extract dependencies from pyproject
-                lines = []
-                in_deps = False
-                for line in pyproject_content.split("\n"):
-                    if "dependencies = [" in line:
-                        in_deps = True
-                        continue
-                    if in_deps:
-                        if "]" in line:
-                            break
-                        # Extract dependency
-                        dep = line.strip().strip('",')
-                        if dep:
-                            lines.append(dep)
-                req_in.write_text("\n".join(lines))
+                req_in.write_text("\n".join(extract_dependencies(pyproject_content)))
                 
                 cmd = [uv_path, "pip", "compile", str(req_in), "-o", "/dev/null", "--quiet"]
                 if dry_run:
@@ -224,19 +259,7 @@ def resolution_benchmark(config: dict, scenario_config: dict, base_dir: Path) ->
             if pip_compile:
                 req_in = tmp / "requirements.in"
                 if not req_in.exists():
-                    lines = []
-                    in_deps = False
-                    for line in pyproject_content.split("\n"):
-                        if "dependencies = [" in line:
-                            in_deps = True
-                            continue
-                        if in_deps:
-                            if "]" in line:
-                                break
-                            dep = line.strip().strip('",')
-                            if dep:
-                                lines.append(dep)
-                    req_in.write_text("\n".join(lines))
+                    req_in.write_text("\n".join(extract_dependencies(pyproject_content)))
                 
                 cmd = [pip_compile, str(req_in), "-o", "/dev/null", "--quiet"]
                 if dry_run:
@@ -294,7 +317,7 @@ def resolution_benchmark(config: dict, scenario_config: dict, base_dir: Path) ->
         pyproject.write_text(CONFLICT_PYPROJECT)
         
         if pybun_path:
-            cmd = [pybun_path, "install", "--dry-run", "--format=json"]
+            cmd = build_pybun_resolution_command(pybun_path, tmp, CONFLICT_PYPROJECT)
             if dry_run:
                 print(f"  Would run: {' '.join(cmd)}")
             else:
@@ -340,7 +363,7 @@ def resolution_benchmark(config: dict, scenario_config: dict, base_dir: Path) ->
         
         if pybun_path:
             # First run (cold)
-            cmd = [pybun_path, "install", "--dry-run", "--format=json"]
+            cmd = build_pybun_resolution_command(pybun_path, tmp, MEDIUM_PROJECT_PYPROJECT)
             if dry_run:
                 print(f"  Would run: {' '.join(cmd)} (cold)")
             else:
