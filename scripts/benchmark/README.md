@@ -31,6 +31,8 @@ python bench.py --list
 | B7 | test | テスト実行のベンチマーク |
 | B8 | mcp | MCP/JSON出力のベンチマーク |
 
+`B8` の MCP 計測は 1 サンプルごとに `pybun mcp serve --stdio` を 1 回だけ起動し、同じ stdio セッション内で `initialize` と `tools/call` を連続実行します。成功判定は JSON-RPC の到達有無ではなく、`tools/call` の実際の結果 (`isError` / tool payload) に基づきます。
+
 ## ディレクトリ構造
 
 ```
