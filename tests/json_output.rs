@@ -123,32 +123,6 @@ fn install_error_outputs_diagnostics_in_json() {
 }
 
 #[test]
-fn lock_without_script_outputs_error_diagnostic_in_json() {
-    let output = bin()
-        .args(["lock", "--format", "json"])
-        .assert()
-        .failure()
-        .get_output()
-        .stdout
-        .clone();
-
-    let stdout = String::from_utf8(output).expect("utf8");
-    let parsed: Value = serde_json::from_str(&stdout).expect("json output");
-
-    assert_eq!(parsed["status"], "error");
-    assert_eq!(parsed["detail"]["error"], "--script is required for locking");
-
-    let diags = parsed["diagnostics"].as_array().expect("diagnostics array");
-    assert!(
-        diags.iter().any(|d| {
-            d.get("level") == Some(&Value::from("error"))
-                && d.get("message") == Some(&Value::from("--script is required for locking"))
-        }),
-        "expected missing --script error in diagnostics"
-    );
-}
-
-#[test]
 fn install_conflict_outputs_conflict_tree_diagnostics_in_json() {
     let temp = tempdir().unwrap();
     let lock_path = temp.path().join("pybun.lockb");
@@ -252,6 +226,7 @@ fn lock_missing_script_outputs_diagnostics_in_json() {
     let parsed: Value = serde_json::from_str(&stdout).expect("json output");
 
     assert_eq!(parsed["status"], "error");
+    assert_eq!(parsed["detail"]["error"], "--script is required for locking");
     let diags = parsed["diagnostics"].as_array().expect("diagnostics array");
     assert!(
         diags
