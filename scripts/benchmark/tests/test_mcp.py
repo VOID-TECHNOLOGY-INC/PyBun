@@ -1,5 +1,6 @@
 import json
 import sys
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -16,16 +17,28 @@ mcp_scenario.BenchResult = bench.BenchResult
 class FakeStdout:
     def __init__(self) -> None:
         self._lines: list[str] = []
+        self._closed = False
+        self._condition = threading.Condition()
 
     def push(self, line: str) -> None:
         if not line.endswith("\n"):
             line = f"{line}\n"
-        self._lines.append(line)
+        with self._condition:
+            self._lines.append(line)
+            self._condition.notify_all()
+
+    def close(self) -> None:
+        with self._condition:
+            self._closed = True
+            self._condition.notify_all()
 
     def readline(self) -> str:
-        if self._lines:
-            return self._lines.pop(0)
-        return ""
+        with self._condition:
+            while not self._lines and not self._closed:
+                self._condition.wait(timeout=0.1)
+            if self._lines:
+                return self._lines.pop(0)
+            return ""
 
 
 class FakeStdin:
@@ -48,6 +61,7 @@ class FakeStdin:
     def close(self) -> None:
         self.closed = True
         self._process.closed = True
+        self._process.stdout.close()
 
 
 class FakeProcess:
@@ -70,13 +84,16 @@ class FakeProcess:
         return self.returncode
 
     def wait(self, timeout: float | None = None) -> int:
+        self.stdout.close()
         self.returncode = 0
         return 0
 
     def terminate(self) -> None:
+        self.stdout.close()
         self.returncode = 0
 
     def kill(self) -> None:
+        self.stdout.close()
         self.returncode = -9
 
 

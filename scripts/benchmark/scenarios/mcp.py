@@ -12,11 +12,11 @@ Scenarios:
 
 from __future__ import annotations
 
-import io
 import json
-import select
+import queue
 import subprocess
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -75,6 +75,18 @@ def tool_response_error(response: dict | None) -> str | None:
     return None
 
 
+def _enqueue_stdout_lines(stream, output_lines: queue.Queue[str | None]) -> None:
+    """Continuously read stdout lines from the MCP process into a queue."""
+    try:
+        while True:
+            line = stream.readline()
+            if line == "":
+                break
+            output_lines.put(line)
+    finally:
+        output_lines.put(None)
+
+
 class McpStdioSession:
     """Line-oriented stdio client for a single MCP server process."""
 
@@ -88,6 +100,17 @@ class McpStdioSession:
             bufsize=1,
         )
         self._pending: dict[str, dict] = {}
+        self._stdout_lines: queue.Queue[str | None] = queue.Queue()
+
+        if self._proc.stdout is not None:
+            self._reader = threading.Thread(
+                target=_enqueue_stdout_lines,
+                args=(self._proc.stdout, self._stdout_lines),
+                daemon=True,
+            )
+            self._reader.start()
+        else:
+            self._reader = None
 
     def __enter__(self) -> "McpStdioSession":
         return self
@@ -162,22 +185,13 @@ class McpStdioSession:
         return None
 
     def _readline_with_timeout(self, timeout: float) -> str | None:
-        if self._proc.stdout is None:
+        try:
+            line = self._stdout_lines.get(timeout=timeout)
+        except queue.Empty:
             return None
 
-        fileno = getattr(self._proc.stdout, "fileno", None)
-        if callable(fileno):
-            try:
-                ready, _, _ = select.select([self._proc.stdout], [], [], timeout)
-            except (OSError, ValueError, io.UnsupportedOperation):
-                ready = None
-            if ready == []:
-                return None
-
-        line = self._proc.stdout.readline()
-        if line == "":
-            if self._proc.poll() is not None:
-                return None
+        if line is None:
+            return None
         return line
 
 
