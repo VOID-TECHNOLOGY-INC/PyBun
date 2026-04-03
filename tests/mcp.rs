@@ -70,6 +70,35 @@ fn mcp_serve_starts_server_stdio_mode() {
 }
 
 #[test]
+fn mcp_serve_stdio_clean_shutdown_emits_no_stdout() {
+    let temp = tempdir().unwrap();
+
+    let mut child = pybun_bin()
+        .env("PYBUN_HOME", temp.path())
+        .args(["mcp", "serve", "--stdio"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to start MCP server");
+
+    // Closing stdin should trigger a clean shutdown without any trailing CLI output
+    drop(child.stdin.take());
+
+    let output = child.wait_with_output().expect("failed to wait on child");
+
+    assert!(
+        output.status.success(),
+        "expected clean stdio shutdown to succeed"
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "clean stdio shutdown should not emit non-protocol stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
+#[test]
 fn mcp_serve_responds_to_initialize() {
     let temp = tempdir().unwrap();
 

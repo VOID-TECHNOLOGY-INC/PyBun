@@ -227,15 +227,18 @@ pub async fn execute(cli: Cli) -> Result<()> {
                         ),
                     )
                 }
-                Err(e) => (
-                    "lock".to_string(),
-                    RenderDetail::error(
-                        e.to_string(),
-                        json!({
-                            "error": e.to_string(),
-                        }),
-                    ),
-                ),
+                Err(e) => {
+                    collector.error(e.to_string());
+                    (
+                        "lock".to_string(),
+                        RenderDetail::error(
+                            e.to_string(),
+                            json!({
+                                "error": e.to_string(),
+                            }),
+                        ),
+                    )
+                }
             }
         }
         Commands::Run(args) => {
@@ -427,13 +430,7 @@ pub async fn execute(cli: Cli) -> Result<()> {
                             RenderDetail::error(e.to_string(), json!({"error": e.to_string()})),
                         )
                     } else {
-                        (
-                            "mcp serve".to_string(),
-                            RenderDetail::with_json(
-                                "MCP server stopped",
-                                json!({"status": "stopped", "mode": "stdio"}),
-                            ),
-                        )
+                        ("mcp serve".to_string(), RenderDetail::silent())
                     }
                 } else {
                     // HTTP mode (not yet implemented)
@@ -696,7 +693,9 @@ pub async fn execute(cli: Cli) -> Result<()> {
     );
 
     progress.finish();
-    println!("{rendered}");
+    if !rendered.is_empty() {
+        println!("{rendered}");
+    }
 
     // Exit with error code if command failed
     if is_error {
@@ -715,6 +714,10 @@ fn render(
     diagnostics: Vec<Diagnostic>,
     trace_id: Option<String>,
 ) -> String {
+    if detail.silent {
+        return String::new();
+    }
+
     match format {
         OutputFormat::Text => {
             if detail.raw_text {
@@ -1541,10 +1544,18 @@ fn emit_lockfile_verification_drift(lockfile: &Lockfile, collector: &mut EventCo
 }
 
 async fn lock_dependencies(args: &LockArgs, collector: &mut EventCollector) -> Result<LockOutcome> {
-    let script_path = args
-        .script
-        .as_ref()
-        .ok_or_else(|| eyre!("--script is required for locking"))?;
+    let Some(script_path) = args.script.as_ref() else {
+        collector.diagnostic(Diagnostic {
+            level: crate::schema::DiagnosticLevel::Error,
+            code: Some("E_LOCK_SCRIPT_REQUIRED".to_string()),
+            message: "--script is required for locking".to_string(),
+            file: None,
+            line: None,
+            suggestion: Some("Usage: pybun lock --script <path/to/script.py>".to_string()),
+            context: None,
+        });
+        return Err(eyre!("--script is required for locking"));
+    };
 
     if !script_path.exists() {
         return Err(eyre!("script not found: {}", script_path.display()));
@@ -1684,6 +1695,7 @@ struct RenderDetail {
     json: Value,
     is_error: bool,
     raw_text: bool,
+    silent: bool,
 }
 
 impl RenderDetail {
@@ -1693,6 +1705,7 @@ impl RenderDetail {
             json,
             is_error: false,
             raw_text: false,
+            silent: false,
         }
     }
 
@@ -1702,6 +1715,7 @@ impl RenderDetail {
             json,
             is_error: true,
             raw_text: false,
+            silent: false,
         }
     }
 
@@ -1711,6 +1725,17 @@ impl RenderDetail {
             json,
             is_error: false,
             raw_text: true,
+            silent: false,
+        }
+    }
+
+    fn silent() -> Self {
+        Self {
+            text: String::new(),
+            json: Value::Null,
+            is_error: false,
+            raw_text: true,
+            silent: true,
         }
     }
 }
