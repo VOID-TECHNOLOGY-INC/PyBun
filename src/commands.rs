@@ -77,6 +77,8 @@ pub async fn execute(cli: Cli) -> Result<()> {
                     summary,
                     packages,
                     lockfile,
+                    verified,
+                    artifacts,
                 }) => {
                     collector.event(EventType::InstallComplete);
                     (
@@ -86,6 +88,8 @@ pub async fn execute(cli: Cli) -> Result<()> {
                             json!({
                                 "lockfile": lockfile.display().to_string(),
                                 "packages": packages,
+                                "verified": verified,
+                                "artifacts": artifacts,
                             }),
                         ),
                     )
@@ -206,6 +210,8 @@ pub async fn execute(cli: Cli) -> Result<()> {
                     summary,
                     lockfile,
                     packages,
+                    verified,
+                    artifacts,
                 }) => {
                     collector.event(EventType::InstallComplete);
                     (
@@ -215,6 +221,8 @@ pub async fn execute(cli: Cli) -> Result<()> {
                             json!({
                                 "lockfile": lockfile.display().to_string(),
                                 "packages": packages,
+                                "verified": verified,
+                                "artifacts": artifacts,
                             }),
                         ),
                     )
@@ -1146,11 +1154,15 @@ async fn install(
             summary: format!("no dependencies to install -> {}", args.lock.display()),
             packages: vec![],
             lockfile: args.lock.clone(),
+            verified: true,
+            artifacts: Vec::new(),
         });
     }
 
+    let source_index_url: String;
     let offline = args.offline;
     let resolution = if let Some(index_path) = args.index.clone() {
+        source_index_url = index_path.display().to_string();
         let index = load_index_from_path(&index_path).map_err(|e| eyre!(e))?;
         match resolve(requirements.clone(), &index).await {
             Ok(r) => r,
@@ -1164,10 +1176,10 @@ async fn install(
     } else {
         let client = PyPiClient::from_env(offline)
             .map_err(|e| eyre!("failed to init pypi client: {}", e))?;
+        source_index_url = client.index_url();
         collector.info(format!(
             "Using PyPI index {} (offline: {})",
-            client.index_url(),
-            offline
+            source_index_url, offline
         ));
         let index = PyPiIndex::new(client);
         match resolve(requirements.clone(), &index).await {
@@ -1195,6 +1207,7 @@ async fn install(
                 .unwrap_or_else(|| "unknown".to_string()),
         ],
     );
+    let mut verified_artifacts = Vec::new();
     for pkg in resolution.packages.values() {
         let selection = select_artifact_for_platform(pkg, &platform_tags);
         if selection.from_source {
@@ -1207,18 +1220,15 @@ async fn install(
             eprintln!("warning: {}", message);
             collector.warning(message);
         }
+        let (verified_hash, artifact) =
+            ensure_selection_is_verifiable(pkg, &selection, collector, &source_index_url)?;
+        verified_artifacts.push(artifact);
         lock.add_package(Package {
             name: pkg.name.clone(),
             version: pkg.version.clone(),
-            source: PackageSource::Registry {
-                index: "pypi".into(),
-                url: "https://pypi.org/simple".into(),
-            },
+            source: registry_source_for_index(&source_index_url),
             wheel: selection.filename,
-            hash: selection
-                .hash
-                .clone()
-                .unwrap_or_else(|| "sha256:placeholder".into()),
+            hash: verified_hash,
             dependencies: pkg.dependencies.iter().map(ToString::to_string).collect(),
         });
     }
@@ -1277,6 +1287,8 @@ async fn install(
         ),
         packages: lock.packages.keys().cloned().collect(),
         lockfile: args.lock.clone(),
+        verified: true,
+        artifacts: verified_artifacts,
     };
 
     if download_items.is_empty() {
@@ -1393,6 +1405,8 @@ struct InstallOutcome {
     summary: String,
     packages: Vec<String>,
     lockfile: PathBuf,
+    verified: bool,
+    artifacts: Vec<Value>,
 }
 
 #[derive(Debug)]
@@ -1400,6 +1414,129 @@ struct LockOutcome {
     summary: String,
     lockfile: PathBuf,
     packages: Vec<String>,
+    verified: bool,
+    artifacts: Vec<Value>,
+}
+
+fn is_missing_sha256(hash: Option<&str>) -> bool {
+    match hash {
+        Some(value) => crate::security::is_placeholder_hash(value),
+        None => true,
+    }
+}
+
+fn registry_source_for_index(index_url: &str) -> PackageSource {
+    PackageSource::Registry {
+        index: "pypi".into(),
+        url: index_url.to_string(),
+    }
+}
+
+fn verification_artifact_value(
+    pkg: &crate::resolver::ResolvedPackage,
+    selection: &crate::resolver::ArtifactSelection,
+    index_url: &str,
+    verified_hash: &str,
+) -> Value {
+    json!({
+        "package": pkg.name,
+        "version": pkg.version,
+        "sha256": verified_hash,
+        "index_url": index_url,
+        "artifact_url": selection.url,
+        "platform_tag": selection.matched_platform,
+        "filename": selection.filename,
+        "from_source": selection.from_source,
+    })
+}
+
+fn missing_hash_diagnostic(
+    pkg: &crate::resolver::ResolvedPackage,
+    selection: &crate::resolver::ArtifactSelection,
+    index_url: &str,
+) -> Diagnostic {
+    Diagnostic {
+        level: crate::schema::DiagnosticLevel::Error,
+        code: Some("E_VERIFY_MISSING_HASH".to_string()),
+        message: format!(
+            "selected artifact for {} {} ({}) is missing sha256 verification metadata",
+            pkg.name, pkg.version, selection.filename
+        ),
+        file: None,
+        line: None,
+        suggestion: Some(
+            "use an index that provides sha256 digests, then rerun install/lock/upgrade"
+                .to_string(),
+        ),
+        context: Some(json!({
+            "package": pkg.name,
+            "version": pkg.version,
+            "filename": selection.filename,
+            "artifact_url": selection.url,
+            "index_url": index_url,
+            "platform_tag": selection.matched_platform,
+            "from_source": selection.from_source,
+        })),
+    }
+}
+
+fn ensure_selection_is_verifiable(
+    pkg: &crate::resolver::ResolvedPackage,
+    selection: &crate::resolver::ArtifactSelection,
+    collector: &mut EventCollector,
+    index_url: &str,
+) -> Result<(String, Value)> {
+    if is_missing_sha256(selection.hash.as_deref()) {
+        let diagnostic = missing_hash_diagnostic(pkg, selection, index_url);
+        let message = diagnostic.message.clone();
+        collector.diagnostic(diagnostic);
+        return Err(eyre!(message));
+    }
+
+    let verified_hash = selection
+        .hash
+        .clone()
+        .expect("hash must be present after strict verification");
+    Ok((
+        verified_hash.clone(),
+        verification_artifact_value(pkg, selection, index_url, &verified_hash),
+    ))
+}
+
+fn emit_lockfile_verification_drift(lockfile: &Lockfile, collector: &mut EventCollector) {
+    let drifted_packages: Vec<Value> = lockfile
+        .packages
+        .values()
+        .filter(|pkg| is_missing_sha256(Some(&pkg.hash)))
+        .map(|pkg| {
+            json!({
+                "package": pkg.name,
+                "version": pkg.version,
+                "filename": pkg.wheel,
+                "hash": pkg.hash,
+            })
+        })
+        .collect();
+
+    if drifted_packages.is_empty() {
+        return;
+    }
+
+    collector.diagnostic(Diagnostic {
+        level: crate::schema::DiagnosticLevel::Warning,
+        code: Some("W_LOCK_PLACEHOLDER_HASH".to_string()),
+        message: format!(
+            "existing lockfile contains {} package(s) without verified hashes",
+            drifted_packages.len()
+        ),
+        file: None,
+        line: None,
+        suggestion: Some(
+            "rerun 'pybun install' or 'pybun lock' with an index that provides sha256 digests"
+                .to_string(),
+        ),
+        context: Some(json!({ "packages": drifted_packages })),
+    });
 }
 
 async fn lock_dependencies(args: &LockArgs, collector: &mut EventCollector) -> Result<LockOutcome> {
@@ -1441,11 +1578,15 @@ async fn lock_dependencies(args: &LockArgs, collector: &mut EventCollector) -> R
             summary: format!("no dependencies to lock -> {}", lock_path.display()),
             lockfile: lock_path,
             packages: Vec::new(),
+            verified: true,
+            artifacts: Vec::new(),
         });
     }
 
+    let source_index_url: String;
     let offline = args.offline;
     let resolution = if let Some(index_path) = args.index.clone() {
+        source_index_url = index_path.display().to_string();
         let index = load_index_from_path(&index_path).map_err(|e| eyre!(e))?;
         match resolve(requirements.clone(), &index).await {
             Ok(r) => r,
@@ -1459,10 +1600,10 @@ async fn lock_dependencies(args: &LockArgs, collector: &mut EventCollector) -> R
     } else {
         let client = PyPiClient::from_env(offline)
             .map_err(|e| eyre!("failed to init pypi client: {}", e))?;
+        source_index_url = client.index_url();
         collector.info(format!(
             "Using PyPI index {} (offline: {})",
-            client.index_url(),
-            offline
+            source_index_url, offline
         ));
         let index = PyPiIndex::new(client);
         match resolve(requirements.clone(), &index).await {
@@ -1491,6 +1632,7 @@ async fn lock_dependencies(args: &LockArgs, collector: &mut EventCollector) -> R
                 .unwrap_or_else(|| "unknown".to_string()),
         ],
     );
+    let mut verified_artifacts = Vec::new();
 
     for pkg in resolution.packages.values() {
         let selection = select_artifact_for_platform(pkg, &platform_tags);
@@ -1504,18 +1646,15 @@ async fn lock_dependencies(args: &LockArgs, collector: &mut EventCollector) -> R
             eprintln!("warning: {}", message);
             collector.warning(message);
         }
+        let (verified_hash, artifact) =
+            ensure_selection_is_verifiable(pkg, &selection, collector, &source_index_url)?;
+        verified_artifacts.push(artifact);
         lock.add_package(Package {
             name: pkg.name.clone(),
             version: pkg.version.clone(),
-            source: PackageSource::Registry {
-                index: "pypi".into(),
-                url: "https://pypi.org/simple".into(),
-            },
+            source: registry_source_for_index(&source_index_url),
             wheel: selection.filename,
-            hash: selection
-                .hash
-                .clone()
-                .unwrap_or_else(|| "sha256:placeholder".into()),
+            hash: verified_hash,
             dependencies: pkg.dependencies.iter().map(ToString::to_string).collect(),
         });
     }
@@ -1530,6 +1669,8 @@ async fn lock_dependencies(args: &LockArgs, collector: &mut EventCollector) -> R
         ),
         lockfile: lock_path,
         packages: lock.packages.keys().cloned().collect(),
+        verified: true,
+        artifacts: verified_artifacts,
     })
 }
 
@@ -5293,12 +5434,17 @@ async fn run_upgrade(args: &UpgradeArgs, collector: &mut EventCollector) -> Resu
             json!({
                 "upgraded": [],
                 "dry_run": args.dry_run,
+                "verified": true,
+                "artifacts": [],
             }),
         ));
     }
 
     // Load current lockfile if exists (for partial updates and comparison)
     let current_lock = Lockfile::load_from_path(&lock_path).ok();
+    if let Some(lockfile) = &current_lock {
+        emit_lockfile_verification_drift(lockfile, collector);
+    }
 
     // Prepare requirements
     let mut requirements: Vec<Requirement> = Vec::new();
@@ -5343,12 +5489,15 @@ async fn run_upgrade(args: &UpgradeArgs, collector: &mut EventCollector) -> Resu
     collector.event(EventType::ResolveStart);
 
     // Re-resolve dependencies
+    let source_index_url: String;
     let resolution = if let Some(index_path) = &args.index {
+        source_index_url = index_path.display().to_string();
         let index = load_index_from_path(index_path)?;
         resolve(requirements.clone(), &index).await?
     } else {
         let pypi_client = PyPiClient::from_env(args.offline)
             .map_err(|e| eyre!("failed to create PyPI client: {}", e))?;
+        source_index_url = pypi_client.index_url();
         let pypi_index = PyPiIndex::new(pypi_client);
         resolve(requirements.clone(), &pypi_index).await?
     };
@@ -5356,6 +5505,7 @@ async fn run_upgrade(args: &UpgradeArgs, collector: &mut EventCollector) -> Resu
     collector.event(EventType::ResolveComplete);
 
     let mut upgraded_packages: Vec<Value> = Vec::new();
+    let mut verification_artifacts: Vec<Value> = Vec::new();
     let platform_tags = current_platform_tags();
 
     // Use an empty lockfile if none exists for comparison base
@@ -5371,12 +5521,9 @@ async fn run_upgrade(args: &UpgradeArgs, collector: &mut EventCollector) -> Resu
     for (pkg_name, pkg) in &resolution.packages {
         let selection = select_artifact_for_platform(pkg, &platform_tags);
         let wheel_name = selection.filename.clone();
-
-        // Use real hash if available, otherwise placeholder
-        let hash = selection
-            .hash
-            .clone()
-            .unwrap_or_else(|| "sha256:placeholder".to_string());
+        let (hash, artifact) =
+            ensure_selection_is_verifiable(pkg, &selection, collector, &source_index_url)?;
+        verification_artifacts.push(artifact);
 
         let new_pkg = Package {
             name: pkg.name.clone(),
@@ -5384,10 +5531,7 @@ async fn run_upgrade(args: &UpgradeArgs, collector: &mut EventCollector) -> Resu
             source: pkg
                 .source
                 .clone()
-                .unwrap_or_else(|| PackageSource::Registry {
-                    index: "https://pypi.org/simple".to_string(),
-                    url: String::new(),
-                }),
+                .unwrap_or_else(|| registry_source_for_index(&source_index_url)),
             wheel: wheel_name,
             hash,
             dependencies: pkg.dependencies.iter().map(|r| r.to_string()).collect(),
@@ -5475,6 +5619,8 @@ async fn run_upgrade(args: &UpgradeArgs, collector: &mut EventCollector) -> Resu
             "upgraded": upgraded_packages,
             "dry_run": args.dry_run,
             "lockfile": lock_path.display().to_string(),
+            "verified": true,
+            "artifacts": verification_artifacts,
         }),
     ))
 }

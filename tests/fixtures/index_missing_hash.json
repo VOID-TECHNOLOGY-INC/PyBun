@@ -1,0 +1,22 @@
+[
+  {
+    "name": "app",
+    "version": "1.0.0",
+    "dependencies": ["dep==1.0.0"],
+    "wheels": [
+      {
+        "file": "app-1.0.0-py3-none-any.whl"
+      }
+    ]
+  },
+  {
+    "name": "dep",
+    "version": "1.0.0",
+    "dependencies": [],
+    "wheels": [
+      {
+        "file": "dep-1.0.0-py3-none-any.whl"
+      }
+    ]
+  }
+]

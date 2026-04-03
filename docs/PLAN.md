@@ -10,7 +10,7 @@
 このPLANは「実装計画」中心で、各PRの項目が **"MVPの土台（stub/preview）まで含めて[DONE]"** になっている箇所があります。  
 直近の実装状況（`src/commands.rs`, `src/hot_reload.rs`, `src/mcp.rs`）に照らすと、次のフォローアップが必要です（= **大きな設計変更は不要だが、実装を"本物"にする段階**）。
 
-- **Installer/Lock**: ✅ `pybun install` は `pyproject.toml` から依存関係を読み込む通常フローに対応。`--require` と `--index` も引き続き使用可能（`--require` 指定時はpyprojectより優先）。lockfileの `wheel/hash` は placeholder が残っており、将来の `--verify`/再現性の前提が未整備。
+- **Installer/Lock**: ✅ `pybun install` は `pyproject.toml` から依存関係を読み込む通常フローに対応。`--require` と `--index` も引き続き使用可能（`--require` 指定時はpyprojectより優先）。`install` / `lock` / `upgrade` は lock 生成時に placeholder hash を拒否し、成功JSONに検証済み artifact 情報を含める。旧 lockfile の placeholder hash は `upgrade` 時に drift warning を出す。
 - **Runner (PEP 723)**: ✅ dependencies 解析・自動インストール・cache 再利用を実装。`uv run` 委譲とネイティブ経路を切替可能。`run` 側の `--offline` 経路は今後の拡張余地あり。
 - **Hot Reload**: ✅ `native-watch` feature 有効時は macOS/Linux でネイティブ監視が実動。標準ビルド（feature無効）では preview 表示が中心で、fallback 監視実装が未完。
 - **Tester**: ⚠️ AST discovery/診断は実装済みだが、実行本体は現状 pytest/unittest ラッパー中心。`test_executor` / `snapshot` はモジュールとして存在するが CLI 本線への統合が未完。
@@ -26,10 +26,11 @@
   - Depends on: PR6.5（manifest/signature metadata）。
   - Current: `src/self_update.rs` を追加し、asset download / checksum+signature verify（ed25519 + minisign）/ archive extract / atomic binary swap / rollback を実装。`src/commands.rs` の `self update` 非 dry-run 経路を実更新へ切り替え、JSON detail に `update_applied` / `rollback_performed` / `install_path` / `error` を追加。テスト用に `PYBUN_SELF_UPDATE_BIN`（更新対象バイナリ上書き）と `PYBUN_SELF_UPDATE_TEST_FAIL_SWAP`（ロールバック検証用 failpoint）を導入。
   - Tests: `cargo test --test self_update`（13件, 成功系/署名不一致/swap失敗ロールバックを含む）、`cargo test --test e2e_general --test self_update`、`cargo test --test json_schema self_update_stub_json`、`cargo test --lib self_update::tests::`、`cargo clippy --all-targets --all-features -- -D warnings`、`cargo fmt -- --check`、`cargo build --release`、`PATH=$(pwd)/target/release:$PATH python3 scripts/benchmark/bench.py -s run --format markdown`。
-- PR-A2: lock/hash の完全性担保と `--verify` 強制モード
+- [DONE] PR-A2: lock/hash の完全性担保と `--verify` 強制モード
   - Goal: `sha256:placeholder` を lock 生成経路から排除し、検証不能 artifact を受け入れない。
   - Depends on: PR1.2/PR5.3（artifact metadata と downloader）。
-  - Tests: hash欠落時の失敗、改ざん検知、`install/lock/upgrade` 全経路で実hash生成。
+  - Current: `src/commands.rs` に strict verification helper を追加し、`install` / `lock` / `upgrade` が lockfile 保存前に artifact hash を検証するよう変更。hash 欠落時は `E_VERIFY_MISSING_HASH` 診断を JSON envelope に載せて失敗し、成功時は `verified` / `artifacts` を detail に含める。`upgrade` は旧 lockfile 内の placeholder hash を `W_LOCK_PLACEHOLDER_HASH` で通知。`src/downloader.rs` も placeholder checksum を `MissingChecksum` として拒否。
+  - Tests: `tests/cli_install.rs`（hash欠落 install failure, source-only failure semantics 更新）, `tests/cli_lock.rs`（hash欠落 lock failure）, `tests/cli_upgrade.rs`（hash欠落 upgrade failure + lockfile non-mutation）, `tests/json_output.rs`（`E_VERIFY_MISSING_HASH`, `W_LOCK_PLACEHOLDER_HASH`, verified artifact detail）, `tests/security_features.rs`（placeholder checksum rejection）, `tests/pypi_integration.rs`（real wheel digests へ更新）, `cargo test`, `cargo test --test '*'`, `just lint`, `cargo audit`, `cargo deny check licenses`, `cargo build --release`, `PATH=$(pwd)/target/release:$PATH python3 scripts/benchmark/bench.py -s run --format markdown`.
 
 ### P1 (GA Hardening)
 - [DONE] PR-A3b: MCP tool expansion — agentic development tools (Issue #111)

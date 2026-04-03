@@ -5,6 +5,7 @@ use pybun::lockfile::Lockfile;
 use pybun::pypi::{PyPiClient, PyPiIndex};
 use pybun::resolver::PackageIndex;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -37,6 +38,12 @@ fn wheel_bytes() -> Vec<u8> {
     cursor.into_inner()
 }
 
+fn wheel_sha256() -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(wheel_bytes());
+    hex::encode(hasher.finalize())
+}
+
 fn mock_download(server: &MockServer, filename: &str) {
     let path = format!("/files/{}", filename);
     let body = wheel_bytes();
@@ -50,6 +57,7 @@ fn mock_download(server: &MockServer, filename: &str) {
 
 fn setup_package_mocks(server: &MockServer) -> String {
     let base = server.base_url();
+    let wheel_sha256 = wheel_sha256();
 
     let project_body = json!({
         "info": { "name": "app", "version": "1.0.0" },
@@ -60,7 +68,7 @@ fn setup_package_mocks(server: &MockServer) -> String {
                     "packagetype": "bdist_wheel",
                     "url": format!("{}/files/app-1.0.0-py3-none-any.whl", base),
                     "yanked": false,
-                    "digests": { "sha256": "placeholder" }
+                    "digests": { "sha256": wheel_sha256 }
                 },
                 {
                     "filename": "app-1.0.0.tar.gz",
@@ -107,7 +115,7 @@ fn setup_package_mocks(server: &MockServer) -> String {
                     "packagetype": "bdist_wheel",
                     "url": format!("{}/files/dep-2.0.0-py3-none-any.whl", base),
                     "yanked": false,
-                    "digests": { "sha256": "placeholder" }
+                    "digests": { "sha256": wheel_sha256 }
                 }
             ]
         }
@@ -149,6 +157,7 @@ async fn concurrent_metadata_fetch_is_deduped() {
     let cache_dir = temp.path().join("cache");
     let server = MockServer::start();
     let base = server.base_url();
+    let wheel_sha256 = wheel_sha256();
 
     let project_body = json!({
         "info": { "name": "app", "version": "1.0.0" },
@@ -159,7 +168,7 @@ async fn concurrent_metadata_fetch_is_deduped() {
                     "packagetype": "bdist_wheel",
                     "url": format!("{}/files/app-1.0.0-py3-none-any.whl", base),
                     "yanked": false,
-                    "digests": { "sha256": "placeholder" }
+                    "digests": { "sha256": wheel_sha256 }
                 }
             ]
         }
@@ -231,6 +240,7 @@ fn install_does_not_prefetch_all_version_metadata() {
     let server = MockServer::start();
     let base = server.base_url();
     let venv = ensure_venv(temp.path());
+    let wheel_sha256 = wheel_sha256();
 
     let project_body = json!({
         "info": { "name": "app", "version": "2.0.0" },
@@ -241,7 +251,7 @@ fn install_does_not_prefetch_all_version_metadata() {
                     "packagetype": "bdist_wheel",
                     "url": format!("{}/files/app-1.0.0-py3-none-any.whl", base),
                     "yanked": false,
-                    "digests": { "sha256": "placeholder" }
+                    "digests": { "sha256": wheel_sha256 }
                 }
             ],
             "2.0.0": [
@@ -250,7 +260,7 @@ fn install_does_not_prefetch_all_version_metadata() {
                     "packagetype": "bdist_wheel",
                     "url": format!("{}/files/app-2.0.0-py3-none-any.whl", base),
                     "yanked": false,
-                    "digests": { "sha256": "placeholder" }
+                    "digests": { "sha256": wheel_sha256 }
                 }
             ]
         }
@@ -427,6 +437,7 @@ fn install_uses_fresh_cache_without_network() {
     let server = MockServer::start();
     let base = server.base_url();
     let venv = ensure_venv(temp.path());
+    let wheel_sha256 = wheel_sha256();
 
     let project_body = json!({
         "info": { "name": "app", "version": "1.0.0" },
@@ -437,7 +448,7 @@ fn install_uses_fresh_cache_without_network() {
                     "packagetype": "bdist_wheel",
                     "url": format!("{}/files/app-1.0.0-py3-none-any.whl", base),
                     "yanked": false,
-                    "digests": { "sha256": "placeholder" }
+                    "digests": { "sha256": wheel_sha256 }
                 }
             ]
         }

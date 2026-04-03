@@ -2,21 +2,45 @@
   {
     "name": "app",
     "version": "1.0.0",
-    "dependencies": ["lib>=1.0.0"]
+    "dependencies": ["lib>=1.0.0"],
+    "wheels": [
+      {
+        "file": "app-1.0.0-py3-none-any.whl",
+        "hash": "sha256:app100"
+      }
+    ]
   },
   {
     "name": "lib",
     "version": "1.0.0",
-    "dependencies": []
+    "dependencies": [],
+    "wheels": [
+      {
+        "file": "lib-1.0.0-py3-none-any.whl",
+        "hash": "sha256:lib100"
+      }
+    ]
   },
   {
     "name": "lib",
     "version": "1.5.0",
-    "dependencies": []
+    "dependencies": [],
+    "wheels": [
+      {
+        "file": "lib-1.5.0-py3-none-any.whl",
+        "hash": "sha256:lib150"
+      }
+    ]
   },
   {
     "name": "lib",
     "version": "2.0.0",
-    "dependencies": []
+    "dependencies": [],
+    "wheels": [
+      {
+        "file": "lib-2.0.0-py3-none-any.whl",
+        "hash": "sha256:lib200"
+      }
+    ]
   }
 ]

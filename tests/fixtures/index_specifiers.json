@@ -2,76 +2,91 @@
   {
     "name": "root-max",
     "version": "1.0.0",
-    "dependencies": ["lib<=2.0.0"]
+    "dependencies": ["lib<=2.0.0"],
+    "wheels": [{"file": "root-max-1.0.0-py3-none-any.whl", "hash": "sha256:rootmax100"}]
   },
   {
     "name": "root-max-excl",
     "version": "1.0.0",
-    "dependencies": ["lib<2.0.0"]
+    "dependencies": ["lib<2.0.0"],
+    "wheels": [{"file": "root-max-excl-1.0.0-py3-none-any.whl", "hash": "sha256:rootmaxexcl100"}]
   },
   {
     "name": "root-min-excl",
     "version": "1.0.0",
-    "dependencies": ["lib>1.0.0"]
+    "dependencies": ["lib>1.0.0"],
+    "wheels": [{"file": "root-min-excl-1.0.0-py3-none-any.whl", "hash": "sha256:rootminexcl100"}]
   },
   {
     "name": "root-not-eq",
     "version": "1.0.0",
-    "dependencies": ["lib!=1.5.0"]
+    "dependencies": ["lib!=1.5.0"],
+    "wheels": [{"file": "root-not-eq-1.0.0-py3-none-any.whl", "hash": "sha256:rootnoteq100"}]
   },
   {
     "name": "root-compat",
     "version": "1.0.0",
-    "dependencies": ["lib~=1.4.0"]
+    "dependencies": ["lib~=1.4.0"],
+    "wheels": [{"file": "root-compat-1.0.0-py3-none-any.whl", "hash": "sha256:rootcompat100"}]
   },
   {
     "name": "root-numpy",
     "version": "1.0.0",
-    "dependencies": ["numpy<2.4"]
+    "dependencies": ["numpy<2.4"],
+    "wheels": [{"file": "root-numpy-1.0.0-py3-none-any.whl", "hash": "sha256:rootnumpy100"}]
   },
   {
     "name": "numpy",
     "version": "2.3.5",
-    "dependencies": []
+    "dependencies": [],
+    "wheels": [{"file": "numpy-2.3.5-py3-none-any.whl", "hash": "sha256:numpy235"}]
   },
   {
     "name": "numpy",
     "version": "2.4.0",
-    "dependencies": []
+    "dependencies": [],
+    "wheels": [{"file": "numpy-2.4.0-py3-none-any.whl", "hash": "sha256:numpy240"}]
   },
   {
     "name": "lib",
     "version": "1.0.0",
-    "dependencies": []
+    "dependencies": [],
+    "wheels": [{"file": "lib-1.0.0-py3-none-any.whl", "hash": "sha256:lib100"}]
   },
   {
     "name": "lib",
     "version": "1.4.0",
-    "dependencies": []
+    "dependencies": [],
+    "wheels": [{"file": "lib-1.4.0-py3-none-any.whl", "hash": "sha256:lib140"}]
   },
   {
     "name": "lib",
     "version": "1.4.5",
-    "dependencies": []
+    "dependencies": [],
+    "wheels": [{"file": "lib-1.4.5-py3-none-any.whl", "hash": "sha256:lib145"}]
   },
   {
     "name": "lib",
     "version": "1.5.0",
-    "dependencies": []
+    "dependencies": [],
+    "wheels": [{"file": "lib-1.5.0-py3-none-any.whl", "hash": "sha256:lib150"}]
   },
   {
     "name": "lib",
     "version": "1.9.0",
-    "dependencies": []
+    "dependencies": [],
+    "wheels": [{"file": "lib-1.9.0-py3-none-any.whl", "hash": "sha256:lib190"}]
   },
   {
     "name": "lib",
     "version": "2.0.0",
-    "dependencies": []
+    "dependencies": [],
+    "wheels": [{"file": "lib-2.0.0-py3-none-any.whl", "hash": "sha256:lib200"}]
   },
   {
     "name": "lib",
     "version": "2.1.0",
-    "dependencies": []
+    "dependencies": [],
+    "wheels": [{"file": "lib-2.1.0-py3-none-any.whl", "hash": "sha256:lib210"}]
   }
 ]

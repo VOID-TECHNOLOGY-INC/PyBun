@@ -86,3 +86,23 @@ pub fn sha256_and_rewind(file: &mut File) -> std::io::Result<String> {
     file.rewind()?;
     Ok(format!("{:x}", hasher.finalize()))
 }
+
+/// Check if a hash string is missing usable SHA-256 metadata.
+pub fn is_placeholder_hash(hash: &str) -> bool {
+    let normalized = hash.trim();
+    normalized.is_empty() || normalized == "placeholder" || normalized == "sha256:placeholder"
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_placeholder_hash;
+
+    #[test]
+    fn placeholder_hashes_are_rejected() {
+        assert!(is_placeholder_hash(""));
+        assert!(is_placeholder_hash("  "));
+        assert!(is_placeholder_hash("placeholder"));
+        assert!(is_placeholder_hash(" sha256:placeholder "));
+        assert!(!is_placeholder_hash("sha256:deadbeef"));
+    }
+}

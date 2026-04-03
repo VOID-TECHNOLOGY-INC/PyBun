@@ -48,6 +48,8 @@ pub enum DownloadError {
     Network(String),
     #[error("io error: {0}")]
     Io(String),
+    #[error("missing checksum for {path}: {checksum}")]
+    MissingChecksum { path: PathBuf, checksum: String },
     #[error("checksum mismatch for {path}: expected {expected}, got {actual}")]
     ChecksumMismatch {
         expected: String,
@@ -126,6 +128,16 @@ impl Downloader {
         checksum: Option<&str>,
         signature: Option<&SignatureSpec>,
     ) -> Result<PathBuf, DownloadError> {
+        if let Some(expected) = checksum
+            && crate::security::is_placeholder_hash(expected)
+        {
+            let _ = tokio::fs::remove_file(destination).await;
+            return Err(DownloadError::MissingChecksum {
+                path: destination.to_path_buf(),
+                checksum: expected.to_string(),
+            });
+        }
+
         let max_retries = 3;
         let mut attempt = 0;
 
@@ -201,9 +213,12 @@ impl Downloader {
     }
 
     async fn verify_checksum(&self, path: &Path, expected: &str) -> Result<(), DownloadError> {
-        // If expected is placeholder, skip verification
-        if expected == "sha256:placeholder" || expected == "placeholder" {
-            return Ok(());
+        if crate::security::is_placeholder_hash(expected) {
+            let _ = fs::remove_file(path).await;
+            return Err(DownloadError::MissingChecksum {
+                path: path.to_path_buf(),
+                checksum: expected.to_string(),
+            });
         }
         // Handle "sha256:" prefix
         let expected_clean = expected.strip_prefix("sha256:").unwrap_or(expected);
