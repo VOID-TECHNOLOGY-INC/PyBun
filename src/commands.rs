@@ -427,13 +427,10 @@ pub async fn execute(cli: Cli) -> Result<()> {
                             RenderDetail::error(e.to_string(), json!({"error": e.to_string()})),
                         )
                     } else {
-                        (
-                            "mcp serve".to_string(),
-                            RenderDetail::with_json(
-                                "MCP server stopped",
-                                json!({"status": "stopped", "mode": "stdio"}),
-                            ),
-                        )
+                        // stdio mode: stdout is the MCP protocol channel.
+                        // Do not print anything after the session ends to
+                        // avoid corrupting the stream with non-JSON text.
+                        ("mcp serve".to_string(), RenderDetail::silent())
                     }
                 } else {
                     // HTTP mode (not yet implemented)
@@ -696,7 +693,9 @@ pub async fn execute(cli: Cli) -> Result<()> {
     );
 
     progress.finish();
-    println!("{rendered}");
+    if let Some(output) = rendered {
+        println!("{output}");
+    }
 
     // Exit with error code if command failed
     if is_error {
@@ -714,8 +713,11 @@ fn render(
     events: Vec<Event>,
     diagnostics: Vec<Diagnostic>,
     trace_id: Option<String>,
-) -> String {
-    match format {
+) -> Option<String> {
+    if detail.silent {
+        return None;
+    }
+    Some(match format {
         OutputFormat::Text => {
             if detail.raw_text {
                 detail.text
@@ -736,7 +738,7 @@ fn render(
             envelope.trace_id = trace_id;
             envelope.to_json()
         }
-    }
+    })
 }
 
 fn stub_detail(message: String, payload: Value) -> RenderDetail {
@@ -1680,6 +1682,10 @@ struct RenderDetail {
     json: Value,
     is_error: bool,
     raw_text: bool,
+    /// When true, produce no stdout output at all. Used for MCP stdio mode
+    /// where stdout is the protocol channel and must not be polluted after
+    /// the session ends.
+    silent: bool,
 }
 
 impl RenderDetail {
@@ -1689,6 +1695,7 @@ impl RenderDetail {
             json,
             is_error: false,
             raw_text: false,
+            silent: false,
         }
     }
 
@@ -1698,6 +1705,7 @@ impl RenderDetail {
             json,
             is_error: true,
             raw_text: false,
+            silent: false,
         }
     }
 
@@ -1707,6 +1715,20 @@ impl RenderDetail {
             json,
             is_error: false,
             raw_text: true,
+            silent: false,
+        }
+    }
+
+    /// Produces no stdout output. Used when the command has already written
+    /// its own output to stdout (e.g. MCP stdio mode) and the render layer
+    /// must stay silent.
+    fn silent() -> Self {
+        Self {
+            text: String::new(),
+            json: json!({}),
+            is_error: false,
+            raw_text: false,
+            silent: true,
         }
     }
 }
