@@ -122,46 +122,93 @@ dependencies = [
 '''
 
 
+def extract_dependencies(pyproject_content: str) -> list[str]:
+    """Extract project dependencies from the benchmark pyproject fixture."""
+    lines: list[str] = []
+    in_deps = False
+    for line in pyproject_content.split("\n"):
+        if "dependencies = [" in line:
+            in_deps = True
+            continue
+        if in_deps:
+            if "]" in line:
+                break
+            dep = line.strip().strip('",')
+            if dep:
+                lines.append(dep)
+    return lines
+
+
+def write_resolution_script(tmp: Path, pyproject_content: str) -> Path:
+    """Create a PEP 723 script that resolves dependencies without install work."""
+    script_path = tmp / "benchmark.py"
+    dependencies = extract_dependencies(pyproject_content)
+    dependency_lines = "\n".join(f'#   "{dependency}",' for dependency in dependencies)
+    script_path.write_text(
+        "\n".join(
+            [
+                "# /// script",
+                '# requires-python = ">=3.9"',
+                "# dependencies = [",
+                dependency_lines,
+                "# ]",
+                "# ///",
+                'print("benchmark")',
+                "",
+            ]
+        )
+    )
+    return script_path
+
+
+def build_pybun_resolution_command(
+    pybun_path: str,
+    tmp: Path,
+    pyproject_content: str,
+) -> list[str]:
+    """Return the closest valid public PyBun command for B1 resolution timing."""
+    script_path = write_resolution_script(tmp, pyproject_content)
+    return [pybun_path, "lock", "--script", str(script_path), "--format=json"]
+
+
 def resolution_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
     """Run dependency resolution benchmarks."""
     results: list[BenchResult] = []
-    
+
     general = config.get("general", {})
     iterations = general.get("iterations", 5)
     warmup = general.get("warmup", 1)
     trim_ratio = scenario_config.get("trim_ratio", general.get("trim_ratio", 0.0))
     dry_run = config.get("dry_run", False)
     verbose = config.get("verbose", False)
-    
+
     # Find tools
     pybun_path = find_tool("pybun", config)
     uv_path = find_tool("uv", config) if is_tool_enabled("uv", config) else None
     pip_path = find_tool("pip", config) if is_tool_enabled("pip", config) else None
     poetry_path = find_tool("poetry", config) if is_tool_enabled("poetry", config) else None
-    
+
     fixtures = scenario_config.get("fixtures", ["small", "medium", "large"])
-    
+
     fixture_map = {
         "small": ("B1.1", SINGLE_PACKAGE_PYPROJECT, "single package"),
         "medium": ("B1.2", MEDIUM_PROJECT_PYPROJECT, "10 packages"),
         "large": ("B1.3", LARGE_PROJECT_PYPROJECT, "50+ packages"),
     }
-    
+
     for fixture_name in fixtures:
         if fixture_name not in fixture_map:
             continue
-        
+
         scenario_id, pyproject_content, description = fixture_map[fixture_name]
         print(f"\n--- {scenario_id}: {description} ---")
-        
+
         with tempfile.TemporaryDirectory(prefix=f"pybun_resolve_bench_{fixture_name}_") as tmpdir:
             tmp = Path(tmpdir)
-            pyproject = tmp / "pyproject.toml"
-            pyproject.write_text(pyproject_content)
-            
-            # PyBun resolve
+
+            # PyBun resolve via pybun lock --script <pep723_script>
             if pybun_path:
-                cmd = [pybun_path, "install", "--dry-run", "--format=json"]
+                cmd = build_pybun_resolution_command(pybun_path, tmp, pyproject_content)
                 if dry_run:
                     print(f"  Would run: {' '.join(cmd)}")
                 else:
@@ -179,27 +226,13 @@ def resolution_benchmark(config: dict, scenario_config: dict, base_dir: Path) ->
                     result.metadata["fixture"] = fixture_name
                     results.append(result)
                     print(f"  pybun: {result.duration_ms:.2f}ms")
-            
+
             # uv pip compile
             if uv_path:
                 # Create requirements.in for uv
                 req_in = tmp / "requirements.in"
-                # Extract dependencies from pyproject
-                lines = []
-                in_deps = False
-                for line in pyproject_content.split("\n"):
-                    if "dependencies = [" in line:
-                        in_deps = True
-                        continue
-                    if in_deps:
-                        if "]" in line:
-                            break
-                        # Extract dependency
-                        dep = line.strip().strip('",')
-                        if dep:
-                            lines.append(dep)
-                req_in.write_text("\n".join(lines))
-                
+                req_in.write_text("\n".join(extract_dependencies(pyproject_content)))
+
                 cmd = [uv_path, "pip", "compile", str(req_in), "-o", "/dev/null", "--quiet"]
                 if dry_run:
                     print(f"  Would run: {' '.join(cmd)}")
@@ -218,26 +251,14 @@ def resolution_benchmark(config: dict, scenario_config: dict, base_dir: Path) ->
                     result.metadata["fixture"] = fixture_name
                     results.append(result)
                     print(f"  uv: {result.duration_ms:.2f}ms")
-            
+
             # pip-compile (if pip-tools installed)
             pip_compile = find_tool("pip-compile", config)
             if pip_compile:
                 req_in = tmp / "requirements.in"
                 if not req_in.exists():
-                    lines = []
-                    in_deps = False
-                    for line in pyproject_content.split("\n"):
-                        if "dependencies = [" in line:
-                            in_deps = True
-                            continue
-                        if in_deps:
-                            if "]" in line:
-                                break
-                            dep = line.strip().strip('",')
-                            if dep:
-                                lines.append(dep)
-                    req_in.write_text("\n".join(lines))
-                
+                    req_in.write_text("\n".join(extract_dependencies(pyproject_content)))
+
                 cmd = [pip_compile, str(req_in), "-o", "/dev/null", "--quiet"]
                 if dry_run:
                     print(f"  Would run: {' '.join(cmd)}")
@@ -256,7 +277,7 @@ def resolution_benchmark(config: dict, scenario_config: dict, base_dir: Path) ->
                     result.metadata["fixture"] = fixture_name
                     results.append(result)
                     print(f"  pip-compile: {result.duration_ms:.2f}ms")
-            
+
             # poetry lock (slow, optional)
             if poetry_path:
                 # Poetry needs a different pyproject format
@@ -265,7 +286,7 @@ def resolution_benchmark(config: dict, scenario_config: dict, base_dir: Path) ->
                 poetry_content = pyproject_content.replace("[project]", "[tool.poetry]")
                 poetry_content = poetry_content.replace("requires-python", "python")
                 poetry_pyproject.write_text(poetry_content)
-                
+
                 cmd = [poetry_path, "lock", "--no-update"]
                 if dry_run:
                     print(f"  Would run: {' '.join(cmd)}")
@@ -284,17 +305,15 @@ def resolution_benchmark(config: dict, scenario_config: dict, base_dir: Path) ->
                     result.metadata["fixture"] = fixture_name
                     results.append(result)
                     print(f"  poetry: {result.duration_ms:.2f}ms")
-    
+
     # === B1.4: Conflict Resolution ===
     print("\n--- B1.4: Conflict Resolution ---")
-    
+
     with tempfile.TemporaryDirectory(prefix="pybun_resolve_conflict_") as tmpdir:
         tmp = Path(tmpdir)
-        pyproject = tmp / "pyproject.toml"
-        pyproject.write_text(CONFLICT_PYPROJECT)
-        
+
         if pybun_path:
-            cmd = [pybun_path, "install", "--dry-run", "--format=json"]
+            cmd = build_pybun_resolution_command(pybun_path, tmp, CONFLICT_PYPROJECT)
             if dry_run:
                 print(f"  Would run: {' '.join(cmd)}")
             else:
@@ -309,11 +328,11 @@ def resolution_benchmark(config: dict, scenario_config: dict, base_dir: Path) ->
                 result.tool = "pybun"
                 results.append(result)
                 print(f"  pybun: {result.duration_ms:.2f}ms")
-        
+
         if uv_path:
             req_in = tmp / "requirements.in"
             req_in.write_text("requests>=2.28.0,<2.30.0\nurllib3>=1.26.0,<2.0.0")
-            
+
             cmd = [uv_path, "pip", "compile", str(req_in), "-o", "/dev/null", "--quiet"]
             if dry_run:
                 print(f"  Would run: {' '.join(cmd)}")
@@ -329,18 +348,16 @@ def resolution_benchmark(config: dict, scenario_config: dict, base_dir: Path) ->
                 result.tool = "uv"
                 results.append(result)
                 print(f"  uv: {result.duration_ms:.2f}ms")
-    
+
     # === B1.5: Cached Re-resolution ===
     print("\n--- B1.5: Cached Re-resolution ---")
-    
+
     with tempfile.TemporaryDirectory(prefix="pybun_resolve_cache_") as tmpdir:
         tmp = Path(tmpdir)
-        pyproject = tmp / "pyproject.toml"
-        pyproject.write_text(MEDIUM_PROJECT_PYPROJECT)
-        
+
         if pybun_path:
             # First run (cold)
-            cmd = [pybun_path, "install", "--dry-run", "--format=json"]
+            cmd = build_pybun_resolution_command(pybun_path, tmp, MEDIUM_PROJECT_PYPROJECT)
             if dry_run:
                 print(f"  Would run: {' '.join(cmd)} (cold)")
             else:
@@ -355,7 +372,7 @@ def resolution_benchmark(config: dict, scenario_config: dict, base_dir: Path) ->
                 result.tool = "pybun"
                 results.append(result)
                 print(f"  pybun (cold): {result.duration_ms:.2f}ms")
-            
+
             # Second run (warm)
             if dry_run:
                 print(f"  Would run: {' '.join(cmd)} (warm)")
@@ -371,5 +388,5 @@ def resolution_benchmark(config: dict, scenario_config: dict, base_dir: Path) ->
                 result.tool = "pybun"
                 results.append(result)
                 print(f"  pybun (warm): {result.duration_ms:.2f}ms")
-    
+
     return results
