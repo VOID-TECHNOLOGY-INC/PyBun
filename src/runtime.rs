@@ -126,41 +126,58 @@ impl Platform {
 
 /// Detect the current macOS version as (major, minor).
 ///
+/// Uses `/usr/bin/sw_vers -productVersion` to read the version string.
+/// The patch component is intentionally ignored (only major.minor are relevant for wheel tags).
 /// Falls back to (11, 0) for ARM64 or (10, 9) for x86_64 if detection fails.
 #[cfg(target_os = "macos")]
 pub fn macos_version() -> (u32, u32) {
-    std::process::Command::new("sw_vers")
-        .arg("-productVersion")
-        .output()
-        .ok()
-        .and_then(|out| String::from_utf8(out.stdout).ok())
-        .and_then(|s| {
-            let parts: Vec<u32> = s.trim().split('.').filter_map(|p| p.parse().ok()).collect();
-            if parts.len() >= 2 {
-                Some((parts[0], parts[1]))
-            } else {
-                None
-            }
-        })
-        .unwrap_or({
-            #[cfg(target_arch = "aarch64")]
-            {
-                (11, 0)
-            }
-            #[cfg(not(target_arch = "aarch64"))]
-            {
-                (10, 9)
-            }
-        })
+    use std::sync::OnceLock;
+    static CACHED: OnceLock<(u32, u32)> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        parse_macos_version_str(
+            std::process::Command::new("/usr/bin/sw_vers")
+                .arg("-productVersion")
+                .output()
+                .ok()
+                .and_then(|out| String::from_utf8(out.stdout).ok())
+                .as_deref()
+                .unwrap_or(""),
+        )
+    })
+}
+
+/// Parse a macOS version string (e.g. "14.5", "10.15.7") into (major, minor).
+/// Exported for unit testing; production code uses `macos_version()`.
+#[cfg(target_os = "macos")]
+pub fn parse_macos_version_str(s: &str) -> (u32, u32) {
+    let parts: Vec<u32> = s.trim().split('.').filter_map(|p| p.parse().ok()).collect();
+    if parts.len() >= 2 {
+        (parts[0], parts[1])
+    } else {
+        #[cfg(target_arch = "aarch64")]
+        {
+            (11, 0)
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            (10, 9)
+        }
+    }
 }
 
 /// Generate PEP 425 macOS ARM64 wheel tags for a given macOS version.
 ///
-/// Produces `macosx_{major}_{minor}_arm64` and `macosx_{major}_{minor}_universal2`
-/// for all versions from `(cur_major, 0)` down to `(11, 0)` — the minimum for Apple Silicon.
+/// Produces `macosx_{major}_0_arm64` and `macosx_{major}_0_universal2`
+/// for all major versions from `cur_major` down to 11 (the minimum for Apple Silicon).
+///
+/// `_cur_minor` is accepted for API symmetry with the x86_64 variant but unused:
+/// Apple's packaging convention uses only `major_0` tags for macOS >= 11.
+///
+/// Values of `cur_major` below 11 are clamped up to 11 so that the function
+/// always emits at least `macosx_11_0_arm64` (ARM64 requires macOS 11+).
 pub fn pep425_macos_arm64_tags(cur_major: u32, _cur_minor: u32) -> Vec<String> {
     let mut tags = Vec::new();
-    // For macOS >= 11, only major_0 tags matter (Apple packaging convention)
+    // Apple Silicon requires macOS 11+; clamp upward if a value below 11 is passed.
     let max_major = cur_major.max(11);
     for major in (11..=max_major).rev() {
         tags.push(format!("macosx_{major}_0_arm64"));
@@ -180,7 +197,8 @@ pub fn pep425_macos_x86_64_tags(cur_major: u32, cur_minor: u32) -> Vec<String> {
         tags.push(format!("macosx_{major}_0_x86_64"));
         tags.push(format!("macosx_{major}_0_universal2"));
     }
-    // macOS 10.x: each minor from cur_minor (capped at 15) down to 9
+    // macOS 10.x: each minor from cur_minor (capped at 15) down to 9.
+    // 15 is macOS 10.15 Catalina, the last 10.x release.
     let top_minor = if cur_major == 10 { cur_minor } else { 15 };
     for minor in (9..=top_minor).rev() {
         tags.push(format!("macosx_10_{minor}_x86_64"));
@@ -191,11 +209,13 @@ pub fn pep425_macos_x86_64_tags(cur_major: u32, cur_minor: u32) -> Vec<String> {
 
 /// Generate PEP 600 manylinux wheel tags for Linux x86_64.
 ///
-/// Covers glibc versions from 2.28 down to 2.5, plus legacy aliases.
+/// Covers glibc versions from 2.35 down to 2.17 (manylinux2014 minimum), plus
+/// legacy compatibility aliases. Floored at 2.17 because pip >= 22.0 dropped
+/// install support for manylinux1 (glibc < 2.17) targets.
 pub fn manylinux_tags_x86_64() -> Vec<String> {
     let mut tags = Vec::new();
-    // PEP 600 numeric tags: descending glibc minor from 35 to 5
-    for minor in (5..=35u32).rev() {
+    // PEP 600 numeric tags: descending glibc minor from 35 to 17 (manylinux2014 floor)
+    for minor in (17..=35u32).rev() {
         tags.push(format!("manylinux_2_{minor}_x86_64"));
     }
     // Legacy compatibility aliases
@@ -248,7 +268,7 @@ pub fn current_wheel_tags() -> Vec<String> {
     #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
     {
         tags.extend(manylinux_tags_aarch64());
-        tags.push("manylinux_aarch64".into());
+        // "manylinux_aarch64" is a legacy internal tag included via Platform::wheel_tags() below
     }
 
     // Add legacy custom tags (for backward compat with JSON index fixtures)
@@ -896,6 +916,39 @@ mod tests {
     // PEP 425 / PEP 600 platform tag tests
     // ====================================================================
 
+    // ------------------------------------------------------------------
+    // macos_version() / parse_macos_version_str() parsing tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn parse_macos_version_str_two_component() {
+        assert_eq!(parse_macos_version_str("14.5"), (14, 5));
+        assert_eq!(parse_macos_version_str("11.0"), (11, 0));
+        assert_eq!(parse_macos_version_str("10.15"), (10, 15));
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn parse_macos_version_str_three_component() {
+        // Patch version must be silently dropped
+        assert_eq!(parse_macos_version_str("10.15.7"), (10, 15));
+        assert_eq!(parse_macos_version_str("12.0.1"), (12, 0));
+        assert_eq!(parse_macos_version_str("14.5\n"), (14, 5));
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn parse_macos_version_str_empty_falls_back() {
+        // Empty / unparseable input should fall back to the compile-time default
+        let (major, _minor) = parse_macos_version_str("");
+        // ARM64 build: falls back to 11; x86_64 build: falls back to 10
+        #[cfg(target_arch = "aarch64")]
+        assert_eq!(major, 11);
+        #[cfg(not(target_arch = "aarch64"))]
+        assert_eq!(major, 10);
+    }
+
     #[test]
     fn pep425_macos_arm64_tags_includes_standard_macosx_format() {
         let tags = pep425_macos_arm64_tags(14, 0);
@@ -935,6 +988,21 @@ mod tests {
     }
 
     #[test]
+    fn pep425_macos_arm64_tags_clamps_cur_major_below_11() {
+        // Passing a major version below 11 (e.g., from a cross-compile or test mock)
+        // must be clamped up so that macosx_11_0_arm64 is always emitted.
+        let tags = pep425_macos_arm64_tags(10, 0);
+        assert!(
+            tags.iter().any(|t| t == "macosx_11_0_arm64"),
+            "clamping cur_major=10 should still emit macosx_11_0_arm64"
+        );
+        assert!(
+            !tags.iter().any(|t| t.contains("macosx_10_")),
+            "clamped arm64 tags should not include macos 10.x"
+        );
+    }
+
+    #[test]
     fn pep425_macos_x86_64_tags_includes_standard_macosx_format() {
         let tags = pep425_macos_x86_64_tags(14, 0);
         assert!(
@@ -961,6 +1029,25 @@ mod tests {
     }
 
     #[test]
+    fn pep425_macos_x86_64_tags_pure_10x_path() {
+        // When cur_major == 10, only 10.x tags (down to 10.9) should be emitted.
+        let tags = pep425_macos_x86_64_tags(10, 15);
+        assert!(
+            tags.iter().any(|t| t == "macosx_10_15_x86_64"),
+            "should include macosx_10_15_x86_64 for macOS 10.15"
+        );
+        assert!(
+            tags.iter().any(|t| t == "macosx_10_9_x86_64"),
+            "should include macosx_10_9_x86_64 for minimum 10.9"
+        );
+        // No 11+ tags should be emitted for a pure 10.x host
+        assert!(
+            !tags.iter().any(|t| t.starts_with("macosx_11_")),
+            "should not include macOS 11+ tags for a 10.x host"
+        );
+    }
+
+    #[test]
     fn manylinux_x86_64_tags_includes_standard_formats() {
         let tags = manylinux_tags_x86_64();
         assert!(
@@ -978,6 +1065,11 @@ mod tests {
         assert!(
             tags.iter().any(|t| t == "linux_x86_64"),
             "should include plain linux_x86_64 tag"
+        );
+        // pip >= 22.0 dropped manylinux1 (glibc < 2.17); we floor at 2.17
+        assert!(
+            !tags.iter().any(|t| t == "manylinux_2_5_x86_64"),
+            "should not include glibc 2.5 tags (below manylinux2014 floor)"
         );
     }
 
