@@ -227,7 +227,8 @@ pub fn manylinux_tags_x86_64() -> Vec<String> {
 
 /// Generate PEP 600 manylinux wheel tags for Linux aarch64.
 ///
-/// Covers glibc versions from 2.28 down to 2.17, plus legacy aliases.
+/// Covers glibc versions from 2.35 down to 2.17 (manylinux2014 minimum), plus
+/// legacy compatibility aliases. Matches the x86_64 floor (pip >= 22.0).
 pub fn manylinux_tags_aarch64() -> Vec<String> {
     let mut tags = Vec::new();
     // PEP 600 numeric tags: descending glibc minor from 35 to 17
