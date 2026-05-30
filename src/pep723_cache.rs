@@ -482,7 +482,7 @@ impl Pep723Cache {
         }
 
         // Sort by last_used (most recent first)
-        envs.sort_by(|a, b| b.last_used.cmp(&a.last_used));
+        envs.sort_by_key(|e| std::cmp::Reverse(e.last_used));
 
         Ok(envs)
     }
@@ -530,7 +530,7 @@ impl Pep723Cache {
 
         let mut envs = self.list_cached_envs()?;
         // Sort by last_used (oldest first for LRU eviction)
-        envs.sort_by(|a, b| a.last_used.cmp(&b.last_used));
+        envs.sort_by_key(|e| e.last_used);
 
         result.size_before = self.total_size()?;
         let max_bytes = max_bytes.unwrap_or(u64::MAX);

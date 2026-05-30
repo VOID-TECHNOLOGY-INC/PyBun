@@ -366,7 +366,7 @@ pub fn select_artifact_for_platform(
             .collect();
 
         // Sort by score descending
-        scored_wheels.sort_by(|a, b| b.0.cmp(&a.0));
+        scored_wheels.sort_by_key(|w| std::cmp::Reverse(w.0));
 
         // Take the best wheel if it matches the platform
         if let Some((_, wheel)) = scored_wheels.first() {

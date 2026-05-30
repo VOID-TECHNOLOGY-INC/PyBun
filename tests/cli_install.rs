@@ -615,3 +615,132 @@ fn install_warns_and_errors_when_no_wheel_matches() {
         "install should fail before writing an unverifiable source artifact lockfile"
     );
 }
+
+// =============================================================================
+// Issue #144: PEP 425/600 platform tag matching for macOS ARM64 and manylinux
+// =============================================================================
+
+fn index_pypi_wheels_path() -> std::path::PathBuf {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("manifest dir");
+    std::path::Path::new(&manifest_dir)
+        .join("tests")
+        .join("fixtures")
+        .join("index_pypi_wheels.json")
+}
+
+/// Expected wheel filename using PyPI/PEP 425 standard platform tags.
+fn expected_pypi_native_wheel() -> String {
+    if cfg!(target_os = "macos") && cfg!(target_arch = "aarch64") {
+        "pypi-native-1.0.0-cp311-cp311-macosx_11_0_arm64.whl".into()
+    } else if cfg!(target_os = "macos") && cfg!(target_arch = "x86_64") {
+        "pypi-native-1.0.0-cp311-cp311-macosx_11_0_x86_64.whl".into()
+    } else if cfg!(target_os = "linux") && cfg!(target_arch = "x86_64") {
+        "pypi-native-1.0.0-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl".into()
+    } else if cfg!(target_os = "linux") && cfg!(target_arch = "aarch64") {
+        "pypi-native-1.0.0-cp311-cp311-manylinux_2_17_aarch64.manylinux2014_aarch64.whl".into()
+    } else if cfg!(target_os = "windows") && cfg!(target_arch = "x86_64") {
+        "pypi-native-1.0.0-cp311-cp311-win_amd64.whl".into()
+    } else {
+        "pypi-native-1.0.0-py3-none-any.whl".into()
+    }
+}
+
+#[test]
+fn install_resolves_pep425_macosx_arm64_wheel() {
+    // Regression test for Issue #144: wheels with standard PEP 425 platform tags
+    // like macosx_11_0_arm64 must be matched on macOS ARM64.
+    let temp = tempdir().unwrap();
+    let lock_path = temp.path().join("pybun.lockb");
+    let index = index_pypi_wheels_path();
+
+    bin()
+        .args([
+            "install",
+            "--index",
+            index.to_str().unwrap(),
+            "--require",
+            "pypi-native==1.0.0",
+            "--lock",
+            lock_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let lock = Lockfile::load_from_path(&lock_path).expect("lock loads");
+    let pkg = lock.packages.get("pypi-native").expect("entry exists");
+    assert_eq!(
+        pkg.wheel,
+        expected_pypi_native_wheel(),
+        "should select native platform wheel using PEP 425 tags"
+    );
+}
+
+#[test]
+fn install_resolves_universal2_wheel_on_macos() {
+    // universal2 wheels should be matched on both macOS ARM64 and x86_64.
+    let temp = tempdir().unwrap();
+    let lock_path = temp.path().join("pybun.lockb");
+    let index = index_pypi_wheels_path();
+
+    let status = bin()
+        .args([
+            "install",
+            "--index",
+            index.to_str().unwrap(),
+            "--require",
+            "universal2-only==2.0.0",
+            "--lock",
+            lock_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("command runs");
+
+    if cfg!(target_os = "macos") {
+        assert!(
+            status.status.success(),
+            "universal2 wheel should install on macOS: {}",
+            String::from_utf8_lossy(&status.stdout)
+        );
+        let lock = Lockfile::load_from_path(&lock_path).expect("lock loads");
+        let pkg = lock.packages.get("universal2-only").expect("entry exists");
+        assert_eq!(
+            pkg.wheel, "universal2-only-2.0.0-cp311-cp311-macosx_11_0_universal2.whl",
+            "should select universal2 wheel on macOS"
+        );
+    }
+}
+
+#[test]
+fn install_resolves_manylinux_2_28_wheel_on_linux_x86_64() {
+    // manylinux_2_28 wheels should be matched on Linux x86_64.
+    let temp = tempdir().unwrap();
+    let lock_path = temp.path().join("pybun.lockb");
+    let index = index_pypi_wheels_path();
+
+    let output = bin()
+        .args([
+            "install",
+            "--index",
+            index.to_str().unwrap(),
+            "--require",
+            "manylinux28-only==3.0.0",
+            "--lock",
+            lock_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("command runs");
+
+    if cfg!(target_os = "linux") && cfg!(target_arch = "x86_64") {
+        assert!(
+            output.status.success(),
+            "manylinux_2_28 wheel should install on Linux x86_64: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        let lock = Lockfile::load_from_path(&lock_path).expect("lock loads");
+        let pkg = lock.packages.get("manylinux28-only").expect("entry exists");
+        assert_eq!(
+            pkg.wheel, "manylinux28-only-3.0.0-cp311-cp311-manylinux_2_28_x86_64.whl",
+            "should select manylinux_2_28 wheel on Linux x86_64"
+        );
+    }
+}
