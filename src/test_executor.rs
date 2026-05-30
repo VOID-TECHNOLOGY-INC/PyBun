@@ -565,7 +565,7 @@ pub fn validate_shard(shard_str: &str) -> Result<(u32, u32), String> {
 pub fn distribute_tests_for_shard(tests: &[TestItem], current: u32, total: u32) -> Vec<TestItem> {
     // Sort tests by name for deterministic distribution
     let mut sorted: Vec<_> = tests.to_vec();
-    sorted.sort_by(|a, b| a.name.cmp(&b.name));
+    sorted.sort_by_key(|t| t.name.clone());
 
     // Distribute using round-robin
     sorted

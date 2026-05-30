@@ -213,11 +213,7 @@ impl Project {
                     arr.push(Value::String(dep.to_string()));
 
                     // Sort for deterministic output
-                    arr.sort_by(|a, b| {
-                        let a_str = a.as_str().unwrap_or("");
-                        let b_str = b.as_str().unwrap_or("");
-                        a_str.cmp(b_str)
-                    });
+                    arr.sort_by_key(|v| v.as_str().unwrap_or("").to_string());
                 }
             }
         }

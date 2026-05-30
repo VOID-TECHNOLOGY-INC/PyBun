@@ -1,0 +1,12 @@
+[advisories]
+# Pre-existing transitive dependency advisories not caused by direct dependencies.
+# These are tracked upstream and will be addressed when the upstream dependencies
+# release fixes.
+ignore = [
+    # instant 0.1.13 (unmaintained) - transitive dep of notify 7.0.0
+    # upstream: https://rustsec.org/advisories/RUSTSEC-2024-0384
+    "RUSTSEC-2024-0384",
+    # rand 0.9.2 (unsound with custom logger) - transitive dep of reqwest via quinn
+    # upstream: https://rustsec.org/advisories/RUSTSEC-2026-0097
+    "RUSTSEC-2026-0097",
+]

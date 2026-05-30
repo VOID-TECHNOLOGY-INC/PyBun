@@ -189,7 +189,7 @@ impl Cache {
         result.size_before = entries.iter().map(|e| e.size).sum();
 
         // Sort by access time (oldest first for LRU eviction)
-        entries.sort_by(|a, b| a.accessed.cmp(&b.accessed));
+        entries.sort_by_key(|e| e.accessed);
 
         let max_bytes = max_bytes.unwrap_or(u64::MAX);
         let mut current_size = result.size_before;
