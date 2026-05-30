@@ -106,6 +106,7 @@ impl Platform {
     }
 
     /// Platform tags suitable for wheel selection preference (most specific first).
+    /// Returns legacy custom tags for backward compat with JSON index fixtures.
     pub fn wheel_tags(&self) -> Vec<&'static str> {
         match self {
             Platform::MacOSArm64 => vec!["macos_arm64", "macos"],
@@ -123,16 +124,145 @@ impl Platform {
     }
 }
 
-/// Wheel tags for the current platform.
-pub fn current_wheel_tags() -> Vec<String> {
-    let mut tags = Platform::current()
-        .map(|p| {
-            p.wheel_tags()
-                .into_iter()
-                .map(ToString::to_string)
-                .collect::<Vec<String>>()
+/// Detect the current macOS version as (major, minor).
+///
+/// Falls back to (11, 0) for ARM64 or (10, 9) for x86_64 if detection fails.
+#[cfg(target_os = "macos")]
+pub fn macos_version() -> (u32, u32) {
+    std::process::Command::new("sw_vers")
+        .arg("-productVersion")
+        .output()
+        .ok()
+        .and_then(|out| String::from_utf8(out.stdout).ok())
+        .and_then(|s| {
+            let parts: Vec<u32> = s.trim().split('.').filter_map(|p| p.parse().ok()).collect();
+            if parts.len() >= 2 {
+                Some((parts[0], parts[1]))
+            } else {
+                None
+            }
         })
-        .unwrap_or_default();
+        .unwrap_or({
+            #[cfg(target_arch = "aarch64")]
+            {
+                (11, 0)
+            }
+            #[cfg(not(target_arch = "aarch64"))]
+            {
+                (10, 9)
+            }
+        })
+}
+
+/// Generate PEP 425 macOS ARM64 wheel tags for a given macOS version.
+///
+/// Produces `macosx_{major}_{minor}_arm64` and `macosx_{major}_{minor}_universal2`
+/// for all versions from `(cur_major, 0)` down to `(11, 0)` — the minimum for Apple Silicon.
+pub fn pep425_macos_arm64_tags(cur_major: u32, _cur_minor: u32) -> Vec<String> {
+    let mut tags = Vec::new();
+    // For macOS >= 11, only major_0 tags matter (Apple packaging convention)
+    let max_major = cur_major.max(11);
+    for major in (11..=max_major).rev() {
+        tags.push(format!("macosx_{major}_0_arm64"));
+        tags.push(format!("macosx_{major}_0_universal2"));
+    }
+    tags
+}
+
+/// Generate PEP 425 macOS x86_64 wheel tags for a given macOS version.
+///
+/// Produces `macosx_{major}_0_x86_64`, `macosx_10_{minor}_x86_64` (for 10.x), and
+/// `macosx_{major}_0_universal2` tags down to macOS 10.9.
+pub fn pep425_macos_x86_64_tags(cur_major: u32, cur_minor: u32) -> Vec<String> {
+    let mut tags = Vec::new();
+    // macOS >= 11: major_0 tags
+    for major in (11..=cur_major).rev() {
+        tags.push(format!("macosx_{major}_0_x86_64"));
+        tags.push(format!("macosx_{major}_0_universal2"));
+    }
+    // macOS 10.x: each minor from cur_minor (capped at 15) down to 9
+    let top_minor = if cur_major == 10 { cur_minor } else { 15 };
+    for minor in (9..=top_minor).rev() {
+        tags.push(format!("macosx_10_{minor}_x86_64"));
+        tags.push(format!("macosx_10_{minor}_universal2"));
+    }
+    tags
+}
+
+/// Generate PEP 600 manylinux wheel tags for Linux x86_64.
+///
+/// Covers glibc versions from 2.28 down to 2.5, plus legacy aliases.
+pub fn manylinux_tags_x86_64() -> Vec<String> {
+    let mut tags = Vec::new();
+    // PEP 600 numeric tags: descending glibc minor from 35 to 5
+    for minor in (5..=35u32).rev() {
+        tags.push(format!("manylinux_2_{minor}_x86_64"));
+    }
+    // Legacy compatibility aliases
+    tags.push("manylinux2014_x86_64".into());
+    tags.push("manylinux1_x86_64".into());
+    tags.push("linux_x86_64".into());
+    tags
+}
+
+/// Generate PEP 600 manylinux wheel tags for Linux aarch64.
+///
+/// Covers glibc versions from 2.28 down to 2.17, plus legacy aliases.
+pub fn manylinux_tags_aarch64() -> Vec<String> {
+    let mut tags = Vec::new();
+    // PEP 600 numeric tags: descending glibc minor from 35 to 17
+    for minor in (17..=35u32).rev() {
+        tags.push(format!("manylinux_2_{minor}_aarch64"));
+    }
+    // Legacy compatibility aliases
+    tags.push("manylinux2014_aarch64".into());
+    tags.push("linux_aarch64".into());
+    tags
+}
+
+/// Wheel tags for the current platform.
+///
+/// Returns PEP 425/600 standard tags (most specific first) followed by legacy
+/// custom tags for backward compatibility with JSON index fixtures.
+pub fn current_wheel_tags() -> Vec<String> {
+    let mut tags: Vec<String> = Vec::new();
+
+    // Add PEP 425/600 standard tags first (highest priority)
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        let (major, minor) = macos_version();
+        tags.extend(pep425_macos_arm64_tags(major, minor));
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+    {
+        let (major, minor) = macos_version();
+        tags.extend(pep425_macos_x86_64_tags(major, minor));
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    {
+        tags.extend(manylinux_tags_x86_64());
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    {
+        tags.extend(manylinux_tags_aarch64());
+        tags.push("manylinux_aarch64".into());
+    }
+
+    // Add legacy custom tags (for backward compat with JSON index fixtures)
+    if let Some(platform) = Platform::current() {
+        for tag in platform.wheel_tags() {
+            let s = tag.to_string();
+            if !tags.contains(&s) {
+                tags.push(s);
+            }
+        }
+    }
+
+    // Windows-specific tags (win_amd64 already included via wheel_tags)
+
     if !tags.iter().any(|t| t == "any") {
         tags.push("any".into());
     }
@@ -760,5 +890,156 @@ mod tests {
 
         let result = manager.ensure_version("3.12.7");
         assert!(result.is_ok(), "ensure_version failed: {:?}", result.err());
+    }
+
+    // ====================================================================
+    // PEP 425 / PEP 600 platform tag tests
+    // ====================================================================
+
+    #[test]
+    fn pep425_macos_arm64_tags_includes_standard_macosx_format() {
+        let tags = pep425_macos_arm64_tags(14, 0);
+        assert!(
+            tags.iter().any(|t| t == "macosx_14_0_arm64"),
+            "should include current version arm64 tag"
+        );
+        assert!(
+            tags.iter().any(|t| t == "macosx_11_0_arm64"),
+            "should include macosx_11_0_arm64 (minimum for Apple Silicon)"
+        );
+        assert!(
+            tags.iter().any(|t| t == "macosx_14_0_universal2"),
+            "should include universal2 tag for current version"
+        );
+        assert!(
+            tags.iter().any(|t| t == "macosx_11_0_universal2"),
+            "should include macosx_11_0_universal2"
+        );
+        // Ensure ordering: most specific (newer) first
+        let arm64_idx_14 = tags.iter().position(|t| t == "macosx_14_0_arm64").unwrap();
+        let arm64_idx_11 = tags.iter().position(|t| t == "macosx_11_0_arm64").unwrap();
+        assert!(
+            arm64_idx_14 < arm64_idx_11,
+            "newer tag should appear before older tag"
+        );
+    }
+
+    #[test]
+    fn pep425_macos_arm64_tags_minimum_version_is_11() {
+        // ARM64 (Apple Silicon) requires macOS 11+; no tags below that
+        let tags = pep425_macos_arm64_tags(14, 0);
+        assert!(
+            !tags.iter().any(|t| t.contains("macosx_10_")),
+            "arm64 tags should not include macos 10.x"
+        );
+    }
+
+    #[test]
+    fn pep425_macos_x86_64_tags_includes_standard_macosx_format() {
+        let tags = pep425_macos_x86_64_tags(14, 0);
+        assert!(
+            tags.iter().any(|t| t == "macosx_14_0_x86_64"),
+            "should include current version x86_64 tag"
+        );
+        assert!(
+            tags.iter().any(|t| t == "macosx_10_9_x86_64"),
+            "should include legacy macosx_10_9_x86_64"
+        );
+        assert!(
+            tags.iter().any(|t| t == "macosx_14_0_universal2"),
+            "should include universal2 tag"
+        );
+    }
+
+    #[test]
+    fn pep425_macos_x86_64_tags_does_not_include_arm64() {
+        let tags = pep425_macos_x86_64_tags(14, 0);
+        assert!(
+            !tags.iter().any(|t| t.ends_with("_arm64")),
+            "x86_64 tags should not include arm64 variants"
+        );
+    }
+
+    #[test]
+    fn manylinux_x86_64_tags_includes_standard_formats() {
+        let tags = manylinux_tags_x86_64();
+        assert!(
+            tags.iter().any(|t| t == "manylinux_2_17_x86_64"),
+            "should include manylinux_2_17 (manylinux2014)"
+        );
+        assert!(
+            tags.iter().any(|t| t == "manylinux_2_28_x86_64"),
+            "should include manylinux_2_28"
+        );
+        assert!(
+            tags.iter().any(|t| t == "manylinux2014_x86_64"),
+            "should include legacy manylinux2014_x86_64 tag"
+        );
+        assert!(
+            tags.iter().any(|t| t == "linux_x86_64"),
+            "should include plain linux_x86_64 tag"
+        );
+    }
+
+    #[test]
+    fn manylinux_aarch64_tags_includes_standard_formats() {
+        let tags = manylinux_tags_aarch64();
+        assert!(
+            tags.iter().any(|t| t == "manylinux_2_17_aarch64"),
+            "should include manylinux_2_17_aarch64"
+        );
+        assert!(
+            tags.iter().any(|t| t == "manylinux2014_aarch64"),
+            "should include legacy manylinux2014_aarch64 tag"
+        );
+        assert!(
+            tags.iter().any(|t| t == "linux_aarch64"),
+            "should include plain linux_aarch64 tag"
+        );
+    }
+
+    #[test]
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn current_wheel_tags_on_macos_arm64_includes_pep425_tags() {
+        let tags = current_wheel_tags();
+        assert!(
+            tags.iter().any(|t| t == "macosx_11_0_arm64"),
+            "macOS ARM64 should include macosx_11_0_arm64 tag; got: {:?}",
+            &tags[..tags.len().min(15)]
+        );
+        assert!(
+            tags.iter().any(|t| t == "any"),
+            "should always include 'any'"
+        );
+    }
+
+    #[test]
+    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+    fn current_wheel_tags_on_macos_x86_64_includes_pep425_tags() {
+        let tags = current_wheel_tags();
+        assert!(
+            tags.iter().any(|t| t == "macosx_10_9_x86_64"),
+            "macOS x86_64 should include macosx_10_9_x86_64; got: {:?}",
+            &tags[..tags.len().min(15)]
+        );
+        assert!(
+            tags.iter().any(|t| t == "any"),
+            "should always include 'any'"
+        );
+    }
+
+    #[test]
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    fn current_wheel_tags_on_linux_x86_64_includes_manylinux_tags() {
+        let tags = current_wheel_tags();
+        assert!(
+            tags.iter().any(|t| t == "manylinux_2_17_x86_64"),
+            "Linux x86_64 should include manylinux_2_17_x86_64; got: {:?}",
+            &tags[..tags.len().min(15)]
+        );
+        assert!(
+            tags.iter().any(|t| t == "any"),
+            "should always include 'any'"
+        );
     }
 }
