@@ -620,7 +620,7 @@ pub async fn execute(cli: Cli) -> Result<()> {
             }
         }
         Commands::Init(args) => {
-            let result = init_project(args);
+            let result = init_project(args, &mut collector);
             match result {
                 Ok(detail) => ("init".to_string(), detail),
                 Err(e) => {
@@ -5059,7 +5059,7 @@ fn sanitize_project_name(name: &str) -> String {
     }
 }
 
-fn init_project(args: &InitArgs) -> Result<RenderDetail> {
+fn init_project(args: &InitArgs, collector: &mut EventCollector) -> Result<RenderDetail> {
     let cwd =
         std::env::current_dir().map_err(|e| eyre!("failed to get current directory: {}", e))?;
     let pyproject_path = cwd.join("pyproject.toml");
@@ -5083,7 +5083,25 @@ fn init_project(args: &InitArgs) -> Result<RenderDetail> {
             args.template,
         )
     } else {
-        // Interactive mode
+        // Interactive mode — requires a terminal
+        if !std::io::stdin().is_terminal() {
+            collector.diagnostic(Diagnostic {
+                level: crate::schema::DiagnosticLevel::Error,
+                code: Some("E_INIT_NOT_INTERACTIVE".to_string()),
+                message: "Interactive prompt requires a terminal".to_string(),
+                file: None,
+                line: None,
+                suggestion: Some(
+                    "Run with --yes to accept defaults non-interactively: pybun init --yes"
+                        .to_string(),
+                ),
+                context: None,
+            });
+            return Err(eyre!(
+                "Interactive prompt requires a terminal. Run with --yes to accept defaults non-interactively: pybun init --yes"
+            ));
+        }
+
         let theme = ColorfulTheme::default();
 
         // Name

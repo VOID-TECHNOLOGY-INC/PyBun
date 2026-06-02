@@ -213,6 +213,91 @@ fn init_help_shows_options() {
         .stdout(predicate::str::contains("--template"));
 }
 
+// Issue #133: non-TTY without --yes should produce an actionable hint
+#[test]
+fn init_non_tty_without_yes_fails_with_hint() {
+    let temp = tempdir().unwrap();
+
+    // Pipe empty stdin to simulate non-TTY
+    let output = bin()
+        .current_dir(temp.path())
+        .args(["init"])
+        .write_stdin("")
+        .output()
+        .expect("command runs");
+
+    assert!(
+        !output.status.success(),
+        "should fail in non-TTY without --yes"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let combined = format!("{}{}", stdout, stderr);
+
+    assert!(
+        combined.contains("--yes") || combined.contains("-y"),
+        "error output should mention --yes flag, got: {}",
+        combined
+    );
+}
+
+#[test]
+fn init_non_tty_without_yes_json_fails_with_hint() {
+    let temp = tempdir().unwrap();
+
+    let output = bin()
+        .current_dir(temp.path())
+        .args(["--format=json", "init"])
+        .write_stdin("")
+        .output()
+        .expect("command runs");
+
+    assert!(
+        !output.status.success(),
+        "should fail in non-TTY without --yes"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|_| panic!("expected JSON output, got: {}", stdout));
+
+    assert_eq!(json["status"], "error", "JSON status should be error");
+
+    let diagnostics = json["diagnostics"].as_array().expect("diagnostics array");
+    assert!(
+        !diagnostics.is_empty(),
+        "should have at least one diagnostic"
+    );
+
+    let hint_found = diagnostics.iter().any(|d| {
+        d["suggestion"]
+            .as_str()
+            .map(|h| h.contains("--yes") || h.contains("-y"))
+            .unwrap_or(false)
+    });
+    assert!(
+        hint_found,
+        "at least one diagnostic should contain --yes suggestion, got: {}",
+        stdout
+    );
+}
+
+#[test]
+fn init_non_tty_with_yes_succeeds() {
+    let temp = tempdir().unwrap();
+
+    // With --yes flag, non-TTY should succeed even with piped stdin
+    bin()
+        .current_dir(temp.path())
+        .args(["init", "--yes"])
+        .write_stdin("")
+        .assert()
+        .success();
+
+    assert!(temp.path().join("pyproject.toml").exists());
+}
+
 #[test]
 fn init_with_python_version() {
     let temp = tempdir().unwrap();
