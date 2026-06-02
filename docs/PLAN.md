@@ -59,6 +59,11 @@
   - Goal: プロジェクト検出時に system Python へ直接入る経路を避け、`.pybun/venv` を既定化。
   - Tests: 既存venv無しプロジェクトでの install E2E（system汚染しないことを確認）。
 
+- [DONE] PR-UX2: `pybun run` propagates child process exit code (Issue #148)
+  - Goal: `pybun run` が子Pythonプロセスの終了コードをシェルに伝播する。非ゼロで終了したスクリプトで pybun が常に 0 を返していた。
+  - Current: `RenderDetail` に `process_exit_code: Option<i32>` フィールドと `with_process_exit_code()` ビルダーを追加。`Commands::Run` が `RunOutcome.exit_code` を `with_process_exit_code()` で設定し、`execute()` がアウトプット flush 後に `std::process::exit(code)` で伝播。stdout flush を `std::process::exit` 前に明示追加（Windows CRT バッファ対策）。
+  - Tests: `tests/cli_run.rs` に4件追加 — `run_script_propagates_nonzero_exit_code`（スクリプトファイル、exit 42）、`run_inline_code_propagates_nonzero_exit_code`（-c モード、exit 7）、`run_script_exit_zero_still_succeeds`（exit 0 のリグレッションガード）、`run_script_propagates_exit_code_json_mode`（JSON モード、exit 5、JSON 出力が有効かつ終了コード伝播）。既存テスト `run_script_with_exit_code` を `.code(42)` アサーションに更新。`tests/sandbox.rs` の6件を `.code(1)` に更新（sandbox ポリシー違反で Python が exit 1 する場合）。
+
 - [DONE] PR-UX1: `pybun init` non-TTY actionable error (Issue #133)
   - Goal: non-TTY 環境で `pybun init`（`--yes` なし）を実行した際、"IO error: not a terminal" の代わりに `--yes` フラグを案内する actionable diagnostic を返す。
   - Current: `init_project()` に `&mut EventCollector` を追加し、stdin が TTY でない場合は `E_INIT_NOT_INTERACTIVE` diagnostic（`suggestion` フィールドに `pybun init --yes` 案内）を push してから早期 return。テキストモードの stderr にも `--yes` を含むメッセージを出力。
