@@ -59,6 +59,11 @@
   - Goal: プロジェクト検出時に system Python へ直接入る経路を避け、`.pybun/venv` を既定化。
   - Tests: 既存venv無しプロジェクトでの install E2E（system汚染しないことを確認）。
 
+- [DONE] PR-UX1: `pybun init` non-TTY actionable error (Issue #133)
+  - Goal: non-TTY 環境で `pybun init`（`--yes` なし）を実行した際、"IO error: not a terminal" の代わりに `--yes` フラグを案内する actionable diagnostic を返す。
+  - Current: `init_project()` に `&mut EventCollector` を追加し、stdin が TTY でない場合は `E_INIT_NOT_INTERACTIVE` diagnostic（`suggestion` フィールドに `pybun init --yes` 案内）を push してから早期 return。テキストモードの stderr にも `--yes` を含むメッセージを出力。
+  - Tests: `tests/cli_init.rs` に3件追加 — `init_non_tty_without_yes_fails_with_hint`（テキスト出力に --yes 含む）、`init_non_tty_without_yes_json_fails_with_hint`（JSON diagnostics に suggestion フィールド含む）、`init_non_tty_with_yes_succeeds`（--yes 指定時は非 TTY でも成功）。
+
 ### P2 (Post-GA Improvement)
 - PR-A8: Runtime catalog hardening（実チェックサム管理 + 3.13 preview）
   - Goal: 埋め込み runtime metadata の完全性・更新性を強化し、3.13 preview を段階導入。
