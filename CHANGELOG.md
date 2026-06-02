@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.1.18
+
+### Features
+- feat(sandbox): filesystem policy, execution audit, and MCP sandbox_policy (#122)
+- feat(mcp): add pybun_lint, pybun_type_check, pybun_profile, pybun_fix tools (#121)
+
+### Fixes
+- fix(resolver): support PEP 425/600 wheel tags for macOS ARM64 and manylinux (closes #144)
+- fix(resolver): handle PEP 508 environment markers (fixes #123) (#127)
+- fix(lock,mcp): address issue #132 and #137 (#143)
+- fix(mcp): suppress stdout output in stdio mode after session end (closes #129) (#141)
+
+### Security / Integrity
+- PR-A2: enforce strict lock/hash verification (#128)
+
 ## v0.1.17
 
 ### Fixes
