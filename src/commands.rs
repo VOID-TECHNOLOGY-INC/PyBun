@@ -268,24 +268,23 @@ pub async fn execute(cli: Cli) -> Result<()> {
                             "audit": s.audit,
                         })
                     });
-                    (
-                        "run".to_string(),
-                        RenderDetail::with_json(
-                            summary,
-                            json!({
-                                "target": target,
-                                "exit_code": exit_code,
-                                "pep723_dependencies": pep723_deps,
-                                "pep723_backend": pep723_backend,
-                                "temp_env": temp_env,
-                                "cleanup": cleanup,
-                                "cache_hit": cache_hit,
-                                "stdout": stdout,
-                                "stderr": stderr,
-                                "sandbox": sandbox_detail,
-                            }),
-                        ),
+                    let detail = RenderDetail::with_json(
+                        summary,
+                        json!({
+                            "target": target,
+                            "exit_code": exit_code,
+                            "pep723_dependencies": pep723_deps,
+                            "pep723_backend": pep723_backend,
+                            "temp_env": temp_env,
+                            "cleanup": cleanup,
+                            "cache_hit": cache_hit,
+                            "stdout": stdout,
+                            "stderr": stderr,
+                            "sandbox": sandbox_detail,
+                        }),
                     )
+                    .with_process_exit_code(exit_code);
+                    ("run".to_string(), detail)
                 }
                 Err(e) => {
                     collector.error(e.to_string());
@@ -316,6 +315,9 @@ pub async fn execute(cli: Cli) -> Result<()> {
                     cleanup,
                 }) => (
                     "x".to_string(),
+                    // TODO: propagate exit_code for `pybun x` the same way
+                    // `pybun run` does (with_process_exit_code). Tracked
+                    // separately to keep this PR scoped to issue #148.
                     RenderDetail::with_json(
                         summary,
                         json!({
@@ -689,6 +691,7 @@ pub async fn execute(cli: Cli) -> Result<()> {
     let (events, diagnostics, trace_id) = collector.into_parts();
 
     let is_error = detail.is_error;
+    let process_exit_code = detail.process_exit_code;
     let rendered = render(
         &command,
         detail,
@@ -704,9 +707,24 @@ pub async fn execute(cli: Cli) -> Result<()> {
         println!("{output}");
     }
 
-    // Exit with error code if command failed
+    // Flush stdout before any std::process::exit call. std::process::exit
+    // skips destructors, so a BufWriter around stdout (common on Windows)
+    // would otherwise silently discard buffered output.
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+
+    // `is_error` and `process_exit_code` are mutually exclusive: the Err
+    // arm of every command sets is_error via RenderDetail::error() which
+    // leaves process_exit_code = None, while the Ok arm uses with_json()
+    // and may call with_process_exit_code(). is_error always takes priority.
     if is_error {
         std::process::exit(1);
+    }
+
+    // Propagate the child process exit code (e.g. from `pybun run`).
+    if let Some(code) = process_exit_code
+        && code != 0
+    {
+        std::process::exit(code);
     }
 
     Ok(())
@@ -1701,6 +1719,10 @@ struct RenderDetail {
     /// where stdout is the protocol channel and must not be polluted after
     /// the session ends.
     silent: bool,
+    /// Exit code to propagate from a child process (e.g. `pybun run`).
+    /// When set and non-zero, `execute` calls `std::process::exit` with this
+    /// code after flushing output, so the shell sees the script's own code.
+    process_exit_code: Option<i32>,
 }
 
 impl RenderDetail {
@@ -1711,6 +1733,7 @@ impl RenderDetail {
             is_error: false,
             raw_text: false,
             silent: false,
+            process_exit_code: None,
         }
     }
 
@@ -1721,6 +1744,7 @@ impl RenderDetail {
             is_error: true,
             raw_text: false,
             silent: false,
+            process_exit_code: None,
         }
     }
 
@@ -1731,6 +1755,7 @@ impl RenderDetail {
             is_error: false,
             raw_text: true,
             silent: false,
+            process_exit_code: None,
         }
     }
 
@@ -1744,7 +1769,15 @@ impl RenderDetail {
             is_error: false,
             raw_text: false,
             silent: true,
+            process_exit_code: None,
         }
+    }
+
+    /// Attach a child-process exit code that `execute` will propagate via
+    /// `std::process::exit` after flushing output.
+    fn with_process_exit_code(mut self, code: i32) -> Self {
+        self.process_exit_code = Some(code);
+        self
     }
 }
 
