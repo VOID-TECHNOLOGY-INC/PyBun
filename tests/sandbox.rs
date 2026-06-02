@@ -33,7 +33,7 @@ subprocess.run(["echo", "hello from child"])
             script.to_str().unwrap(),
         ])
         .assert()
-        .success()
+        .code(1)
         .stdout(predicate::str::contains("\"sandbox\""))
         .stdout(predicate::str::contains("\"allow_network\":false"))
         .stdout(predicate::str::contains("\"exit_code\":1"))
@@ -63,7 +63,7 @@ print("network allowed")
             script.to_str().unwrap(),
         ])
         .assert()
-        .success()
+        .code(1)
         .stdout(predicate::str::contains("\"exit_code\":1"));
 
     // With opt-in, the script should run successfully and report the sandbox policy in JSON.
@@ -108,7 +108,7 @@ fn sandbox_allow_read_blocks_unauthorized_path() {
         &format!("--allow-read={}", allowed_dir.path().display()),
         script.to_str().unwrap(),
     ])
-    .success()
+    .code(1)
     .stdout(predicate::str::contains("\"exit_code\":1"));
 }
 
@@ -138,7 +138,7 @@ fn sandbox_allow_read_blocks_sibling_prefix_bypass() {
         &format!("--allow-read={}", allowed_dir.display()),
         script.to_str().unwrap(),
     ])
-    .success()
+    .code(1)
     .stdout(predicate::str::contains("\"exit_code\":1"))
     .stdout(predicate::str::contains("\"blocked_file_reads\":"));
 }
@@ -199,7 +199,7 @@ fn sandbox_allow_read_blocks_update_mode_bypass() {
         &format!("--allow-read={}", allowed_dir.path().display()),
         script.to_str().unwrap(),
     ])
-    .success()
+    .code(1)
     .stdout(predicate::str::contains("\"exit_code\":1"))
     .stdout(predicate::str::contains("\"blocked_file_reads\":"));
 }
@@ -226,7 +226,7 @@ fn sandbox_allow_write_blocks_unauthorized_path() {
         &format!("--allow-write={}", temp.path().display()),
         script.to_str().unwrap(),
     ])
-    .success()
+    .code(1)
     .stdout(predicate::str::contains("\"exit_code\":1"));
 }
 

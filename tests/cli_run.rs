@@ -100,11 +100,77 @@ fn run_script_with_exit_code() {
     let script = temp.path().join("exit_nonzero.py");
     fs::write(&script, "import sys; sys.exit(42)").unwrap();
 
-    bin()
+    // pybun propagates the script's exit code; JSON output is still emitted
+    let output = bin()
         .args(["--format=json", "run", script.to_str().unwrap()])
+        .output()
+        .expect("run pybun");
+    assert_eq!(output.status.code(), Some(42));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("\"exit_code\":42"), "stdout: {stdout}");
+}
+
+// Issue #148: pybun run must propagate the child Python process exit code.
+
+#[test]
+fn run_script_propagates_nonzero_exit_code() {
+    let temp = tempdir().unwrap();
+    let script = temp.path().join("fail.py");
+    fs::write(&script, "import sys; sys.exit(42)").unwrap();
+
+    let output = bin()
+        .args(["run", script.to_str().unwrap()])
+        .output()
+        .expect("run pybun");
+    assert_eq!(
+        output.status.code(),
+        Some(42),
+        "pybun must exit with the script's exit code"
+    );
+}
+
+#[test]
+fn run_inline_code_propagates_nonzero_exit_code() {
+    let output = bin()
+        .args(["run", "-c", "--", "import sys; sys.exit(7)"])
+        .output()
+        .expect("run pybun");
+    assert_eq!(
+        output.status.code(),
+        Some(7),
+        "pybun must exit with the inline code's exit code"
+    );
+}
+
+#[test]
+fn run_script_exit_zero_still_succeeds() {
+    let temp = tempdir().unwrap();
+    let script = temp.path().join("ok.py");
+    fs::write(&script, "print('ok')").unwrap();
+
+    bin()
+        .args(["run", script.to_str().unwrap()])
         .assert()
-        .success() // pybun itself succeeds, reports script exit code
-        .stdout(predicate::str::contains("\"exit_code\":42"));
+        .success();
+}
+
+#[test]
+fn run_script_propagates_exit_code_json_mode() {
+    let temp = tempdir().unwrap();
+    let script = temp.path().join("fail_json.py");
+    fs::write(&script, "import sys; sys.exit(5)").unwrap();
+
+    let output = bin()
+        .args(["--format=json", "run", script.to_str().unwrap()])
+        .output()
+        .expect("run pybun");
+    // JSON output must be valid and contain exit_code
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let value: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|_| panic!("expected valid JSON, got: {stdout}"));
+    assert_eq!(value["detail"]["exit_code"], 5);
+    // pybun process must exit with the script's code
+    assert_eq!(output.status.code(), Some(5));
 }
 
 #[test]
