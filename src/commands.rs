@@ -21,7 +21,9 @@ use crate::resolver::{
 };
 use crate::sandbox;
 use crate::sbom;
-use crate::schema::{Diagnostic, Event, EventCollector, EventType, JsonEnvelope, Status};
+use crate::schema::{
+    Diagnostic, DiagnosticLevel, Event, EventCollector, EventType, JsonEnvelope, Status,
+};
 use crate::self_update::apply_update_for_asset;
 use crate::support_bundle::{BundleContext, BundleReport, build_support_bundle, upload_bundle};
 use crate::wheel_cache::WheelCache;
@@ -620,11 +622,16 @@ pub async fn execute(cli: Cli) -> Result<()> {
             }
         }
         Commands::Init(args) => {
+            let pre_diag_count = collector.diagnostic_count();
             let result = init_project(args, &mut collector);
             match result {
                 Ok(detail) => ("init".to_string(), detail),
                 Err(e) => {
-                    collector.error(e.to_string());
+                    // Only push a generic fallback error if init_project did not
+                    // already record a structured diagnostic (e.g. E_INIT_NOT_INTERACTIVE).
+                    if collector.diagnostic_count() == pre_diag_count {
+                        collector.error(e.to_string());
+                    }
                     (
                         "init".to_string(),
                         RenderDetail::error(
@@ -5086,7 +5093,7 @@ fn init_project(args: &InitArgs, collector: &mut EventCollector) -> Result<Rende
         // Interactive mode — requires a terminal
         if !std::io::stdin().is_terminal() {
             collector.diagnostic(Diagnostic {
-                level: crate::schema::DiagnosticLevel::Error,
+                level: DiagnosticLevel::Error,
                 code: Some("E_INIT_NOT_INTERACTIVE".to_string()),
                 message: "Interactive prompt requires a terminal".to_string(),
                 file: None,

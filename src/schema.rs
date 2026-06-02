@@ -429,6 +429,11 @@ impl EventCollector {
         self.diagnostics.push(diagnostic);
     }
 
+    /// Return the number of diagnostics recorded so far.
+    pub fn diagnostic_count(&self) -> usize {
+        self.diagnostics.len()
+    }
+
     /// Record an error diagnostic
     pub fn error(&mut self, message: impl Into<String>) {
         self.diagnostics.push(Diagnostic::error(message));

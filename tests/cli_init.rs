@@ -265,9 +265,11 @@ fn init_non_tty_without_yes_json_fails_with_hint() {
     assert_eq!(json["status"], "error", "JSON status should be error");
 
     let diagnostics = json["diagnostics"].as_array().expect("diagnostics array");
-    assert!(
-        !diagnostics.is_empty(),
-        "should have at least one diagnostic"
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "should have exactly one diagnostic (no duplicates), got: {}",
+        stdout
     );
 
     let hint_found = diagnostics.iter().any(|d| {
@@ -278,9 +280,14 @@ fn init_non_tty_without_yes_json_fails_with_hint() {
     });
     assert!(
         hint_found,
-        "at least one diagnostic should contain --yes suggestion, got: {}",
+        "diagnostic should contain --yes suggestion, got: {}",
         stdout
     );
+
+    // Verify structured diagnostic fields
+    let diag = &diagnostics[0];
+    assert_eq!(diag["level"], "error");
+    assert_eq!(diag["code"], "E_INIT_NOT_INTERACTIVE");
 }
 
 #[test]
