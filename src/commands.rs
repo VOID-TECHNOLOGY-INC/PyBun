@@ -315,6 +315,9 @@ pub async fn execute(cli: Cli) -> Result<()> {
                     cleanup,
                 }) => (
                     "x".to_string(),
+                    // TODO: propagate exit_code for `pybun x` the same way
+                    // `pybun run` does (with_process_exit_code). Tracked
+                    // separately to keep this PR scoped to issue #148.
                     RenderDetail::with_json(
                         summary,
                         json!({
@@ -704,13 +707,20 @@ pub async fn execute(cli: Cli) -> Result<()> {
         println!("{output}");
     }
 
-    // Exit with error code if command failed
+    // Flush stdout before any std::process::exit call. std::process::exit
+    // skips destructors, so a BufWriter around stdout (common on Windows)
+    // would otherwise silently discard buffered output.
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+
+    // `is_error` and `process_exit_code` are mutually exclusive: the Err
+    // arm of every command sets is_error via RenderDetail::error() which
+    // leaves process_exit_code = None, while the Ok arm uses with_json()
+    // and may call with_process_exit_code(). is_error always takes priority.
     if is_error {
         std::process::exit(1);
     }
 
     // Propagate the child process exit code (e.g. from `pybun run`).
-    // Output has already been flushed above, so it is safe to exit now.
     if let Some(code) = process_exit_code
         && code != 0
     {
