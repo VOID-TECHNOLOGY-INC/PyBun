@@ -9,6 +9,55 @@ use tokio::{
     net::TcpListener,
 };
 
+/// Regression guard: every resolved copy of rustls-webpki must be >= 0.103.13
+/// to be free of RUSTSEC-2026-0104 / 0098 / 0099 / 0049 (Issue #156).
+///
+/// Uses the `semver` crate (already a direct dep) for robust version comparison
+/// and checks *all* `[[package]]` blocks — in case two copies are resolved
+/// simultaneously — so no vulnerable version can slip through undetected.
+#[test]
+fn rustls_webpki_all_resolved_versions_are_at_patched_floor() {
+    use semver::Version;
+
+    let lock_src = include_str!("../Cargo.lock");
+    let floor = Version::new(0, 103, 13);
+
+    let mut resolved: Vec<String> = Vec::new();
+    let mut name_matched = false;
+    for line in lock_src.lines() {
+        let line = line.trim();
+        if line == r#"name = "rustls-webpki""# {
+            name_matched = true;
+            continue;
+        }
+        if name_matched {
+            if let Some(ver_str) = line
+                .strip_prefix("version = \"")
+                .and_then(|s| s.strip_suffix('"'))
+            {
+                resolved.push(ver_str.to_owned());
+                name_matched = false; // reset; collect next block independently
+            } else if line.starts_with("name = ") {
+                name_matched = false;
+            }
+        }
+    }
+
+    assert!(
+        !resolved.is_empty(),
+        "rustls-webpki not found in Cargo.lock — dependency was removed?"
+    );
+    for ver_str in &resolved {
+        let ver = Version::parse(ver_str)
+            .unwrap_or_else(|e| panic!("failed to parse rustls-webpki version '{ver_str}': {e}"));
+        assert!(
+            ver >= floor,
+            "rustls-webpki {ver_str} is below the patched floor {floor} — \
+             upgrade to fix RUSTSEC-2026-0104/0098/0099/0049"
+        );
+    }
+}
+
 #[test]
 fn verify_ed25519_signature_accepts_valid_signature() {
     let key = SigningKey::from_bytes(&[7u8; 32]);

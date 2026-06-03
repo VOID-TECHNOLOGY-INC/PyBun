@@ -1937,6 +1937,7 @@ dependencies = [
  "predicates",
  "regex",
  "reqwest",
+ "rustls-webpki",
  "semver",
  "serde",
  "serde_json",
