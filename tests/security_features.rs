@@ -9,6 +9,53 @@ use tokio::{
     net::TcpListener,
 };
 
+/// Regression guard: rustls-webpki must be >= 0.103.13 to be free of
+/// RUSTSEC-2026-0104 / RUSTSEC-2026-0098 / RUSTSEC-2026-0099 / RUSTSEC-2026-0049.
+/// This test parses Cargo.lock and fails immediately if the resolved version
+/// regresses below the patched floor.
+#[test]
+fn rustls_webpki_version_is_at_least_patched_floor() {
+    let lock_src = include_str!("../Cargo.lock");
+
+    let mut found = false;
+    let mut name_matched = false;
+    for line in lock_src.lines() {
+        let line = line.trim();
+        if line == r#"name = "rustls-webpki""# {
+            name_matched = true;
+            continue;
+        }
+        if name_matched {
+            if let Some(ver_str) = line
+                .strip_prefix("version = \"")
+                .and_then(|s| s.strip_suffix('"'))
+            {
+                found = true;
+                let parts: Vec<u64> = ver_str
+                    .split('.')
+                    .map(|p| p.parse().expect("numeric version component"))
+                    .collect();
+                assert_eq!(parts.len(), 3, "expected semver x.y.z, got {ver_str}");
+                let (major, minor, patch) = (parts[0], parts[1], parts[2]);
+                assert!(
+                    (major, minor, patch) >= (0, 103, 13),
+                    "rustls-webpki {ver_str} is below the patched floor 0.103.13 — \
+                     upgrade to fix RUSTSEC-2026-0104/0098/0099/0049"
+                );
+                break;
+            }
+            // Reset if we hit another name = ... before finding version
+            if line.starts_with("name = ") {
+                name_matched = false;
+            }
+        }
+    }
+    assert!(
+        found,
+        "rustls-webpki not found in Cargo.lock — dependency was removed?"
+    );
+}
+
 #[test]
 fn verify_ed25519_signature_accepts_valid_signature() {
     let key = SigningKey::from_bytes(&[7u8; 32]);

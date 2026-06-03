@@ -73,6 +73,11 @@
   - Current: `render()` 関数内（`src/commands.rs`）の JSON ステータス決定ロジックを修正。`detail.is_error` に加え `detail.process_exit_code.is_some_and(|c| c != 0)` を OR 条件として追加することで、子プロセス失敗時も `Status::Error` を返すよう変更。
   - Tests: `tests/cli_run.rs` に3件追加 — `run_json_mode_nonzero_exit_reports_error_status`（スクリプトファイル、exit 3、status == "error"）、`run_json_mode_inline_nonzero_reports_error_status`（-c モード、exit 7、status == "error"）、`run_json_mode_zero_exit_reports_ok_status`（exit 0 のリグレッションガード、status == "ok"）。既存テスト `run_script_propagates_exit_code_json_mode` に `value["status"] == "error"` アサーションを追加。
 
+- [DONE] PR-SEC1: rustls-webpki CVE fix + regression guard (Issue #156)
+  - Goal: `cargo audit` ゲートを通過させ、`rustls-webpki` の脆弱バージョンへの退行を防ぐ。
+  - Current: `rustls-webpki` を `Cargo.lock` で `0.103.13` に固定（RUSTSEC-2026-0104/0098/0099/0049 をクリア）。`Cargo.toml` に `rustls-webpki = { version = ">=0.103.13", optional = true }` を追加してバージョン floor を明示。`tests/security_features.rs` に `rustls_webpki_version_is_at_least_patched_floor` テストを追加（Cargo.lock を parse してバージョンを検証するリグレッションガード）。
+  - Tests: `rustls_webpki_version_is_at_least_patched_floor` — Cargo.lock の `rustls-webpki` バージョンが `>= 0.103.13` であることをアサート。`cargo audit` exit 0 確認。`cargo clippy --all-targets --all-features -- -D warnings` 0 エラー。
+
 - [DONE] PR-UX1: `pybun init` non-TTY actionable error (Issue #133)
   - Goal: non-TTY 環境で `pybun init`（`--yes` なし）を実行した際、"IO error: not a terminal" の代わりに `--yes` フラグを案内する actionable diagnostic を返す。
   - Current: `init_project()` に `&mut EventCollector` を追加し、stdin が TTY でない場合は `E_INIT_NOT_INTERACTIVE` diagnostic（`suggestion` フィールドに `pybun init --yes` 案内）を push してから早期 return。テキストモードの stderr にも `--yes` を含むメッセージを出力。
