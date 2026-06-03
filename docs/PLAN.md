@@ -68,6 +68,11 @@
   - Current: `RenderDetail` に `process_exit_code: Option<i32>` フィールドと `with_process_exit_code()` ビルダーを追加。`Commands::Run` が `RunOutcome.exit_code` を `with_process_exit_code()` で設定し、`execute()` がアウトプット flush 後に `std::process::exit(code)` で伝播。stdout flush を `std::process::exit` 前に明示追加（Windows CRT バッファ対策）。
   - Tests: `tests/cli_run.rs` に4件追加 — `run_script_propagates_nonzero_exit_code`（スクリプトファイル、exit 42）、`run_inline_code_propagates_nonzero_exit_code`（-c モード、exit 7）、`run_script_exit_zero_still_succeeds`（exit 0 のリグレッションガード）、`run_script_propagates_exit_code_json_mode`（JSON モード、exit 5、JSON 出力が有効かつ終了コード伝播）。既存テスト `run_script_with_exit_code` を `.code(42)` アサーションに更新。`tests/sandbox.rs` の6件を `.code(1)` に更新（sandbox ポリシー違反で Python が exit 1 する場合）。
 
+- [DONE] PR-UX3: `pybun run --format=json` reports `status: "error"` on child failure (Issue #155)
+  - Goal: JSON モードで子プロセスが非ゼロで終了した場合、JSON エンベロープの `status` を `"error"` にし、pybun プロセスも子の終了コードで終了する。サンドボックス違反も同様。
+  - Current: `render()` 関数内（`src/commands.rs`）の JSON ステータス決定ロジックを修正。`detail.is_error` に加え `detail.process_exit_code.is_some_and(|c| c != 0)` を OR 条件として追加することで、子プロセス失敗時も `Status::Error` を返すよう変更。
+  - Tests: `tests/cli_run.rs` に3件追加 — `run_json_mode_nonzero_exit_reports_error_status`（スクリプトファイル、exit 3、status == "error"）、`run_json_mode_inline_nonzero_reports_error_status`（-c モード、exit 7、status == "error"）、`run_json_mode_zero_exit_reports_ok_status`（exit 0 のリグレッションガード、status == "ok"）。既存テスト `run_script_propagates_exit_code_json_mode` に `value["status"] == "error"` アサーションを追加。
+
 - [DONE] PR-UX1: `pybun init` non-TTY actionable error (Issue #133)
   - Goal: non-TTY 環境で `pybun init`（`--yes` なし）を実行した際、"IO error: not a terminal" の代わりに `--yes` フラグを案内する actionable diagnostic を返す。
   - Current: `init_project()` に `&mut EventCollector` を追加し、stdin が TTY でない場合は `E_INIT_NOT_INTERACTIVE` diagnostic（`suggestion` フィールドに `pybun init --yes` 案内）を push してから早期 return。テキストモードの stderr にも `--yes` を含むメッセージを出力。
