@@ -35,7 +35,8 @@ tokio = { version = "1.48.0", features = ["full"] }
 reqwest = { version = "0.12.25", default-features = false, features = ["blocking", "json", "rustls-tls", "stream"] }
 # Floor pin: reqwest pulls in rustls → rustls-webpki transitively.
 # >= 0.103.13 clears RUSTSEC-2026-0104/0098/0099/0049 (Issue #156).
-rustls-webpki = { version = ">=0.103.13", optional = true }
+# Non-optional so the version floor is compile-time enforced in every build.
+rustls-webpki = ">=0.103.13"
 futures = "0.3.31"
 dashmap = "6.1"
 mimalloc = { version = "0.1.43", optional = true }
