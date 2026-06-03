@@ -428,7 +428,7 @@ fn sandbox_json_output_includes_default_deny_write_paths() {
     let script = temp.path().join("noop.py");
     fs::write(&script, "print('hello')\n").unwrap();
 
-    // When --sandbox is used without --allow-write, JSON output should include default_deny_write
+    // When --sandbox is used without --allow-write, JSON output should include non-empty default_deny_write
     run_sandbox(&[
         "--format=json",
         "run",
@@ -436,5 +436,25 @@ fn sandbox_json_output_includes_default_deny_write_paths() {
         script.to_str().unwrap(),
     ])
     .success()
-    .stdout(predicate::str::contains("\"default_deny_write\""));
+    .stdout(predicate::str::contains("\"default_deny_write\""))
+    .stdout(predicate::str::contains("\"/etc\"").or(predicate::str::contains("\"/usr\"")));
+}
+
+#[test]
+fn sandbox_explicit_allow_write_yields_empty_default_deny_write_in_json() {
+    let temp = tempdir().unwrap();
+    let script = temp.path().join("noop.py");
+    fs::write(&script, "print('hello')\n").unwrap();
+
+    // When --allow-write is specified, default_deny_write must be [] in JSON
+    // (the explicit allowlist already restricts all other paths)
+    run_sandbox(&[
+        "--format=json",
+        "run",
+        "--sandbox",
+        &format!("--allow-write={}", temp.path().display()),
+        script.to_str().unwrap(),
+    ])
+    .success()
+    .stdout(predicate::str::contains("\"default_deny_write\":[]"));
 }

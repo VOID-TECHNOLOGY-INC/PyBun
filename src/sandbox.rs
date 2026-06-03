@@ -60,6 +60,8 @@ pub struct SandboxGuard {
     _tempdir: TempDir,
     enforcement: &'static str,
     audit_file: PathBuf,
+    /// Default system-critical paths denied for writes (empty when explicit allow_write is set).
+    pub default_deny_write: Vec<String>,
 }
 
 impl SandboxGuard {
@@ -141,6 +143,7 @@ pub fn apply_python_sandbox(cmd: &mut Command, config: SandboxConfig) -> Result<
         _tempdir: tempdir,
         enforcement: "python-sitecustomize",
         audit_file,
+        default_deny_write: default_deny,
     })
 }
 
@@ -231,12 +234,18 @@ def _is_allowed(path, allowed_paths):
 
 
 def _is_in_denied(path, denied_paths):
-    """Return True if path is within any of the denied directories."""
+    """Return True if path is within any of the denied directories.
+
+    Fails closed (returns True) on any evaluation error so that an
+    unexpected exception does not silently grant write access.
+    """
     try:
         normalized_path = _normalize_path(os.fsdecode(os.fspath(path)))
+        if not normalized_path:
+            return False
         return any(_path_within(normalized_path, p) for p in denied_paths)
     except Exception:
-        return False
+        return True  # fail-closed: deny on error
 
 
 def _mode_needs_read(mode):
@@ -282,6 +291,8 @@ def _patch_filesystem():
         if not isinstance(file, (str, bytes, os.PathLike)):
             return _orig_open(file, mode, *args, **kwargs)
         path = os.fsdecode(os.fspath(file))
+        if not path:
+            return _orig_open(file, mode, *args, **kwargs)
         if _HAS_READ_POLICY and _mode_needs_read(mode):
             if not _is_allowed(path, _ALLOW_READ):
                 _deny("read from " + path, "blocked_file_reads")
@@ -289,7 +300,9 @@ def _patch_filesystem():
             if not _is_allowed(path, _ALLOW_WRITE):
                 _deny("write to " + path, "blocked_file_writes")
         elif _HAS_DEFAULT_DENY_WRITE and _mode_needs_write(mode):
-            if _is_in_denied(path, _DEFAULT_DENY_WRITE):
+            # Exempt sys prefixes (Python internals) even if they fall under a denied path
+            # to avoid blocking .pyc writes and other interpreter-internal operations.
+            if _is_in_denied(path, _DEFAULT_DENY_WRITE) and not _is_allowed(path, []):
                 _deny("write to " + path, "blocked_file_writes")
         return _orig_open(file, mode, *args, **kwargs)
 
@@ -299,7 +312,8 @@ def _patch_filesystem():
 def _write_audit():
     if _AUDIT_FILE:
         try:
-            _orig_open(_AUDIT_FILE, "w").write(json.dumps(_audit))
+            with _orig_open(_AUDIT_FILE, "w") as _f:
+                _f.write(json.dumps(_audit))
         except Exception:
             pass
 

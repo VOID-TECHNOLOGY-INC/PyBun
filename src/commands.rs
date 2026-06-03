@@ -2884,17 +2884,12 @@ async fn run_script(
                 allow_write: args.allow_write.clone(),
             },
         )?;
-        let default_deny_write = if args.allow_write.is_empty() {
-            sandbox::default_system_deny_write_paths()
-        } else {
-            vec![]
-        };
         sandbox_info = Some(SandboxInfo {
             enabled: true,
             allow_network,
             allow_read: args.allow_read.clone(),
             allow_write: args.allow_write.clone(),
-            default_deny_write,
+            default_deny_write: guard.default_deny_write.clone(),
             enforcement: guard.enforcement().to_string(),
             audit: None,
         });
@@ -3016,17 +3011,12 @@ fn run_python_code(
                 allow_write: args.allow_write.clone(),
             },
         )?;
-        let default_deny_write = if args.allow_write.is_empty() {
-            sandbox::default_system_deny_write_paths()
-        } else {
-            vec![]
-        };
         sandbox_info = Some(SandboxInfo {
             enabled: true,
             allow_network,
             allow_read: args.allow_read.clone(),
             allow_write: args.allow_write.clone(),
-            default_deny_write,
+            default_deny_write: guard.default_deny_write.clone(),
             enforcement: guard.enforcement().to_string(),
             audit: None,
         });
