@@ -264,6 +264,7 @@ pub async fn execute(cli: Cli) -> Result<()> {
                             "allow_network": s.allow_network,
                             "allow_read": s.allow_read,
                             "allow_write": s.allow_write,
+                            "default_deny_write": s.default_deny_write,
                             "enforcement": s.enforcement,
                             "audit": s.audit,
                         })
@@ -2109,6 +2110,7 @@ struct SandboxInfo {
     allow_network: bool,
     allow_read: Vec<String>,
     allow_write: Vec<String>,
+    default_deny_write: Vec<String>,
     enforcement: String,
     audit: Option<sandbox::SandboxAudit>,
 }
@@ -2882,11 +2884,17 @@ async fn run_script(
                 allow_write: args.allow_write.clone(),
             },
         )?;
+        let default_deny_write = if args.allow_write.is_empty() {
+            sandbox::default_system_deny_write_paths()
+        } else {
+            vec![]
+        };
         sandbox_info = Some(SandboxInfo {
             enabled: true,
             allow_network,
             allow_read: args.allow_read.clone(),
             allow_write: args.allow_write.clone(),
+            default_deny_write,
             enforcement: guard.enforcement().to_string(),
             audit: None,
         });
@@ -3008,11 +3016,17 @@ fn run_python_code(
                 allow_write: args.allow_write.clone(),
             },
         )?;
+        let default_deny_write = if args.allow_write.is_empty() {
+            sandbox::default_system_deny_write_paths()
+        } else {
+            vec![]
+        };
         sandbox_info = Some(SandboxInfo {
             enabled: true,
             allow_network,
             allow_read: args.allow_read.clone(),
             allow_write: args.allow_write.clone(),
+            default_deny_write,
             enforcement: guard.enforcement().to_string(),
             audit: None,
         });
