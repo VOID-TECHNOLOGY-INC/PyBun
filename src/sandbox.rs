@@ -22,27 +22,28 @@ pub struct SandboxConfig {
 /// Returns the default system-critical paths that should be denied for writes
 /// when sandbox mode is active and no explicit `--allow-write` policy is set.
 pub fn default_system_deny_write_paths() -> Vec<String> {
-    let mut paths = vec![
-        "/etc".to_string(),
-        "/usr".to_string(),
-        "/bin".to_string(),
-        "/sbin".to_string(),
-        "/lib".to_string(),
-        "/lib64".to_string(),
-        "/proc".to_string(),
-        "/sys".to_string(),
-        "/dev".to_string(),
-        "/boot".to_string(),
+    let paths: &[&str] = &[
+        "/etc",
+        "/usr",
+        "/bin",
+        "/sbin",
+        "/lib",
+        "/lib64",
+        "/proc",
+        "/sys",
+        "/dev",
+        "/boot",
+        #[cfg(target_os = "macos")]
+        "/System",
+        #[cfg(target_os = "macos")]
+        "/Library",
+        #[cfg(target_os = "macos")]
+        "/Applications",
+        // /etc on macOS resolves to /private/etc via realpath, so both are covered by /etc above.
+        // /private/var is intentionally excluded: it contains /private/var/folders which is
+        // the macOS user temp dir used by tempfile::tempdir() and common user workflows.
     ];
-    #[cfg(target_os = "macos")]
-    {
-        paths.push("/System".to_string());
-        paths.push("/Library".to_string());
-        paths.push("/Applications".to_string());
-        paths.push("/private/etc".to_string());
-        paths.push("/private/var".to_string());
-    }
-    paths
+    paths.iter().map(|&s| s.to_string()).collect()
 }
 
 /// Audit data collected by the sandbox after execution.
