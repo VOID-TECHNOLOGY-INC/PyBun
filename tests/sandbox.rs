@@ -302,3 +302,159 @@ fn sandbox_json_output_includes_policy() {
     .stdout(predicate::str::contains("\"allow_read\""))
     .stdout(predicate::str::contains("\"allow_write\""));
 }
+
+// --- Default write restriction tests (Issue #150) ---
+
+#[test]
+fn sandbox_default_blocks_write_to_etc() {
+    let temp = tempdir().unwrap();
+    let script = temp.path().join("write_etc.py");
+    // Attempt to write to /etc (should be blocked by sandbox default policy even without --allow-write)
+    // Catches OSError broadly since the sandbox raises PermissionError (subclass of OSError)
+    fs::write(
+        &script,
+        r#"
+try:
+    open('/etc/pybun_sandbox_test_DO_NOT_CREATE', 'w').write('hacked')
+    print('WRITE ALLOWED')
+except OSError as e:
+    print('WRITE BLOCKED')
+"#,
+    )
+    .unwrap();
+
+    run_sandbox(&[
+        "--format=json",
+        "run",
+        "--sandbox",
+        script.to_str().unwrap(),
+    ])
+    .success()
+    .stdout(predicate::str::contains("WRITE BLOCKED"));
+}
+
+#[test]
+fn sandbox_default_allows_write_to_tmp() {
+    let temp = tempdir().unwrap();
+    let script = temp.path().join("write_tmp.py");
+    let output_file = temp.path().join("sandbox_output.txt");
+    let out_path = output_file.to_str().unwrap().replace('\\', "/");
+    // Write to a temp dir path (which is in /tmp or equivalent) — should be allowed
+    fs::write(
+        &script,
+        format!(
+            r#"
+import os
+open({path:?}, 'w').write('ok')
+print('WRITE OK')
+"#,
+            path = out_path
+        ),
+    )
+    .unwrap();
+
+    run_sandbox(&[
+        "--format=json",
+        "run",
+        "--sandbox",
+        script.to_str().unwrap(),
+    ])
+    .success()
+    .stdout(predicate::str::contains("WRITE OK"));
+}
+
+#[test]
+fn sandbox_default_write_restriction_audit_counts_blocked_writes() {
+    let temp = tempdir().unwrap();
+    let script = temp.path().join("write_audit.py");
+    // This test verifies that the SANDBOX (not the OS) is blocking writes by checking
+    // the audit counter. The sandbox intercepts open() before the OS syscall and
+    // increments blocked_file_writes.
+    fs::write(
+        &script,
+        r#"
+try:
+    open('/etc/pybun_sandbox_test_DO_NOT_CREATE', 'w').write('x')
+except OSError:
+    pass
+try:
+    open('/usr/pybun_sandbox_test_DO_NOT_CREATE', 'w').write('x')
+except OSError:
+    pass
+"#,
+    )
+    .unwrap();
+
+    run_sandbox(&[
+        "--format=json",
+        "run",
+        "--sandbox",
+        script.to_str().unwrap(),
+    ])
+    .success()
+    .stdout(predicate::str::contains("\"blocked_file_writes\":2"));
+}
+
+#[test]
+fn sandbox_explicit_allow_write_overrides_default_restriction() {
+    let temp = tempdir().unwrap();
+    let output_file = temp.path().join("out.txt");
+    let script = temp.path().join("write_explicit.py");
+    let out_path = output_file.to_str().unwrap().replace('\\', "/");
+    fs::write(
+        &script,
+        format!(
+            "open({path:?}, 'w').write('explicit')\nprint('WRITE OK')\n",
+            path = out_path
+        ),
+    )
+    .unwrap();
+
+    // With --allow-write, explicit paths are allowed (existing behavior preserved)
+    run_sandbox(&[
+        "--format=json",
+        "run",
+        "--sandbox",
+        &format!("--allow-write={}", temp.path().display()),
+        script.to_str().unwrap(),
+    ])
+    .success()
+    .stdout(predicate::str::contains("WRITE OK"));
+}
+
+#[test]
+fn sandbox_json_output_includes_default_deny_write_paths() {
+    let temp = tempdir().unwrap();
+    let script = temp.path().join("noop.py");
+    fs::write(&script, "print('hello')\n").unwrap();
+
+    // When --sandbox is used without --allow-write, JSON output should include non-empty default_deny_write
+    run_sandbox(&[
+        "--format=json",
+        "run",
+        "--sandbox",
+        script.to_str().unwrap(),
+    ])
+    .success()
+    .stdout(predicate::str::contains("\"default_deny_write\""))
+    .stdout(predicate::str::contains("\"/etc\"").or(predicate::str::contains("\"/usr\"")));
+}
+
+#[test]
+fn sandbox_explicit_allow_write_yields_empty_default_deny_write_in_json() {
+    let temp = tempdir().unwrap();
+    let script = temp.path().join("noop.py");
+    fs::write(&script, "print('hello')\n").unwrap();
+
+    // When --allow-write is specified, default_deny_write must be [] in JSON
+    // (the explicit allowlist already restricts all other paths)
+    run_sandbox(&[
+        "--format=json",
+        "run",
+        "--sandbox",
+        &format!("--allow-write={}", temp.path().display()),
+        script.to_str().unwrap(),
+    ])
+    .success()
+    .stdout(predicate::str::contains("\"default_deny_write\":[]"));
+}

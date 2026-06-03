@@ -15,8 +15,40 @@ pub struct SandboxConfig {
     pub allow_network: bool,
     /// Paths allowed for reading. Empty = no read restriction.
     pub allow_read: Vec<String>,
-    /// Paths allowed for writing. Empty = no write restriction.
+    /// Paths allowed for writing. Empty = no write restriction (default deny applies).
     pub allow_write: Vec<String>,
+}
+
+/// Returns the default system-critical paths that should be denied for writes
+/// when sandbox mode is active and no explicit `--allow-write` policy is set.
+pub fn default_system_deny_write_paths() -> Vec<String> {
+    let paths: &[&str] = &[
+        "/etc",
+        "/usr",
+        "/bin",
+        "/sbin",
+        "/lib",
+        "/lib64",
+        "/proc",
+        "/sys",
+        "/dev",
+        "/boot",
+        #[cfg(target_os = "macos")]
+        "/System",
+        #[cfg(target_os = "macos")]
+        "/Library",
+        #[cfg(target_os = "macos")]
+        "/Applications",
+        // Defense in depth: /etc resolves to /private/etc on macOS via realpath, but
+        // list both forms so the deny fires regardless of whether the caller normalized.
+        #[cfg(target_os = "macos")]
+        "/private/etc",
+        // /private/var is intentionally excluded: /private/var/folders is the macOS
+        // user temp dir (used by tempfile::tempdir()), so denying the whole subtree
+        // would block legitimate writes. Specific high-value sub-paths are protected
+        // by macOS SIP and file ownership independently of this sandbox layer.
+    ];
+    paths.iter().map(|&s| s.to_string()).collect()
 }
 
 /// Audit data collected by the sandbox after execution.
@@ -34,6 +66,8 @@ pub struct SandboxGuard {
     _tempdir: TempDir,
     enforcement: &'static str,
     audit_file: PathBuf,
+    /// Default system-critical paths denied for writes (empty when explicit allow_write is set).
+    pub default_deny_write: Vec<String>,
 }
 
 impl SandboxGuard {
@@ -94,6 +128,19 @@ pub fn apply_python_sandbox(cmd: &mut Command, config: SandboxConfig) -> Result<
         serialize_policy_paths(&config.allow_write)?,
     );
 
+    // When no explicit write policy is set, apply default system-path restrictions.
+    // When an explicit allow_write policy is set, the default deny is not needed
+    // (the allowlist already restricts all other paths).
+    let default_deny = if config.allow_write.is_empty() {
+        default_system_deny_write_paths()
+    } else {
+        vec![]
+    };
+    cmd.env(
+        "PYBUN_SANDBOX_DEFAULT_DENY_WRITE",
+        serialize_policy_paths(&default_deny)?,
+    );
+
     // Tell the sitecustomize where to write the audit JSON.
     cmd.env("PYBUN_SANDBOX_AUDIT_FILE", audit_file.as_os_str());
     cmd.env("PYBUN_SANDBOX_HELPER_DIR", tempdir.path().as_os_str());
@@ -102,6 +149,7 @@ pub fn apply_python_sandbox(cmd: &mut Command, config: SandboxConfig) -> Result<
         _tempdir: tempdir,
         enforcement: "python-sitecustomize",
         audit_file,
+        default_deny_write: default_deny,
     })
 }
 
@@ -148,8 +196,10 @@ def _path_within(path, allowed_root):
 
 _ALLOW_READ = [_normalize_path(p) for p in _load_policy_paths("PYBUN_SANDBOX_ALLOW_READ")]
 _ALLOW_WRITE = [_normalize_path(p) for p in _load_policy_paths("PYBUN_SANDBOX_ALLOW_WRITE")]
+_DEFAULT_DENY_WRITE = [_normalize_path(p) for p in _load_policy_paths("PYBUN_SANDBOX_DEFAULT_DENY_WRITE")]
 _HAS_READ_POLICY = bool(_ALLOW_READ)
 _HAS_WRITE_POLICY = bool(_ALLOW_WRITE)
+_HAS_DEFAULT_DENY_WRITE = bool(_DEFAULT_DENY_WRITE)
 
 # Sys prefixes are always readable so Python imports keep working.
 _SYS_PREFIXES = []
@@ -187,6 +237,21 @@ def _is_allowed(path, allowed_paths):
         return any(_path_within(normalized_path, p) for p in allowed_paths)
     except Exception:
         return False
+
+
+def _is_in_denied(path, denied_paths):
+    """Return True if path is within any of the denied directories.
+
+    Fails closed (returns True) on any evaluation error so that an
+    unexpected exception does not silently grant write access.
+    """
+    try:
+        normalized_path = _normalize_path(os.fsdecode(os.fspath(path)))
+        if not normalized_path:
+            return False
+        return any(_path_within(normalized_path, p) for p in denied_paths)
+    except Exception:
+        return True  # fail-closed: deny on error
 
 
 def _mode_needs_read(mode):
@@ -232,11 +297,16 @@ def _patch_filesystem():
         if not isinstance(file, (str, bytes, os.PathLike)):
             return _orig_open(file, mode, *args, **kwargs)
         path = os.fsdecode(os.fspath(file))
+        if not path:
+            return _orig_open(file, mode, *args, **kwargs)
         if _HAS_READ_POLICY and _mode_needs_read(mode):
             if not _is_allowed(path, _ALLOW_READ):
                 _deny("read from " + path, "blocked_file_reads")
         if _HAS_WRITE_POLICY and _mode_needs_write(mode):
             if not _is_allowed(path, _ALLOW_WRITE):
+                _deny("write to " + path, "blocked_file_writes")
+        elif _HAS_DEFAULT_DENY_WRITE and _mode_needs_write(mode):
+            if _is_in_denied(path, _DEFAULT_DENY_WRITE):
                 _deny("write to " + path, "blocked_file_writes")
         return _orig_open(file, mode, *args, **kwargs)
 
@@ -246,7 +316,8 @@ def _patch_filesystem():
 def _write_audit():
     if _AUDIT_FILE:
         try:
-            _orig_open(_AUDIT_FILE, "w").write(json.dumps(_audit))
+            with _orig_open(_AUDIT_FILE, "w") as _f:
+                _f.write(json.dumps(_audit))
         except Exception:
             pass
 
@@ -256,11 +327,11 @@ try:
     _block_subprocesses()
     if not ALLOW_NETWORK:
         _block_network()
-    if _HAS_READ_POLICY or _HAS_WRITE_POLICY:
+    if _HAS_READ_POLICY or _HAS_WRITE_POLICY or _HAS_DEFAULT_DENY_WRITE:
         _patch_filesystem()
     sys.stderr.write(
-        "[pybun] sandbox active (allow_network={}, read_policy={}, write_policy={})\n".format(
-            ALLOW_NETWORK, _HAS_READ_POLICY, _HAS_WRITE_POLICY
+        "[pybun] sandbox active (allow_network={}, read_policy={}, write_policy={}, default_deny_write={})\n".format(
+            ALLOW_NETWORK, _HAS_READ_POLICY, _HAS_WRITE_POLICY, _HAS_DEFAULT_DENY_WRITE
         )
     )
 except Exception as exc:  # pragma: no cover - defensive, should not happen
