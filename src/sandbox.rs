@@ -39,9 +39,14 @@ pub fn default_system_deny_write_paths() -> Vec<String> {
         "/Library",
         #[cfg(target_os = "macos")]
         "/Applications",
-        // /etc on macOS resolves to /private/etc via realpath, so both are covered by /etc above.
-        // /private/var is intentionally excluded: it contains /private/var/folders which is
-        // the macOS user temp dir used by tempfile::tempdir() and common user workflows.
+        // Defense in depth: /etc resolves to /private/etc on macOS via realpath, but
+        // list both forms so the deny fires regardless of whether the caller normalized.
+        #[cfg(target_os = "macos")]
+        "/private/etc",
+        // /private/var is intentionally excluded: /private/var/folders is the macOS
+        // user temp dir (used by tempfile::tempdir()), so denying the whole subtree
+        // would block legitimate writes. Specific high-value sub-paths are protected
+        // by macOS SIP and file ownership independently of this sandbox layer.
     ];
     paths.iter().map(|&s| s.to_string()).collect()
 }
@@ -301,9 +306,7 @@ def _patch_filesystem():
             if not _is_allowed(path, _ALLOW_WRITE):
                 _deny("write to " + path, "blocked_file_writes")
         elif _HAS_DEFAULT_DENY_WRITE and _mode_needs_write(mode):
-            # Exempt sys prefixes (Python internals) even if they fall under a denied path
-            # to avoid blocking .pyc writes and other interpreter-internal operations.
-            if _is_in_denied(path, _DEFAULT_DENY_WRITE) and not _is_allowed(path, []):
+            if _is_in_denied(path, _DEFAULT_DENY_WRITE):
                 _deny("write to " + path, "blocked_file_writes")
         return _orig_open(file, mode, *args, **kwargs)
 
