@@ -752,7 +752,9 @@ fn render(
             }
         }
         OutputFormat::Json => {
-            let status = if detail.is_error {
+            // child_failed is only set on the Ok arm; is_error covers the Err arm (see execute()).
+            let child_failed = detail.process_exit_code.is_some_and(|c| c != 0);
+            let status = if detail.is_error || child_failed {
                 Status::Error
             } else {
                 Status::Ok

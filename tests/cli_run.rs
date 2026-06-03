@@ -169,6 +169,8 @@ fn run_script_propagates_exit_code_json_mode() {
     let value: serde_json::Value = serde_json::from_str(&stdout)
         .unwrap_or_else(|_| panic!("expected valid JSON, got: {stdout}"));
     assert_eq!(value["detail"]["exit_code"], 5);
+    // JSON envelope status must be "error" when child exits non-zero (#155)
+    assert_eq!(value["status"], "error");
     // pybun process must exit with the script's code
     assert_eq!(output.status.code(), Some(5));
 }
@@ -391,4 +393,79 @@ print("test cleanup field")
         .success()
         // cleanup should be false with caching (venv not cleaned up)
         .stdout(predicate::str::contains("\"cleanup\":false"));
+}
+
+// =============================================================================
+// Issue #155: --format=json must report status "error" when child exits non-zero
+// =============================================================================
+
+#[test]
+fn run_json_mode_nonzero_exit_reports_error_status() {
+    let temp = tempdir().unwrap();
+    let script = temp.path().join("fail155.py");
+    fs::write(&script, "import sys; sys.exit(3)").unwrap();
+
+    let output = bin()
+        .args(["--format=json", "run", script.to_str().unwrap()])
+        .output()
+        .expect("run pybun");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let value: Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|_| panic!("expected valid JSON, got: {stdout}"));
+
+    assert_eq!(
+        value["status"], "error",
+        "JSON status must be 'error' when child exits non-zero"
+    );
+    assert_eq!(value["detail"]["exit_code"], 3);
+    assert_eq!(output.status.code(), Some(3));
+}
+
+#[test]
+fn run_json_mode_inline_nonzero_reports_error_status() {
+    let output = bin()
+        .args([
+            "--format=json",
+            "run",
+            "-c",
+            "--",
+            "import sys; sys.exit(7)",
+        ])
+        .output()
+        .expect("run pybun");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let value: Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|_| panic!("expected valid JSON, got: {stdout}"));
+
+    assert_eq!(
+        value["status"], "error",
+        "JSON status must be 'error' for -c mode with non-zero exit"
+    );
+    assert_eq!(value["detail"]["exit_code"], 7);
+    assert_eq!(output.status.code(), Some(7));
+}
+
+#[test]
+fn run_json_mode_zero_exit_reports_ok_status() {
+    let temp = tempdir().unwrap();
+    let script = temp.path().join("ok155.py");
+    fs::write(&script, "print('success')").unwrap();
+
+    let output = bin()
+        .args(["--format=json", "run", script.to_str().unwrap()])
+        .output()
+        .expect("run pybun");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let value: Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|_| panic!("expected valid JSON, got: {stdout}"));
+
+    assert_eq!(
+        value["status"], "ok",
+        "JSON status must be 'ok' when child exits 0"
+    );
+    assert_eq!(value["detail"]["exit_code"], 0);
+    assert!(output.status.success());
 }
