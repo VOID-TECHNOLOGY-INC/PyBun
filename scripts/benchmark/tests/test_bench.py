@@ -1,3 +1,4 @@
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -28,29 +29,24 @@ class TestComputeStats(unittest.TestCase):
 
 
 class TestFindToolRelativePath(unittest.TestCase):
-    """Test that find_tool resolves relative paths against _base_dir, not cwd."""
+    """find_tool must resolve relative paths against _base_dir, not cwd."""
 
     def test_relative_path_resolved_against_base_dir(self) -> None:
         import tempfile
-        import os
-        from pathlib import Path
 
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
-            # Create a fake pybun binary in a subdirectory
             bin_dir = tmp / "bin"
             bin_dir.mkdir()
-            fake_pybun = bin_dir / "pybun"
-            fake_pybun.write_text("#!/bin/sh\necho pybun")
+            fake_pybun = tmp / "bin" / "pybun"
+            fake_pybun.write_text("#!/bin/sh\nexit 0")
             fake_pybun.chmod(0o755)
 
-            # Config with relative path from a different base_dir
             config = {
                 "_base_dir": str(tmp),
                 "paths": {"pybun": "bin/pybun"},
             }
 
-            # Call from a different cwd (not tmp)
             original_cwd = os.getcwd()
             try:
                 os.chdir("/tmp")
@@ -61,22 +57,20 @@ class TestFindToolRelativePath(unittest.TestCase):
             self.assertEqual(result, str(fake_pybun))
 
     def test_relative_path_without_base_dir_falls_through_to_which(self) -> None:
-        """Without _base_dir, relative path that doesn't exist returns PATH lookup."""
+        """Without _base_dir, a relative path that doesn't exist returns PATH lookup (None)."""
         config = {
             "paths": {"nonexistent_tool_xyz": "../../target/release/nonexistent_xyz"},
         }
         result = bench.find_tool("nonexistent_tool_xyz", config)
-        # Should be None since neither path nor PATH entry exists
         self.assertIsNone(result)
 
     def test_absolute_path_still_works(self) -> None:
         import tempfile
-        from pathlib import Path
 
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
             fake_pybun = tmp / "pybun"
-            fake_pybun.write_text("#!/bin/sh\necho pybun")
+            fake_pybun.write_text("#!/bin/sh\nexit 0")
             fake_pybun.chmod(0o755)
 
             config = {
@@ -85,23 +79,6 @@ class TestFindToolRelativePath(unittest.TestCase):
             }
             result = bench.find_tool("pybun", config)
             self.assertEqual(result, str(fake_pybun))
-
-    def test_base_dir_stored_in_config_after_load(self) -> None:
-        """Verify that _base_dir ends up in config after main() config loading."""
-        # Simulate the config loading logic from main()
-        import tempfile
-        from pathlib import Path
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp = Path(tmpdir)
-            config_file = tmp / "config.toml"
-            config_file.write_text("[general]\niterations = 1\n")
-
-            # Replicate the logic from main() that sets _base_dir
-            config: dict = {}
-            config["_base_dir"] = str(tmp)
-
-            self.assertEqual(config["_base_dir"], str(tmp))
 
 
 if __name__ == "__main__":

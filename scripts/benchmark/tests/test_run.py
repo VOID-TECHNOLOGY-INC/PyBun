@@ -1,16 +1,15 @@
 import os
 import sys
-import shutil
 import unittest
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 # scenarios/run.py depends on bench.py injecting these names at load time.
 # Inject stubs before importing so the module is importable in tests.
 import bench
-import importlib
-import types
+import importlib.util
 
 # Load run module with injected bench exports (mirrors bench.load_scenarios)
 run_spec = importlib.util.spec_from_file_location(
@@ -43,11 +42,12 @@ def _make_fake_binary(path: Path) -> Path:
     return path
 
 
-def _collect_calls(config: dict, scenario_config: dict, base_dir: Path) -> list[dict]:
+def _collect_calls(config: dict[str, Any], scenario_config: dict[str, Any], base_dir: Path) -> list[dict[str, Any]]:
     """Run run_benchmark with patched measure_command and return captured calls."""
-    calls: list[dict] = []
+    calls: list[dict[str, Any]] = []
 
-    def fake_measure(cmd, warmup=1, iterations=5, timeout=300, env=None, cwd=None, trim_ratio=0.0):
+    def fake_measure(cmd: list[str], warmup: int = 1, iterations: int = 5, timeout: int = 300,
+                     env: dict | None = None, cwd: str | None = None, trim_ratio: float = 0.0) -> bench.BenchResult:
         calls.append({"cmd": list(cmd), "cwd": cwd})
         return bench.BenchResult(
             scenario="",
@@ -81,8 +81,8 @@ class TestRunCwdHermetic(unittest.TestCase):
     def tearDown(self) -> None:
         self._bindir_ctx.__exit__(None, None, None)
 
-    def _make_config(self, *, pep723: bool = False, profiles: list | None = None) -> tuple[dict, dict]:
-        config = {
+    def _make_config(self, *, pep723: bool = False, profiles: list[str] | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
+        config: dict[str, Any] = {
             "_base_dir": str(self.base_dir),
             "paths": {
                 "pybun": str(self.fake_pybun),
@@ -94,7 +94,7 @@ class TestRunCwdHermetic(unittest.TestCase):
             "dry_run": False,
             "verbose": False,
         }
-        scenario_config = {
+        scenario_config: dict[str, Any] = {
             "pep723": pep723,
             "profiles": profiles if profiles is not None else [],
             "pep723_clear_envs": False,
@@ -117,14 +117,26 @@ class TestRunCwdHermetic(unittest.TestCase):
         config, scenario_config = self._make_config()
         calls = _collect_calls(config, scenario_config, self.base_dir)
 
-        # B3.3 uses heavy_imports.py — collect all uv calls
         uv_calls = [c for c in calls if "uv" in c["cmd"][0]]
         self.assertTrue(len(uv_calls) > 0)
         for call in uv_calls:
             self.assertIsNotNone(call["cwd"], f"uv call missing cwd: {call['cmd']}")
 
+    def test_b32_pep723_calls_have_cwd(self) -> None:
+        """B3.2: all four pybun/uv PEP 723 measure_command calls must pass cwd."""
+        config, scenario_config = self._make_config(pep723=True)
+        calls = _collect_calls(config, scenario_config, self.base_dir)
+
+        # B3.2 produces at least pybun-cold, pybun-warm, uv-cold, uv-warm
+        self.assertGreaterEqual(len(calls), 4, f"Expected >=4 calls with pep723=True, got: {calls}")
+        for call in calls:
+            self.assertIsNotNone(
+                call["cwd"],
+                f"measure_command missing cwd for cmd: {call['cmd']}"
+            )
+
     def test_all_measure_command_calls_have_cwd(self) -> None:
-        """Every single measure_command call must specify cwd."""
+        """Every single measure_command call in non-pep723 paths must specify cwd."""
         config, scenario_config = self._make_config()
         calls = _collect_calls(config, scenario_config, self.base_dir)
 
@@ -154,63 +166,6 @@ class TestRunCwdHermetic(unittest.TestCase):
         self.assertTrue(len(python_calls) > 0, f"No python calls found. All: {calls}")
         for call in python_calls:
             self.assertIsNotNone(call["cwd"], f"python call missing cwd: {call['cmd']}")
-
-
-class TestFindToolRelativePath(unittest.TestCase):
-    """find_tool must resolve relative paths against _base_dir, not cwd."""
-
-    def test_relative_path_resolved_against_base_dir(self) -> None:
-        import tempfile
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp = Path(tmpdir)
-            bin_dir = tmp / "bin"
-            bin_dir.mkdir()
-            fake_pybun = _make_fake_binary(bin_dir / "pybun")
-
-            config = {
-                "_base_dir": str(tmp),
-                "paths": {"pybun": "bin/pybun"},
-            }
-
-            original_cwd = os.getcwd()
-            try:
-                os.chdir("/tmp")
-                result = bench.find_tool("pybun", config)
-            finally:
-                os.chdir(original_cwd)
-
-            self.assertEqual(result, str(fake_pybun))
-
-    def test_relative_path_without_base_dir_falls_through_to_which(self) -> None:
-        config = {
-            "paths": {"nonexistent_tool_xyz": "../../target/release/nonexistent_xyz"},
-        }
-        result = bench.find_tool("nonexistent_tool_xyz", config)
-        self.assertIsNone(result)
-
-    def test_absolute_path_still_works(self) -> None:
-        import tempfile
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp = Path(tmpdir)
-            fake_pybun = _make_fake_binary(tmp / "pybun")
-
-            config = {
-                "_base_dir": "/some/other/dir",
-                "paths": {"pybun": str(fake_pybun)},
-            }
-            result = bench.find_tool("pybun", config)
-            self.assertEqual(result, str(fake_pybun))
-
-    def test_base_dir_stored_in_config_after_load(self) -> None:
-        import tempfile
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp = Path(tmpdir)
-            config: dict = {}
-            config["_base_dir"] = str(tmp)
-            self.assertEqual(config["_base_dir"], str(tmp))
 
 
 if __name__ == "__main__":

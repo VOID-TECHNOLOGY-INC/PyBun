@@ -278,6 +278,7 @@ def run_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
                         iterations=1,
                         env=pybun_env,
                         trim_ratio=trim_ratio,
+                        cwd=str(tmp),
                     )
                     result.scenario = "B3.2_pep723_cold"
                     result.tool = "pybun"
@@ -286,7 +287,7 @@ def run_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
                     result.metadata["pep723_fixture"] = str(pep723_script)
                     results.append(result)
                     print(f"  pybun (cold): {result.duration_ms:.2f}ms")
-                    
+
                     # Warm runs
                     cache_state = {
                         "pep723_envs": "kept",
@@ -298,6 +299,7 @@ def run_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
                         iterations=iterations,
                         env=pybun_env,
                         trim_ratio=trim_ratio,
+                        cwd=str(tmp),
                     )
                     result.scenario = "B3.2_pep723_warm"
                     result.tool = "pybun"
@@ -318,13 +320,15 @@ def run_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
                         "uv_cache": clear_dir(shared_uv_cache),
                         "fs_cache": clear_fs_cache() if pep723_clear_fs_cache else "kept",
                     }
-                    # Cold run
+                    # Cold run — pass cwd=tmp so uv doesn't walk up to a parent
+                    # pyproject.toml (fixes Issue #157 Problem 2).
                     result = measure_command(
                         [uv_path, "run", str(pep723_script)],
                         warmup=0,
                         iterations=1,
                         env=uv_env,
                         trim_ratio=trim_ratio,
+                        cwd=str(tmp),
                     )
                     result.scenario = "B3.2_pep723_cold"
                     result.tool = "uv"
@@ -333,7 +337,7 @@ def run_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
                     result.metadata["pep723_fixture"] = str(pep723_script)
                     results.append(result)
                     print(f"  uv (cold): {result.duration_ms:.2f}ms")
-                    
+
                     # Warm runs
                     cache_state = {
                         "fs_cache": clear_fs_cache() if pep723_clear_fs_cache else "kept",
@@ -344,6 +348,7 @@ def run_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
                         iterations=iterations,
                         env=uv_env,
                         trim_ratio=trim_ratio,
+                        cwd=str(tmp),
                     )
                     result.scenario = "B3.2_pep723_warm"
                     result.tool = "uv"
