@@ -541,7 +541,11 @@ fn install_prefers_prebuilt_wheel_for_platform() {
     let lock_path = temp.path().join("pybun.lockb");
     let index = index_wheels_path();
 
+    // Pin to cp311 so this test is independent of the system Python version.
+    // The fixture only contains cp311 wheels; without the override the test would fall
+    // back to py3-none-any on hosts running Python != 3.11.
     bin()
+        .env("PYBUN_FORCE_CP_TAG", "cp311")
         .args([
             "install",
             "--index",
@@ -653,7 +657,11 @@ fn install_resolves_pep425_macosx_arm64_wheel() {
     let lock_path = temp.path().join("pybun.lockb");
     let index = index_pypi_wheels_path();
 
+    // Pin to cp311 so this test is independent of the system Python version.
+    // The fixture only contains cp311 wheels; without the override the test would fall
+    // back to py3-none-any on hosts running Python != 3.11.
     bin()
+        .env("PYBUN_FORCE_CP_TAG", "cp311")
         .args([
             "install",
             "--index",
@@ -682,7 +690,11 @@ fn install_resolves_universal2_wheel_on_macos() {
     let lock_path = temp.path().join("pybun.lockb");
     let index = index_pypi_wheels_path();
 
+    // Pin to cp311 so this test is independent of the system Python version.
+    // The fixture only contains cp311 wheels; without the override the test would fall
+    // back to sdist on hosts running Python != 3.11.
     let status = bin()
+        .env("PYBUN_FORCE_CP_TAG", "cp311")
         .args([
             "install",
             "--index",
@@ -717,7 +729,11 @@ fn install_resolves_manylinux_2_28_wheel_on_linux_x86_64() {
     let lock_path = temp.path().join("pybun.lockb");
     let index = index_pypi_wheels_path();
 
+    // Pin to cp311 so this test is independent of the system Python version.
+    // The fixture only contains cp311 wheels; without the override the test would fall
+    // back to sdist on hosts running Python != 3.11.
     let output = bin()
+        .env("PYBUN_FORCE_CP_TAG", "cp311")
         .args([
             "install",
             "--index",

@@ -397,12 +397,22 @@ pub fn is_wheel_python_compatible(
 
 /// Return the CPython tag for the active Python interpreter, e.g. `"cp311"`.
 ///
-/// Derived from [`get_python_version`] and cached. Falls back to `"cp311"` if
-/// the version cannot be determined, which is the most common deployment target
-/// and avoids silently dropping packages on misconfigured systems.
+/// Detection order:
+/// 1. `PYBUN_FORCE_CP_TAG` environment variable — overrides detection entirely (for testing).
+/// 2. The output of `python3 --version` / `python --version` on PATH.
+/// 3. Fallback: `"cp311"` (most common deployment target).
+///
+/// The result is cached in a `OnceLock` so detection runs at most once per process.
 fn active_python_cp_tag() -> &'static str {
     static CP_TAG: OnceLock<String> = OnceLock::new();
     CP_TAG.get_or_init(|| {
+        // Allow tests (and users) to pin the CPython tag without changing the Python on PATH.
+        if let Ok(forced) = std::env::var("PYBUN_FORCE_CP_TAG") {
+            let trimmed = forced.trim().to_string();
+            if !trimmed.is_empty() {
+                return trimmed;
+            }
+        }
         python_version_to_cp_tag(get_python_version()).unwrap_or_else(|| "cp311".to_string())
     })
 }
