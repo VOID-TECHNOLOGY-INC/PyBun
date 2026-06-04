@@ -294,6 +294,9 @@ pub struct Wheel {
 /// Wheel filename format: `{name}-{version}(-{build})?-{python}-{abi}-{platform}.whl`
 /// The last three dash-separated components before `.whl` are always platform, abi, python
 /// (reading right-to-left), regardless of how many dashes appear in the package name.
+///
+/// Returns `(None, None)` for filenames that cannot be parsed, including malformed names
+/// or filenames with fewer than five dash-separated components.
 pub fn parse_wheel_tags(filename: &str) -> (Option<String>, Option<String>) {
     let stem = filename
         .trim_end_matches(".whl")
@@ -302,9 +305,13 @@ pub fn parse_wheel_tags(filename: &str) -> (Option<String>, Option<String>) {
         .unwrap_or(filename);
     let parts: Vec<&str> = stem.split('-').collect();
     if parts.len() >= 5 {
-        let python_tag = parts[parts.len() - 3].to_string();
-        let abi_tag = parts[parts.len() - 2].to_string();
-        (Some(python_tag), Some(abi_tag))
+        let python_tag = parts[parts.len() - 3];
+        let abi_tag = parts[parts.len() - 2];
+        // Reject empty tags produced by double-dash sequences in malformed filenames
+        if python_tag.is_empty() || abi_tag.is_empty() {
+            return (None, None);
+        }
+        (Some(python_tag.to_string()), Some(abi_tag.to_string()))
     } else {
         (None, None)
     }
@@ -326,15 +333,20 @@ pub fn python_version_to_cp_tag(version: &str) -> Option<String> {
 }
 
 /// Compare two CPython tags version-wise: returns true if `a` >= `b`.
-/// Tags use the format `cp{major}{minor}` (e.g., `cp311`, `cp37`).
+///
+/// Tags use the format `cp{major}{minor}` (e.g., `cp311`, `cp37`, `cp312`).
+/// The major version is always exactly one digit; the minor is the remaining digits.
+/// This handles all current CPython versions (3.x through 3.19) and remains correct
+/// for hypothetical future versions (Python 4.x, Python 10.x with 4-digit tags).
 fn cp_tag_ge(a: &str, b: &str) -> bool {
     fn parse(s: &str) -> Option<(u32, u32)> {
         let digits = s.strip_prefix("cp")?;
-        match digits.len() {
-            2 => Some((digits[..1].parse().ok()?, digits[1..].parse().ok()?)),
-            3 => Some((digits[..1].parse().ok()?, digits[1..].parse().ok()?)),
-            _ => None,
+        if digits.is_empty() {
+            return None;
         }
+        // Major is always 1 digit; minor is everything after the first digit.
+        let (major_str, minor_str) = digits.split_at(1);
+        Some((major_str.parse().ok()?, minor_str.parse().ok()?))
     }
     match (parse(a), parse(b)) {
         (Some((a_maj, a_min)), Some((b_maj, b_min))) => (a_maj, a_min) >= (b_maj, b_min),
@@ -345,33 +357,42 @@ fn cp_tag_ge(a: &str, b: &str) -> bool {
 /// Check whether a wheel is compatible with the given active CPython tag (e.g., `"cp311"`).
 ///
 /// Compatibility rules (PEP 425):
-/// - `py2`, `py3`, or `py2.py3` python tags are compatible with any Python 3.
-/// - Wheels with `abi3` ABI tag implement the stable ABI and are compatible with any
-///   CPython version >= the version encoded in the python tag.
-/// - All other CPython-specific wheels require an exact match of the python tag.
-/// - `None` python tag (unparseable filename) is treated as compatible to avoid
-///   breaking older index formats.
+/// - `py2`, `py3`, or `py2.py3` python tags: compatible with any Python 3.
+/// - Wheels with `abi3` ABI tag: stable ABI, compatible with any CPython >= the version
+///   encoded in the python tag. The python tag may be a compressed set (e.g., `cp37.cp38`);
+///   the minimum version is taken as the oldest component.
+/// - CPython-specific wheels (e.g., `cp311` or compressed `cp310.cp311`): compatible if
+///   the active CPython tag matches any component in the set.
+/// - `None` python tag (unparseable filename): treated as compatible to avoid breaking
+///   older index formats. **Known limitation**: an unparseable tag scores the same as
+///   an `abi3` wheel, which may allow a malformed wheel to supersede a pure-Python one.
 pub fn is_wheel_python_compatible(
     python_tag: Option<&str>,
     abi_tag: Option<&str>,
     active_cp_tag: &str,
 ) -> bool {
     let Some(ptag) = python_tag else {
-        return true; // unknown → assume compatible
+        return true; // unknown → assume compatible (legacy index compat)
     };
 
-    // Pure-Python wheels work on any interpreter
-    if ptag.starts_with("py") {
+    // Compressed tags: split on '.' and check each component.
+    // e.g., "cp310.cp311" matches if active_cp_tag is either "cp310" or "cp311".
+    // e.g., "py3" or "py2.py3" — any component starting with "py" is pure-Python.
+    let components: Vec<&str> = ptag.split('.').collect();
+
+    // Pure-Python: any component starts with "py"
+    if components.iter().any(|c| c.starts_with("py")) {
         return true;
     }
 
-    // Stable ABI: compatible with CPython >= the wheel's minimum version
+    // Stable ABI (abi3): compatible if active CPython >= the *oldest* version in the set
     if abi_tag == Some("abi3") {
-        return cp_tag_ge(active_cp_tag, ptag);
+        return components.iter().all(|c| c.starts_with("cp"))
+            && components.iter().any(|c| cp_tag_ge(active_cp_tag, c));
     }
 
-    // CPython-specific: require exact match
-    ptag == active_cp_tag
+    // CPython-specific: compatible if active_cp_tag matches any component
+    components.contains(&active_cp_tag)
 }
 
 /// Return the CPython tag for the active Python interpreter, e.g. `"cp311"`.
@@ -504,8 +525,10 @@ fn rank_wheel(wheel: &Wheel, platform_tags: &[String], active_cp_tag: &str) -> u
         (Some(ptag), _) if ptag == active_cp_tag => score += 30, // exact match
         (_, Some("abi3")) => score += 15,                        // stable ABI
         (Some(ptag), _) if ptag.starts_with("py") => score += 10, // pure Python
-        (None, _) => score += 15, // unknown — treat like abi3 for compat
-        _ => {}                   // incompatible or lower-priority Python version
+        (None, _) => score += 15, // unknown tag — treat like abi3 for legacy-index compat
+        // Non-CPython interpreters (e.g., PyPy "pp311") that passed compatibility
+        // checking have no specific bonus; they rank below abi3 and pure-Python.
+        _ => {}
     }
 
     if wheel.platforms.len() <= 1 {

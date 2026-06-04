@@ -325,7 +325,7 @@ impl PyPiClient {
                 .wheels
                 .iter()
                 .map(|w| {
-                    let (python_tag, abi_tag) = if w.python_tag.is_some() {
+                    let (python_tag, abi_tag) = if w.python_tag.is_some() && w.abi_tag.is_some() {
                         (w.python_tag.clone(), w.abi_tag.clone())
                     } else {
                         crate::resolver::parse_wheel_tags(&w.file)
