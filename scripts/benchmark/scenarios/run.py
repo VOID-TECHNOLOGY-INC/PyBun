@@ -205,12 +205,13 @@ def run_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
                     warmup=warmup,
                     iterations=iterations,
                     trim_ratio=trim_ratio,
+                    cwd=str(tmp),
                 )
                 result.scenario = "B3.1_simple_startup"
                 result.tool = "python"
                 results.append(result)
                 print(f"  python: {result.duration_ms:.2f}ms")
-        
+
         # PyBun
         if pybun_path:
             if dry_run:
@@ -224,13 +225,15 @@ def run_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
                     iterations=iterations,
                     env=pybun_env,
                     trim_ratio=trim_ratio,
+                    cwd=str(tmp),
                 )
                 result.scenario = "B3.1_simple_startup"
                 result.tool = "pybun"
                 results.append(result)
                 print(f"  pybun: {result.duration_ms:.2f}ms")
-        
-        # uv
+
+        # uv — pass cwd=tmp so uv doesn't walk up to a parent pyproject.toml
+        # (fixes Issue #157 Problem 2).
         if uv_path:
             if dry_run:
                 print(f"  Would run: {uv_path} run {simple_script}")
@@ -242,6 +245,7 @@ def run_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
                     warmup=warmup,
                     iterations=iterations,
                     trim_ratio=trim_ratio,
+                    cwd=str(tmp),
                 )
                 result.scenario = "B3.1_simple_startup"
                 result.tool = "uv"
@@ -365,12 +369,13 @@ def run_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
                     warmup=warmup,
                     iterations=iterations,
                     trim_ratio=trim_ratio,
+                    cwd=str(tmp),
                 )
                 result.scenario = "B3.3_heavy_import"
                 result.tool = "python"
                 results.append(result)
                 print(f"  python: {result.duration_ms:.2f}ms")
-        
+
         # PyBun
         if pybun_path:
             if dry_run:
@@ -382,13 +387,15 @@ def run_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
                     iterations=iterations,
                     env=pybun_env,
                     trim_ratio=trim_ratio,
+                    cwd=str(tmp),
                 )
                 result.scenario = "B3.3_heavy_import"
                 result.tool = "pybun"
                 results.append(result)
                 print(f"  pybun: {result.duration_ms:.2f}ms")
-        
-        # uv
+
+        # uv — pass cwd=tmp so uv doesn't walk up to a parent pyproject.toml
+        # (fixes Issue #157 Problem 2).
         if uv_path:
             if dry_run:
                 print(f"  Would run: {uv_path} run {heavy_script}")
@@ -398,6 +405,7 @@ def run_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
                     warmup=warmup,
                     iterations=iterations,
                     trim_ratio=trim_ratio,
+                    cwd=str(tmp),
                 )
                 result.scenario = "B3.3_heavy_import"
                 result.tool = "uv"
@@ -423,6 +431,7 @@ def run_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
                             iterations=iterations,
                             env={**pybun_env, "PYBUN_PROFILE": profile},
                             trim_ratio=trim_ratio,
+                            cwd=str(tmp),
                         )
                         result.scenario = f"B3.4_profile_{profile}"
                         result.tool = "pybun"
