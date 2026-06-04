@@ -324,15 +324,24 @@ impl PyPiClient {
             wheels: pkg
                 .wheels
                 .iter()
-                .map(|w| Wheel {
-                    file: w.file.clone(),
-                    url: w.url.clone(),
-                    platforms: if w.platforms.is_empty() {
-                        vec!["any".into()]
+                .map(|w| {
+                    let (python_tag, abi_tag) = if w.python_tag.is_some() {
+                        (w.python_tag.clone(), w.abi_tag.clone())
                     } else {
-                        w.platforms.clone()
-                    },
-                    hash: w.hash.clone(),
+                        crate::resolver::parse_wheel_tags(&w.file)
+                    };
+                    Wheel {
+                        file: w.file.clone(),
+                        url: w.url.clone(),
+                        platforms: if w.platforms.is_empty() {
+                            vec!["any".into()]
+                        } else {
+                            w.platforms.clone()
+                        },
+                        hash: w.hash.clone(),
+                        python_tag,
+                        abi_tag,
+                    }
                 })
                 .collect(),
             sdist: pkg.sdist.clone(),
@@ -475,6 +484,10 @@ struct CachedWheel {
     pub url: Option<String>,
     pub hash: Option<String>,
     platforms: Vec<String>,
+    #[serde(default)]
+    python_tag: Option<String>,
+    #[serde(default)]
+    abi_tag: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -764,6 +777,7 @@ fn build_cached_packages(
                         .as_ref()
                         .and_then(|d| d.get("sha256"))
                         .map(|h| format!("sha256:{}", h));
+                    let (python_tag, abi_tag) = crate::resolver::parse_wheel_tags(&file.filename);
 
                     wheels.push(CachedWheel {
                         file: file.filename.clone(),
@@ -774,6 +788,8 @@ fn build_cached_packages(
                         } else {
                             platforms
                         },
+                        python_tag,
+                        abi_tag,
                     });
                 }
                 "sdist" => {

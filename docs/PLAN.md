@@ -83,6 +83,11 @@
   - Current: `init_project()` に `&mut EventCollector` を追加し、stdin が TTY でない場合は `E_INIT_NOT_INTERACTIVE` diagnostic（`suggestion` フィールドに `pybun init --yes` 案内）を push してから早期 return。テキストモードの stderr にも `--yes` を含むメッセージを出力。
   - Tests: `tests/cli_init.rs` に3件追加 — `init_non_tty_without_yes_fails_with_hint`（テキスト出力に --yes 含む）、`init_non_tty_without_yes_json_fails_with_hint`（JSON diagnostics に suggestion フィールド含む）、`init_non_tty_with_yes_succeeds`（--yes 指定時は非 TTY でも成功）。
 
+- [DONE] PR-BUG161: ABI resolution fix — correct Python version wheel selection (Issue #161)
+  - Goal: `pybun install` が Python 3.11 環境で cp310 wheel を選択してしまうバグを修正する。
+  - Current: `Wheel` struct に `python_tag: Option<String>` / `abi_tag: Option<String>` フィールドを追加。`parse_wheel_tags()` がホイールファイル名から Python/ABI タグを解析（位置は末尾から -3, -2）。`python_version_to_cp_tag()` が "3.11" → "cp311" 変換。`is_wheel_python_compatible()` が PEP 425 互換ルール（exact match / abi3 stable ABI / py3 pure-Python）を判定。`select_artifact_for_platform_with_cp()` が互換 wheel だけをフィルタリングして best-rank を選択。`select_artifact_for_platform()` は auto-detect CPython タグで同関数に委譲。`index.rs` / `pypi.rs` の `Wheel` 構築箇所も `parse_wheel_tags()` でタグを付与。
+  - Tests: `src/resolver.rs` に20件追加 — `parse_wheel_tags_*`（6件）、`python_version_to_cp_tag_*`（3件）、`is_wheel_python_compatible_*`（6件）、`select_artifact_*`（5件）。全382テストパス。`cargo clippy --all-targets --all-features -- -D warnings` 0エラー。`cargo fmt -- --check` 差分なし。
+
 ### P2 (Post-GA Improvement)
 - PR-A8: Runtime catalog hardening（実チェックサム管理 + 3.13 preview）
   - Goal: 埋め込み runtime metadata の完全性・更新性を強化し、3.13 preview を段階導入。
