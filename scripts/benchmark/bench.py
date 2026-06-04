@@ -148,9 +148,15 @@ def find_tool(name: str, config: dict) -> str | None:
     paths = config.get("paths", {})
     if name in paths and paths[name]:
         path = paths[name]
+        # Resolve relative paths against _base_dir so the result is independent
+        # of the caller's cwd (fixes Issue #157 Problem 1).
+        if not os.path.isabs(path):
+            base_dir = config.get("_base_dir")
+            if base_dir:
+                path = str(Path(base_dir) / path)
         if os.path.exists(path):
             return path
-    
+
     # Check PATH
     path = shutil.which(name)
     return path
@@ -645,7 +651,11 @@ def main():
     else:
         print(f"Warning: Config file not found: {config_path}")
         config = {}
-    
+
+    # Store benchmark base dir so find_tool() can resolve relative tool paths
+    # against it rather than the caller's cwd (fixes Issue #157 Problem 1).
+    config["_base_dir"] = str(base_dir)
+
     # Override from args
     general = config.setdefault("general", {})
     if args.iterations:
