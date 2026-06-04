@@ -267,6 +267,8 @@ impl PackageArtifacts {
                 url: None,
                 hash: None,
                 platforms: vec!["any".into()],
+                python_tag: Some("py3".into()),
+                abi_tag: Some("none".into()),
             }],
             sdist: None,
         }
@@ -279,6 +281,211 @@ pub struct Wheel {
     pub url: Option<String>,
     pub hash: Option<String>,
     pub platforms: Vec<String>,
+    /// Python interpreter tag from the wheel filename (e.g., "cp311", "py3", "cp37").
+    /// None means the tag could not be parsed; treated as compatible with all Python versions.
+    pub python_tag: Option<String>,
+    /// ABI tag from the wheel filename (e.g., "cp311", "abi3", "none").
+    /// None means the tag could not be parsed.
+    pub abi_tag: Option<String>,
+}
+
+/// Parse Python interpreter tag and ABI tag from a wheel filename.
+///
+/// Wheel filename format: `{name}-{version}(-{build})?-{python}-{abi}-{platform}.whl`
+/// The last three dash-separated components before `.whl` are always platform, abi, python
+/// (reading right-to-left), regardless of how many dashes appear in the package name.
+///
+/// Returns `(None, None)` for filenames that cannot be parsed, including malformed names
+/// or filenames with fewer than five dash-separated components.
+pub fn parse_wheel_tags(filename: &str) -> (Option<String>, Option<String>) {
+    let stem = filename
+        .trim_end_matches(".whl")
+        .rsplit('/')
+        .next()
+        .unwrap_or(filename);
+    let parts: Vec<&str> = stem.split('-').collect();
+    if parts.len() >= 5 {
+        let python_tag = parts[parts.len() - 3];
+        let abi_tag = parts[parts.len() - 2];
+        // Reject empty tags produced by double-dash sequences in malformed filenames
+        if python_tag.is_empty() || abi_tag.is_empty() {
+            return (None, None);
+        }
+        (Some(python_tag.to_string()), Some(abi_tag.to_string()))
+    } else {
+        (None, None)
+    }
+}
+
+/// Convert a Python version string (e.g., "3.11.5" or "3.11") to a CPython wheel tag
+/// (e.g., "cp311"). Returns None if the version string cannot be parsed.
+pub fn python_version_to_cp_tag(version: &str) -> Option<String> {
+    let parts: Vec<&str> = version.split('.').collect();
+    if parts.len() >= 2 {
+        if let (Ok(major), Ok(minor)) = (parts[0].parse::<u32>(), parts[1].parse::<u32>()) {
+            Some(format!("cp{}{}", major, minor))
+        } else {
+            None
+        }
+    } else {
+        None
+    }
+}
+
+/// Compare two CPython tags version-wise: returns true if `a` >= `b`.
+///
+/// Tags use the format `cp{major}{minor}` (e.g., `cp311`, `cp37`, `cp312`).
+/// The major version is always exactly one digit; the minor is the remaining digits.
+/// This handles all current CPython versions (3.x through 3.19) and remains correct
+/// for hypothetical future versions (Python 4.x, Python 10.x with 4-digit tags).
+fn cp_tag_ge(a: &str, b: &str) -> bool {
+    fn parse(s: &str) -> Option<(u32, u32)> {
+        let digits = s.strip_prefix("cp")?;
+        if digits.is_empty() {
+            return None;
+        }
+        // Major is always 1 digit; minor is everything after the first digit.
+        let (major_str, minor_str) = digits.split_at(1);
+        Some((major_str.parse().ok()?, minor_str.parse().ok()?))
+    }
+    match (parse(a), parse(b)) {
+        (Some((a_maj, a_min)), Some((b_maj, b_min))) => (a_maj, a_min) >= (b_maj, b_min),
+        _ => false,
+    }
+}
+
+/// Check whether a wheel is compatible with the given active CPython tag (e.g., `"cp311"`).
+///
+/// Compatibility rules (PEP 425):
+/// - `py2`, `py3`, or `py2.py3` python tags: compatible with any Python 3.
+/// - Wheels with `abi3` ABI tag: stable ABI, compatible with any CPython >= the version
+///   encoded in the python tag. The python tag may be a compressed set (e.g., `cp37.cp38`);
+///   the minimum version is taken as the oldest component.
+/// - CPython-specific wheels (e.g., `cp311` or compressed `cp310.cp311`): compatible if
+///   the active CPython tag matches any component in the set.
+/// - `None` python tag (unparseable filename): treated as compatible to avoid breaking
+///   older index formats. **Known limitation**: an unparseable tag scores the same as
+///   an `abi3` wheel, which may allow a malformed wheel to supersede a pure-Python one.
+pub fn is_wheel_python_compatible(
+    python_tag: Option<&str>,
+    abi_tag: Option<&str>,
+    active_cp_tag: &str,
+) -> bool {
+    let Some(ptag) = python_tag else {
+        return true; // unknown → assume compatible (legacy index compat)
+    };
+
+    // Compressed tags: split on '.' and check each component.
+    // e.g., "cp310.cp311" matches if active_cp_tag is either "cp310" or "cp311".
+    // e.g., "py3" or "py2.py3" — any component starting with "py" is pure-Python.
+    let components: Vec<&str> = ptag.split('.').collect();
+
+    // Pure-Python: any component starts with "py"
+    if components.iter().any(|c| c.starts_with("py")) {
+        return true;
+    }
+
+    // Stable ABI (abi3): compatible if active CPython >= the *oldest* version in the set
+    if abi_tag == Some("abi3") {
+        return components.iter().all(|c| c.starts_with("cp"))
+            && components.iter().any(|c| cp_tag_ge(active_cp_tag, c));
+    }
+
+    // CPython-specific: compatible if active_cp_tag matches any component
+    components.contains(&active_cp_tag)
+}
+
+/// Return the CPython tag for the active Python interpreter, e.g. `"cp311"`.
+///
+/// Detection order:
+/// 1. `PYBUN_FORCE_CP_TAG` environment variable — overrides detection entirely (for testing).
+/// 2. The output of `python3 --version` / `python --version` on PATH.
+/// 3. Fallback: `"cp311"` (most common deployment target).
+///
+/// The result is cached in a `OnceLock` so detection runs at most once per process.
+fn active_python_cp_tag() -> &'static str {
+    static CP_TAG: OnceLock<String> = OnceLock::new();
+    CP_TAG.get_or_init(|| {
+        // Allow tests (and users) to pin the CPython tag without changing the Python on PATH.
+        if let Ok(forced) = std::env::var("PYBUN_FORCE_CP_TAG") {
+            let trimmed = forced.trim().to_string();
+            if !trimmed.is_empty() {
+                return trimmed;
+            }
+        }
+        python_version_to_cp_tag(get_python_version()).unwrap_or_else(|| "cp311".to_string())
+    })
+}
+
+/// Select the best artifact for a given Python version — exposed for testing.
+///
+/// This is the canonical selection logic; [`select_artifact_for_platform`] is a
+/// thin wrapper that supplies the auto-detected CP tag.
+pub fn select_artifact_for_platform_with_cp(
+    pkg: &ResolvedPackage,
+    platform_tags: &[String],
+    active_cp_tag: &str,
+) -> ArtifactSelection {
+    let mut tags = platform_tags.to_vec();
+    if !tags.iter().any(|t| t == "any") {
+        tags.push("any".into());
+    }
+
+    if !pkg.artifacts.wheels.is_empty() {
+        let mut scored_wheels: Vec<_> = pkg
+            .artifacts
+            .wheels
+            .iter()
+            .filter_map(|w| {
+                let matches_platform = w.platforms.is_empty()
+                    || tags.iter().any(|t| w.platforms.iter().any(|p| p == t));
+                let matches_python = is_wheel_python_compatible(
+                    w.python_tag.as_deref(),
+                    w.abi_tag.as_deref(),
+                    active_cp_tag,
+                );
+                if matches_platform && matches_python {
+                    Some((rank_wheel(w, &tags, active_cp_tag), w))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        scored_wheels.sort_by_key(|w| std::cmp::Reverse(w.0));
+
+        if let Some((_, wheel)) = scored_wheels.first() {
+            let matched_platform = if wheel.platforms.is_empty() {
+                None
+            } else {
+                tags.iter()
+                    .find(|t| wheel.platforms.iter().any(|p| p == *t))
+                    .cloned()
+            };
+            return ArtifactSelection {
+                filename: wheel.file.clone(),
+                url: wheel.url.clone(),
+                hash: wheel.hash.clone(),
+                matched_platform,
+                from_source: false,
+                available_wheels: pkg.artifacts.wheels.len(),
+            };
+        }
+    }
+
+    // Fallback: sdist
+    ArtifactSelection {
+        filename: pkg
+            .artifacts
+            .sdist
+            .clone()
+            .unwrap_or_else(|| format!("{}-{}.tar.gz", pkg.name, pkg.version)),
+        url: None,
+        hash: None,
+        matched_platform: None,
+        from_source: true,
+        available_wheels: pkg.artifacts.wheels.len(),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -307,30 +514,33 @@ pub fn current_platform_tags() -> Vec<String> {
 
 /// Rank a wheel for selection priority.
 /// Higher score = better preference.
-/// Prefers: native platform wheels > abi3 wheels > any-platform wheels
-fn rank_wheel(wheel: &Wheel, platform_tags: &[String]) -> u32 {
-    let mut score: u32 = 100; // Base score for being a wheel (vs sdist)
+/// Prefers: native platform + exact Python version > abi3 > pure-Python > any-platform.
+fn rank_wheel(wheel: &Wheel, platform_tags: &[String], active_cp_tag: &str) -> u32 {
+    let mut score: u32 = 100; // base score for being a wheel (vs sdist)
 
-    // Check platform match
+    // Platform scoring
     if wheel.platforms.is_empty() {
-        // Universal wheel (any platform)
-        score += 10;
+        score += 10; // universal wheel
     } else {
         for (priority, tag) in platform_tags.iter().enumerate() {
             if wheel.platforms.iter().any(|p| p == tag) {
-                // Native platform match - higher priority = lower index = higher score
                 score += 50 - (priority as u32).min(40);
                 break;
             }
         }
     }
 
-    // Prefer abi3 wheels (stable ABI, faster to select)
-    if wheel.file.contains("-abi3-") || wheel.file.contains("-cp3") {
-        score += 20;
+    // Python version scoring
+    match (wheel.python_tag.as_deref(), wheel.abi_tag.as_deref()) {
+        (Some(ptag), _) if ptag == active_cp_tag => score += 30, // exact match
+        (_, Some("abi3")) => score += 15,                        // stable ABI
+        (Some(ptag), _) if ptag.starts_with("py") => score += 10, // pure Python
+        (None, _) => score += 15, // unknown tag — treat like abi3 for legacy-index compat
+        // Non-CPython interpreters (e.g., PyPy "pp311") that passed compatibility
+        // checking have no specific bonus; they rank below abi3 and pure-Python.
+        _ => {}
     }
 
-    // Prefer wheels with fewer platform restrictions (more portable)
     if wheel.platforms.len() <= 1 {
         score += 5;
     }
@@ -339,106 +549,14 @@ fn rank_wheel(wheel: &Wheel, platform_tags: &[String]) -> u32 {
 }
 
 /// Select the best artifact for the current platform.
+///
+/// Delegates to [`select_artifact_for_platform_with_cp`] using the auto-detected
+/// CPython tag of the active Python interpreter.
 pub fn select_artifact_for_platform(
     pkg: &ResolvedPackage,
     platform_tags: &[String],
 ) -> ArtifactSelection {
-    let mut tags = platform_tags.to_vec();
-    if !tags.iter().any(|t| t == "any") {
-        tags.push("any".into());
-    }
-
-    // Find the best matching wheel using ranking
-    if !pkg.artifacts.wheels.is_empty() {
-        let mut scored_wheels: Vec<_> = pkg
-            .artifacts
-            .wheels
-            .iter()
-            .filter_map(|w| {
-                let matches_platform = w.platforms.is_empty()
-                    || tags.iter().any(|t| w.platforms.iter().any(|p| p == t));
-                if matches_platform {
-                    Some((rank_wheel(w, &tags), w))
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        // Sort by score descending
-        scored_wheels.sort_by_key(|w| std::cmp::Reverse(w.0));
-
-        // Take the best wheel if it matches the platform
-        if let Some((_, wheel)) = scored_wheels.first() {
-            // This is the highest-ranked matching wheel for the platform.
-            let matched_platform = if wheel.platforms.is_empty() {
-                None
-            } else {
-                tags.iter()
-                    .find(|t| wheel.platforms.iter().any(|p| p == *t))
-                    .cloned()
-            };
-            return ArtifactSelection {
-                filename: wheel.file.clone(),
-                url: wheel.url.clone(),
-                hash: wheel.hash.clone(),
-                matched_platform,
-                from_source: false,
-                available_wheels: pkg.artifacts.wheels.len(),
-            };
-        }
-    }
-
-    // Fallback: try platform matching the old way
-    for tag in &tags {
-        if let Some(wheel) = pkg
-            .artifacts
-            .wheels
-            .iter()
-            .find(|w| w.platforms.is_empty() || w.platforms.iter().any(|p| p == tag))
-        {
-            let matched_platform = if wheel.platforms.is_empty() {
-                None
-            } else {
-                Some(tag.clone())
-            };
-            return ArtifactSelection {
-                filename: wheel.file.clone(),
-                url: wheel.url.clone(),
-                hash: wheel.hash.clone(),
-                matched_platform,
-                from_source: false,
-                available_wheels: pkg.artifacts.wheels.len(),
-            };
-        }
-    }
-
-    if let Some(sdist) = &pkg.artifacts.sdist {
-        return ArtifactSelection {
-            filename: sdist.clone(),
-            url: None,
-            hash: None, // sdist hash not yet tracked in PackageArtifacts struct
-            matched_platform: None,
-            from_source: true,
-            available_wheels: pkg.artifacts.wheels.len(),
-        };
-    }
-
-    let fallback = pkg
-        .artifacts
-        .wheels
-        .first()
-        .map(|w| w.file.clone())
-        .unwrap_or_else(|| format!("{}-{}-py3-none-any.whl", pkg.name, pkg.version));
-
-    ArtifactSelection {
-        filename: fallback,
-        url: None,
-        hash: None,
-        matched_platform: None,
-        from_source: pkg.artifacts.wheels.is_empty(),
-        available_wheels: pkg.artifacts.wheels.len(),
-    }
+    select_artifact_for_platform_with_cp(pkg, platform_tags, active_python_cp_tag())
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -1139,5 +1257,332 @@ mod tests {
             resolution.packages.contains_key("requests"),
             "requests with python_version < '4.0' marker should be resolved"
         );
+    }
+
+    // ====================================================================
+    // Issue #161: ABI resolution — Python version tag tests
+    // ====================================================================
+
+    #[test]
+    fn parse_wheel_tags_cp311_wheel() {
+        let (python, abi) = parse_wheel_tags("pyarrow-14.0.0-cp311-cp311-macosx_14_0_arm64.whl");
+        assert_eq!(python.as_deref(), Some("cp311"));
+        assert_eq!(abi.as_deref(), Some("cp311"));
+    }
+
+    #[test]
+    fn parse_wheel_tags_cp310_wheel() {
+        let (python, abi) = parse_wheel_tags("pyarrow-14.0.0-cp310-cp310-macosx_11_0_arm64.whl");
+        assert_eq!(python.as_deref(), Some("cp310"));
+        assert_eq!(abi.as_deref(), Some("cp310"));
+    }
+
+    #[test]
+    fn parse_wheel_tags_py3_none_any_wheel() {
+        let (python, abi) = parse_wheel_tags("requests-2.28.0-py3-none-any.whl");
+        assert_eq!(python.as_deref(), Some("py3"));
+        assert_eq!(abi.as_deref(), Some("none"));
+    }
+
+    #[test]
+    fn parse_wheel_tags_abi3_wheel() {
+        let (python, abi) = parse_wheel_tags("cryptography-41.0.0-cp37-abi3-macosx_14_0_arm64.whl");
+        assert_eq!(python.as_deref(), Some("cp37"));
+        assert_eq!(abi.as_deref(), Some("abi3"));
+    }
+
+    #[test]
+    fn parse_wheel_tags_hyphenated_name() {
+        // Package names with hyphens — positions from the right must still work
+        let (python, abi) =
+            parse_wheel_tags("some-package-1.0.0-cp311-cp311-manylinux_2_17_x86_64.whl");
+        assert_eq!(python.as_deref(), Some("cp311"));
+        assert_eq!(abi.as_deref(), Some("cp311"));
+    }
+
+    #[test]
+    fn parse_wheel_tags_url_path() {
+        // Filenames preceded by a URL path segment
+        let (python, abi) =
+            parse_wheel_tags("https://example.com/pkg-1.0-cp311-cp311-linux_x86_64.whl");
+        assert_eq!(python.as_deref(), Some("cp311"));
+        assert_eq!(abi.as_deref(), Some("cp311"));
+    }
+
+    #[test]
+    fn python_version_to_cp_tag_three_component() {
+        assert_eq!(python_version_to_cp_tag("3.11.5").as_deref(), Some("cp311"));
+        assert_eq!(python_version_to_cp_tag("3.10.0").as_deref(), Some("cp310"));
+    }
+
+    #[test]
+    fn python_version_to_cp_tag_two_component() {
+        assert_eq!(python_version_to_cp_tag("3.11").as_deref(), Some("cp311"));
+        assert_eq!(python_version_to_cp_tag("3.9").as_deref(), Some("cp39"));
+    }
+
+    #[test]
+    fn python_version_to_cp_tag_invalid_returns_none() {
+        assert_eq!(python_version_to_cp_tag("invalid"), None);
+        assert_eq!(python_version_to_cp_tag(""), None);
+    }
+
+    #[test]
+    fn is_wheel_python_compatible_exact_match() {
+        assert!(is_wheel_python_compatible(
+            Some("cp311"),
+            Some("cp311"),
+            "cp311"
+        ));
+    }
+
+    #[test]
+    fn is_wheel_python_compatible_different_version_rejected() {
+        assert!(!is_wheel_python_compatible(
+            Some("cp310"),
+            Some("cp310"),
+            "cp311"
+        ));
+        assert!(!is_wheel_python_compatible(
+            Some("cp311"),
+            Some("cp311"),
+            "cp310"
+        ));
+    }
+
+    #[test]
+    fn is_wheel_python_compatible_py3_always_matches() {
+        assert!(is_wheel_python_compatible(
+            Some("py3"),
+            Some("none"),
+            "cp311"
+        ));
+        assert!(is_wheel_python_compatible(
+            Some("py3"),
+            Some("none"),
+            "cp310"
+        ));
+        assert!(is_wheel_python_compatible(
+            Some("py3"),
+            Some("none"),
+            "cp39"
+        ));
+    }
+
+    #[test]
+    fn is_wheel_python_compatible_abi3_matches_newer_cp() {
+        // cp37-abi3 wheel: compatible with cp37, cp38, cp39, cp310, cp311
+        assert!(is_wheel_python_compatible(
+            Some("cp37"),
+            Some("abi3"),
+            "cp311"
+        ));
+        assert!(is_wheel_python_compatible(
+            Some("cp37"),
+            Some("abi3"),
+            "cp310"
+        ));
+        assert!(is_wheel_python_compatible(
+            Some("cp37"),
+            Some("abi3"),
+            "cp39"
+        ));
+        assert!(is_wheel_python_compatible(
+            Some("cp37"),
+            Some("abi3"),
+            "cp37"
+        ));
+    }
+
+    #[test]
+    fn is_wheel_python_compatible_abi3_rejects_older_cp() {
+        // cp38-abi3 wheel: NOT compatible with cp37
+        assert!(!is_wheel_python_compatible(
+            Some("cp38"),
+            Some("abi3"),
+            "cp37"
+        ));
+    }
+
+    #[test]
+    fn is_wheel_python_compatible_none_tag_is_compatible() {
+        // Unknown tag → treated as compatible (legacy index compat)
+        assert!(is_wheel_python_compatible(None, None, "cp311"));
+    }
+
+    #[test]
+    fn select_artifact_prefers_cp311_wheel_over_cp310_on_python_311() {
+        let pkg = ResolvedPackage {
+            name: "pyarrow".to_string(),
+            version: "14.0.0".to_string(),
+            dependencies: vec![],
+            source: None,
+            artifacts: PackageArtifacts {
+                wheels: vec![
+                    Wheel {
+                        file: "pyarrow-14.0.0-cp310-cp310-macosx_14_0_arm64.whl".to_string(),
+                        url: None,
+                        hash: None,
+                        platforms: vec!["macosx_14_0_arm64".to_string()],
+                        python_tag: Some("cp310".to_string()),
+                        abi_tag: Some("cp310".to_string()),
+                    },
+                    Wheel {
+                        file: "pyarrow-14.0.0-cp311-cp311-macosx_14_0_arm64.whl".to_string(),
+                        url: None,
+                        hash: None,
+                        platforms: vec!["macosx_14_0_arm64".to_string()],
+                        python_tag: Some("cp311".to_string()),
+                        abi_tag: Some("cp311".to_string()),
+                    },
+                ],
+                sdist: None,
+            },
+        };
+        let platform_tags = vec!["macosx_14_0_arm64".to_string(), "any".to_string()];
+        let selection = select_artifact_for_platform_with_cp(&pkg, &platform_tags, "cp311");
+        assert_eq!(
+            selection.filename, "pyarrow-14.0.0-cp311-cp311-macosx_14_0_arm64.whl",
+            "should select cp311 wheel when active Python is 3.11"
+        );
+    }
+
+    #[test]
+    fn select_artifact_prefers_cp310_wheel_over_cp311_on_python_310() {
+        let pkg = ResolvedPackage {
+            name: "pyarrow".to_string(),
+            version: "14.0.0".to_string(),
+            dependencies: vec![],
+            source: None,
+            artifacts: PackageArtifacts {
+                wheels: vec![
+                    Wheel {
+                        file: "pyarrow-14.0.0-cp310-cp310-macosx_14_0_arm64.whl".to_string(),
+                        url: None,
+                        hash: None,
+                        platforms: vec!["macosx_14_0_arm64".to_string()],
+                        python_tag: Some("cp310".to_string()),
+                        abi_tag: Some("cp310".to_string()),
+                    },
+                    Wheel {
+                        file: "pyarrow-14.0.0-cp311-cp311-macosx_14_0_arm64.whl".to_string(),
+                        url: None,
+                        hash: None,
+                        platforms: vec!["macosx_14_0_arm64".to_string()],
+                        python_tag: Some("cp311".to_string()),
+                        abi_tag: Some("cp311".to_string()),
+                    },
+                ],
+                sdist: None,
+            },
+        };
+        let platform_tags = vec!["macosx_14_0_arm64".to_string(), "any".to_string()];
+        let selection = select_artifact_for_platform_with_cp(&pkg, &platform_tags, "cp310");
+        assert_eq!(
+            selection.filename, "pyarrow-14.0.0-cp310-cp310-macosx_14_0_arm64.whl",
+            "should select cp310 wheel when active Python is 3.10"
+        );
+    }
+
+    #[test]
+    fn select_artifact_excludes_incompatible_python_version() {
+        // Only cp310 wheel available, but we're on cp311
+        let pkg = ResolvedPackage {
+            name: "pyarrow".to_string(),
+            version: "14.0.0".to_string(),
+            dependencies: vec![],
+            source: None,
+            artifacts: PackageArtifacts {
+                wheels: vec![Wheel {
+                    file: "pyarrow-14.0.0-cp310-cp310-macosx_14_0_arm64.whl".to_string(),
+                    url: None,
+                    hash: None,
+                    platforms: vec!["macosx_14_0_arm64".to_string()],
+                    python_tag: Some("cp310".to_string()),
+                    abi_tag: Some("cp310".to_string()),
+                }],
+                sdist: Some("pyarrow-14.0.0.tar.gz".to_string()),
+            },
+        };
+        let platform_tags = vec!["macosx_14_0_arm64".to_string(), "any".to_string()];
+        let selection = select_artifact_for_platform_with_cp(&pkg, &platform_tags, "cp311");
+        assert!(
+            selection.from_source,
+            "should fall back to sdist when no compatible wheel is available"
+        );
+    }
+
+    #[test]
+    fn select_artifact_uses_abi3_wheel_as_fallback() {
+        // abi3 wheel available in addition to cp311
+        let pkg = ResolvedPackage {
+            name: "cryptography".to_string(),
+            version: "41.0.0".to_string(),
+            dependencies: vec![],
+            source: None,
+            artifacts: PackageArtifacts {
+                wheels: vec![
+                    Wheel {
+                        file: "cryptography-41.0.0-cp37-abi3-macosx_14_0_arm64.whl".to_string(),
+                        url: None,
+                        hash: None,
+                        platforms: vec!["macosx_14_0_arm64".to_string()],
+                        python_tag: Some("cp37".to_string()),
+                        abi_tag: Some("abi3".to_string()),
+                    },
+                    Wheel {
+                        file: "cryptography-41.0.0-cp311-cp311-macosx_14_0_arm64.whl".to_string(),
+                        url: None,
+                        hash: None,
+                        platforms: vec!["macosx_14_0_arm64".to_string()],
+                        python_tag: Some("cp311".to_string()),
+                        abi_tag: Some("cp311".to_string()),
+                    },
+                ],
+                sdist: None,
+            },
+        };
+        let platform_tags = vec!["macosx_14_0_arm64".to_string(), "any".to_string()];
+        // On cp311, exact match should win over abi3
+        let selection = select_artifact_for_platform_with_cp(&pkg, &platform_tags, "cp311");
+        assert_eq!(
+            selection.filename,
+            "cryptography-41.0.0-cp311-cp311-macosx_14_0_arm64.whl"
+        );
+        // On cp312 (no exact match), abi3 should be selected
+        let selection312 = select_artifact_for_platform_with_cp(&pkg, &platform_tags, "cp312");
+        assert_eq!(
+            selection312.filename,
+            "cryptography-41.0.0-cp37-abi3-macosx_14_0_arm64.whl"
+        );
+    }
+
+    #[test]
+    fn select_artifact_py3_wheel_is_always_compatible() {
+        let pkg = ResolvedPackage {
+            name: "requests".to_string(),
+            version: "2.28.0".to_string(),
+            dependencies: vec![],
+            source: None,
+            artifacts: PackageArtifacts {
+                wheels: vec![Wheel {
+                    file: "requests-2.28.0-py3-none-any.whl".to_string(),
+                    url: None,
+                    hash: None,
+                    platforms: vec!["any".to_string()],
+                    python_tag: Some("py3".to_string()),
+                    abi_tag: Some("none".to_string()),
+                }],
+                sdist: None,
+            },
+        };
+        let platform_tags = vec!["macosx_14_0_arm64".to_string(), "any".to_string()];
+        for cp_tag in &["cp311", "cp310", "cp39"] {
+            let selection = select_artifact_for_platform_with_cp(&pkg, &platform_tags, cp_tag);
+            assert!(
+                !selection.from_source,
+                "py3 wheel should be compatible with {cp_tag}"
+            );
+        }
     }
 }

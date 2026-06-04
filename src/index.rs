@@ -60,15 +60,20 @@ fn build_index(packages: Vec<IndexPackage>) -> InMemoryIndex {
             let wheels = pkg
                 .wheels
                 .iter()
-                .map(|w| Wheel {
-                    file: w.file.clone(),
-                    url: None,
-                    hash: w.hash.clone(),
-                    platforms: if w.platforms.is_empty() {
-                        vec!["any".into()]
-                    } else {
-                        w.platforms.clone()
-                    },
+                .map(|w| {
+                    let (python_tag, abi_tag) = crate::resolver::parse_wheel_tags(&w.file);
+                    Wheel {
+                        file: w.file.clone(),
+                        url: None,
+                        hash: w.hash.clone(),
+                        platforms: if w.platforms.is_empty() {
+                            vec!["any".into()]
+                        } else {
+                            w.platforms.clone()
+                        },
+                        python_tag,
+                        abi_tag,
+                    }
                 })
                 .collect();
             PackageArtifacts {
