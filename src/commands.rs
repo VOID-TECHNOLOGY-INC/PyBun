@@ -5045,8 +5045,16 @@ fn run_tests(args: &crate::cli::TestArgs, collector: &mut EventCollector) -> Res
                 cmd.arg(arg);
             }
         }
-        // Pybun backend returns early above; this arm is unreachable.
-        TestBackend::Pybun => unreachable!("pybun backend handled before this point"),
+        // The pybun path returns early via run_tests_native() before reaching
+        // this match.  The debug_assert guards against future refactors that
+        // accidentally remove that early return.
+        TestBackend::Pybun => {
+            debug_assert!(
+                false,
+                "TestBackend::Pybun must be handled before this match"
+            );
+            unreachable!("pybun backend handled before this point")
+        }
     }
 
     eprintln!("info: running tests with {:?}...", backend);
@@ -5139,8 +5147,7 @@ fn run_tests_native(
     python: &str,
     collector: &mut EventCollector,
 ) -> Result<RenderDetail> {
-    use crate::snapshot::SnapshotManager;
-    use crate::test_executor::{ExecutorConfig, TestExecutor, TestOutcome};
+    use crate::test_executor::{ExecutorConfig, TestExecutor};
 
     let workers = args.parallel.unwrap_or_else(|| {
         std::thread::available_parallelism()
@@ -5153,6 +5160,7 @@ fn run_tests_native(
         fail_fast: args.fail_fast,
         shard: shard_info,
         verbose: args.verbose,
+        // TODO(#125): expose per-test timeout via CLI flag
         timeout: None,
         python: python.to_string(),
     };
@@ -5168,25 +5176,21 @@ fn run_tests_native(
     let result = executor.execute(tests);
     let summary = &result.summary;
 
-    // Handle snapshot manager if snapshot mode is active
-    let snapshot_summary = if args.snapshot || args.update_snapshots {
+    // Snapshot integration is registered but not yet wired through the executor:
+    // TestExecutor currently calls `python -m pytest` per test, so snapshot
+    // assertions must be coordinated at the Python level or via a future
+    // executor API.  We record the configured directory so callers know where
+    // snapshots will land once the integration is complete.
+    // TODO(#125): wire SnapshotManager.assert_snapshot() into executor callbacks
+    let snapshot_config = if args.snapshot || args.update_snapshots {
         let snapshot_dir = args
             .snapshot_dir
             .clone()
             .unwrap_or_else(|| std::path::PathBuf::from("__snapshots__"));
-        let manager = SnapshotManager::new(snapshot_dir.clone(), args.update_snapshots);
-        let results = manager.results();
-        let updated = results.iter().filter(|r| r.updated).count();
-        let mismatches = results
-            .iter()
-            .filter(|r| matches!(r.result, crate::snapshot::SnapshotResult::Mismatch { .. }))
-            .count();
         Some(json!({
             "snapshot_dir": snapshot_dir.display().to_string(),
             "update_mode": args.update_snapshots,
-            "total": results.len(),
-            "updated": updated,
-            "mismatches": mismatches,
+            "status": "pending",
         }))
     } else {
         None
@@ -5236,7 +5240,9 @@ fn run_tests_native(
                 "name": r.name,
                 "path": r.path.display().to_string(),
                 "line": r.line,
-                "outcome": format!("{:?}", r.outcome).to_lowercase(),
+                // Use serde serialization, not Debug, so this stays in sync
+                // with TestOutcome's #[serde(rename_all = "lowercase")] derive.
+                "outcome": serde_json::to_value(&r.outcome).unwrap_or(Value::Null),
                 "duration_ms": r.duration_ms,
                 "worker_id": r.worker_id,
             })
@@ -5253,7 +5259,7 @@ fn run_tests_native(
         "parallel": args.parallel,
         "snapshot": args.snapshot,
         "update_snapshots": args.update_snapshots,
-        "snapshot_info": snapshot_summary,
+        "snapshot_config": snapshot_config,
         "summary": {
             "total": summary.total,
             "passed": summary.passed,
@@ -5269,15 +5275,7 @@ fn run_tests_native(
         "results": results_json,
     });
 
-    // Determine if any test outcome is a failure
-    let has_outcome_failure = result.results.iter().any(|r| {
-        matches!(
-            r.outcome,
-            TestOutcome::Failed | TestOutcome::Error | TestOutcome::Timeout
-        )
-    });
-
-    if summary.all_passed() && !has_outcome_failure {
+    if summary.all_passed() {
         Ok(RenderDetail::with_json(text_summary, detail))
     } else {
         Ok(RenderDetail::error(text_summary, detail))
