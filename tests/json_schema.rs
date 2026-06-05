@@ -429,7 +429,7 @@ mod schema_default {
         let stdout = String::from_utf8_lossy(&output.stdout);
         // Should print the JSON schema, not a help message
         assert!(
-            stdout.contains("$schema") || stdout.contains("\"schema\""),
+            stdout.contains("$schema"),
             "`pybun schema` output should contain JSON schema content, got:\n{stdout}"
         );
     }
