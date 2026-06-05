@@ -402,6 +402,76 @@ if __name__ == "__main__":
     }
 }
 
+/// Schema command default-to-print tests (Issue #138)
+mod schema_default {
+    use super::*;
+
+    #[test]
+    fn schema_without_subcommand_exits_zero() {
+        let output = Command::new(env!("CARGO_BIN_EXE_pybun"))
+            .arg("schema")
+            .output()
+            .expect("failed to execute pybun");
+        assert!(
+            output.status.success(),
+            "`pybun schema` should exit 0, got {:?}\nstderr: {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn schema_without_subcommand_outputs_json_schema() {
+        let output = Command::new(env!("CARGO_BIN_EXE_pybun"))
+            .arg("schema")
+            .output()
+            .expect("failed to execute pybun");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        // Should print the JSON schema, not a help message
+        assert!(
+            stdout.contains("$schema"),
+            "`pybun schema` output should contain JSON schema content, got:\n{stdout}"
+        );
+    }
+
+    #[test]
+    fn schema_without_subcommand_json_format_is_parseable() {
+        let output = Command::new(env!("CARGO_BIN_EXE_pybun"))
+            .args(["--format=json", "schema"])
+            .output()
+            .expect("failed to execute pybun");
+        assert!(
+            output.status.success(),
+            "`pybun --format=json schema` should exit 0"
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let json: serde_json::Value = serde_json::from_str(&stdout)
+            .expect("`pybun --format=json schema` must output valid JSON");
+        assert_eq!(json["status"], "ok");
+        assert!(
+            json["detail"]["schema"].is_object() || json["detail"]["schema"].is_string(),
+            "detail.schema should be present"
+        );
+    }
+
+    #[test]
+    fn schema_without_subcommand_matches_schema_print() {
+        let bare = Command::new(env!("CARGO_BIN_EXE_pybun"))
+            .arg("schema")
+            .output()
+            .expect("failed to execute pybun");
+        let with_print = Command::new(env!("CARGO_BIN_EXE_pybun"))
+            .args(["schema", "print"])
+            .output()
+            .expect("failed to execute pybun");
+        assert_eq!(
+            String::from_utf8_lossy(&bare.stdout),
+            String::from_utf8_lossy(&with_print.stdout),
+            "`pybun schema` and `pybun schema print` should produce identical output"
+        );
+    }
+}
+
 /// Schema versioning tests
 mod schema_version {
     use super::*;

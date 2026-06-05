@@ -1,8 +1,8 @@
 use crate::build::{BuildBackend, BuildCache};
 use crate::cli::{
     Cli, Commands, InitArgs, InitTemplate, LazyImportArgs, LockArgs, McpCommands, ModuleFindArgs,
-    OutdatedArgs, OutputFormat, ProfileArgs, ProgressMode, PythonCommands, SchemaCommands,
-    SelfCommands, TelemetryCommands, UpgradeArgs, WatchArgs,
+    OutdatedArgs, OutputFormat, ProfileArgs, ProgressMode, PythonCommands, SchemaArgs,
+    SchemaCommands, SelfCommands, TelemetryCommands, UpgradeArgs, WatchArgs,
 };
 use crate::env::{EnvSource, find_python_env};
 use crate::index::load_index_from_path;
@@ -584,8 +584,8 @@ pub async fn execute(cli: Cli) -> Result<()> {
                 }
             }
         }
-        Commands::Schema(cmd) => match cmd {
-            SchemaCommands::Print(_args) => {
+        Commands::Schema(SchemaArgs { command }) => match command {
+            None | Some(SchemaCommands::Print(_)) => {
                 let schema_json = crate::schema::schema_v1_json();
                 let schema_text = crate::schema::schema_v1_pretty();
                 let detail = if matches!(cli.format, OutputFormat::Text) {
@@ -607,7 +607,7 @@ pub async fn execute(cli: Cli) -> Result<()> {
                 };
                 ("schema print".to_string(), detail)
             }
-            SchemaCommands::Check(args) => {
+            Some(SchemaCommands::Check(args)) => {
                 let detail = run_schema_check(args);
                 ("schema check".to_string(), detail)
             }
