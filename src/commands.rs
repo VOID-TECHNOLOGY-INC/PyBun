@@ -365,9 +365,10 @@ pub async fn execute(cli: Cli) -> Result<()> {
                 }
             }
         }
-        Commands::Build(args) => (
-            "build".to_string(),
-            match run_build(args, &mut collector, cli.format) {
+        Commands::Build(args) => {
+            let pre_diag_count = collector.diagnostic_count();
+            let result = run_build(args, &mut collector, cli.format);
+            let detail = match result {
                 Ok(outcome) => RenderDetail::with_json(outcome.summary, {
                     let backend = &outcome.backend;
                     let sbom_detail = if let Some(sbom) = &outcome.sbom {
@@ -406,7 +407,11 @@ pub async fn execute(cli: Cli) -> Result<()> {
                     })
                 }),
                 Err(e) => {
-                    collector.error(e.to_string());
+                    // Only push a generic fallback error if run_build did not
+                    // already record a structured diagnostic (e.g. E_BUILD_MISSING_BUILD_PKG).
+                    if collector.diagnostic_count() == pre_diag_count {
+                        collector.error(e.to_string());
+                    }
                     RenderDetail::error(
                         e.to_string(),
                         json!({
@@ -414,8 +419,9 @@ pub async fn execute(cli: Cli) -> Result<()> {
                         }),
                     )
                 }
-            },
-        ),
+            };
+            ("build".to_string(), detail)
+        }
         Commands::Doctor(args) => {
             collector.info("Running environment diagnostics");
             let detail = run_doctor(args, &mut collector);
@@ -1889,6 +1895,22 @@ fn run_build(
         }
 
         if !output.status.success() {
+            // CPython 3.x emits "No module named 'build'" (with quotes); older builds may
+            // omit the quotes.  Check both forms to be safe.
+            let missing_build = stderr.contains("No module named 'build'")
+                || stderr.contains("No module named build");
+            if missing_build {
+                collector.diagnostic(
+                    Diagnostic::error("python -m build failed: No module named build")
+                        .with_code("E_BUILD_MISSING_BUILD_PKG")
+                        .with_suggestion("pybun add build --dev\n  or: pip install build"),
+                );
+                if matches!(format, OutputFormat::Text) {
+                    eprintln!("hint: Install the build package first: pybun add build --dev");
+                    eprintln!("      or: pip install build");
+                }
+                return Err(eyre!("python -m build failed: No module named build"));
+            }
             return Err(eyre!(
                 "python -m build failed with exit code {}.\nstdout:\n{}\nstderr:\n{}",
                 exit_code,

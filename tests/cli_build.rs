@@ -65,6 +65,99 @@ if __name__ == "__main__":
     (temp, project_dir, pythonpath)
 }
 
+/// Creates a fake Python executable (shell script) that simulates `python -m build`
+/// failing with "No module named build". Unix-only: relies on shebang execution.
+#[cfg(unix)]
+fn setup_no_module_build_project() -> (TempDir, PathBuf, PathBuf) {
+    let temp = tempfile::tempdir().unwrap();
+    let project_dir = temp.path().join("project");
+    fs::create_dir_all(&project_dir).unwrap();
+
+    fs::write(
+        project_dir.join("pyproject.toml"),
+        r#"[project]
+name = "demo-build"
+version = "0.1.0"
+"#,
+    )
+    .unwrap();
+
+    // Fake Python that fails with "No module named build" when invoked with -m build.
+    let fake_python = temp.path().join("fake_python.sh");
+    fs::write(
+        &fake_python,
+        "#!/bin/sh\nif echo \"$*\" | grep -q '\\-m build'; then\n  echo '/fake/python: No module named build' >&2\n  exit 1\nfi\nexec python3 \"$@\"\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&fake_python, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    (temp, project_dir, fake_python)
+}
+
+#[test]
+#[cfg(unix)]
+fn build_no_module_build_gives_hint_in_json() {
+    let (temp, project_dir, fake_python) = setup_no_module_build_project();
+    let cache_home = temp.path().join("cache_home");
+
+    let output = bin()
+        .current_dir(&project_dir)
+        .env("PYBUN_PYTHON", &fake_python)
+        .env("PYBUN_HOME", &cache_home)
+        .env("PYBUN_BUILD_NO_CACHE", "1")
+        .args(["--format=json", "build"])
+        .output()
+        .expect("failed to run pybun build");
+
+    assert!(
+        !output.status.success(),
+        "should fail when build module is missing"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value =
+        serde_json::from_str(&stdout).expect("output should be valid JSON");
+
+    assert_eq!(json["status"], "error", "status should be error: {json}");
+
+    let diagnostics = json["diagnostics"].as_array().expect("diagnostics array");
+    let has_hint = diagnostics.iter().any(|d| {
+        d["code"].as_str() == Some("E_BUILD_MISSING_BUILD_PKG")
+            || d["suggestion"]
+                .as_str()
+                .unwrap_or("")
+                .contains("pybun add build")
+    });
+    assert!(
+        has_hint,
+        "diagnostics should contain E_BUILD_MISSING_BUILD_PKG with hint: {diagnostics:?}"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn build_no_module_build_gives_hint_in_text() {
+    let (temp, project_dir, fake_python) = setup_no_module_build_project();
+    let cache_home = temp.path().join("cache_home");
+
+    bin()
+        .current_dir(&project_dir)
+        .env("PYBUN_PYTHON", &fake_python)
+        .env("PYBUN_HOME", &cache_home)
+        .env("PYBUN_BUILD_NO_CACHE", "1")
+        .arg("build")
+        .assert()
+        .failure()
+        .stderr(
+            predicate::str::contains("pybun add build")
+                .or(predicate::str::contains("pip install build")),
+        );
+}
+
 #[test]
 fn build_invokes_python_module_and_collects_artifacts() {
     let (temp, project_dir, pythonpath) = setup_fake_build_project();
