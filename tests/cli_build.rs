@@ -66,7 +66,8 @@ if __name__ == "__main__":
 }
 
 /// Creates a fake Python executable (shell script) that simulates `python -m build`
-/// failing with "No module named build".
+/// failing with "No module named build". Unix-only: relies on shebang execution.
+#[cfg(unix)]
 fn setup_no_module_build_project() -> (TempDir, PathBuf, PathBuf) {
     let temp = tempfile::tempdir().unwrap();
     let project_dir = temp.path().join("project");
@@ -98,6 +99,7 @@ version = "0.1.0"
 }
 
 #[test]
+#[cfg(unix)]
 fn build_no_module_build_gives_hint_in_json() {
     let (temp, project_dir, fake_python) = setup_no_module_build_project();
     let cache_home = temp.path().join("cache_home");
@@ -124,17 +126,20 @@ fn build_no_module_build_gives_hint_in_json() {
 
     let diagnostics = json["diagnostics"].as_array().expect("diagnostics array");
     let has_hint = diagnostics.iter().any(|d| {
-        let msg = d["message"].as_str().unwrap_or("");
-        let suggestion = d["suggestion"].as_str().unwrap_or("");
-        msg.contains("No module named build") || suggestion.contains("pybun add build")
+        d["code"].as_str() == Some("E_BUILD_MISSING_BUILD_PKG")
+            || d["suggestion"]
+                .as_str()
+                .unwrap_or("")
+                .contains("pybun add build")
     });
     assert!(
         has_hint,
-        "diagnostics should contain a hint about 'pybun add build': {diagnostics:?}"
+        "diagnostics should contain E_BUILD_MISSING_BUILD_PKG with hint: {diagnostics:?}"
     );
 }
 
 #[test]
+#[cfg(unix)]
 fn build_no_module_build_gives_hint_in_text() {
     let (temp, project_dir, fake_python) = setup_no_module_build_project();
     let cache_home = temp.path().join("cache_home");

@@ -407,6 +407,8 @@ pub async fn execute(cli: Cli) -> Result<()> {
                     })
                 }),
                 Err(e) => {
+                    // Only push a generic fallback error if run_build did not
+                    // already record a structured diagnostic (e.g. E_BUILD_MISSING_BUILD_PKG).
                     if collector.diagnostic_count() == pre_diag_count {
                         collector.error(e.to_string());
                     }
@@ -1893,12 +1895,15 @@ fn run_build(
         }
 
         if !output.status.success() {
-            if stderr.contains("No module named build") {
-                let suggestion = "pybun add build --dev\n  or: pip install build".to_string();
+            // CPython 3.x emits "No module named 'build'" (with quotes); older builds may
+            // omit the quotes.  Check both forms to be safe.
+            let missing_build = stderr.contains("No module named 'build'")
+                || stderr.contains("No module named build");
+            if missing_build {
                 collector.diagnostic(
                     Diagnostic::error("python -m build failed: No module named build")
                         .with_code("E_BUILD_MISSING_BUILD_PKG")
-                        .with_suggestion(suggestion),
+                        .with_suggestion("pybun add build --dev\n  or: pip install build"),
                 );
                 if matches!(format, OutputFormat::Text) {
                     eprintln!("hint: Install the build package first: pybun add build --dev");
