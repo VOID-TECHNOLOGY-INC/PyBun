@@ -1460,6 +1460,17 @@ def test_parametrized(value):
 // Native (--backend=pybun) Tests
 // ---------------------------------------------------------------------------
 
+/// Returns true when pytest is importable in the default Python interpreter.
+/// Tests that require pytest to actually run tests use this guard and return
+/// early (effectively skipping) when the CI environment lacks pytest.
+fn pytest_available() -> bool {
+    std::process::Command::new("python3")
+        .args(["-c", "import pytest"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 #[test]
 fn test_pybun_backend_recognized_in_help() {
     pybun()
@@ -1633,6 +1644,12 @@ fn test_pybun_backend_dry_run_shows_snapshot_config() {
 
 #[test]
 fn test_pybun_backend_executes_passing_tests() {
+    // TestExecutor delegates to `python -m pytest`; skip when pytest is absent.
+    if !pytest_available() {
+        eprintln!("Skipping test_pybun_backend_executes_passing_tests: pytest not installed");
+        return;
+    }
+
     let temp = TempDir::new().unwrap();
     let test_file = temp.path().join("test_pass.py");
     fs::write(
@@ -1666,7 +1683,6 @@ def test_string():
         "passing tests should produce status=ok, got: {}",
         json
     );
-    // Summary should be present
     assert!(
         detail.get("summary").is_some(),
         "detail should contain summary"
@@ -1675,6 +1691,12 @@ def test_string():
 
 #[test]
 fn test_pybun_backend_executes_failing_tests() {
+    // TestExecutor delegates to `python -m pytest`; skip when pytest is absent.
+    if !pytest_available() {
+        eprintln!("Skipping test_pybun_backend_executes_failing_tests: pytest not installed");
+        return;
+    }
+
     let temp = TempDir::new().unwrap();
     let test_file = temp.path().join("test_fail.py");
     fs::write(
@@ -1708,6 +1730,12 @@ def test_failing():
 
 #[test]
 fn test_pybun_backend_json_contains_results_array() {
+    // TestExecutor delegates to `python -m pytest`; skip when pytest is absent.
+    if !pytest_available() {
+        eprintln!("Skipping test_pybun_backend_json_contains_results_array: pytest not installed");
+        return;
+    }
+
     let temp = TempDir::new().unwrap();
     let test_file = temp.path().join("test_results.py");
     fs::write(
