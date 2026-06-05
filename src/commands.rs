@@ -4927,6 +4927,16 @@ fn run_tests(args: &crate::cli::TestArgs, collector: &mut EventCollector) -> Res
             Vec::new()
         };
 
+        let workers = if backend == TestBackend::Pybun {
+            Some(args.parallel.unwrap_or_else(|| {
+                std::thread::available_parallelism()
+                    .map(|p| p.get())
+                    .unwrap_or(4)
+            }))
+        } else {
+            args.parallel
+        };
+
         return Ok(RenderDetail::with_json(
             summary,
             json!({
@@ -4941,6 +4951,9 @@ fn run_tests(args: &crate::cli::TestArgs, collector: &mut EventCollector) -> Res
                 "shard": shard_info.map(|(n, m)| format!("{}/{}", n, m)),
                 "filter": args.filter,
                 "parallel": args.parallel,
+                "workers": workers,
+                "snapshot": args.snapshot,
+                "update_snapshots": args.update_snapshots,
                 "ast_discovery": {
                     "tests": tests.len(),
                     "fixtures": discovery_result.fixtures.len(),
@@ -4955,6 +4968,11 @@ fn run_tests(args: &crate::cli::TestArgs, collector: &mut EventCollector) -> Res
     // Find Python interpreter
     let (python, env_source) = find_python_interpreter()?;
     eprintln!("info: using Python from {}", env_source);
+
+    // Native pybun backend: use Rust TestExecutor
+    if backend == TestBackend::Pybun {
+        return run_tests_native(args, tests, shard_info, &python, collector);
+    }
 
     // Build the command based on backend
     let mut cmd = ProcessCommand::new(&python);
@@ -5026,6 +5044,16 @@ fn run_tests(args: &crate::cli::TestArgs, collector: &mut EventCollector) -> Res
             for arg in &args.passthrough {
                 cmd.arg(arg);
             }
+        }
+        // The pybun path returns early via run_tests_native() before reaching
+        // this match.  The debug_assert guards against future refactors that
+        // accidentally remove that early return.
+        TestBackend::Pybun => {
+            debug_assert!(
+                false,
+                "TestBackend::Pybun must be handled before this match"
+            );
+            unreachable!("pybun backend handled before this point")
         }
     }
 
@@ -5105,6 +5133,152 @@ fn run_tests(args: &crate::cli::TestArgs, collector: &mut EventCollector) -> Res
         Ok(RenderDetail::error(summary, detail))
     } else {
         Ok(RenderDetail::with_json(summary, detail))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Native pybun test executor
+// ---------------------------------------------------------------------------
+
+fn run_tests_native(
+    args: &crate::cli::TestArgs,
+    tests: Vec<TestItem>,
+    shard_info: Option<(u32, u32)>,
+    python: &str,
+    collector: &mut EventCollector,
+) -> Result<RenderDetail> {
+    use crate::test_executor::{ExecutorConfig, TestExecutor};
+
+    let workers = args.parallel.unwrap_or_else(|| {
+        std::thread::available_parallelism()
+            .map(|p| p.get())
+            .unwrap_or(4)
+    });
+
+    let config = ExecutorConfig {
+        workers,
+        fail_fast: args.fail_fast,
+        shard: shard_info,
+        verbose: args.verbose,
+        // TODO(#125): expose per-test timeout via CLI flag
+        timeout: None,
+        python: python.to_string(),
+    };
+
+    let executor = TestExecutor::new(config);
+
+    collector.info(format!(
+        "Running {} tests with native pybun executor ({} workers)",
+        tests.len(),
+        workers
+    ));
+
+    let result = executor.execute(tests);
+    let summary = &result.summary;
+
+    // Snapshot integration is registered but not yet wired through the executor:
+    // TestExecutor currently calls `python -m pytest` per test, so snapshot
+    // assertions must be coordinated at the Python level or via a future
+    // executor API.  We record the configured directory so callers know where
+    // snapshots will land once the integration is complete.
+    // TODO(#125): wire SnapshotManager.assert_snapshot() into executor callbacks
+    let snapshot_config = if args.snapshot || args.update_snapshots {
+        let snapshot_dir = args
+            .snapshot_dir
+            .clone()
+            .unwrap_or_else(|| std::path::PathBuf::from("__snapshots__"));
+        Some(json!({
+            "snapshot_dir": snapshot_dir.display().to_string(),
+            "update_mode": args.update_snapshots,
+            "status": "pending",
+        }))
+    } else {
+        None
+    };
+
+    let text_summary = if summary.all_passed() {
+        format!(
+            "{} passed, {} skipped in {:.2}s",
+            summary.passed,
+            summary.skipped,
+            summary.duration_ms as f64 / 1000.0
+        )
+    } else {
+        format!(
+            "{} passed, {} failed, {} errors, {} skipped in {:.2}s",
+            summary.passed,
+            summary.failed,
+            summary.errors,
+            summary.skipped,
+            summary.duration_ms as f64 / 1000.0
+        )
+    };
+
+    // Emit diagnostics for failed tests
+    for failed in result.failed_tests() {
+        let diag = Diagnostic {
+            level: crate::schema::DiagnosticLevel::Error,
+            code: Some("E_TEST_FAILED".to_string()),
+            message: format!("FAILED {}", failed.name),
+            file: Some(failed.path.display().to_string()),
+            line: Some(failed.line as u32),
+            suggestion: None,
+            context: if failed.stderr.is_empty() {
+                None
+            } else {
+                Some(Value::String(failed.stderr.clone()))
+            },
+        };
+        collector.diagnostic(diag);
+    }
+
+    let results_json: Vec<Value> = result
+        .results
+        .iter()
+        .map(|r| {
+            json!({
+                "name": r.name,
+                "path": r.path.display().to_string(),
+                "line": r.line,
+                // Use serde serialization, not Debug, so this stays in sync
+                // with TestOutcome's #[serde(rename_all = "lowercase")] derive.
+                "outcome": serde_json::to_value(&r.outcome).unwrap_or(Value::Null),
+                "duration_ms": r.duration_ms,
+                "worker_id": r.worker_id,
+            })
+        })
+        .collect();
+
+    let detail = json!({
+        "backend": "pybun",
+        "test_runner": "pybun",
+        "workers": workers,
+        "fail_fast": args.fail_fast,
+        "shard": shard_info.map(|(n, m)| format!("{}/{}", n, m)),
+        "filter": args.filter,
+        "parallel": args.parallel,
+        "snapshot": args.snapshot,
+        "update_snapshots": args.update_snapshots,
+        "snapshot_config": snapshot_config,
+        "summary": {
+            "total": summary.total,
+            "passed": summary.passed,
+            "failed": summary.failed,
+            "skipped": summary.skipped,
+            "errors": summary.errors,
+            "timeouts": summary.timeouts,
+            "xfail": summary.xfail,
+            "xpass": summary.xpass,
+            "duration_ms": summary.duration_ms,
+            "stopped_early": summary.stopped_early,
+        },
+        "results": results_json,
+    });
+
+    if summary.all_passed() {
+        Ok(RenderDetail::with_json(text_summary, detail))
+    } else {
+        Ok(RenderDetail::error(text_summary, detail))
     }
 }
 
