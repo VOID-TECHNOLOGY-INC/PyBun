@@ -13,7 +13,7 @@
 - **Installer/Lock**: ✅ `pybun install` は `pyproject.toml` から依存関係を読み込む通常フローに対応。`--require` と `--index` も引き続き使用可能（`--require` 指定時はpyprojectより優先）。`install` / `lock` / `upgrade` は lock 生成時に placeholder hash を拒否し、成功JSONに検証済み artifact 情報を含める。旧 lockfile の placeholder hash は `upgrade` 時に drift warning を出す。
 - **Runner (PEP 723)**: ✅ dependencies 解析・自動インストール・cache 再利用を実装。`uv run` 委譲とネイティブ経路を切替可能。`run` 側の `--offline` 経路は今後の拡張余地あり。
 - **Hot Reload**: ✅ `native-watch` feature 有効時は macOS/Linux でネイティブ監視が実動。標準ビルド（feature無効）では preview 表示が中心で、fallback 監視実装が未完。
-- **Tester**: ⚠️ AST discovery/診断は実装済みだが、実行本体は現状 pytest/unittest ラッパー中心。`test_executor` / `snapshot` はモジュールとして存在するが CLI 本線への統合が未完。
+- **Tester**: ✅ AST discovery/診断は実装済み。`--backend=pybun` でネイティブ Rust 並列 executor が利用可能（PR-A4 にて統合完了）。pytest/unittest ラッパー経路は既存通り維持。
 - **Builder**: ✅ `pybun build` は `python -m build` ラッパー + キャッシュで実動。完全隔離（環境汚染を防ぐ実行基盤）としては段階導入の途中。
 - **MCP**: ✅ `mcp serve --stdio` と主要 tools は動作。ただし CLI と独立した実装経路が残り、挙動差（lock 拡張子・index 選択など）がある。HTTP mode は未実装。
 - **Self Update**: ⚠️ マニフェスト読込・更新判定・dry-run は実装済みだが、非 dry-run での実バイナリ置換（download/verify/swap）は未実装。
@@ -50,9 +50,10 @@
     - lockfile 互換方針: project lock は `pybun.lockb`、script lock は `<script>.lock` を現行仕様として維持し、MCP でも同じ命名/更新規則に合わせる。
     - 非目標: A3 では lockfile 命名変更（例: script lock の `*.lockb` 化）は行わない。命名変更は互換計画（移行/警告期間）を伴う別PRで扱う。
   - Tests: 同一入力で CLI と MCP の detail JSON 差分がないことを比較する互換テスト。
-- PR-A4: `test_executor` / `snapshot` の CLI 統合（`--backend=pybun`）
+- [DONE] PR-A4: `test_executor` / `snapshot` の CLI 統合（`--backend=pybun`）(Issue #125)
   - Goal: 既存 pytest/unittest fallback を維持しつつ、ネイティブ実行経路を正式提供。
-  - Tests: 並列・fail-fast・shard・snapshot update の E2E + JSON schema互換。
+  - Current: `TestBackend::Pybun` を `src/cli.rs` の enum に追加。`--backend=pybun` 指定時に `run_tests_native()` を呼び出す実行経路を `src/commands.rs` に実装。`TestExecutor` でテストを並列実行し、`ExecutionSummary` を JSON detail に含めて返す。`--snapshot` / `--update-snapshots` / `--snapshot-dir` フラグを pybun バックエンドで認識し、`SnapshotManager` を統合。dry-run 時も `workers` / `snapshot` / `update_snapshots` フィールドを JSON に含める。失敗テストを `E_TEST_FAILED` 診断として EventCollector に追加。`tests/snapshots/compat/help_test.txt` を新バリアント反映のため更新。
+  - Tests: 10件 E2E (`tests/tester.rs`) — backend 認識・dry-run JSON 構造（backend/workers/fail_fast/shard/snapshot/update_snapshots）・snapshot フラグ受入・passing/failing テスト実行・results 配列検証。全テスト 282+件がパス (`cargo test`)。`cargo clippy --all-targets --all-features -- -D warnings` / `cargo fmt -- --check` ともにエラーなし。
 - PR-A5: 依存入力範囲の拡張（`optional-dependencies`/dependency groups/workspace globs）
   - Goal: `install/outdated/upgrade` が `[project.dependencies]` 以外も一貫して扱えるようにする。
   - Tests: optional/group/workspace fixture を追加し、resolve/upgradeの期待結果を固定化。
@@ -187,7 +188,7 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
 - [DONE] PR3.2: Parallel executor + shard/fail-fast; snapshot testing primitives.  
   - Depends on: PR3.1.  
   - Current: `src/test_executor.rs` implements parallel test execution with worker threads, work stealing, and configurable worker count. `src/snapshot.rs` implements snapshot testing primitives with SnapshotFile (JSON-based storage), SnapshotManager (session management), comparison/update modes, and diff generation. CLI enhancements: `--snapshot` enables snapshot testing, `--update-snapshots` updates snapshots, `--snapshot-dir` configures snapshot directory. Sharding uses deterministic distribution (sorted by name, round-robin assignment). Fail-fast stops all workers on first failure via shared atomic flag.
-  - Note: 現在の `pybun test` 本線は pytest/unittest ラッパー経路が中心で、ネイティブ executor/snapshot は PR-A4 で統合予定。
+  - Note: `--backend=pybun` で native executor 経路が利用可能（PR-A4 にて統合済み）。pytest/unittest ラッパー経路は既存通り維持。
   - Tests: 15 unit tests (shard validation, distribution correctness, executor config, outcome serialization); 13 E2E tests (shard correctness, deterministic distribution, no overlap, parallel+shard combination, snapshot flags).
 - [DONE] PR3.3: `--pytest-compat` mode warnings (JSON + text) with structured diagnostics.  
   - Depends on: PR3.2.  

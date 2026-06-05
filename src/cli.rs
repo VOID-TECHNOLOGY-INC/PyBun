@@ -260,6 +260,8 @@ pub struct TestArgs {
 pub enum TestBackend {
     Pytest,
     Unittest,
+    /// Native Rust-based parallel executor (pybun-native).
+    Pybun,
 }
 
 #[derive(Args, Debug)]

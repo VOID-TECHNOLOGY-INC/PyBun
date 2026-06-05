@@ -1455,3 +1455,287 @@ def test_parametrized(value):
         "Should have parametrize info warning (I001)"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Native (--backend=pybun) Tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_pybun_backend_recognized_in_help() {
+    pybun()
+        .args(["test", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("pybun"));
+}
+
+#[test]
+fn test_pybun_backend_dry_run_shows_pybun_backend() {
+    let temp = TempDir::new().unwrap();
+    let test_file = temp.path().join("test_example.py");
+    fs::write(&test_file, "def test_pass():\n    assert True\n").unwrap();
+
+    let output = pybun()
+        .current_dir(temp.path())
+        .args(["test", "--backend=pybun", "--format=json"])
+        .env("PYBUN_TEST_DRY_RUN", "1")
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("Valid JSON");
+    let detail = json.get("detail").unwrap();
+    assert_eq!(
+        detail.get("backend").and_then(|v| v.as_str()),
+        Some("pybun"),
+        "backend field should be 'pybun'"
+    );
+}
+
+#[test]
+fn test_pybun_backend_dry_run_includes_parallel_workers() {
+    let temp = TempDir::new().unwrap();
+    let test_file = temp.path().join("test_example.py");
+    fs::write(&test_file, "def test_pass():\n    assert True\n").unwrap();
+
+    let output = pybun()
+        .current_dir(temp.path())
+        .args(["test", "--backend=pybun", "--parallel=2", "--format=json"])
+        .env("PYBUN_TEST_DRY_RUN", "1")
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("Valid JSON");
+    let detail = json.get("detail").unwrap();
+    assert_eq!(
+        detail.get("backend").and_then(|v| v.as_str()),
+        Some("pybun"),
+    );
+    assert_eq!(
+        detail.get("workers").and_then(|v| v.as_u64()),
+        Some(2),
+        "workers field should be 2"
+    );
+}
+
+#[test]
+fn test_pybun_backend_dry_run_fail_fast() {
+    let temp = TempDir::new().unwrap();
+    let test_file = temp.path().join("test_example.py");
+    fs::write(&test_file, "def test_pass():\n    assert True\n").unwrap();
+
+    let output = pybun()
+        .current_dir(temp.path())
+        .args(["test", "--backend=pybun", "--fail-fast", "--format=json"])
+        .env("PYBUN_TEST_DRY_RUN", "1")
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("Valid JSON");
+    let detail = json.get("detail").unwrap();
+    assert_eq!(
+        detail.get("fail_fast").and_then(|v| v.as_bool()),
+        Some(true),
+        "fail_fast should be true"
+    );
+}
+
+#[test]
+fn test_pybun_backend_dry_run_with_shard() {
+    let temp = TempDir::new().unwrap();
+    let test_file = temp.path().join("test_example.py");
+    fs::write(&test_file, "def test_pass():\n    assert True\n").unwrap();
+
+    let output = pybun()
+        .current_dir(temp.path())
+        .args(["test", "--backend=pybun", "--shard=1/3", "--format=json"])
+        .env("PYBUN_TEST_DRY_RUN", "1")
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("Valid JSON");
+    let detail = json.get("detail").unwrap();
+    assert_eq!(
+        detail.get("backend").and_then(|v| v.as_str()),
+        Some("pybun"),
+    );
+    assert_eq!(
+        detail.get("shard").and_then(|v| v.as_str()),
+        Some("1/3"),
+        "shard field should reflect requested shard"
+    );
+}
+
+#[test]
+fn test_pybun_backend_snapshot_flags_accepted() {
+    let temp = TempDir::new().unwrap();
+    let test_file = temp.path().join("test_example.py");
+    fs::write(&test_file, "def test_pass():\n    assert True\n").unwrap();
+
+    // --snapshot flag must be accepted without error
+    pybun()
+        .current_dir(temp.path())
+        .args(["test", "--backend=pybun", "--snapshot", "--format=json"])
+        .env("PYBUN_TEST_DRY_RUN", "1")
+        .assert()
+        .success();
+
+    // --update-snapshots flag must be accepted without error
+    pybun()
+        .current_dir(temp.path())
+        .args([
+            "test",
+            "--backend=pybun",
+            "--update-snapshots",
+            "--format=json",
+        ])
+        .env("PYBUN_TEST_DRY_RUN", "1")
+        .assert()
+        .success();
+}
+
+#[test]
+fn test_pybun_backend_dry_run_shows_snapshot_config() {
+    let temp = TempDir::new().unwrap();
+    let test_file = temp.path().join("test_example.py");
+    fs::write(&test_file, "def test_pass():\n    assert True\n").unwrap();
+
+    let output = pybun()
+        .current_dir(temp.path())
+        .args([
+            "test",
+            "--backend=pybun",
+            "--snapshot",
+            "--update-snapshots",
+            "--format=json",
+        ])
+        .env("PYBUN_TEST_DRY_RUN", "1")
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("Valid JSON");
+    let detail = json.get("detail").unwrap();
+    assert_eq!(
+        detail.get("snapshot").and_then(|v| v.as_bool()),
+        Some(true),
+        "snapshot field should be true"
+    );
+    assert_eq!(
+        detail.get("update_snapshots").and_then(|v| v.as_bool()),
+        Some(true),
+        "update_snapshots field should be true"
+    );
+}
+
+#[test]
+fn test_pybun_backend_executes_passing_tests() {
+    let temp = TempDir::new().unwrap();
+    let test_file = temp.path().join("test_pass.py");
+    fs::write(
+        &test_file,
+        r#"
+def test_addition():
+    assert 1 + 1 == 2
+
+def test_string():
+    assert "hello".upper() == "HELLO"
+"#,
+    )
+    .unwrap();
+
+    let output = pybun()
+        .current_dir(temp.path())
+        .args(["test", "--backend=pybun", "--format=json"])
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("Valid JSON");
+    let detail = json.get("detail").unwrap();
+
+    assert_eq!(
+        detail.get("backend").and_then(|v| v.as_str()),
+        Some("pybun"),
+    );
+    assert!(
+        json.get("status").and_then(|v| v.as_str()) == Some("ok"),
+        "passing tests should produce status=ok, got: {}",
+        json
+    );
+    // Summary should be present
+    assert!(
+        detail.get("summary").is_some(),
+        "detail should contain summary"
+    );
+}
+
+#[test]
+fn test_pybun_backend_executes_failing_tests() {
+    let temp = TempDir::new().unwrap();
+    let test_file = temp.path().join("test_fail.py");
+    fs::write(
+        &test_file,
+        r#"
+def test_failing():
+    assert False, "intentional failure"
+"#,
+    )
+    .unwrap();
+
+    let output = pybun()
+        .current_dir(temp.path())
+        .args(["test", "--backend=pybun", "--format=json"])
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("Valid JSON");
+
+    assert_eq!(
+        json.get("status").and_then(|v| v.as_str()),
+        Some("error"),
+        "failing tests should produce status=error"
+    );
+    assert!(
+        !output.status.success(),
+        "exit code should be non-zero for failing tests"
+    );
+}
+
+#[test]
+fn test_pybun_backend_json_contains_results_array() {
+    let temp = TempDir::new().unwrap();
+    let test_file = temp.path().join("test_results.py");
+    fs::write(
+        &test_file,
+        r#"
+def test_one():
+    assert True
+
+def test_two():
+    assert True
+"#,
+    )
+    .unwrap();
+
+    let output = pybun()
+        .current_dir(temp.path())
+        .args(["test", "--backend=pybun", "--format=json"])
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("Valid JSON");
+    let detail = json.get("detail").unwrap();
+
+    assert!(
+        detail.get("results").is_some(),
+        "detail should contain results array"
+    );
+    let results = detail.get("results").unwrap().as_array().unwrap();
+    assert_eq!(results.len(), 2, "should have 2 test results");
+}
