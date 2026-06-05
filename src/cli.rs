@@ -87,8 +87,7 @@ pub enum Commands {
     /// Show or configure launch profiles.
     Profile(ProfileArgs),
     /// Print or validate the CLI JSON schema.
-    #[command(subcommand)]
-    Schema(SchemaCommands),
+    Schema(SchemaArgs),
     /// Manage telemetry settings (opt-in/opt-out).
     #[command(subcommand)]
     Telemetry(TelemetryCommands),
@@ -290,6 +289,12 @@ pub struct DoctorArgs {
 pub enum McpCommands {
     /// Start MCP server for programmatic control.
     Serve(McpServeArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct SchemaArgs {
+    #[command(subcommand)]
+    pub command: Option<SchemaCommands>,
 }
 
 #[derive(Subcommand, Debug)]

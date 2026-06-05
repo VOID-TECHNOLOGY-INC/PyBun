@@ -1,6 +1,6 @@
 Print or validate the CLI JSON schema
 
-Usage: pybun schema [OPTIONS] <COMMAND>
+Usage: pybun schema [OPTIONS] [COMMAND]
 
 Commands:
   print  Print the JSON schema for CLI output
