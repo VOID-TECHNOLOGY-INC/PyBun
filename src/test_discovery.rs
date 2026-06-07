@@ -120,7 +120,39 @@ pub struct DiscoveryResult {
     pub compat_warnings: Vec<CompatWarning>,
 }
 
-/// Compatibility warning for pytest features that need special handling
+/// Compatibility warning for pytest features that need special handling.
+///
+/// ## Native (`--backend=pybun`) vs wrapper (`--backend=pytest`/`unittest`)
+///
+/// `pybun test --backend=pybun` runs each discovered test through a Rust-native
+/// parallel executor (`crate::test_executor`) instead of delegating discovery,
+/// collection, and orchestration to `pytest`/`unittest` directly. This is
+/// faster and more deterministic for plain `unittest`-style and simple
+/// `pytest`-style tests, but the patterns below are known to differ or be
+/// unsupported — projects relying on them should pass `--backend=pytest`:
+///
+/// - **Session/package-scoped fixtures** (`@pytest.fixture(scope="session"/"package")`,
+///   code `W001`): the native executor runs each test in its own `pytest`
+///   subprocess, so fixtures are not actually shared/cached across tests —
+///   only single-test scope semantics are guaranteed.
+/// - **Pytest plugin decorators** (`@pytest.mark.usefixtures`,
+///   `filterwarnings`, `tryfirst`, `trylast`, code `W002`): these depend on
+///   plugin hooks (e.g. `pytest-xdist`, `pytest-asyncio`, `pytest-mock`,
+///   `pytest-cov`) that the native executor does not load or orchestrate.
+/// - **`conftest.py` plugin hooks** (custom `pytest_*` hook implementations,
+///   collection plugins, custom markers registered via `pytest_configure`):
+///   not invoked by the native executor's per-test subprocess invocation.
+/// - **Parametrized tests** (`@pytest.mark.parametrize`, code `I001`): expanded
+///   at discovery time and run as independent cases — informational only,
+///   behavior is expected to match.
+///
+/// When `--backend=pybun` is selected, `pybun test` surfaces these as
+/// `W_TEST_BACKEND_COMPAT_<code>` diagnostics (independent of
+/// `--pytest-compat`, which instead reports the same underlying warnings as
+/// general pytest-compatibility info regardless of backend) with a
+/// `--backend=pytest` suggestion, so agents can distinguish "the test failed"
+/// from "the chosen backend doesn't fully emulate a feature this project
+/// relies on" (see Issue #168).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CompatWarning {
     /// Warning code

@@ -2105,3 +2105,173 @@ def test_flaky_snap():
         diagnostics
     );
 }
+
+// ---------------------------------------------------------------------------
+// Native backend compat-warning diagnostics (Issue #168)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_pybun_backend_surfaces_compat_warning_diagnostics_without_pytest_compat_flag() {
+    if !pytest_available() {
+        eprintln!(
+            "Skipping test_pybun_backend_surfaces_compat_warning_diagnostics_without_pytest_compat_flag: pytest not installed"
+        );
+        return;
+    }
+
+    let temp = TempDir::new().unwrap();
+    let test_file = temp.path().join("test_session_fixture.py");
+    fs::write(
+        &test_file,
+        r#"
+import pytest
+
+@pytest.fixture(scope="session")
+def db_connection():
+    return object()
+
+def test_uses_session_fixture(db_connection):
+    assert db_connection is not None
+"#,
+    )
+    .unwrap();
+
+    // Note: --pytest-compat is intentionally NOT passed — compat diagnostics
+    // for the native backend should surface unconditionally, since picking
+    // --backend=pybun is itself the signal that compatibility matters.
+    let output = pybun()
+        .current_dir(temp.path())
+        .args(["test", "--backend=pybun", "--format=json"])
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("Valid JSON");
+    let diagnostics = json
+        .get("diagnostics")
+        .and_then(|v| v.as_array())
+        .expect("diagnostics array should be present");
+
+    let compat_diag = diagnostics.iter().find(|d| {
+        d.get("code")
+            .and_then(|c| c.as_str())
+            .is_some_and(|c| c.starts_with("W_TEST_BACKEND_COMPAT_"))
+    });
+
+    assert!(
+        compat_diag.is_some(),
+        "expected a W_TEST_BACKEND_COMPAT_* diagnostic for a session-scoped fixture under --backend=pybun (without --pytest-compat): {:?}",
+        diagnostics
+    );
+
+    let compat_diag = compat_diag.unwrap();
+    assert_eq!(
+        compat_diag.get("level").and_then(|v| v.as_str()),
+        Some("warning"),
+    );
+    let suggestion = compat_diag
+        .get("suggestion")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    assert!(
+        suggestion.contains("--backend=pytest") || suggestion.contains("--backend pytest"),
+        "expected suggestion to recommend switching to the pytest backend, got: {:?}",
+        compat_diag
+    );
+}
+
+#[test]
+fn test_pytest_backend_does_not_surface_native_compat_diagnostics() {
+    if !pytest_available() {
+        eprintln!(
+            "Skipping test_pytest_backend_does_not_surface_native_compat_diagnostics: pytest not installed"
+        );
+        return;
+    }
+
+    let temp = TempDir::new().unwrap();
+    let test_file = temp.path().join("test_session_fixture.py");
+    fs::write(
+        &test_file,
+        r#"
+import pytest
+
+@pytest.fixture(scope="session")
+def db_connection():
+    return object()
+
+def test_uses_session_fixture(db_connection):
+    assert db_connection is not None
+"#,
+    )
+    .unwrap();
+
+    let output = pybun()
+        .current_dir(temp.path())
+        .args(["test", "--backend=pytest", "--format=json"])
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("Valid JSON");
+    let diagnostics = json
+        .get("diagnostics")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    assert!(
+        !diagnostics.iter().any(|d| {
+            d.get("code")
+                .and_then(|c| c.as_str())
+                .is_some_and(|c| c.starts_with("W_TEST_BACKEND_COMPAT_"))
+        }),
+        "W_TEST_BACKEND_COMPAT_* diagnostics are specific to --backend=pybun and should not appear for --backend=pytest: {:?}",
+        diagnostics
+    );
+}
+
+#[test]
+fn test_pybun_backend_no_compat_diagnostics_for_plain_tests() {
+    if !pytest_available() {
+        eprintln!(
+            "Skipping test_pybun_backend_no_compat_diagnostics_for_plain_tests: pytest not installed"
+        );
+        return;
+    }
+
+    let temp = TempDir::new().unwrap();
+    let test_file = temp.path().join("test_plain.py");
+    fs::write(
+        &test_file,
+        r#"
+def test_addition():
+    assert 1 + 1 == 2
+"#,
+    )
+    .unwrap();
+
+    let output = pybun()
+        .current_dir(temp.path())
+        .args(["test", "--backend=pybun", "--format=json"])
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("Valid JSON");
+    let diagnostics = json
+        .get("diagnostics")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    assert!(
+        !diagnostics.iter().any(|d| {
+            d.get("code")
+                .and_then(|c| c.as_str())
+                .is_some_and(|c| c.starts_with("W_TEST_BACKEND_COMPAT_"))
+        }),
+        "plain tests with no compat-relevant patterns should not produce W_TEST_BACKEND_COMPAT_* diagnostics: {:?}",
+        diagnostics
+    );
+}
