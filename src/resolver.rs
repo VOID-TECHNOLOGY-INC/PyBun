@@ -332,6 +332,20 @@ pub fn python_version_to_cp_tag(version: &str) -> Option<String> {
     }
 }
 
+/// Convert a CPython wheel tag (e.g., `"cp310"`) back to a dotted `MAJOR.MINOR`
+/// version string (e.g., `"3.10"`). Returns `None` for non-CPython tags
+/// (e.g., `"py3"`, `"abi3"`) or tags that don't fit the `cp{major}{minor}` shape.
+///
+/// The major version is always exactly one digit, mirroring [`cp_tag_ge`].
+pub fn cp_tag_to_dotted_version(tag: &str) -> Option<String> {
+    let digits = tag.strip_prefix("cp")?;
+    if digits.len() < 2 || !digits.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let (major, minor) = digits.split_at(1);
+    Some(format!("{major}.{minor}"))
+}
+
 /// Compare two CPython tags version-wise: returns true if `a` >= `b`.
 ///
 /// Tags use the format `cp{major}{minor}` (e.g., `cp311`, `cp37`, `cp312`).
@@ -1325,6 +1339,31 @@ mod tests {
     fn python_version_to_cp_tag_invalid_returns_none() {
         assert_eq!(python_version_to_cp_tag("invalid"), None);
         assert_eq!(python_version_to_cp_tag(""), None);
+    }
+
+    #[test]
+    fn cp_tag_to_dotted_version_two_digit_minor() {
+        assert_eq!(cp_tag_to_dotted_version("cp310").as_deref(), Some("3.10"));
+        assert_eq!(cp_tag_to_dotted_version("cp312").as_deref(), Some("3.12"));
+    }
+
+    #[test]
+    fn cp_tag_to_dotted_version_single_digit_minor() {
+        assert_eq!(cp_tag_to_dotted_version("cp39").as_deref(), Some("3.9"));
+    }
+
+    #[test]
+    fn cp_tag_to_dotted_version_rejects_non_cpython_tags() {
+        assert_eq!(cp_tag_to_dotted_version("py3"), None);
+        assert_eq!(cp_tag_to_dotted_version("abi3"), None);
+        assert_eq!(cp_tag_to_dotted_version("cp"), None);
+        assert_eq!(cp_tag_to_dotted_version("cpXY"), None);
+    }
+
+    #[test]
+    fn cp_tag_to_dotted_version_round_trips_with_python_version_to_cp_tag() {
+        let tag = python_version_to_cp_tag("3.13.1").unwrap();
+        assert_eq!(cp_tag_to_dotted_version(&tag).as_deref(), Some("3.13"));
     }
 
     #[test]

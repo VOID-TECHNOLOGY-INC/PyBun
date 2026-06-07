@@ -469,3 +469,116 @@ fn run_json_mode_zero_exit_reports_ok_status() {
     assert_eq!(value["detail"]["exit_code"], 0);
     assert!(output.status.success());
 }
+
+// =============================================================================
+// Issue #172: validate locked wheel Python tags against the active interpreter
+// =============================================================================
+
+#[cfg(unix)]
+fn write_fake_python(dir: &std::path::Path, version: &str) -> std::path::PathBuf {
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+
+    let path = dir.join("fake_python.sh");
+    let mut file = fs::File::create(&path).unwrap();
+    writeln!(file, "#!/bin/sh").unwrap();
+    writeln!(file, "echo 'Python {version}'").unwrap();
+    let mut perms = file.metadata().unwrap().permissions();
+    perms.set_mode(0o755);
+    file.set_permissions(perms).unwrap();
+    path
+}
+
+fn write_lockfile_with_wheel(path: &std::path::Path, wheel_filename: &str) {
+    use pybun::lockfile::{Lockfile, Package, PackageSource};
+
+    let mut lock = Lockfile::new(vec!["3.10".into()], vec!["macos-arm64".into()]);
+    lock.add_package(Package {
+        name: "numpy".to_string(),
+        version: "1.26.4".to_string(),
+        source: PackageSource::Registry {
+            index: "https://pypi.org/simple".to_string(),
+            url: "https://files.pythonhosted.org/packages/numpy/".to_string(),
+        },
+        wheel: wheel_filename.to_string(),
+        hash: "sha256:deadbeef".to_string(),
+        dependencies: Vec::new(),
+    });
+    lock.save_to_path(path).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn run_warns_on_locked_wheel_python_version_mismatch() {
+    let temp = tempdir().unwrap();
+    let script = temp.path().join("main.py");
+    fs::write(&script, "print('hello')").unwrap();
+
+    write_lockfile_with_wheel(
+        &temp.path().join("pybun.lockb"),
+        "numpy-1.26.4-cp310-cp310-macosx_11_0_arm64.whl",
+    );
+
+    let fake_python = write_fake_python(temp.path(), "3.12.7");
+
+    let output = bin()
+        .current_dir(temp.path())
+        .env_remove("PYBUN_ENV")
+        .env("PYBUN_PYTHON", &fake_python)
+        .args(["--format=json", "run", "main.py"])
+        .output()
+        .expect("run pybun");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let value: Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|_| panic!("expected valid JSON, got: {stdout}"));
+
+    let diags = value["diagnostics"].as_array().expect("diagnostics array");
+    let mismatch = diags
+        .iter()
+        .find(|d| d.get("code") == Some(&Value::from("W_LOCK_PYTHON_VERSION_MISMATCH")))
+        .unwrap_or_else(|| {
+            panic!("expected W_LOCK_PYTHON_VERSION_MISMATCH diagnostic, got: {diags:?}")
+        });
+
+    let message = mismatch["message"].as_str().expect("message string");
+    assert!(message.contains("Python 3.10"), "message: {message}");
+    assert!(message.contains("Python 3.12.7"), "message: {message}");
+    assert!(message.contains("pybun install"), "message: {message}");
+    assert_eq!(mismatch["level"], "warning");
+}
+
+#[cfg(unix)]
+#[test]
+fn run_no_warning_when_locked_wheel_matches_active_interpreter() {
+    let temp = tempdir().unwrap();
+    let script = temp.path().join("main.py");
+    fs::write(&script, "print('hello')").unwrap();
+
+    write_lockfile_with_wheel(
+        &temp.path().join("pybun.lockb"),
+        "numpy-1.26.4-cp312-cp312-macosx_11_0_arm64.whl",
+    );
+
+    let fake_python = write_fake_python(temp.path(), "3.12.7");
+
+    let output = bin()
+        .current_dir(temp.path())
+        .env_remove("PYBUN_ENV")
+        .env("PYBUN_PYTHON", &fake_python)
+        .args(["--format=json", "run", "main.py"])
+        .output()
+        .expect("run pybun");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let value: Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|_| panic!("expected valid JSON, got: {stdout}"));
+
+    let diags = value["diagnostics"].as_array().expect("diagnostics array");
+    assert!(
+        !diags
+            .iter()
+            .any(|d| d.get("code") == Some(&Value::from("W_LOCK_PYTHON_VERSION_MISMATCH"))),
+        "expected no version mismatch diagnostic, got: {diags:?}"
+    );
+}
