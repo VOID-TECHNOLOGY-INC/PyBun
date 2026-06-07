@@ -116,6 +116,8 @@ mod tests {
                 snapshot: false,
                 update_snapshots: false,
                 snapshot_dir: None,
+                timeout: None,
+                retries: None,
                 passthrough: Vec::new(),
             }),
         }

@@ -4952,6 +4952,8 @@ fn run_tests(args: &crate::cli::TestArgs, collector: &mut EventCollector) -> Res
                 "filter": args.filter,
                 "parallel": args.parallel,
                 "workers": workers,
+                "timeout": args.timeout,
+                "retries": args.retries.unwrap_or(0),
                 "snapshot": args.snapshot,
                 "update_snapshots": args.update_snapshots,
                 "ast_discovery": {
@@ -5140,6 +5142,38 @@ fn run_tests(args: &crate::cli::TestArgs, collector: &mut EventCollector) -> Res
 // Native pybun test executor
 // ---------------------------------------------------------------------------
 
+/// Strip pytest's non-deterministic timing text (e.g. "1 passed in 0.01s")
+/// from captured stdout before it is recorded as/compared against a snapshot.
+/// Without this, snapshots would flap on every run since pytest reports wall-clock
+/// duration in its summary line.
+fn normalize_snapshot_stdout(stdout: &str) -> String {
+    stdout
+        .lines()
+        .map(normalize_timing_in_line)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Replaces a trailing `in <digits>[.<digits>]s` duration marker (as emitted by
+/// pytest's session summary, e.g. "1 passed in 0.01s") with a stable placeholder.
+fn normalize_timing_in_line(line: &str) -> String {
+    let Some(marker) = line.find(" in ") else {
+        return line.to_string();
+    };
+    let prefix_end = marker + 4;
+    let rest = &line[prefix_end..];
+    let digits_end = rest
+        .find(|c: char| !c.is_ascii_digit() && c != '.')
+        .unwrap_or(rest.len());
+    let duration = &rest[..digits_end];
+    let has_digit = duration.chars().any(|c| c.is_ascii_digit());
+    if has_digit && rest[digits_end..].starts_with('s') {
+        format!("{}X.XXs{}", &line[..prefix_end], &rest[digits_end + 1..])
+    } else {
+        line.to_string()
+    }
+}
+
 fn run_tests_native(
     args: &crate::cli::TestArgs,
     tests: Vec<TestItem>,
@@ -5147,7 +5181,7 @@ fn run_tests_native(
     python: &str,
     collector: &mut EventCollector,
 ) -> Result<RenderDetail> {
-    use crate::test_executor::{ExecutorConfig, TestExecutor};
+    use crate::test_executor::{ExecutorConfig, TestExecutor, TestOutcome};
 
     let workers = args.parallel.unwrap_or_else(|| {
         std::thread::available_parallelism()
@@ -5160,8 +5194,8 @@ fn run_tests_native(
         fail_fast: args.fail_fast,
         shard: shard_info,
         verbose: args.verbose,
-        // TODO(#125): expose per-test timeout via CLI flag
-        timeout: None,
+        timeout: args.timeout,
+        retries: args.retries.unwrap_or(0),
         python: python.to_string(),
     };
 
@@ -5176,21 +5210,90 @@ fn run_tests_native(
     let result = executor.execute(tests);
     let summary = &result.summary;
 
-    // Snapshot integration is registered but not yet wired through the executor:
-    // TestExecutor currently calls `python -m pytest` per test, so snapshot
-    // assertions must be coordinated at the Python level or via a future
-    // executor API.  We record the configured directory so callers know where
-    // snapshots will land once the integration is complete.
-    // TODO(#125): wire SnapshotManager.assert_snapshot() into executor callbacks
+    // Native snapshot integration: each passing test's captured stdout is
+    // compared against (or written to, in update mode) its stored snapshot
+    // via the same SnapshotManager primitives `pybun test --snapshot` exposes.
     let snapshot_config = if args.snapshot || args.update_snapshots {
+        use crate::snapshot::{SnapshotManager, SnapshotResult};
+
         let snapshot_dir = args
             .snapshot_dir
             .clone()
             .unwrap_or_else(|| std::path::PathBuf::from("__snapshots__"));
+        let mut manager = SnapshotManager::new(snapshot_dir.clone(), args.update_snapshots);
+
+        for r in result
+            .results
+            .iter()
+            .filter(|r| matches!(r.outcome, TestOutcome::Passed | TestOutcome::XPass))
+        {
+            let normalized = normalize_snapshot_stdout(&r.stdout);
+            manager.assert_snapshot(&r.path, &r.name, &normalized);
+        }
+
+        if let Err(e) = manager.save_all() {
+            collector.diagnostic(Diagnostic {
+                level: crate::schema::DiagnosticLevel::Warning,
+                code: Some("E_SNAPSHOT_SAVE".to_string()),
+                message: format!("failed to save snapshot updates: {}", e),
+                file: None,
+                line: None,
+                suggestion: None,
+                context: None,
+            });
+        }
+
+        let snap_summary = manager.summary();
+        let snapshot_results_json: Vec<Value> = manager
+            .results()
+            .iter()
+            .map(|r| {
+                let (status, expected, actual, diff, message) = match &r.result {
+                    SnapshotResult::Match => ("match", None, None, None, None),
+                    SnapshotResult::Mismatch {
+                        expected,
+                        actual,
+                        diff,
+                    } => (
+                        "mismatch",
+                        Some(expected.clone()),
+                        Some(actual.clone()),
+                        Some(diff.clone()),
+                        None,
+                    ),
+                    SnapshotResult::New { actual } => {
+                        ("new", None, Some(actual.clone()), None, None)
+                    }
+                    SnapshotResult::Error { message } => {
+                        ("error", None, None, None, Some(message.clone()))
+                    }
+                };
+                json!({
+                    "test_name": r.test_name,
+                    "source_file": r.source_file.display().to_string(),
+                    "status": status,
+                    "updated": r.updated,
+                    "expected": expected,
+                    "actual": actual,
+                    "diff": diff,
+                    "message": message,
+                })
+            })
+            .collect();
+
         Some(json!({
             "snapshot_dir": snapshot_dir.display().to_string(),
             "update_mode": args.update_snapshots,
-            "status": "pending",
+            "summary": {
+                "total": snap_summary.total(),
+                "passed": snap_summary.passed,
+                "failed": snap_summary.failed,
+                "created": snap_summary.created,
+                "updated": snap_summary.updated,
+                "new": snap_summary.new,
+                "errors": snap_summary.errors,
+            },
+            "results": snapshot_results_json,
         }))
     } else {
         None
@@ -5245,6 +5348,8 @@ fn run_tests_native(
                 "outcome": serde_json::to_value(&r.outcome).unwrap_or(Value::Null),
                 "duration_ms": r.duration_ms,
                 "worker_id": r.worker_id,
+                "skip_reason": r.skip_reason,
+                "retries": r.retries,
             })
         })
         .collect();
@@ -5254,6 +5359,8 @@ fn run_tests_native(
         "test_runner": "pybun",
         "workers": workers,
         "fail_fast": args.fail_fast,
+        "timeout": args.timeout,
+        "retries": args.retries.unwrap_or(0),
         "shard": shard_info.map(|(n, m)| format!("{}/{}", n, m)),
         "filter": args.filter,
         "parallel": args.parallel,
@@ -5933,6 +6040,28 @@ mod tests {
         assert!(parse_shard("a/b").is_err());
         assert!(parse_shard("0/2").is_err());
         assert!(parse_shard("3/2").is_err());
+    }
+
+    #[test]
+    fn test_normalize_snapshot_stdout_masks_pytest_duration() {
+        let first = "collecting ... collected 1 item\n\
+test_snap.py::test_prints PASSED\n\
+============================== 1 passed in 0.01s ===============================";
+        let second = "collecting ... collected 1 item\n\
+test_snap.py::test_prints PASSED\n\
+============================== 1 passed in 0.00s ===============================";
+
+        assert_eq!(
+            normalize_snapshot_stdout(first),
+            normalize_snapshot_stdout(second)
+        );
+        assert!(normalize_snapshot_stdout(first).contains("in X.XXs"));
+    }
+
+    #[test]
+    fn test_normalize_snapshot_stdout_preserves_unrelated_lines() {
+        let stdout = "hello snapshot\nPASSED\n";
+        assert_eq!(normalize_snapshot_stdout(stdout), "hello snapshot\nPASSED");
     }
 
     #[test]

@@ -8,12 +8,13 @@
 
 use crate::test_discovery::{TestItem, TestItemType};
 use serde::{Deserialize, Serialize};
+use std::io::Read;
 use std::path::PathBuf;
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// Configuration for the test executor
 #[derive(Debug, Clone)]
@@ -26,8 +27,12 @@ pub struct ExecutorConfig {
     pub shard: Option<(u32, u32)>,
     /// Verbose output
     pub verbose: bool,
-    /// Timeout per test in seconds
+    /// Timeout per test in seconds. Tests exceeding this are killed and
+    /// reported as `TestOutcome::Timeout`.
     pub timeout: Option<u64>,
+    /// Number of times to retry a failing test before accepting its outcome.
+    /// A value of 2 means up to 3 total attempts (1 initial + 2 retries).
+    pub retries: usize,
     /// Python executable path
     pub python: String,
 }
@@ -40,6 +45,7 @@ impl Default for ExecutorConfig {
             shard: None,
             verbose: false,
             timeout: None,
+            retries: 0,
             python: "python3".to_string(),
         }
     }
@@ -51,6 +57,79 @@ fn num_cpus() -> usize {
     std::thread::available_parallelism()
         .map(|p| p.get())
         .unwrap_or(4)
+}
+
+/// Outcome of running a command with an optional timeout.
+enum RunOutcome {
+    /// The process exited on its own within the timeout (or no timeout was set).
+    Completed(Output),
+    /// The process was killed because it exceeded the configured timeout.
+    TimedOut,
+}
+
+/// Spawn `command`, capturing stdout/stderr, and kill it if it runs longer
+/// than `timeout_secs`. Reader threads drain the pipes concurrently so a
+/// chatty test can't deadlock on a full pipe buffer while we poll for exit.
+fn run_with_timeout(
+    mut command: Command,
+    timeout_secs: Option<u64>,
+) -> std::io::Result<RunOutcome> {
+    command.stdout(Stdio::piped());
+    command.stderr(Stdio::piped());
+
+    let mut child = command.spawn()?;
+
+    let stdout_handle = child.stdout.take().map(spawn_pipe_reader);
+    let stderr_handle = child.stderr.take().map(spawn_pipe_reader);
+
+    let timeout = timeout_secs.map(Duration::from_secs);
+    let poll_interval = Duration::from_millis(50);
+    let start = Instant::now();
+
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+
+        if let Some(timeout) = timeout
+            && start.elapsed() >= timeout
+        {
+            let _ = child.kill();
+            let _ = child.wait();
+            join_pipe_reader(stdout_handle);
+            join_pipe_reader(stderr_handle);
+            return Ok(RunOutcome::TimedOut);
+        }
+
+        thread::sleep(poll_interval);
+    };
+
+    let stdout = join_pipe_reader(stdout_handle).unwrap_or_default();
+    let stderr = join_pipe_reader(stderr_handle).unwrap_or_default();
+
+    Ok(RunOutcome::Completed(Output {
+        status,
+        stdout,
+        stderr,
+    }))
+}
+
+/// Spawn a thread that reads a child process pipe to completion.
+fn spawn_pipe_reader<R>(mut reader: R) -> thread::JoinHandle<Vec<u8>>
+where
+    R: Read + Send + 'static,
+{
+    thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = reader.read_to_end(&mut buf);
+        buf
+    })
+}
+
+/// Join a pipe reader thread, discarding the handle. Returns `None` if there
+/// was no pipe to read or the thread panicked.
+fn join_pipe_reader(handle: Option<thread::JoinHandle<Vec<u8>>>) -> Option<Vec<u8>> {
+    handle.and_then(|h| h.join().ok())
 }
 
 /// Result of executing a single test
@@ -72,6 +151,11 @@ pub struct TestResult {
     pub stderr: String,
     /// Worker ID that ran this test
     pub worker_id: usize,
+    /// Reason the test was skipped, if applicable
+    pub skip_reason: Option<String>,
+    /// Number of retry attempts performed before this outcome was accepted
+    /// (0 means the test settled on its first run)
+    pub retries: usize,
 }
 
 /// Possible test outcomes
@@ -370,11 +454,11 @@ impl TestExecutor {
         ExecutionResult { results, summary }
     }
 
-    /// Run a single test (static method for use in worker threads)
+    /// Run a single test, retrying on failure up to `config.retries` times.
+    ///
+    /// Static method (no `&self`) so it can be shared across worker threads.
     fn run_test_static(config: &ExecutorConfig, test: &TestItem, worker_id: usize) -> TestResult {
-        let start = Instant::now();
-
-        // Handle skipped tests
+        // Handle skipped tests up front — they are never executed or retried.
         if test.skipped {
             return TestResult {
                 name: test.name.clone(),
@@ -383,31 +467,79 @@ impl TestExecutor {
                 outcome: TestOutcome::Skipped,
                 duration_ms: 0,
                 stdout: String::new(),
-                stderr: test.skip_reason.clone().unwrap_or_default(),
+                stderr: String::new(),
                 worker_id,
+                skip_reason: test.skip_reason.clone(),
+                retries: 0,
             };
         }
+
+        let max_attempts = config.retries + 1;
+        let mut attempt = 0;
+        loop {
+            let mut result = Self::run_test_attempt(config, test, worker_id);
+            attempt += 1;
+            result.retries = attempt - 1;
+
+            let retryable = matches!(
+                result.outcome,
+                TestOutcome::Failed | TestOutcome::Error | TestOutcome::Timeout
+            );
+
+            if !retryable || attempt >= max_attempts {
+                return result;
+            }
+
+            if config.verbose {
+                eprintln!(
+                    "retrying {} (attempt {}/{}) after {:?}",
+                    test.name, attempt, max_attempts, result.outcome
+                );
+            }
+        }
+    }
+
+    /// Run a single attempt of a test, enforcing the configured timeout.
+    fn run_test_attempt(config: &ExecutorConfig, test: &TestItem, worker_id: usize) -> TestResult {
+        let start = Instant::now();
 
         // Build the pytest command to run this specific test
         let test_spec = format!("{}::{}", test.path.display(), test.name);
 
-        let output = Command::new(&config.python)
-            .args(["-m", "pytest", "-xvs", &test_spec])
-            .output();
+        let mut command = Command::new(&config.python);
+        command.args(["-m", "pytest", "-xvs", &test_spec]);
 
-        let duration_ms = start.elapsed().as_millis() as u64;
-
-        match output {
-            Ok(output) => Self::parse_test_output(test, output, duration_ms, worker_id),
+        match run_with_timeout(command, config.timeout) {
+            Ok(RunOutcome::Completed(output)) => {
+                let duration_ms = start.elapsed().as_millis() as u64;
+                Self::parse_test_output(test, output, duration_ms, worker_id)
+            }
+            Ok(RunOutcome::TimedOut) => TestResult {
+                name: test.name.clone(),
+                path: test.path.clone(),
+                line: test.line,
+                outcome: TestOutcome::Timeout,
+                duration_ms: start.elapsed().as_millis() as u64,
+                stdout: String::new(),
+                stderr: format!(
+                    "test timed out after {}s",
+                    config.timeout.unwrap_or_default()
+                ),
+                worker_id,
+                skip_reason: None,
+                retries: 0,
+            },
             Err(e) => TestResult {
                 name: test.name.clone(),
                 path: test.path.clone(),
                 line: test.line,
                 outcome: TestOutcome::Error,
-                duration_ms,
+                duration_ms: start.elapsed().as_millis() as u64,
                 stdout: String::new(),
                 stderr: format!("Failed to execute test: {}", e),
                 worker_id,
+                skip_reason: None,
+                retries: 0,
             },
         }
     }
@@ -457,6 +589,8 @@ impl TestExecutor {
             stdout,
             stderr,
             worker_id,
+            skip_reason: None,
+            retries: 0,
         }
     }
 
@@ -746,5 +880,139 @@ mod tests {
 
         let sharded = executor.shard_tests(tests.clone());
         assert_eq!(sharded.len(), tests.len());
+    }
+
+    /// Returns true when pytest is importable in python3. Tests that need to
+    /// actually spawn `python -m pytest` skip themselves when it's missing.
+    fn pytest_available() -> bool {
+        Command::new("python3")
+            .args(["-c", "import pytest"])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+
+    #[test]
+    fn test_skipped_test_result_includes_skip_reason() {
+        let executor = TestExecutor::new(ExecutorConfig::default());
+        let mut test = make_test("test_skipped");
+        test.skipped = true;
+        test.skip_reason = Some("requires network".to_string());
+
+        let result = executor.execute(vec![test]);
+
+        assert_eq!(result.results.len(), 1);
+        assert_eq!(result.results[0].outcome, TestOutcome::Skipped);
+        assert_eq!(
+            result.results[0].skip_reason.as_deref(),
+            Some("requires network")
+        );
+        assert_eq!(
+            result.results[0].retries, 0,
+            "skipped tests are not retried"
+        );
+    }
+
+    #[test]
+    fn test_executor_config_default_has_no_retries() {
+        let config = ExecutorConfig::default();
+        assert_eq!(config.retries, 0);
+    }
+
+    #[test]
+    fn test_timeout_kills_long_running_test() {
+        if !pytest_available() {
+            eprintln!("Skipping test_timeout_kills_long_running_test: pytest not installed");
+            return;
+        }
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let test_file = temp.path().join("test_slow.py");
+        std::fs::write(
+            &test_file,
+            "import time\n\n\ndef test_slow():\n    time.sleep(30)\n",
+        )
+        .unwrap();
+
+        let config = ExecutorConfig {
+            workers: 1,
+            timeout: Some(1),
+            python: "python3".to_string(),
+            ..Default::default()
+        };
+        let executor = TestExecutor::new(config);
+        let mut test = make_test("test_slow");
+        test.path = test_file;
+        test.line = 4;
+
+        let start = Instant::now();
+        let result = executor.execute(vec![test]);
+        let elapsed = start.elapsed();
+
+        assert_eq!(result.results.len(), 1);
+        assert_eq!(result.results[0].outcome, TestOutcome::Timeout);
+        assert!(
+            elapsed.as_secs() < 20,
+            "timeout should kill the test long before its 30s sleep completes, took {:?}",
+            elapsed
+        );
+    }
+
+    #[test]
+    fn test_retries_recovers_flaky_test() {
+        if !pytest_available() {
+            eprintln!("Skipping test_retries_recovers_flaky_test: pytest not installed");
+            return;
+        }
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let counter_file = temp.path().join("counter.txt");
+        let test_file = temp.path().join("test_flaky.py");
+        std::fs::write(
+            &test_file,
+            format!(
+                r#"import os
+
+COUNTER = {counter:?}
+
+def test_flaky():
+    count = 0
+    if os.path.exists(COUNTER):
+        with open(COUNTER) as f:
+            count = int(f.read().strip() or "0")
+    count += 1
+    with open(COUNTER, "w") as f:
+        f.write(str(count))
+    assert count >= 3
+"#,
+                counter = counter_file.display().to_string(),
+            ),
+        )
+        .unwrap();
+
+        let config = ExecutorConfig {
+            workers: 1,
+            retries: 2,
+            python: "python3".to_string(),
+            ..Default::default()
+        };
+        let executor = TestExecutor::new(config);
+        let mut test = make_test("test_flaky");
+        test.path = test_file;
+        test.line = 5;
+
+        let result = executor.execute(vec![test]);
+
+        assert_eq!(result.results.len(), 1);
+        assert_eq!(
+            result.results[0].outcome,
+            TestOutcome::Passed,
+            "test should pass after retries recover it: {:?}",
+            result.results[0]
+        );
+        assert_eq!(
+            result.results[0].retries, 2,
+            "should report 2 retries before passing on the 3rd attempt"
+        );
     }
 }
