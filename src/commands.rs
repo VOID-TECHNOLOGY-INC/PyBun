@@ -16,7 +16,8 @@ use crate::pypi::{PyPiClient, PyPiIndex};
 use crate::release_manifest::{ReleaseManifest, current_release_target};
 use crate::resolver::parse_version_relaxed;
 use crate::resolver::{
-    PackageIndex, Requirement, compare_versions, current_platform_tags, resolve,
+    PackageIndex, Requirement, compare_versions, cp_tag_to_dotted_version, current_platform_tags,
+    is_wheel_python_compatible, parse_wheel_tags, python_version_to_cp_tag, resolve,
     select_artifact_for_platform,
 };
 use crate::sandbox;
@@ -3025,6 +3026,8 @@ async fn run_script(
         // No PEP 723 dependencies, use system/project Python
         let (python, env_source) = find_python_interpreter()?;
 
+        check_lockfile_python_compatibility(&python, collector);
+
         if matches!(env_source, crate::env::EnvSource::System) {
             let current_dir = std::env::current_dir()?;
             if Project::discover(&current_dir).is_ok() {
@@ -3182,6 +3185,63 @@ fn get_python_version(python_path: &std::path::Path) -> Result<String> {
         .unwrap_or(version_str.trim())
         .to_string();
     Ok(version)
+}
+
+/// Validate that the wheels recorded in the project lockfile (`pybun.lockb`)
+/// are compatible with the Python interpreter that is about to execute the
+/// script. A mismatch (e.g. `cp310` wheels locked but running under `cp312`)
+/// otherwise surfaces as an obscure C-extension `ImportError` at runtime
+/// rather than an actionable PyBun diagnostic (see Issue #172).
+///
+/// This check is best-effort: any failure to locate, load, or parse the
+/// lockfile or interpreter version silently skips validation rather than
+/// blocking the run.
+fn check_lockfile_python_compatibility(python_path: &str, collector: &mut EventCollector) {
+    let Ok(cwd) = std::env::current_dir() else {
+        return;
+    };
+    let lock_path = cwd.join("pybun.lockb");
+    if !lock_path.exists() {
+        return;
+    }
+    let Ok(lockfile) = Lockfile::load_from_path(&lock_path) else {
+        return;
+    };
+    let Ok(active_version) = get_python_version(Path::new(python_path)) else {
+        return;
+    };
+    let Some(active_cp_tag) = python_version_to_cp_tag(&active_version) else {
+        return;
+    };
+
+    let mismatched_tag = lockfile.packages.values().find_map(|pkg| {
+        let (python_tag, abi_tag) = parse_wheel_tags(&pkg.wheel);
+        let ptag = python_tag?;
+        if is_wheel_python_compatible(Some(&ptag), abi_tag.as_deref(), &active_cp_tag) {
+            None
+        } else {
+            Some(ptag)
+        }
+    });
+
+    let Some(locked_tag) = mismatched_tag else {
+        return;
+    };
+
+    let locked_version = cp_tag_to_dotted_version(&locked_tag).unwrap_or(locked_tag);
+    let active_minor =
+        cp_tag_to_dotted_version(&active_cp_tag).unwrap_or_else(|| active_version.clone());
+    let message = format!(
+        "Locked package wheels in pybun.lockb (compiled for Python {locked_version}) are \
+         incompatible with the active Python interpreter (Python {active_version}). \
+         Please run 'pybun install' to re-lock dependencies for Python {active_minor}."
+    );
+    eprintln!("warning: {message}");
+    collector.diagnostic(
+        Diagnostic::warning(message)
+            .with_code("W_LOCK_PYTHON_VERSION_MISMATCH")
+            .with_suggestion("pybun install"),
+    );
 }
 
 fn run_python_code(
