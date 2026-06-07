@@ -73,7 +73,7 @@ pub async fn execute(cli: Cli) -> Result<()> {
     let (command, detail) = match &cli.command {
         Commands::Install(args) => {
             collector.event(EventType::ResolveStart);
-            let pre_diag_count = collector.diagnostic_count();
+            let pre_error_count = collector.error_diagnostic_count();
             let result = install(args, &mut collector).await;
             match result {
                 Ok(InstallOutcome {
@@ -98,9 +98,9 @@ pub async fn execute(cli: Cli) -> Result<()> {
                     )
                 }
                 Err(e) => {
-                    // Only push a generic fallback error if install() did not
-                    // already record a structured diagnostic (e.g. resolve errors).
-                    if collector.diagnostic_count() == pre_diag_count {
+                    // Only push a generic fallback error if install() did not already
+                    // record an error-level diagnostic (e.g. resolve errors).
+                    if collector.error_diagnostic_count() == pre_error_count {
                         collector.error(e.to_string());
                     }
                     (
@@ -214,7 +214,7 @@ pub async fn execute(cli: Cli) -> Result<()> {
         }
         Commands::Lock(args) => {
             collector.event(EventType::ResolveStart);
-            let pre_diag_count = collector.diagnostic_count();
+            let pre_error_count = collector.error_diagnostic_count();
             let result = lock_dependencies(args, &mut collector).await;
             match result {
                 Ok(LockOutcome {
@@ -240,8 +240,8 @@ pub async fn execute(cli: Cli) -> Result<()> {
                 }
                 Err(e) => {
                     // Only push a generic fallback error if lock_dependencies did not
-                    // already record a structured diagnostic (e.g. resolve errors).
-                    if collector.diagnostic_count() == pre_diag_count {
+                    // already record an error-level diagnostic (e.g. resolve errors).
+                    if collector.error_diagnostic_count() == pre_error_count {
                         collector.error(e.to_string());
                     }
                     (
@@ -382,7 +382,7 @@ pub async fn execute(cli: Cli) -> Result<()> {
             }
         }
         Commands::Build(args) => {
-            let pre_diag_count = collector.diagnostic_count();
+            let pre_error_count = collector.error_diagnostic_count();
             let result = run_build(args, &mut collector, cli.format);
             let detail = match result {
                 Ok(outcome) => RenderDetail::with_json(outcome.summary, {
@@ -423,9 +423,9 @@ pub async fn execute(cli: Cli) -> Result<()> {
                     })
                 }),
                 Err(e) => {
-                    // Only push a generic fallback error if run_build did not
-                    // already record a structured diagnostic (e.g. E_BUILD_MISSING_BUILD_PKG).
-                    if collector.diagnostic_count() == pre_diag_count {
+                    // Only push a generic fallback error if run_build did not already
+                    // record an error-level diagnostic (e.g. E_BUILD_MISSING_BUILD_PKG).
+                    if collector.error_diagnostic_count() == pre_error_count {
                         collector.error(e.to_string());
                     }
                     RenderDetail::error(
@@ -647,14 +647,14 @@ pub async fn execute(cli: Cli) -> Result<()> {
             }
         }
         Commands::Init(args) => {
-            let pre_diag_count = collector.diagnostic_count();
+            let pre_error_count = collector.error_diagnostic_count();
             let result = init_project(args, &mut collector);
             match result {
                 Ok(detail) => ("init".to_string(), detail),
                 Err(e) => {
-                    // Only push a generic fallback error if init_project did not
-                    // already record a structured diagnostic (e.g. E_INIT_NOT_INTERACTIVE).
-                    if collector.diagnostic_count() == pre_diag_count {
+                    // Only push a generic fallback error if init_project did not already
+                    // record an error-level diagnostic (e.g. E_INIT_NOT_INTERACTIVE).
+                    if collector.error_diagnostic_count() == pre_error_count {
                         collector.error(e.to_string());
                     }
                     (
