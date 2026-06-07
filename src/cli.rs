@@ -251,6 +251,12 @@ pub struct TestArgs {
     /// Directory for snapshot files (default: __snapshots__).
     #[arg(long, value_name = "DIR")]
     pub snapshot_dir: Option<std::path::PathBuf>,
+    /// Per-test timeout in seconds (pybun backend only; kills hung tests).
+    #[arg(long, value_name = "SECONDS")]
+    pub timeout: Option<u64>,
+    /// Number of times to retry a failing test before reporting it as failed (pybun backend only).
+    #[arg(long, value_name = "N")]
+    pub retries: Option<usize>,
     /// Additional arguments to pass to the test runner.
     #[arg(last = true)]
     pub passthrough: Vec<String>,

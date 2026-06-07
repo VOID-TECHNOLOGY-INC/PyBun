@@ -1767,3 +1767,341 @@ def test_two():
     let results = detail.get("results").unwrap().as_array().unwrap();
     assert_eq!(results.len(), 2, "should have 2 test results");
 }
+
+// ---------------------------------------------------------------------------
+// Native backend hardening (Issue #117): timeout, retries, skip_reason,
+// and snapshot wiring through the native executor.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_pybun_backend_skipped_test_includes_skip_reason_in_results() {
+    if !pytest_available() {
+        eprintln!(
+            "Skipping test_pybun_backend_skipped_test_includes_skip_reason_in_results: pytest not installed"
+        );
+        return;
+    }
+
+    let temp = TempDir::new().unwrap();
+    let test_file = temp.path().join("test_skip.py");
+    fs::write(
+        &test_file,
+        r#"
+import pytest
+
+@pytest.mark.skip(reason="not ready yet")
+def test_skipped():
+    pass
+
+def test_runs():
+    assert True
+"#,
+    )
+    .unwrap();
+
+    let output = pybun()
+        .current_dir(temp.path())
+        .args(["test", "--backend=pybun", "--format=json"])
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("Valid JSON");
+    let detail = json.get("detail").unwrap();
+    let results = detail.get("results").unwrap().as_array().unwrap();
+
+    let skipped = results
+        .iter()
+        .find(|r| r.get("name").and_then(|n| n.as_str()) == Some("test_skipped"))
+        .expect("should have a result for test_skipped");
+
+    assert_eq!(
+        skipped.get("outcome").and_then(|v| v.as_str()),
+        Some("skipped")
+    );
+    assert_eq!(
+        skipped.get("skip_reason").and_then(|v| v.as_str()),
+        Some("not ready yet"),
+        "skip_reason should be surfaced in the result envelope: {}",
+        skipped
+    );
+    assert_eq!(
+        skipped.get("retries").and_then(|v| v.as_u64()),
+        Some(0),
+        "skipped tests are never retried"
+    );
+}
+
+#[test]
+fn test_pybun_backend_retries_recovers_flaky_test() {
+    if !pytest_available() {
+        eprintln!("Skipping test_pybun_backend_retries_recovers_flaky_test: pytest not installed");
+        return;
+    }
+
+    let temp = TempDir::new().unwrap();
+    let counter_file = temp.path().join("counter.txt");
+    let test_file = temp.path().join("test_flaky.py");
+    fs::write(
+        &test_file,
+        format!(
+            r#"import os
+
+COUNTER = {counter:?}
+
+def test_flaky():
+    count = 0
+    if os.path.exists(COUNTER):
+        with open(COUNTER) as f:
+            count = int(f.read().strip() or "0")
+    count += 1
+    with open(COUNTER, "w") as f:
+        f.write(str(count))
+    assert count >= 3
+"#,
+            counter = counter_file.display().to_string(),
+        ),
+    )
+    .unwrap();
+
+    let output = pybun()
+        .current_dir(temp.path())
+        .args(["test", "--backend=pybun", "--retries=2", "--format=json"])
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("Valid JSON");
+
+    assert_eq!(
+        json.get("status").and_then(|v| v.as_str()),
+        Some("ok"),
+        "test should pass after recovering via retries: {}",
+        json
+    );
+
+    let detail = json.get("detail").unwrap();
+    assert_eq!(
+        detail.get("retries").and_then(|v| v.as_u64()),
+        Some(2),
+        "configured retries should be reflected in detail"
+    );
+
+    let results = detail.get("results").unwrap().as_array().unwrap();
+    let flaky = results
+        .iter()
+        .find(|r| r.get("name").and_then(|n| n.as_str()) == Some("test_flaky"))
+        .expect("should have a result for test_flaky");
+
+    assert_eq!(
+        flaky.get("outcome").and_then(|v| v.as_str()),
+        Some("passed")
+    );
+    assert_eq!(
+        flaky.get("retries").and_then(|v| v.as_u64()),
+        Some(2),
+        "should report 2 retries before passing on the 3rd attempt: {}",
+        flaky
+    );
+}
+
+#[test]
+fn test_pybun_backend_timeout_kills_hanging_test() {
+    if !pytest_available() {
+        eprintln!("Skipping test_pybun_backend_timeout_kills_hanging_test: pytest not installed");
+        return;
+    }
+
+    let temp = TempDir::new().unwrap();
+    let test_file = temp.path().join("test_slow.py");
+    fs::write(
+        &test_file,
+        "import time\n\n\ndef test_slow():\n    time.sleep(30)\n",
+    )
+    .unwrap();
+
+    let output = pybun()
+        .current_dir(temp.path())
+        .args([
+            "test",
+            "--backend=pybun",
+            "--timeout=1",
+            "--parallel=1",
+            "--format=json",
+        ])
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("Valid JSON");
+
+    assert_eq!(
+        json.get("status").and_then(|v| v.as_str()),
+        Some("error"),
+        "a timed-out test should produce status=error: {}",
+        json
+    );
+
+    let detail = json.get("detail").unwrap();
+    let results = detail.get("results").unwrap().as_array().unwrap();
+    let slow = results
+        .iter()
+        .find(|r| r.get("name").and_then(|n| n.as_str()) == Some("test_slow"))
+        .expect("should have a result for test_slow");
+
+    assert_eq!(
+        slow.get("outcome").and_then(|v| v.as_str()),
+        Some("timeout"),
+        "test exceeding --timeout should be reported as timeout: {}",
+        slow
+    );
+}
+
+#[test]
+fn test_pybun_backend_snapshot_wiring_creates_and_matches() {
+    if !pytest_available() {
+        eprintln!(
+            "Skipping test_pybun_backend_snapshot_wiring_creates_and_matches: pytest not installed"
+        );
+        return;
+    }
+
+    let temp = TempDir::new().unwrap();
+    let test_file = temp.path().join("test_snap.py");
+    fs::write(
+        &test_file,
+        "def test_prints():\n    print(\"hello snapshot\")\n    assert True\n",
+    )
+    .unwrap();
+
+    // First run with --update-snapshots: no existing snapshot, so it should be
+    // recorded as "new"/"created" rather than left "pending".
+    let create_output = pybun()
+        .current_dir(temp.path())
+        .args([
+            "test",
+            "--backend=pybun",
+            "--snapshot",
+            "--update-snapshots",
+            "--format=json",
+        ])
+        .output()
+        .unwrap();
+
+    let create_stdout = String::from_utf8_lossy(&create_output.stdout);
+    let create_json: serde_json::Value = serde_json::from_str(&create_stdout).expect("Valid JSON");
+    let create_detail = create_json.get("detail").unwrap();
+    let create_snapshot = create_detail
+        .get("snapshot_config")
+        .and_then(|v| v.as_object())
+        .expect("snapshot_config should be present");
+
+    assert_ne!(
+        create_snapshot.get("status").and_then(|v| v.as_str()),
+        Some("pending"),
+        "snapshot wiring should report real results, not a placeholder: {:?}",
+        create_snapshot
+    );
+    let create_summary = create_snapshot
+        .get("summary")
+        .expect("snapshot_config should include a summary");
+    assert!(
+        create_summary.get("created").and_then(|v| v.as_u64()) >= Some(1)
+            || create_summary.get("updated").and_then(|v| v.as_u64()) >= Some(1),
+        "first run in update mode should create or update a snapshot: {:?}",
+        create_summary
+    );
+
+    // Second run without --update-snapshots: snapshot now exists and the
+    // captured stdout is unchanged, so it should match.
+    let verify_output = pybun()
+        .current_dir(temp.path())
+        .args(["test", "--backend=pybun", "--snapshot", "--format=json"])
+        .output()
+        .unwrap();
+
+    let verify_stdout = String::from_utf8_lossy(&verify_output.stdout);
+    let verify_json: serde_json::Value = serde_json::from_str(&verify_stdout).expect("Valid JSON");
+    let verify_detail = verify_json.get("detail").unwrap();
+    let verify_snapshot = verify_detail
+        .get("snapshot_config")
+        .and_then(|v| v.as_object())
+        .expect("snapshot_config should be present");
+    let verify_summary = verify_snapshot
+        .get("summary")
+        .expect("snapshot_config should include a summary");
+
+    assert_eq!(
+        verify_summary.get("passed").and_then(|v| v.as_u64()),
+        Some(1),
+        "second run should match the snapshot recorded on the first run: {:?}",
+        verify_summary
+    );
+}
+
+#[test]
+fn test_pybun_backend_snapshot_warns_when_recorded_test_needed_retries() {
+    if !pytest_available() {
+        eprintln!(
+            "Skipping test_pybun_backend_snapshot_warns_when_recorded_test_needed_retries: pytest not installed"
+        );
+        return;
+    }
+
+    let temp = TempDir::new().unwrap();
+    let counter_file = temp.path().join("counter.txt");
+    let test_file = temp.path().join("test_flaky_snap.py");
+    fs::write(
+        &test_file,
+        format!(
+            r#"import os
+
+COUNTER = {counter:?}
+
+def test_flaky_snap():
+    count = 0
+    if os.path.exists(COUNTER):
+        with open(COUNTER) as f:
+            count = int(f.read().strip() or "0")
+    count += 1
+    with open(COUNTER, "w") as f:
+        f.write(str(count))
+    assert count >= 2
+    print("settled after retry")
+"#,
+            counter = counter_file.display().to_string(),
+        ),
+    )
+    .unwrap();
+
+    // The test fails on its first attempt and passes on the second (retries=1).
+    // Because its snapshot is recorded from that non-deterministic final attempt,
+    // the executor should warn that the baseline may not be reproducible.
+    let output = pybun()
+        .current_dir(temp.path())
+        .args([
+            "test",
+            "--backend=pybun",
+            "--snapshot",
+            "--update-snapshots",
+            "--retries=1",
+            "--format=json",
+        ])
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("Valid JSON");
+    let diagnostics = json
+        .get("diagnostics")
+        .and_then(|v| v.as_array())
+        .expect("diagnostics array should be present");
+
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.get("code").and_then(|c| c.as_str()) == Some("W_SNAPSHOT_FLAKY_RETRY")),
+        "expected a W_SNAPSHOT_FLAKY_RETRY warning for a snapshotted test that needed retries: {:?}",
+        diagnostics
+    );
+}

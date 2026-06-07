@@ -64,5 +64,11 @@ Options:
       --snapshot-dir <DIR>
           Directory for snapshot files (default: __snapshots__)
 
+      --timeout <SECONDS>
+          Per-test timeout in seconds (pybun backend only; kills hung tests)
+
+      --retries <N>
+          Number of times to retry a failing test before reporting it as failed (pybun backend only)
+
   -h, --help
           Print help (see a summary with '-h')
