@@ -143,3 +143,471 @@ members = ["packages/app"]
         "root dependency should be resolved"
     );
 }
+
+fn write_monorepo(root: &Path) {
+    fs::write(
+        root.join("pyproject.toml"),
+        r#"[project]
+name = "root"
+version = "0.1.0"
+dependencies = []
+
+[tool.pybun.workspace]
+members = ["packages/api", "packages/sdk"]
+
+[dependency-groups]
+dev = ["lib-c==1.0.0"]
+"#,
+    )
+    .unwrap();
+
+    fs::create_dir_all(root.join("packages/api")).unwrap();
+    fs::write(
+        root.join("packages/api/pyproject.toml"),
+        r#"[project]
+name = "api"
+version = "0.1.0"
+dependencies = ["lib-a==1.0.0"]
+
+[project.optional-dependencies]
+dev = ["lib-b==2.0.0"]
+"#,
+    )
+    .unwrap();
+
+    write_pyproject(&root.join("packages/sdk/pyproject.toml"), &["lib-b==2.0.0"]);
+}
+
+fn fixture_index() -> std::path::PathBuf {
+    Path::new("tests/fixtures/index.json")
+        .canonicalize()
+        .unwrap()
+}
+
+#[test]
+fn workspace_install_with_member_selector_scopes_to_member() {
+    let temp = tempdir().unwrap();
+    let root = temp.path();
+    write_monorepo(root);
+
+    let index = fixture_index();
+
+    let output = bin()
+        .current_dir(root)
+        .args([
+            "--format=json",
+            "install",
+            "--member",
+            "api",
+            "--index",
+            index.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run pybun install --member");
+
+    assert!(
+        output.status.success(),
+        "install --member should succeed: {:?}\nstdout: {}\nstderr: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("\"scope\":\"member\""),
+        "json detail should report member scope: {stdout}"
+    );
+    assert!(
+        stdout.contains("\"selected_members\":[\"api\"]"),
+        "json detail should record the selected member: {stdout}"
+    );
+    assert!(
+        stdout.contains("lib-a"),
+        "member dependency should be resolved: {stdout}"
+    );
+    assert!(
+        !stdout.contains("\"name\":\"lib-b\""),
+        "non-selected member dependency should not be installed: {stdout}"
+    );
+}
+
+#[test]
+fn workspace_install_with_member_and_group_selectors_combine() {
+    let temp = tempdir().unwrap();
+    let root = temp.path();
+    write_monorepo(root);
+
+    let index = fixture_index();
+
+    let output = bin()
+        .current_dir(root)
+        .args([
+            "--format=json",
+            "install",
+            "--member",
+            "api",
+            "--group",
+            "dev",
+            "--index",
+            index.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run pybun install --member --group");
+
+    assert!(
+        output.status.success(),
+        "install --member --group should succeed: {:?}\nstdout: {}\nstderr: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("\"scope\":\"member\""),
+        "json detail should report member scope: {stdout}"
+    );
+    assert!(
+        stdout.contains("\"group\":\"dev\""),
+        "json detail should record the selected group: {stdout}"
+    );
+    assert!(
+        stdout.contains("lib-b"),
+        "member's optional-dependencies group should be resolved: {stdout}"
+    );
+}
+
+#[test]
+fn workspace_install_with_group_selector_merges_across_members() {
+    let temp = tempdir().unwrap();
+    let root = temp.path();
+    write_monorepo(root);
+
+    let index = fixture_index();
+
+    let output = bin()
+        .current_dir(root)
+        .args([
+            "--format=json",
+            "install",
+            "--group",
+            "dev",
+            "--index",
+            index.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run pybun install --group");
+
+    assert!(
+        output.status.success(),
+        "install --group should succeed: {:?}\nstdout: {}\nstderr: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("\"scope\":\"group\""),
+        "json detail should report group scope: {stdout}"
+    );
+    assert!(
+        stdout.contains("\"selected_members\":[\"api\",\"sdk\"]"),
+        "json detail should list every member contributing to the group: {stdout}"
+    );
+    assert!(
+        stdout.contains("lib-b") && stdout.contains("lib-c"),
+        "group dependencies from root and members should be merged: {stdout}"
+    );
+}
+
+#[test]
+fn workspace_install_with_workspace_flag_requires_workspace_config() {
+    let temp = tempdir().unwrap();
+    let root = temp.path();
+    write_pyproject(&root.join("pyproject.toml"), &["lib-a==1.0.0"]);
+
+    let index = fixture_index();
+
+    bin()
+        .current_dir(root)
+        .args([
+            "--format=json",
+            "install",
+            "--workspace",
+            "--index",
+            index.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("[tool.pybun.workspace]"));
+}
+
+#[test]
+fn workspace_install_with_unknown_member_reports_available_members() {
+    let temp = tempdir().unwrap();
+    let root = temp.path();
+    write_monorepo(root);
+
+    let index = fixture_index();
+
+    bin()
+        .current_dir(root)
+        .args([
+            "--format=json",
+            "install",
+            "--member",
+            "missing",
+            "--index",
+            index.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stdout(
+            predicate::str::contains("workspace member 'missing' not found")
+                .and(predicate::str::contains("api"))
+                .and(predicate::str::contains("sdk")),
+        );
+}
+
+#[test]
+fn test_command_with_member_selector_scopes_discovery_to_member_root() {
+    let temp = tempdir().unwrap();
+    let root = temp.path();
+    write_monorepo(root);
+
+    // Add a test file inside the `api` member and a sibling member that
+    // should be excluded when `--member api` scopes discovery.
+    fs::write(
+        root.join("packages/api/test_api.py"),
+        "def test_ok():\n    assert True\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("packages/sdk/test_sdk.py"),
+        "def test_ok():\n    assert True\n",
+    )
+    .unwrap();
+
+    let output = bin()
+        .current_dir(root)
+        .env("PYBUN_TEST_DRY_RUN", "1")
+        .args(["--format=json", "test", "--member", "api"])
+        .output()
+        .expect("run pybun test --member");
+
+    assert!(
+        output.status.success(),
+        "test --member should succeed: {:?}\nstdout: {}\nstderr: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("\"scope\":\"member\""),
+        "json detail should report member scope: {stdout}"
+    );
+    assert!(
+        stdout.contains("\"selected_members\":[\"api\"]"),
+        "json detail should record the selected member: {stdout}"
+    );
+    assert!(
+        stdout.contains("test_api.py"),
+        "discovery should include the member's own test file: {stdout}"
+    );
+    assert!(
+        !stdout.contains("test_sdk.py"),
+        "discovery should not include sibling member test files: {stdout}"
+    );
+}
+
+#[test]
+fn test_command_with_unknown_member_reports_available_members() {
+    let temp = tempdir().unwrap();
+    let root = temp.path();
+    write_monorepo(root);
+
+    bin()
+        .current_dir(root)
+        .env("PYBUN_TEST_DRY_RUN", "1")
+        .args(["--format=json", "test", "--member", "missing"])
+        .assert()
+        .failure()
+        .stdout(
+            predicate::str::contains("workspace member 'missing' not found")
+                .and(predicate::str::contains("api"))
+                .and(predicate::str::contains("sdk")),
+        );
+}
+
+#[test]
+fn outdated_with_member_selector_scopes_constraints_to_member() {
+    let temp = tempdir().unwrap();
+    let root = temp.path();
+    write_monorepo(root);
+
+    let index = fixture_index();
+
+    // Create a lockfile to check against.
+    bin()
+        .current_dir(root)
+        .args(["install", "--index", index.to_str().unwrap()])
+        .assert()
+        .success();
+
+    let output = bin()
+        .current_dir(root)
+        .args([
+            "--format=json",
+            "outdated",
+            "--member",
+            "api",
+            "--index",
+            index.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run pybun outdated --member");
+
+    assert!(
+        output.status.success(),
+        "outdated --member should succeed: {:?}\nstdout: {}\nstderr: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("\"scope\":\"member\""),
+        "json detail should report member scope: {stdout}"
+    );
+    assert!(
+        stdout.contains("\"selected_members\":[\"api\"]"),
+        "json detail should record the selected member: {stdout}"
+    );
+}
+
+#[test]
+fn outdated_with_group_selector_merges_across_members() {
+    let temp = tempdir().unwrap();
+    let root = temp.path();
+    write_monorepo(root);
+
+    let index = fixture_index();
+
+    bin()
+        .current_dir(root)
+        .args(["install", "--index", index.to_str().unwrap()])
+        .assert()
+        .success();
+
+    let output = bin()
+        .current_dir(root)
+        .args([
+            "--format=json",
+            "outdated",
+            "--group",
+            "dev",
+            "--index",
+            index.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run pybun outdated --group");
+
+    assert!(
+        output.status.success(),
+        "outdated --group should succeed: {:?}\nstdout: {}\nstderr: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("\"scope\":\"group\""),
+        "json detail should report group scope: {stdout}"
+    );
+    assert!(
+        stdout.contains("\"selected_members\":[\"api\",\"sdk\"]"),
+        "json detail should list every member contributing to the group: {stdout}"
+    );
+}
+
+#[test]
+fn upgrade_with_member_selector_scopes_to_member_dependencies() {
+    let temp = tempdir().unwrap();
+    let root = temp.path();
+    write_monorepo(root);
+
+    let index = fixture_index();
+
+    bin()
+        .current_dir(root)
+        .args(["install", "--index", index.to_str().unwrap()])
+        .assert()
+        .success();
+
+    let output = bin()
+        .current_dir(root)
+        .args([
+            "--format=json",
+            "upgrade",
+            "--member",
+            "api",
+            "--index",
+            index.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run pybun upgrade --member");
+
+    assert!(
+        output.status.success(),
+        "upgrade --member should succeed: {:?}\nstdout: {}\nstderr: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("\"scope\":\"member\""),
+        "json detail should report member scope: {stdout}"
+    );
+    assert!(
+        stdout.contains("\"selected_members\":[\"api\"]"),
+        "json detail should record the selected member: {stdout}"
+    );
+}
+
+#[test]
+fn upgrade_with_unknown_group_falls_back_to_empty_dependency_set() {
+    let temp = tempdir().unwrap();
+    let root = temp.path();
+    write_monorepo(root);
+
+    let index = fixture_index();
+
+    bin()
+        .current_dir(root)
+        .args(["install", "--index", index.to_str().unwrap()])
+        .assert()
+        .success();
+
+    bin()
+        .current_dir(root)
+        .args([
+            "--format=json",
+            "upgrade",
+            "--group",
+            "missing",
+            "--index",
+            index.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"upgraded\":[]"))
+        .stdout(predicate::str::contains("\"scope\":\"group\""));
+}

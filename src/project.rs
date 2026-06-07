@@ -248,6 +248,59 @@ impl Project {
             .any(|d| extract_package_name(d).to_lowercase() == name_lower)
     }
 
+    /// Get optional dependency groups from `[project.optional-dependencies]`.
+    /// Returns a map of group name to dependency specifiers.
+    pub fn optional_dependencies(&self) -> BTreeMap<String, Vec<String>> {
+        self.raw
+            .get("project")
+            .and_then(|p| p.get("optional-dependencies"))
+            .and_then(|v| v.as_table())
+            .map(|table| {
+                table
+                    .iter()
+                    .map(|(name, deps)| (name.clone(), string_array(deps)))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Get dependency groups from the top-level `[dependency-groups]` table
+    /// (PEP 735). Entries may be plain requirement strings or
+    /// `{ include-group = "<name>" }` references to other groups, which are
+    /// expanded inline.
+    pub fn dependency_groups(&self) -> BTreeMap<String, Vec<String>> {
+        let Some(table) = self.raw.get("dependency-groups").and_then(|v| v.as_table()) else {
+            return BTreeMap::new();
+        };
+
+        let raw_groups: BTreeMap<String, Vec<Value>> = table
+            .iter()
+            .map(|(name, items)| (name.clone(), items.as_array().cloned().unwrap_or_default()))
+            .collect();
+
+        raw_groups
+            .keys()
+            .map(|name| {
+                let mut seen = std::collections::HashSet::new();
+                (
+                    name.clone(),
+                    expand_dependency_group(name, &raw_groups, &mut seen),
+                )
+            })
+            .collect()
+    }
+
+    /// Get dependencies for a named group, checking
+    /// `[project.optional-dependencies]` first, then `[dependency-groups]`.
+    /// Returns an empty list if the group does not exist.
+    pub fn group_dependencies(&self, group: &str) -> Vec<String> {
+        self.optional_dependencies()
+            .get(group)
+            .cloned()
+            .or_else(|| self.dependency_groups().get(group).cloned())
+            .unwrap_or_default()
+    }
+
     /// Get pybun-specific configuration.
     pub fn pybun_config(&self) -> PybunConfig {
         self.raw
@@ -275,6 +328,43 @@ impl Project {
         })?;
         Ok(())
     }
+}
+
+/// Collect string entries from a TOML array value.
+fn string_array(value: &Value) -> Vec<String> {
+    value
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Expand a dependency group entry list, resolving `{ include-group = "<name>" }`
+/// references into the referenced group's requirements. Guards against cycles
+/// via `seen`.
+fn expand_dependency_group(
+    name: &str,
+    raw_groups: &BTreeMap<String, Vec<Value>>,
+    seen: &mut std::collections::HashSet<String>,
+) -> Vec<String> {
+    if !seen.insert(name.to_string()) {
+        return Vec::new();
+    }
+
+    let mut resolved = Vec::new();
+    if let Some(items) = raw_groups.get(name) {
+        for item in items {
+            if let Some(spec) = item.as_str() {
+                resolved.push(spec.to_string());
+            } else if let Some(include) = item.get("include-group").and_then(|v| v.as_str()) {
+                resolved.extend(expand_dependency_group(include, raw_groups, seen));
+            }
+        }
+    }
+    resolved
 }
 
 /// Extract package name from a dependency specifier (PEP 508).
@@ -405,6 +495,147 @@ mod tests {
         assert!(project.remove_dependency("requests"));
         assert!(!project.has_dependency("requests"));
         assert!(project.has_dependency("numpy"));
+    }
+
+    #[test]
+    fn optional_dependencies_reads_named_groups() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("pyproject.toml");
+        fs::write(
+            &path,
+            r#"[project]
+name = "demo"
+version = "0.1.0"
+dependencies = ["requests>=2.28.0"]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0.0", "ruff>=0.1.0"]
+docs = ["mkdocs"]
+"#,
+        )
+        .unwrap();
+
+        let project = Project::load(&path).unwrap();
+        let groups = project.optional_dependencies();
+        assert_eq!(
+            groups.get("dev"),
+            Some(&vec![
+                "pytest>=7.0.0".to_string(),
+                "ruff>=0.1.0".to_string()
+            ])
+        );
+        assert_eq!(groups.get("docs"), Some(&vec!["mkdocs".to_string()]));
+        assert_eq!(groups.get("missing"), None);
+    }
+
+    #[test]
+    fn dependency_groups_reads_pep735_table() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("pyproject.toml");
+        fs::write(
+            &path,
+            r#"[project]
+name = "demo"
+version = "0.1.0"
+dependencies = []
+
+[dependency-groups]
+test = ["pytest>=7.0.0"]
+lint = ["ruff>=0.1.0"]
+"#,
+        )
+        .unwrap();
+
+        let project = Project::load(&path).unwrap();
+        let groups = project.dependency_groups();
+        assert_eq!(groups.get("test"), Some(&vec!["pytest>=7.0.0".to_string()]));
+        assert_eq!(groups.get("lint"), Some(&vec!["ruff>=0.1.0".to_string()]));
+    }
+
+    #[test]
+    fn dependency_groups_expands_include_group_references() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("pyproject.toml");
+        fs::write(
+            &path,
+            r#"[project]
+name = "demo"
+version = "0.1.0"
+dependencies = []
+
+[dependency-groups]
+test = ["pytest>=7.0.0"]
+dev = ["ruff>=0.1.0", { include-group = "test" }]
+"#,
+        )
+        .unwrap();
+
+        let project = Project::load(&path).unwrap();
+        let groups = project.dependency_groups();
+        assert_eq!(
+            groups.get("dev"),
+            Some(&vec![
+                "ruff>=0.1.0".to_string(),
+                "pytest>=7.0.0".to_string()
+            ])
+        );
+    }
+
+    #[test]
+    fn dependency_groups_guards_against_include_cycles() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("pyproject.toml");
+        fs::write(
+            &path,
+            r#"[project]
+name = "demo"
+version = "0.1.0"
+dependencies = []
+
+[dependency-groups]
+a = [{ include-group = "b" }]
+b = [{ include-group = "a" }, "pytest"]
+"#,
+        )
+        .unwrap();
+
+        let project = Project::load(&path).unwrap();
+        let groups = project.dependency_groups();
+        // Cycle is broken; "pytest" from b is still reachable via a -> b.
+        assert_eq!(groups.get("a"), Some(&vec!["pytest".to_string()]));
+    }
+
+    #[test]
+    fn group_dependencies_prefers_optional_dependencies_over_dependency_groups() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("pyproject.toml");
+        fs::write(
+            &path,
+            r#"[project]
+name = "demo"
+version = "0.1.0"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["from-optional"]
+
+[dependency-groups]
+dev = ["from-groups"]
+docs = ["mkdocs"]
+"#,
+        )
+        .unwrap();
+
+        let project = Project::load(&path).unwrap();
+        assert_eq!(
+            project.group_dependencies("dev"),
+            vec!["from-optional".to_string()]
+        );
+        assert_eq!(
+            project.group_dependencies("docs"),
+            vec!["mkdocs".to_string()]
+        );
+        assert!(project.group_dependencies("missing").is_empty());
     }
 
     #[test]
