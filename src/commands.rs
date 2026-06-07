@@ -85,15 +85,13 @@ pub async fn execute(cli: Cli) -> Result<()> {
                     workspace,
                 }) => {
                     collector.event(EventType::InstallComplete);
-                    let mut detail = json!({
+                    let detail = json!({
                         "lockfile": lockfile.display().to_string(),
                         "packages": packages,
                         "verified": verified,
                         "artifacts": artifacts,
+                        "workspace": workspace,
                     });
-                    if let Some(workspace) = workspace {
-                        detail["workspace"] = workspace;
-                    }
                     (
                         "install".to_string(),
                         RenderDetail::with_json(summary, detail),

@@ -159,7 +159,20 @@ fn merge_dependencies(deps: impl Iterator<Item = String>) -> Vec<String> {
 /// directories. Patterns without `*` are returned as-is (single entry);
 /// patterns containing `*` are matched against directory entries one path
 /// segment at a time (e.g. `apps/*`, `packages/*/services`).
+///
+/// Patterns may not escape `root`: components like `..`, absolute paths, or
+/// (on Windows) drive prefixes are rejected outright (returns no matches),
+/// preventing a `pyproject.toml` from declaring members outside the workspace.
 fn expand_member_pattern(root: &Path, pattern: &str) -> Vec<PathBuf> {
+    use std::path::Component;
+
+    if Path::new(pattern)
+        .components()
+        .any(|c| !matches!(c, Component::Normal(_) | Component::CurDir))
+    {
+        return Vec::new();
+    }
+
     if !pattern.contains('*') {
         return vec![root.join(pattern)];
     }
@@ -263,6 +276,44 @@ members = ["apps/*"]
         let mut names = workspace.member_names();
         names.sort();
         assert_eq!(names, vec!["api".to_string(), "web".to_string()]);
+    }
+
+    #[test]
+    fn from_root_rejects_member_patterns_that_escape_root() {
+        let temp = tempdir().unwrap();
+        let root_dir = temp.path();
+        fs::write(
+            root_dir.join("pyproject.toml"),
+            r#"[project]
+name = "root"
+version = "0.1.0"
+
+[tool.pybun.workspace]
+members = ["../escape", "../../*"]
+"#,
+        )
+        .unwrap();
+
+        // A sibling directory that a `..` pattern would otherwise reach.
+        write_project(&root_dir.join("../escape/pyproject.toml"), "escape", &[]);
+
+        let root = Project::load(root_dir.join("pyproject.toml")).unwrap();
+        let err = Workspace::from_root(root).unwrap_err();
+        assert!(
+            matches!(err, WorkspaceError::MemberNotFound { .. }),
+            "literal `..` member pattern should error rather than escape root: {err:?}"
+        );
+    }
+
+    #[test]
+    fn expand_member_pattern_rejects_parent_and_absolute_components() {
+        let temp = tempdir().unwrap();
+        let root_dir = temp.path();
+
+        assert!(expand_member_pattern(root_dir, "../outside").is_empty());
+        assert!(expand_member_pattern(root_dir, "../../*").is_empty());
+        assert!(expand_member_pattern(root_dir, "/etc/*").is_empty());
+        assert!(expand_member_pattern(root_dir, "packages/../*").is_empty());
     }
 
     #[test]

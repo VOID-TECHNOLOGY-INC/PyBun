@@ -185,6 +185,54 @@ fn fixture_index() -> std::path::PathBuf {
 }
 
 #[test]
+fn non_workspace_projects_report_workspace_as_null_in_json_detail() {
+    let temp = tempdir().unwrap();
+    let root = temp.path();
+    write_pyproject(&root.join("pyproject.toml"), &["lib-a==1.0.0"]);
+
+    let index = fixture_index();
+
+    // `install` on a plain (non-workspace) project should still include the
+    // "workspace" key, set to null, so JSON consumers don't need to special
+    // case "key present" vs "key absent" depending on subcommand.
+    let install_output = bin()
+        .current_dir(root)
+        .args([
+            "--format=json",
+            "install",
+            "--index",
+            index.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run pybun install");
+    assert!(install_output.status.success());
+    let install_stdout = String::from_utf8_lossy(&install_output.stdout);
+    assert!(
+        install_stdout.contains("\"workspace\":null"),
+        "non-workspace install detail should report workspace as null: {install_stdout}"
+    );
+
+    // `test` (dry-run) without --member should also emit "workspace": null.
+    fs::write(
+        root.join("test_sample.py"),
+        "def test_ok():\n    assert True\n",
+    )
+    .unwrap();
+    let test_output = bin()
+        .current_dir(root)
+        .env("PYBUN_TEST_DRY_RUN", "1")
+        .args(["--format=json", "test"])
+        .output()
+        .expect("run pybun test");
+    assert!(test_output.status.success());
+    let test_stdout = String::from_utf8_lossy(&test_output.stdout);
+    assert!(
+        test_stdout.contains("\"workspace\":null"),
+        "non-workspace test detail should report workspace as null: {test_stdout}"
+    );
+}
+
+#[test]
 fn workspace_install_with_member_selector_scopes_to_member() {
     let temp = tempdir().unwrap();
     let root = temp.path();
