@@ -4739,6 +4739,45 @@ fn get_pytest_compat_hint(code: &str) -> Option<&'static str> {
     }
 }
 
+/// Convert a discovery-time compat warning into a structured diagnostic that
+/// is specific to having chosen `--backend=pybun`.
+///
+/// Unlike `--pytest-compat` (which surfaces these warnings only when the user
+/// explicitly opts in), the native backend's compat risk is implied by the
+/// backend choice itself: an agent picking `--backend=pybun` for speed has no
+/// other signal that a project leans on pytest plugins/fixtures the native
+/// executor doesn't fully emulate (see Issue #168), so a real test failure can
+/// look identical to a backend-compatibility gap. These diagnostics close that
+/// gap by always surfacing the warning — with a `--backend=pytest` hint —
+/// whenever the native backend is in use, regardless of `--pytest-compat`.
+fn native_backend_compat_diagnostic(warning: &crate::test_discovery::CompatWarning) -> Diagnostic {
+    use crate::schema::DiagnosticLevel;
+    use crate::test_discovery::WarningSeverity;
+
+    let level = match warning.severity {
+        WarningSeverity::Error => DiagnosticLevel::Error,
+        WarningSeverity::Warning => DiagnosticLevel::Warning,
+        WarningSeverity::Info => DiagnosticLevel::Info,
+    };
+
+    Diagnostic {
+        level,
+        code: Some(format!("W_TEST_BACKEND_COMPAT_{}", warning.code)),
+        message: format!(
+            "{} (the native --backend=pybun executor may not fully emulate this pytest feature)",
+            warning.message
+        ),
+        file: Some(warning.path.display().to_string()),
+        line: Some(warning.line as u32),
+        suggestion: Some(
+            "Run with --backend=pytest if this project relies on pytest plugins, advanced fixtures, \
+             or other features the native executor doesn't fully emulate"
+                .to_string(),
+        ),
+        context: None,
+    }
+}
+
 /// Parse shard specification (N/M format)
 fn parse_shard(shard: &str) -> Result<(u32, u32)> {
     let parts: Vec<&str> = shard.split('/').collect();
@@ -4990,6 +5029,16 @@ fn run_tests(args: &crate::cli::TestArgs, collector: &mut EventCollector) -> Res
         discovery_result.scanned_files.len(),
         discovery_result.duration_us
     ));
+
+    // Surface native-backend compat-warning diagnostics unconditionally
+    // (independent of --pytest-compat): choosing --backend=pybun is itself
+    // the signal that compatibility matters, since the native executor may
+    // not fully emulate every pytest plugin/fixture pattern (Issue #168).
+    if backend == TestBackend::Pybun {
+        for warning in &discovery_result.compat_warnings {
+            collector.diagnostic(native_backend_compat_diagnostic(warning));
+        }
+    }
 
     // Process pytest-compat warnings and add as diagnostics
     if args.pytest_compat && !discovery_result.compat_warnings.is_empty() {
@@ -6438,6 +6487,60 @@ collected 3 items in fixtures.py";
     fn test_normalize_snapshot_stdout_preserves_unrelated_lines() {
         let stdout = "hello snapshot\nPASSED\n";
         assert_eq!(normalize_snapshot_stdout(stdout), "hello snapshot\nPASSED");
+    }
+
+    #[test]
+    fn native_backend_compat_diagnostic_prefixes_code_and_suggests_pytest_backend() {
+        use crate::test_discovery::{CompatWarning, WarningSeverity};
+        use std::path::PathBuf;
+
+        let warning = CompatWarning {
+            code: "W001".to_string(),
+            message: "Session/package scoped fixture may need pytest backend: fixture".to_string(),
+            path: PathBuf::from("test_example.py"),
+            line: 5,
+            severity: WarningSeverity::Warning,
+        };
+
+        let diag = native_backend_compat_diagnostic(&warning);
+
+        assert_eq!(diag.code.as_deref(), Some("W_TEST_BACKEND_COMPAT_W001"));
+        assert_eq!(diag.level, crate::schema::DiagnosticLevel::Warning);
+        assert_eq!(diag.file.as_deref(), Some("test_example.py"));
+        assert_eq!(diag.line, Some(5));
+        assert!(diag.message.contains(&warning.message));
+        let suggestion = diag.suggestion.as_deref().unwrap_or("");
+        assert!(
+            suggestion.contains("--backend=pytest"),
+            "expected suggestion to mention --backend=pytest, got: {suggestion:?}"
+        );
+    }
+
+    #[test]
+    fn native_backend_compat_diagnostic_maps_severity_levels() {
+        use crate::test_discovery::{CompatWarning, WarningSeverity};
+        use std::path::PathBuf;
+
+        let make = |severity| CompatWarning {
+            code: "I001".to_string(),
+            message: "info".to_string(),
+            path: PathBuf::from("t.py"),
+            line: 1,
+            severity,
+        };
+
+        assert_eq!(
+            native_backend_compat_diagnostic(&make(WarningSeverity::Info)).level,
+            crate::schema::DiagnosticLevel::Info
+        );
+        assert_eq!(
+            native_backend_compat_diagnostic(&make(WarningSeverity::Warning)).level,
+            crate::schema::DiagnosticLevel::Warning
+        );
+        assert_eq!(
+            native_backend_compat_diagnostic(&make(WarningSeverity::Error)).level,
+            crate::schema::DiagnosticLevel::Error
+        );
     }
 
     #[test]
