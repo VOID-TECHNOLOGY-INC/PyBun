@@ -502,6 +502,35 @@ fn install_no_pyproject_and_no_require_error() {
 }
 
 #[test]
+fn install_json_output_reports_error_in_diagnostics_array() {
+    let temp = tempdir().unwrap();
+    // No pyproject.toml and no --require: install() returns a generic error
+    // that must still surface as a structured Diagnostic in the JSON envelope
+    // (Issue #126: inconsistent diagnostics reporting).
+
+    let assert = bin()
+        .current_dir(temp.path())
+        .args(["--format=json", "install"])
+        .assert()
+        .failure();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    let json: Value = serde_json::from_str(stdout.trim()).expect("valid JSON output");
+
+    assert_eq!(json["status"], "error");
+    let diagnostics = json["diagnostics"].as_array().cloned().unwrap_or_default();
+    assert!(
+        diagnostics.iter().any(|d| {
+            d["level"] == "error"
+                && d["message"]
+                    .as_str()
+                    .is_some_and(|m| m.contains("no requirements provided"))
+        }),
+        "expected an error diagnostic about missing requirements: {diagnostics:?}"
+    );
+}
+
+#[test]
 fn install_json_output_from_pyproject() {
     let temp = tempdir().unwrap();
     let pyproject_path = temp.path().join("pyproject.toml");

@@ -1,4 +1,5 @@
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
+use serde_json::{Value, json};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -532,4 +533,250 @@ pub struct UpgradeArgs {
     /// Path to lockfile.
     #[arg(long, default_value = "pybun.lockb")]
     pub lock: std::path::PathBuf,
+}
+
+/// Render a JSON help envelope when the raw CLI arguments request both
+/// `--help`/`-h` and `--format=json`. Clap intercepts `--help` and prints
+/// plain text before our normal command dispatch ever runs, so this must be
+/// checked before `Cli::parse()` is called.
+///
+/// Returns `None` when the arguments are not a JSON help request, in which
+/// case normal `Cli::parse()` handling (including clap's text help) applies.
+pub fn json_help_envelope(args: &[String]) -> Option<String> {
+    let (wants_help, wants_json, command, path) = scan_help_request(args);
+    if !(wants_help && wants_json) {
+        return None;
+    }
+
+    let mut command_name = vec!["pybun".to_string()];
+    command_name.extend(path);
+    command_name.push("--help".to_string());
+
+    Some(render_help_envelope(&command, &command_name.join(" ")))
+}
+
+/// Scan raw CLI arguments for `--help`/`-h`, `--format=json`, and the
+/// subcommand chain (e.g. `pybun mcp serve --help` resolves to the `serve`
+/// `clap::Command` and path `["mcp", "serve"]`).
+///
+/// The subcommand chain is resolved by walking the `clap::Command` tree
+/// alongside the argument scan — a token only extends the path when it names
+/// an actual subcommand of the command reached so far. This avoids treating
+/// option *values* (e.g. the `foo.py` in `lock --script foo.py`) as path
+/// segments, which a naive "every non-flag token is a subcommand" scan would
+/// misidentify as the target command.
+///
+/// Global value-taking flags (`--format`, `--progress`) are recognized and
+/// their values skipped explicitly; any other unrecognized token simply fails
+/// to match a subcommand and is ignored, so the scan keeps looking for the
+/// help/format flags without derailing the path.
+fn scan_help_request(args: &[String]) -> (bool, bool, clap::Command, Vec<String>) {
+    let mut wants_help = false;
+    let mut wants_json = false;
+    let mut path = Vec::new();
+    let mut command = Cli::command();
+
+    let mut iter = args.iter().peekable();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--help" | "-h" => wants_help = true,
+            "--format" => {
+                if iter.peek().is_some_and(|v| v.as_str() == "json") {
+                    wants_json = true;
+                }
+                iter.next();
+            }
+            "--format=json" => wants_json = true,
+            "--progress" => {
+                iter.next();
+            }
+            s if s.starts_with('-') => {}
+            s => {
+                let next = command
+                    .get_subcommands()
+                    .find(|sub| sub.get_name() == s)
+                    .cloned();
+                if let Some(sub) = next {
+                    path.push(s.to_string());
+                    command = sub;
+                }
+                // Otherwise this is a positional value (or an option value we
+                // don't special-case) — ignore it and keep scanning for flags.
+            }
+        }
+    }
+
+    (wants_help, wants_json, command, path)
+}
+
+fn render_help_envelope(command: &clap::Command, command_name: &str) -> String {
+    let detail = command_help_json(command);
+    let envelope = crate::schema::JsonEnvelope::new(
+        command_name,
+        crate::schema::Status::Ok,
+        std::time::Duration::default(),
+        detail,
+    );
+    envelope.to_json()
+}
+
+fn command_help_json(command: &clap::Command) -> Value {
+    let mut cmd = command.clone();
+    let usage = cmd.render_usage().to_string();
+
+    let args: Vec<Value> = cmd
+        .get_arguments()
+        .filter(|a| !matches!(a.get_id().as_str(), "help" | "version"))
+        .map(arg_help_json)
+        .collect();
+
+    let subcommands: Vec<Value> = cmd
+        .get_subcommands()
+        .map(|sub| {
+            json!({
+                "name": sub.get_name(),
+                "about": sub.get_about().map(|s| s.to_string()),
+            })
+        })
+        .collect();
+
+    json!({
+        "name": cmd.get_name(),
+        "about": cmd.get_about().map(|s| s.to_string()),
+        "long_about": cmd.get_long_about().map(|s| s.to_string()),
+        "usage": usage,
+        "args": args,
+        "subcommands": subcommands,
+    })
+}
+
+fn arg_help_json(arg: &clap::Arg) -> Value {
+    json!({
+        "name": arg.get_id().as_str(),
+        "help": arg.get_help().map(|s| s.to_string()),
+        "long": arg.get_long(),
+        "short": arg.get_short().map(|c| c.to_string()),
+        "required": arg.is_required_set(),
+        "takes_value": arg.get_num_args().is_some_and(|n| n.takes_values()),
+        "default_values": arg
+            .get_default_values()
+            .iter()
+            .map(|v| v.to_string_lossy().to_string())
+            .collect::<Vec<_>>(),
+    })
+}
+
+#[cfg(test)]
+mod help_tests {
+    use super::*;
+
+    #[test]
+    fn detects_top_level_json_help_request() {
+        let args: Vec<String> = ["--format=json", "--help"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let (wants_help, wants_json, _, path) = scan_help_request(&args);
+        assert!(wants_help);
+        assert!(wants_json);
+        assert!(path.is_empty());
+    }
+
+    #[test]
+    fn detects_subcommand_json_help_request_with_split_format_flag() {
+        let args: Vec<String> = ["mcp", "serve", "--format", "json", "-h"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let (wants_help, wants_json, _, path) = scan_help_request(&args);
+        assert!(wants_help);
+        assert!(wants_json);
+        assert_eq!(path, vec!["mcp".to_string(), "serve".to_string()]);
+    }
+
+    #[test]
+    fn ignores_text_format_help_requests() {
+        let args: Vec<String> = ["install", "--help"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let (wants_help, wants_json, _, _) = scan_help_request(&args);
+        assert!(wants_help);
+        assert!(!wants_json);
+    }
+
+    #[test]
+    fn renders_top_level_json_help_envelope() {
+        let args: Vec<String> = ["--help", "--format=json"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let output = json_help_envelope(&args).expect("expected JSON help envelope");
+        let value: Value = serde_json::from_str(&output).expect("valid JSON");
+        assert_eq!(value["command"], "pybun --help");
+        assert_eq!(value["status"], "ok");
+        assert_eq!(value["detail"]["name"], "pybun");
+        assert!(
+            value["detail"]["subcommands"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|s| s["name"] == "install")
+        );
+    }
+
+    #[test]
+    fn renders_subcommand_json_help_envelope() {
+        let args: Vec<String> = ["install", "--format=json", "--help"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let output = json_help_envelope(&args).expect("expected JSON help envelope");
+        let value: Value = serde_json::from_str(&output).expect("valid JSON");
+        assert_eq!(value["command"], "pybun install --help");
+        assert_eq!(value["detail"]["name"], "install");
+        assert!(
+            value["detail"]["args"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|a| a["name"] == "offline")
+        );
+    }
+
+    #[test]
+    fn returns_none_when_not_a_help_request() {
+        let args: Vec<String> = ["install", "--format=json"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert!(json_help_envelope(&args).is_none());
+    }
+
+    #[test]
+    fn ignores_option_values_that_resemble_subcommand_names() {
+        // `--script foo.py` must not be mistaken for a subcommand path segment —
+        // the resolved command should remain `lock`, not descend into `foo.py`.
+        let args: Vec<String> = ["lock", "--script", "foo.py", "--format=json", "--help"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let (wants_help, wants_json, command, path) = scan_help_request(&args);
+        assert!(wants_help);
+        assert!(wants_json);
+        assert_eq!(path, vec!["lock".to_string()]);
+        assert_eq!(command.get_name(), "lock");
+    }
+
+    #[test]
+    fn renders_help_envelope_with_correct_command_name_when_option_value_looks_like_a_subcommand() {
+        let args: Vec<String> = ["lock", "--script", "foo.py", "--format=json", "--help"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let output = json_help_envelope(&args).expect("expected JSON help envelope");
+        let value: Value = serde_json::from_str(&output).expect("valid JSON");
+        assert_eq!(value["command"], "pybun lock --help");
+        assert_eq!(value["detail"]["name"], "lock");
+    }
 }

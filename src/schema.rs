@@ -434,6 +434,19 @@ impl EventCollector {
         self.diagnostics.len()
     }
 
+    /// Return the number of error-level diagnostics recorded so far.
+    ///
+    /// Used by command dispatch to decide whether a generic fallback error
+    /// must still be pushed: counting *all* diagnostics would wrongly skip
+    /// the fallback whenever the failing command had already emitted
+    /// info/warning diagnostics (e.g. progress messages) before failing.
+    pub fn error_diagnostic_count(&self) -> usize {
+        self.diagnostics
+            .iter()
+            .filter(|d| matches!(d.level, DiagnosticLevel::Error))
+            .count()
+    }
+
     /// Record an error diagnostic
     pub fn error(&mut self, message: impl Into<String>) {
         self.diagnostics.push(Diagnostic::error(message));

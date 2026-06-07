@@ -1,6 +1,7 @@
 use assert_cmd::Command;
 use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
+use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tempfile::tempdir;
@@ -49,6 +50,40 @@ print("hello")
     assert!(lock.packages.contains_key("lib-a"));
     assert!(lock.packages.contains_key("lib-b"));
     assert!(lock.packages.contains_key("lib-c"));
+}
+
+#[test]
+fn lock_json_output_reports_error_in_diagnostics_array() {
+    let temp = tempdir().unwrap();
+    let missing_script = temp.path().join("does-not-exist.py");
+    // lock_dependencies() returns a generic "script not found" error without
+    // pushing a structured diagnostic itself; the dispatcher must still surface
+    // it as a Diagnostic in the JSON envelope (Issue #126).
+
+    let assert = bin()
+        .args([
+            "--format=json",
+            "lock",
+            "--script",
+            missing_script.to_str().unwrap(),
+        ])
+        .assert()
+        .failure();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    let json: Value = serde_json::from_str(stdout.trim()).expect("valid JSON output");
+
+    assert_eq!(json["status"], "error");
+    let diagnostics = json["diagnostics"].as_array().cloned().unwrap_or_default();
+    assert!(
+        diagnostics.iter().any(|d| {
+            d["level"] == "error"
+                && d["message"]
+                    .as_str()
+                    .is_some_and(|m| m.contains("script not found"))
+        }),
+        "expected an error diagnostic about the missing script: {diagnostics:?}"
+    );
 }
 
 #[test]
