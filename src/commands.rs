@@ -5154,10 +5154,17 @@ fn normalize_snapshot_stdout(stdout: &str) -> String {
         .join("\n")
 }
 
-/// Replaces a trailing `in <digits>[.<digits>]s` duration marker (as emitted by
-/// pytest's session summary, e.g. "1 passed in 0.01s") with a stable placeholder.
+/// Replaces a `in <digits>[.<digits>]s` duration marker that trails a pytest
+/// session summary line (e.g. "==== 1 passed in 0.01s ====" or
+/// "1 passed, 2 failed in 0.01s") with a stable placeholder.
+///
+/// Only the *last* `" in "` on a line is considered, and only when the digits+`s`
+/// run is followed solely by border/whitespace characters (`=`, ` `) through the
+/// end of the line. This anchors the rewrite to pytest's summary format and avoids
+/// mangling incidental `" in "` substrings inside test names or assertion text
+/// (e.g. "assert 1 in [2, 3]"), which would otherwise corrupt snapshot content.
 fn normalize_timing_in_line(line: &str) -> String {
-    let Some(marker) = line.find(" in ") else {
+    let Some(marker) = line.rfind(" in ") else {
         return line.to_string();
     };
     let prefix_end = marker + 4;
@@ -5167,11 +5174,14 @@ fn normalize_timing_in_line(line: &str) -> String {
         .unwrap_or(rest.len());
     let duration = &rest[..digits_end];
     let has_digit = duration.chars().any(|c| c.is_ascii_digit());
-    if has_digit && rest[digits_end..].starts_with('s') {
-        format!("{}X.XXs{}", &line[..prefix_end], &rest[digits_end + 1..])
-    } else {
-        line.to_string()
+    if !has_digit || !rest[digits_end..].starts_with('s') {
+        return line.to_string();
     }
+    let trailer = &rest[digits_end + 1..];
+    if !trailer.chars().all(|c| c == '=' || c.is_whitespace()) {
+        return line.to_string();
+    }
+    format!("{}X.XXs{}", &line[..prefix_end], trailer)
 }
 
 fn run_tests_native(
@@ -5227,6 +5237,27 @@ fn run_tests_native(
             .iter()
             .filter(|r| matches!(r.outcome, TestOutcome::Passed | TestOutcome::XPass))
         {
+            // A test that needed retries produced different output on at least one
+            // earlier attempt, so the snapshot is being recorded against/compared with
+            // only its final (non-deterministic) attempt's stdout. Surface this so
+            // consumers know the baseline may not be reproducible run-to-run.
+            if r.retries > 0 {
+                collector.diagnostic(Diagnostic {
+                    level: crate::schema::DiagnosticLevel::Warning,
+                    code: Some("W_SNAPSHOT_FLAKY_RETRY".to_string()),
+                    message: format!(
+                        "{}::{} passed only after {} retr{} — its snapshot reflects the final attempt's output, which may not be reproducible",
+                        r.path.display(),
+                        r.name,
+                        r.retries,
+                        if r.retries == 1 { "y" } else { "ies" }
+                    ),
+                    file: Some(r.path.display().to_string()),
+                    line: u32::try_from(r.line).ok(),
+                    suggestion: Some("Investigate test flakiness before relying on this snapshot as a stable baseline".to_string()),
+                    context: None,
+                });
+            }
             let normalized = normalize_snapshot_stdout(&r.stdout);
             manager.assert_snapshot(&r.path, &r.name, &normalized);
         }
@@ -6056,6 +6087,27 @@ test_snap.py::test_prints PASSED\n\
             normalize_snapshot_stdout(second)
         );
         assert!(normalize_snapshot_stdout(first).contains("in X.XXs"));
+    }
+
+    #[test]
+    fn test_normalize_snapshot_stdout_handles_multi_status_summary() {
+        let first = "================ 2 passed, 1 failed in 0.05s ================";
+        let second = "================ 2 passed, 1 failed in 1.23s ================";
+        assert_eq!(
+            normalize_snapshot_stdout(first),
+            normalize_snapshot_stdout(second)
+        );
+        assert!(normalize_snapshot_stdout(first).contains("in X.XXs"));
+    }
+
+    #[test]
+    fn test_normalize_snapshot_stdout_does_not_mangle_incidental_in_text() {
+        // " in " inside an assertion message or test name must survive untouched —
+        // only the trailing pytest summary duration should ever be rewritten.
+        let stdout = "FAILED test_foo.py::test_bar - assert 1 in [2, 3]\n\
+test_collection.py::test_year checks 1 in 2024\n\
+collected 3 items in fixtures.py";
+        assert_eq!(normalize_snapshot_stdout(stdout), stdout);
     }
 
     #[test]

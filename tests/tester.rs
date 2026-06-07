@@ -2038,3 +2038,70 @@ fn test_pybun_backend_snapshot_wiring_creates_and_matches() {
         verify_summary
     );
 }
+
+#[test]
+fn test_pybun_backend_snapshot_warns_when_recorded_test_needed_retries() {
+    if !pytest_available() {
+        eprintln!(
+            "Skipping test_pybun_backend_snapshot_warns_when_recorded_test_needed_retries: pytest not installed"
+        );
+        return;
+    }
+
+    let temp = TempDir::new().unwrap();
+    let counter_file = temp.path().join("counter.txt");
+    let test_file = temp.path().join("test_flaky_snap.py");
+    fs::write(
+        &test_file,
+        format!(
+            r#"import os
+
+COUNTER = {counter:?}
+
+def test_flaky_snap():
+    count = 0
+    if os.path.exists(COUNTER):
+        with open(COUNTER) as f:
+            count = int(f.read().strip() or "0")
+    count += 1
+    with open(COUNTER, "w") as f:
+        f.write(str(count))
+    assert count >= 2
+    print("settled after retry")
+"#,
+            counter = counter_file.display().to_string(),
+        ),
+    )
+    .unwrap();
+
+    // The test fails on its first attempt and passes on the second (retries=1).
+    // Because its snapshot is recorded from that non-deterministic final attempt,
+    // the executor should warn that the baseline may not be reproducible.
+    let output = pybun()
+        .current_dir(temp.path())
+        .args([
+            "test",
+            "--backend=pybun",
+            "--snapshot",
+            "--update-snapshots",
+            "--retries=1",
+            "--format=json",
+        ])
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("Valid JSON");
+    let diagnostics = json
+        .get("diagnostics")
+        .and_then(|v| v.as_array())
+        .expect("diagnostics array should be present");
+
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.get("code").and_then(|c| c.as_str()) == Some("W_SNAPSHOT_FLAKY_RETRY")),
+        "expected a W_SNAPSHOT_FLAKY_RETRY warning for a snapshotted test that needed retries: {:?}",
+        diagnostics
+    );
+}
