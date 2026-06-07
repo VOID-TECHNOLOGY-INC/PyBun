@@ -73,6 +73,7 @@ pub async fn execute(cli: Cli) -> Result<()> {
     let (command, detail) = match &cli.command {
         Commands::Install(args) => {
             collector.event(EventType::ResolveStart);
+            let pre_diag_count = collector.diagnostic_count();
             let result = install(args, &mut collector).await;
             match result {
                 Ok(InstallOutcome {
@@ -96,15 +97,22 @@ pub async fn execute(cli: Cli) -> Result<()> {
                         ),
                     )
                 }
-                Err(e) => (
-                    "install".to_string(),
-                    RenderDetail::error(
-                        e.to_string(),
-                        json!({
-                            "error": e.to_string(),
-                        }),
-                    ),
-                ),
+                Err(e) => {
+                    // Only push a generic fallback error if install() did not
+                    // already record a structured diagnostic (e.g. resolve errors).
+                    if collector.diagnostic_count() == pre_diag_count {
+                        collector.error(e.to_string());
+                    }
+                    (
+                        "install".to_string(),
+                        RenderDetail::error(
+                            e.to_string(),
+                            json!({
+                                "error": e.to_string(),
+                            }),
+                        ),
+                    )
+                }
             }
         }
         Commands::Add(args) => {
@@ -206,6 +214,7 @@ pub async fn execute(cli: Cli) -> Result<()> {
         }
         Commands::Lock(args) => {
             collector.event(EventType::ResolveStart);
+            let pre_diag_count = collector.diagnostic_count();
             let result = lock_dependencies(args, &mut collector).await;
             match result {
                 Ok(LockOutcome {
@@ -229,15 +238,22 @@ pub async fn execute(cli: Cli) -> Result<()> {
                         ),
                     )
                 }
-                Err(e) => (
-                    "lock".to_string(),
-                    RenderDetail::error(
-                        e.to_string(),
-                        json!({
-                            "error": e.to_string(),
-                        }),
-                    ),
-                ),
+                Err(e) => {
+                    // Only push a generic fallback error if lock_dependencies did not
+                    // already record a structured diagnostic (e.g. resolve errors).
+                    if collector.diagnostic_count() == pre_diag_count {
+                        collector.error(e.to_string());
+                    }
+                    (
+                        "lock".to_string(),
+                        RenderDetail::error(
+                            e.to_string(),
+                            json!({
+                                "error": e.to_string(),
+                            }),
+                        ),
+                    )
+                }
             }
         }
         Commands::Run(args) => {

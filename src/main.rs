@@ -3,6 +3,15 @@ use color_eyre::eyre::{Result, WrapErr, eyre};
 use pybun::{cli::Cli, commands::execute, entry, support_bundle};
 
 fn main() -> Result<()> {
+    // Clap intercepts `--help`/`-h` and prints plain text before normal command
+    // dispatch runs, which breaks `--format=json --help` for agents that need
+    // machine-readable help. Detect that combination up front and short-circuit.
+    let raw_args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(envelope) = pybun::cli::json_help_envelope(&raw_args) {
+        println!("{envelope}");
+        return Ok(());
+    }
+
     let cli = Cli::parse();
     if entry::should_install_color_eyre(&cli) {
         color_eyre::install()?;
