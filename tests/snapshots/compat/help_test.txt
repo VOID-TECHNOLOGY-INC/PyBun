@@ -16,8 +16,8 @@ Options:
           [default: text]
           [possible values: text, json]
 
-      --shard <SHARD>
-          Shard identifier (N/M) for distributed testing
+      --member <NAME>
+          Run tests scoped to a single workspace member by its `[project.name]`. Used as the search root when no PATH is given
 
       --progress <PROGRESS>
           Progress UI mode (auto hides on non-TTY)
@@ -26,11 +26,14 @@ Options:
           [default: auto]
           [possible values: auto, always, never]
 
-  -x, --fail-fast
-          Stop on first failure
+      --shard <SHARD>
+          Shard identifier (N/M) for distributed testing
 
       --no-progress
           Disable progress UI
+
+  -x, --fail-fast
+          Stop on first failure
 
       --pytest-compat
           Enable pytest compatibility layer

@@ -105,6 +105,7 @@ mod tests {
             no_progress: false,
             command: Commands::Test(TestArgs {
                 paths: Vec::new(),
+                member: None,
                 shard: None,
                 fail_fast: false,
                 pytest_compat: false,
@@ -200,6 +201,9 @@ mod tests {
                 requirements: Vec::new(),
                 index: None,
                 lock: "pybun.lockb".into(),
+                workspace: false,
+                member: None,
+                group: None,
             }),
         };
         assert!(requires_tokio_runtime(&cli));

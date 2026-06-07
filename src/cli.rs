@@ -152,6 +152,17 @@ pub struct InstallArgs {
     /// Path to write lockfile.
     #[arg(long, default_value = "pybun.lockb")]
     pub lock: std::path::PathBuf,
+    /// Operate on the whole workspace, merging dependencies from the root and
+    /// all members. Useful when run from inside a workspace member directory.
+    #[arg(long)]
+    pub workspace: bool,
+    /// Operate on a single workspace member by its `[project.name]`.
+    #[arg(long, value_name = "NAME")]
+    pub member: Option<String>,
+    /// Operate on a named dependency group (checks
+    /// `[project.optional-dependencies]` then `[dependency-groups]`).
+    #[arg(long, value_name = "NAME")]
+    pub group: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -219,6 +230,10 @@ pub struct TestArgs {
     /// Test file(s) or directory to run. Defaults to current directory.
     #[arg(value_name = "PATH")]
     pub paths: Vec<std::path::PathBuf>,
+    /// Run tests scoped to a single workspace member by its `[project.name]`.
+    /// Used as the search root when no PATH is given.
+    #[arg(long, value_name = "NAME")]
+    pub member: Option<String>,
     /// Shard identifier (N/M) for distributed testing.
     #[arg(long)]
     pub shard: Option<String>,
@@ -514,6 +529,13 @@ pub struct OutdatedArgs {
     /// Use offline mode when cache is sufficient.
     #[arg(long)]
     pub offline: bool,
+    /// Scope "wanted" version constraints to a single workspace member by its
+    /// `[project.name]`.
+    #[arg(long, value_name = "NAME")]
+    pub member: Option<String>,
+    /// Scope "wanted" version constraints to a named dependency group.
+    #[arg(long, value_name = "NAME")]
+    pub group: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -533,6 +555,13 @@ pub struct UpgradeArgs {
     /// Path to lockfile.
     #[arg(long, default_value = "pybun.lockb")]
     pub lock: std::path::PathBuf,
+    /// Scope the upgrade to a single workspace member's dependencies by its
+    /// `[project.name]`.
+    #[arg(long, value_name = "NAME")]
+    pub member: Option<String>,
+    /// Scope the upgrade to a named dependency group's dependencies.
+    #[arg(long, value_name = "NAME")]
+    pub group: Option<String>,
 }
 
 /// Render a JSON help envelope when the raw CLI arguments request both

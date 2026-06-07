@@ -82,19 +82,19 @@ pub async fn execute(cli: Cli) -> Result<()> {
                     lockfile,
                     verified,
                     artifacts,
+                    workspace,
                 }) => {
                     collector.event(EventType::InstallComplete);
+                    let detail = json!({
+                        "lockfile": lockfile.display().to_string(),
+                        "packages": packages,
+                        "verified": verified,
+                        "artifacts": artifacts,
+                        "workspace": workspace,
+                    });
                     (
                         "install".to_string(),
-                        RenderDetail::with_json(
-                            summary,
-                            json!({
-                                "lockfile": lockfile.display().to_string(),
-                                "packages": packages,
-                                "verified": verified,
-                                "artifacts": artifacts,
-                            }),
-                        ),
+                        RenderDetail::with_json(summary, detail),
                     )
                 }
                 Err(e) => {
@@ -132,6 +132,9 @@ pub async fn execute(cli: Cli) -> Result<()> {
                         requirements: Vec::new(), // install from pyproject.toml
                         index: None,
                         lock: std::path::PathBuf::from("pybun.lockb"),
+                        workspace: false,
+                        member: None,
+                        group: None,
                     };
 
                     match install(&install_args, &mut collector).await {
@@ -1148,55 +1151,216 @@ fn run_doctor(args: &crate::cli::DoctorArgs, collector: &mut EventCollector) -> 
     RenderDetail::with_json(summary, detail)
 }
 
+/// Resolve dependency specifiers scoped by `--member` (optionally narrowed by
+/// `--group`) or `--group` alone, against an already-discovered workspace (or
+/// the single `project` when no workspace exists). Returns `Ok(None)` when
+/// neither selector is set, so callers can fall through to their own default
+/// behavior (workspace merge, plain project dependencies, etc).
+///
+/// This is the shared precedence core behind `pybun install`, `pybun
+/// outdated`, and `pybun upgrade`'s `--member`/`--group` selectors.
+fn select_member_or_group_dependencies(
+    project: &Project,
+    workspace: &Option<Workspace>,
+    member: Option<&str>,
+    group: Option<&str>,
+    collector: &mut EventCollector,
+) -> Result<Option<(Vec<String>, Option<Value>)>> {
+    if let Some(member_name) = member {
+        let ws = workspace.as_ref().ok_or_else(|| {
+            eyre!("--member requires a workspace; no [tool.pybun.workspace] configuration found")
+        })?;
+        let member_project = ws.member_by_name(member_name).ok_or_else(|| {
+            eyre!(
+                "workspace member '{member_name}' not found (available: {})",
+                ws.member_names().join(", ")
+            )
+        })?;
+        let deps = match group {
+            Some(group_name) => member_project.group_dependencies(group_name),
+            None => member_project.dependencies(),
+        };
+        collector.info(format!(
+            "Selected workspace member '{}' at {} ({} dependencies{})",
+            member_name,
+            member_project.root().display(),
+            deps.len(),
+            group.map(|g| format!(", group '{g}'")).unwrap_or_default(),
+        ));
+        return Ok(Some((
+            deps,
+            Some(json!({
+                "scope": "member",
+                "root": ws.root.root().display().to_string(),
+                "selected_members": [member_name],
+                "group": group,
+            })),
+        )));
+    }
+
+    if let Some(group_name) = group {
+        if let Some(ws) = workspace {
+            let deps = ws.dependencies_for_group(group_name);
+            collector.info(format!(
+                "Selected dependency group '{}' across workspace at {} ({} dependencies)",
+                group_name,
+                ws.root.root().display(),
+                deps.len(),
+            ));
+            return Ok(Some((
+                deps,
+                Some(json!({
+                    "scope": "group",
+                    "root": ws.root.root().display().to_string(),
+                    "selected_members": ws.member_names(),
+                    "group": group_name,
+                })),
+            )));
+        }
+
+        let deps = project.group_dependencies(group_name);
+        collector.info(format!(
+            "Selected dependency group '{}' ({} dependencies)",
+            group_name,
+            deps.len(),
+        ));
+        return Ok(Some((
+            deps,
+            Some(json!({
+                "scope": "group",
+                "selected_members": Value::Null,
+                "group": group_name,
+            })),
+        )));
+    }
+
+    Ok(None)
+}
+
+/// Resolve which dependency specifiers to install based on workspace
+/// selectors (`--workspace`/`--member`/`--group`). Returns the dependency
+/// strings plus an optional JSON blob describing the selection scope for
+/// workspace-aware JSON output (`None` for plain single-project installs).
+///
+/// Selector precedence: `--member` (optionally narrowed by `--group`) takes
+/// priority, then `--group` alone (workspace-wide or project-local), then
+/// `--workspace`/auto-detected workspace merging, finally falling back to the
+/// discovered project's own `[project.dependencies]`.
+fn select_install_dependencies(
+    project: &Project,
+    working_dir: &Path,
+    args: &crate::cli::InstallArgs,
+    collector: &mut EventCollector,
+) -> Result<(Vec<String>, Option<Value>)> {
+    let workspace = if args.workspace {
+        Workspace::discover_root(working_dir).map_err(|e| eyre!(e))?
+    } else {
+        Workspace::discover(working_dir).map_err(|e| eyre!(e))?
+    };
+
+    if args.workspace && workspace.is_none() {
+        return Err(eyre!(
+            "--workspace specified but no [tool.pybun.workspace] configuration found"
+        ));
+    }
+
+    if let Some((deps, detail)) = select_member_or_group_dependencies(
+        project,
+        &workspace,
+        args.member.as_deref(),
+        args.group.as_deref(),
+        collector,
+    )? {
+        return Ok((deps, detail));
+    }
+
+    if let Some(ws) = &workspace {
+        let merged = ws.merged_dependencies();
+        collector.info(format!(
+            "Workspace detected at {} ({} members); merged {} dependencies",
+            ws.root.root().display(),
+            ws.members.len(),
+            merged.len()
+        ));
+        return Ok((
+            merged,
+            Some(json!({
+                "scope": "workspace",
+                "root": ws.root.root().display().to_string(),
+                "selected_members": ws.member_names(),
+                "group": Value::Null,
+            })),
+        ));
+    }
+
+    let deps = project.dependencies();
+    if deps.is_empty() {
+        collector.info("No dependencies found in pyproject.toml");
+    } else {
+        collector.info(format!(
+            "Found {} dependencies in {}",
+            deps.len(),
+            project.path().display()
+        ));
+    }
+    Ok((deps, None))
+}
+
+/// Resolve dependency specifiers for `pybun outdated`/`pybun upgrade`,
+/// honoring `--member`/`--group` selectors against an auto-detected workspace
+/// (these commands have no `--workspace` merge mode of their own). Falls back
+/// to the discovered project's own `[project.dependencies]` when neither
+/// selector is set.
+fn select_scoped_dependencies(
+    project: &Project,
+    working_dir: &Path,
+    member: Option<&str>,
+    group: Option<&str>,
+    collector: &mut EventCollector,
+) -> Result<(Vec<String>, Option<Value>)> {
+    let workspace = Workspace::discover(working_dir).map_err(|e| eyre!(e))?;
+
+    if let Some((deps, detail)) =
+        select_member_or_group_dependencies(project, &workspace, member, group, collector)?
+    {
+        return Ok((deps, detail));
+    }
+
+    Ok((project.dependencies(), None))
+}
+
 async fn install(
     args: &crate::cli::InstallArgs,
     collector: &mut EventCollector,
 ) -> Result<InstallOutcome> {
     // Gather requirements: either from --require flags or from pyproject.toml
-    let requirements = if !args.requirements.is_empty() {
-        // CLI --require flags take precedence
-        args.requirements.clone()
-    } else {
-        // Try to load from pyproject.toml
-        let working_dir = std::env::current_dir()?;
-        let project = Project::discover(&working_dir).map_err(|_| {
-            eyre!(
-                "no requirements provided and no pyproject.toml found. \
-                     Use --require or create a pyproject.toml with [project.dependencies]"
-            )
-        })?;
-
-        // Workspace-aware dependency gathering.
-        let deps = if let Ok(Some(workspace)) = Workspace::discover(&working_dir) {
-            let merged = workspace.merged_dependencies();
-            collector.info(format!(
-                "Workspace detected at {} ({} members); merged {} dependencies",
-                workspace.root.root().display(),
-                workspace.members.len(),
-                merged.len()
-            ));
-            merged
+    let (requirements, workspace_detail): (Vec<Requirement>, Option<Value>) =
+        if !args.requirements.is_empty() {
+            // CLI --require flags take precedence
+            (args.requirements.clone(), None)
         } else {
-            let deps = project.dependencies();
-            if deps.is_empty() {
-                collector.info("No dependencies found in pyproject.toml");
-            } else {
-                collector.info(format!(
-                    "Found {} dependencies in {}",
-                    deps.len(),
-                    project.path().display()
-                ));
-            }
-            deps
-        };
+            // Try to load from pyproject.toml
+            let working_dir = std::env::current_dir()?;
+            let project = Project::discover(&working_dir).map_err(|_| {
+                eyre!(
+                    "no requirements provided and no pyproject.toml found. \
+                     Use --require or create a pyproject.toml with [project.dependencies]"
+                )
+            })?;
 
-        deps.into_iter()
-            .map(|d| {
-                d.parse::<Requirement>()
-                    .unwrap_or_else(|_| Requirement::any(d.trim()))
-            })
-            .collect()
-    };
+            let (deps, workspace_detail) =
+                select_install_dependencies(&project, &working_dir, args, collector)?;
+
+            let requirements = deps
+                .into_iter()
+                .map(|d| {
+                    d.parse::<Requirement>()
+                        .unwrap_or_else(|_| Requirement::any(d.trim()))
+                })
+                .collect();
+
+            (requirements, workspace_detail)
+        };
 
     // If no requirements (empty pyproject dependencies), create empty lockfile
     if requirements.is_empty() {
@@ -1208,6 +1372,7 @@ async fn install(
             lockfile: args.lock.clone(),
             verified: true,
             artifacts: Vec::new(),
+            workspace: workspace_detail.clone(),
         });
     }
 
@@ -1341,6 +1506,7 @@ async fn install(
         lockfile: args.lock.clone(),
         verified: true,
         artifacts: verified_artifacts,
+        workspace: workspace_detail,
     };
 
     if download_items.is_empty() {
@@ -1459,6 +1625,9 @@ struct InstallOutcome {
     lockfile: PathBuf,
     verified: bool,
     artifacts: Vec<Value>,
+    /// Workspace selection details (scope, selected members, group), present
+    /// only when dependencies were gathered from a workspace-aware source.
+    workspace: Option<Value>,
 }
 
 #[derive(Debug)]
@@ -4676,9 +4845,71 @@ fn shard_tests(tests: Vec<TestItem>, shard_n: u32, shard_m: u32) -> Vec<TestItem
         .collect()
 }
 
+/// Resolve effective test search paths, honoring `--member` to scope
+/// discovery to a single workspace member directory when no explicit PATH is
+/// given (relative PATHs are resolved against the member root). Returns the
+/// paths plus an optional JSON blob describing the selected member for
+/// workspace-aware output (`None` when `--member` was not used).
+fn resolve_test_paths(
+    args: &crate::cli::TestArgs,
+    collector: &mut EventCollector,
+) -> Result<(Vec<PathBuf>, Option<Value>)> {
+    let Some(member_name) = &args.member else {
+        return Ok((args.paths.clone(), None));
+    };
+
+    let cwd = std::env::current_dir()?;
+    let workspace = Workspace::discover_root(&cwd)
+        .map_err(|e| eyre!(e))?
+        .ok_or_else(|| {
+            eyre!("--member requires a workspace; no [tool.pybun.workspace] configuration found")
+        })?;
+    let member = workspace.member_by_name(member_name).ok_or_else(|| {
+        eyre!(
+            "workspace member '{member_name}' not found (available: {})",
+            workspace.member_names().join(", ")
+        )
+    })?;
+
+    let member_root = member.root().to_path_buf();
+    let paths = if args.paths.is_empty() {
+        vec![member_root.clone()]
+    } else {
+        args.paths
+            .iter()
+            .map(|p| {
+                if p.is_absolute() {
+                    p.clone()
+                } else {
+                    member_root.join(p)
+                }
+            })
+            .collect()
+    };
+
+    collector.info(format!(
+        "Selected workspace member '{}' at {}",
+        member_name,
+        member_root.display(),
+    ));
+
+    Ok((
+        paths,
+        Some(json!({
+            "scope": "member",
+            "root": workspace.root.root().display().to_string(),
+            "selected_members": [member_name],
+        })),
+    ))
+}
+
 fn run_tests(args: &crate::cli::TestArgs, collector: &mut EventCollector) -> Result<RenderDetail> {
     // Check for dry-run mode (for testing)
     let dry_run = std::env::var("PYBUN_TEST_DRY_RUN").is_ok();
+
+    // Resolve effective search paths, honoring `--member` to scope discovery
+    // to a single workspace member directory.
+    let (paths, member_detail) = resolve_test_paths(args, collector)?;
 
     // Parse shard if provided
     let shard_info = if let Some(ref shard_str) = args.shard {
@@ -4688,12 +4919,10 @@ fn run_tests(args: &crate::cli::TestArgs, collector: &mut EventCollector) -> Res
     };
 
     // Determine backend
-    let backend = args
-        .backend
-        .unwrap_or_else(|| detect_test_backend(&args.paths));
+    let backend = args.backend.unwrap_or_else(|| detect_test_backend(&paths));
 
     // Use AST-based discovery
-    let discovery_result = discover_tests_ast(&args.paths);
+    let discovery_result = discover_tests_ast(&paths);
 
     collector.info(format!(
         "AST discovery: found {} tests in {} files ({}µs)",
@@ -4781,7 +5010,7 @@ fn run_tests(args: &crate::cli::TestArgs, collector: &mut EventCollector) -> Res
     let runnable_tests: Vec<&TestItem> = tests.iter().filter(|t| !t.skipped).collect();
 
     // Legacy file discovery for backward compatibility
-    let discovered_files = discover_test_files(&args.paths);
+    let discovered_files = discover_test_files(&paths);
 
     // Handle --discover mode (just show discovered tests without running)
     if args.discover {
@@ -4897,6 +5126,7 @@ fn run_tests(args: &crate::cli::TestArgs, collector: &mut EventCollector) -> Res
             text_output,
             json!({
                 "discover": true,
+                "workspace": member_detail,
                 "tests": tests_json,
                 "fixtures": fixtures_json,
                 "compat_warnings": warnings_json,
@@ -4957,6 +5187,7 @@ fn run_tests(args: &crate::cli::TestArgs, collector: &mut EventCollector) -> Res
             summary,
             json!({
                 "dry_run": true,
+                "workspace": member_detail,
                 "backend": format!("{:?}", backend).to_lowercase(),
                 "test_runner": format!("{:?}", backend).to_lowercase(),
                 "discovered_files": discovered_files.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
@@ -4989,7 +5220,7 @@ fn run_tests(args: &crate::cli::TestArgs, collector: &mut EventCollector) -> Res
 
     // Native pybun backend: use Rust TestExecutor
     if backend == TestBackend::Pybun {
-        return run_tests_native(args, tests, shard_info, &python, collector);
+        return run_tests_native(args, tests, shard_info, &python, member_detail, collector);
     }
 
     // Build the command based on backend
@@ -5020,8 +5251,8 @@ fn run_tests(args: &crate::cli::TestArgs, collector: &mut EventCollector) -> Res
             }
 
             // Add test paths
-            if !args.paths.is_empty() {
-                for path in &args.paths {
+            if !paths.is_empty() {
+                for path in &paths {
                     cmd.arg(path);
                 }
             }
@@ -5044,15 +5275,15 @@ fn run_tests(args: &crate::cli::TestArgs, collector: &mut EventCollector) -> Res
             }
 
             // For unittest, we need to specify discover or specific files
-            if args.paths.is_empty() {
+            if paths.is_empty() {
                 cmd.arg("discover");
             } else {
                 // If the first path is a directory, assume the user wants discovery in that dir
                 // This fixes "pybun test optimizer/tests" failing to find tests
-                if args.paths.len() == 1 && args.paths[0].is_dir() {
-                    cmd.arg("discover").arg("-s").arg(&args.paths[0]);
+                if paths.len() == 1 && paths[0].is_dir() {
+                    cmd.arg("discover").arg("-s").arg(&paths[0]);
                 } else {
-                    for path in &args.paths {
+                    for path in &paths {
                         cmd.arg(path);
                     }
                 }
@@ -5126,6 +5357,7 @@ fn run_tests(args: &crate::cli::TestArgs, collector: &mut EventCollector) -> Res
 
     let detail = json!({
         "backend": format!("{:?}", backend).to_lowercase(),
+        "workspace": member_detail,
         "test_runner": format!("{:?}", backend).to_lowercase(),
         "exit_code": exit_code,
         "passed": tests_passed && !tests_failed,
@@ -5205,6 +5437,7 @@ fn run_tests_native(
     tests: Vec<TestItem>,
     shard_info: Option<(u32, u32)>,
     python: &str,
+    member_detail: Option<Value>,
     collector: &mut EventCollector,
 ) -> Result<RenderDetail> {
     use crate::test_executor::{ExecutorConfig, TestExecutor, TestOutcome};
@@ -5403,6 +5636,7 @@ fn run_tests_native(
 
     let detail = json!({
         "backend": "pybun",
+        "workspace": member_detail,
         "test_runner": "pybun",
         "workers": workers,
         "fail_fast": args.fail_fast,
@@ -5680,18 +5914,24 @@ async fn run_outdated(args: &OutdatedArgs, collector: &mut EventCollector) -> Re
     let lockfile = Lockfile::load_from_path(&lock_path)
         .map_err(|e| eyre!("failed to load lockfile: {}", e))?;
 
-    // Load constraints for "wanted" logic
-    let constraints = if let Ok(project) = Project::discover(&cwd) {
-        let meta = project.metadata();
+    // Load constraints for "wanted" logic, optionally scoped by --member/--group
+    let (constraints, scope_detail) = if let Ok(project) = Project::discover(&cwd) {
+        let (dep_strs, scope_detail) = select_scoped_dependencies(
+            &project,
+            &cwd,
+            args.member.as_deref(),
+            args.group.as_deref(),
+            collector,
+        )?;
         let mut map = HashMap::new();
-        for dep_str in meta.dependencies {
+        for dep_str in dep_strs {
             if let Ok(req) = Requirement::from_str(&dep_str) {
                 map.insert(req.name.clone(), req);
             }
         }
-        map
+        (map, scope_detail)
     } else {
-        HashMap::new()
+        (HashMap::new(), None)
     };
 
     collector.event(EventType::ResolveStart);
@@ -5823,7 +6063,8 @@ async fn run_outdated(args: &OutdatedArgs, collector: &mut EventCollector) -> Re
         summary,
         json!({
             "outdated": outdated_packages,
-            "errors": check_errors
+            "errors": check_errors,
+            "workspace": scope_detail,
         }),
     ))
 }
@@ -5868,10 +6109,15 @@ async fn run_upgrade(args: &UpgradeArgs, collector: &mut EventCollector) -> Resu
         ));
     }
 
-    // Load project to get constraints
+    // Load project to get constraints, optionally scoped by --member/--group
     let project = Project::discover(&cwd).map_err(|e| eyre!("failed to load project: {}", e))?;
-
-    let dependencies = project.dependencies();
+    let (dependencies, scope_detail) = select_scoped_dependencies(
+        &project,
+        &cwd,
+        args.member.as_deref(),
+        args.group.as_deref(),
+        collector,
+    )?;
     if dependencies.is_empty() {
         return Ok(RenderDetail::with_json(
             "No dependencies to upgrade",
@@ -5880,6 +6126,7 @@ async fn run_upgrade(args: &UpgradeArgs, collector: &mut EventCollector) -> Resu
                 "dry_run": args.dry_run,
                 "verified": true,
                 "artifacts": [],
+                "workspace": scope_detail,
             }),
         ));
     }
@@ -6065,6 +6312,7 @@ async fn run_upgrade(args: &UpgradeArgs, collector: &mut EventCollector) -> Resu
             "lockfile": lock_path.display().to_string(),
             "verified": true,
             "artifacts": verification_artifacts,
+            "workspace": scope_detail,
         }),
     ))
 }
