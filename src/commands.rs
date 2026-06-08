@@ -1762,38 +1762,51 @@ fn emit_lockfile_verification_drift(lockfile: &Lockfile, collector: &mut EventCo
 }
 
 async fn lock_dependencies(args: &LockArgs, collector: &mut EventCollector) -> Result<LockOutcome> {
-    let Some(script_path) = args.script.as_ref() else {
-        collector.diagnostic(Diagnostic {
-            level: crate::schema::DiagnosticLevel::Error,
-            code: Some("E_LOCK_SCRIPT_REQUIRED".to_string()),
-            message: "--script is required for locking".to_string(),
-            file: None,
-            line: None,
-            suggestion: Some("Usage: pybun lock --script <path/to/script.py>".to_string()),
-            context: None,
-        });
-        return Err(eyre!("--script is required for locking"));
-    };
+    let (dep_specs, lock_path): (Vec<String>, PathBuf) =
+        if let Some(script_path) = args.script.as_ref() {
+            if !script_path.exists() {
+                return Err(eyre!("script not found: {}", script_path.display()));
+            }
 
-    if !script_path.exists() {
-        return Err(eyre!("script not found: {}", script_path.display()));
-    }
+            let pep723_metadata = match pep723::parse_script_metadata(script_path) {
+                Ok(metadata) => metadata,
+                Err(e) => {
+                    return Err(eyre!("failed to parse PEP 723 metadata: {}", e));
+                }
+            };
 
-    let pep723_metadata = match pep723::parse_script_metadata(script_path) {
-        Ok(metadata) => metadata,
-        Err(e) => {
-            return Err(eyre!("failed to parse PEP 723 metadata: {}", e));
-        }
-    };
+            let pep723_deps = pep723_metadata
+                .as_ref()
+                .map(|m| m.dependencies.clone())
+                .unwrap_or_default();
 
-    let pep723_deps = pep723_metadata
-        .as_ref()
-        .map(|m| m.dependencies.clone())
-        .unwrap_or_default();
+            (pep723_deps, script_lock_path(script_path))
+        } else {
+            let cwd = std::env::current_dir()?;
+            let Ok(project) = Project::discover(&cwd) else {
+                let message =
+                    "no pyproject.toml found in the current directory or any parent directory"
+                        .to_string();
+                collector.diagnostic(Diagnostic {
+                    level: crate::schema::DiagnosticLevel::Error,
+                    code: Some("E_LOCK_TARGET_REQUIRED".to_string()),
+                    message: message.clone(),
+                    file: None,
+                    line: None,
+                    suggestion: Some(
+                        "Run 'pybun lock --script <path/to/script.py>' to lock a PEP 723 script, \
+                     or create a pyproject.toml with [project.dependencies] to lock a project"
+                            .to_string(),
+                    ),
+                    context: None,
+                });
+                return Err(eyre!(message));
+            };
 
-    let lock_path = script_lock_path(script_path);
+            (project.dependencies(), cwd.join("pybun.lockb"))
+        };
 
-    let requirements: Vec<Requirement> = pep723_deps
+    let requirements: Vec<Requirement> = dep_specs
         .iter()
         .map(|d| {
             d.parse::<Requirement>()
@@ -1801,7 +1814,7 @@ async fn lock_dependencies(args: &LockArgs, collector: &mut EventCollector) -> R
         })
         .collect();
 
-    if pep723_deps.is_empty() {
+    if dep_specs.is_empty() {
         let lock = Lockfile::new(vec!["3.11".into()], vec!["unknown".into()]);
         lock.save_to_path(&lock_path)?;
         return Ok(LockOutcome {
