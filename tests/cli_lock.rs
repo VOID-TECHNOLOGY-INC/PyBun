@@ -1,6 +1,7 @@
 use assert_cmd::Command;
 use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
+use pybun::lockfile::Lockfile;
 use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -14,6 +15,14 @@ fn script_lock_path(script: &Path) -> PathBuf {
     let mut lock_path = script.as_os_str().to_os_string();
     lock_path.push(".lock");
     PathBuf::from(lock_path)
+}
+
+fn index_path() -> PathBuf {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("manifest dir");
+    Path::new(&manifest_dir)
+        .join("tests")
+        .join("fixtures")
+        .join("index.json")
 }
 
 #[test]
@@ -116,5 +125,93 @@ print("hello")
     assert!(
         !lock_path.exists(),
         "lock should fail before writing an unverifiable lockfile"
+    );
+}
+
+// =============================================================================
+// Issue #149: `pybun lock` should support locking project dependencies
+// without requiring `--script` when a `pyproject.toml` is present.
+// =============================================================================
+
+#[test]
+fn lock_project_creates_pybun_lockb_without_script_flag() {
+    let temp = tempdir().unwrap();
+    let pyproject_path = temp.path().join("pyproject.toml");
+    let lock_path = temp.path().join("pybun.lockb");
+
+    let pyproject_content = r#"[project]
+name = "test-project"
+version = "0.1.0"
+dependencies = [
+    "app==1.0.0",
+]
+"#;
+    fs::write(&pyproject_path, pyproject_content).unwrap();
+
+    bin()
+        .current_dir(temp.path())
+        .args([
+            "--format=json",
+            "lock",
+            "--index",
+            index_path().to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"lockfile\""));
+
+    assert!(lock_path.exists(), "expected pybun.lockb to be created");
+
+    let lock = Lockfile::load_from_path(&lock_path).expect("lock loads");
+    assert!(lock.packages.contains_key("app"));
+    assert!(lock.packages.contains_key("lib-a"));
+}
+
+#[test]
+fn lock_project_with_no_dependencies_creates_empty_lockfile() {
+    let temp = tempdir().unwrap();
+    let pyproject_path = temp.path().join("pyproject.toml");
+    let lock_path = temp.path().join("pybun.lockb");
+
+    let pyproject_content = r#"[project]
+name = "empty-project"
+version = "0.1.0"
+"#;
+    fs::write(&pyproject_path, pyproject_content).unwrap();
+
+    bin()
+        .current_dir(temp.path())
+        .args(["--format=json", "lock"])
+        .assert()
+        .success();
+
+    assert!(lock_path.exists(), "expected pybun.lockb to be created");
+    let lock = Lockfile::load_from_path(&lock_path).expect("lock loads");
+    assert!(lock.packages.is_empty());
+}
+
+#[test]
+fn lock_without_script_or_pyproject_fails_with_actionable_error() {
+    let temp = tempdir().unwrap();
+
+    let assert = bin()
+        .current_dir(temp.path())
+        .args(["--format=json", "lock"])
+        .assert()
+        .failure();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    let json: Value = serde_json::from_str(stdout.trim()).expect("valid JSON output");
+
+    assert_eq!(json["status"], "error");
+    let diagnostics = json["diagnostics"].as_array().cloned().unwrap_or_default();
+    assert!(
+        diagnostics.iter().any(|d| {
+            d["level"] == "error"
+                && d["suggestion"]
+                    .as_str()
+                    .is_some_and(|s| s.contains("--script") && s.contains("pyproject.toml"))
+        }),
+        "expected an actionable error diagnostic mentioning --script and pyproject.toml: {diagnostics:?}"
     );
 }
