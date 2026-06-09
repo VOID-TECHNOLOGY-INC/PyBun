@@ -25,13 +25,17 @@ pub struct SandboxConfig {
 
 /// Returns the minimal set of environment variable names that are always safe to
 /// pass into a sandboxed process (Python runtime essentials + locale + temp dirs).
+///
+/// Intentionally excludes:
+/// - `SHELL`: subprocess creation is blocked; leaks host shell path unnecessarily.
+/// - `VIRTUAL_ENV` / `VIRTUAL_ENV_PROMPT`: expose host venv path; not needed in sandbox.
+/// - `PYTHONPATH`: PyBun constructs the child's PYTHONPATH from scratch (tempdir only).
 pub fn default_safe_env_vars() -> &'static [&'static str] {
     &[
         "PATH",
         "HOME",
         "USER",
         "LOGNAME",
-        "SHELL",
         "TERM",
         "COLORTERM",
         "LANG",
@@ -45,8 +49,6 @@ pub fn default_safe_env_vars() -> &'static [&'static str] {
         "TMPDIR",
         "TEMP",
         "TMP",
-        "VIRTUAL_ENV",
-        "VIRTUAL_ENV_PROMPT",
         "PYTHONDONTWRITEBYTECODE",
         "PYTHONNOUSERSITE",
         "PYTHONIOENCODING",
@@ -140,14 +142,15 @@ pub fn apply_python_sandbox(cmd: &mut Command, config: SandboxConfig) -> Result<
         .map_err(|e| eyre!("failed to write sandbox shim: {e}"))?;
 
     // --- Environment variable filtering ---
-    // Capture PYTHONPATH *before* env_clear so we can reconstruct it below.
-    let existing_pythonpath = std::env::var("PYTHONPATH").ok();
-
     // Clear all inherited env vars so the sandbox child doesn't inherit secrets.
+    // env_clear() only affects the *child* process env; std::env::var() below still
+    // reads from the *parent* process environment — this is intentional.
     cmd.env_clear();
 
     // Re-add the default safe set plus any caller-specified names.
-    let safe_names: Vec<String> = default_safe_env_vars()
+    // Use a HashSet to avoid duplicate cmd.env() calls when a name appears in both
+    // the default set and allow_env (harmless but wasteful).
+    let safe_names: std::collections::HashSet<String> = default_safe_env_vars()
         .iter()
         .map(|&s| s.to_string())
         .chain(config.allow_env.iter().cloned())
@@ -158,16 +161,16 @@ pub fn apply_python_sandbox(cmd: &mut Command, config: SandboxConfig) -> Result<
         }
     }
 
-    // Ensure our tempdir is first on PYTHONPATH so sitecustomize is picked up.
-    // We use the captured value (before env_clear) rather than re-reading from env.
-    let mut paths = vec![tempdir.path().to_path_buf()];
-    if let Some(existing) = existing_pythonpath {
-        paths.extend(std::env::split_paths(&existing));
-    }
-    let joined = std::env::join_paths(paths)
+    // Build PYTHONPATH from scratch: only the sandbox tempdir (for sitecustomize).
+    // The parent's PYTHONPATH is intentionally dropped — forwarding it would
+    // reintroduce potentially attacker-controlled paths into the sandbox.
+    let joined = std::env::join_paths(std::iter::once(tempdir.path()))
         .map_err(|e| eyre!("failed to join PYTHONPATH entries for sandbox: {e}"))?;
     cmd.env("PYTHONPATH", joined);
 
+    // Note: std::env::var reads from the *parent process* environment, not from `cmd`.
+    // env_clear() above only strips the *child's* inherited env, so reading
+    // PYBUN_SANDBOX_ALLOW_NETWORK here correctly reflects the caller's intent.
     let allow_network = config.allow_network
         || std::env::var("PYBUN_SANDBOX_ALLOW_NETWORK")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))

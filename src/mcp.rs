@@ -821,7 +821,13 @@ impl McpServer {
                 .and_then(|v| v.as_array())
                 .map(|arr| {
                     arr.iter()
-                        .filter_map(|v| v.as_str().map(String::from))
+                        .filter_map(|v| v.as_str())
+                        // Reject names that are empty, contain '=' (invalid on POSIX), or NUL bytes
+                        // to prevent cmd.env() from panicking or misbehaving on some platforms.
+                        .filter(|name| {
+                            !name.is_empty() && !name.contains('=') && !name.contains('\0')
+                        })
+                        .map(String::from)
                         .collect()
                 })
                 .unwrap_or_default(),

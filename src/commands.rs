@@ -2334,6 +2334,7 @@ struct SandboxInfo {
     allow_network: bool,
     allow_read: Vec<String>,
     allow_write: Vec<String>,
+    /// Env var *names* (never values) that were explicitly allowed through the env filter.
     allow_env: Vec<String>,
     default_deny_write: Vec<String>,
     enforcement: String,
