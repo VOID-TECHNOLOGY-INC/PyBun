@@ -284,6 +284,7 @@ pub async fn execute(cli: Cli) -> Result<()> {
                             "allow_network": s.allow_network,
                             "allow_read": s.allow_read,
                             "allow_write": s.allow_write,
+                            "allow_env": s.allow_env,
                             "default_deny_write": s.default_deny_write,
                             "enforcement": s.enforcement,
                             "audit": s.audit,
@@ -2333,6 +2334,7 @@ struct SandboxInfo {
     allow_network: bool,
     allow_read: Vec<String>,
     allow_write: Vec<String>,
+    allow_env: Vec<String>,
     default_deny_write: Vec<String>,
     enforcement: String,
     audit: Option<sandbox::SandboxAudit>,
@@ -3107,6 +3109,7 @@ async fn run_script(
                 allow_network,
                 allow_read: args.allow_read.clone(),
                 allow_write: args.allow_write.clone(),
+                allow_env: args.allow_env.clone(),
             },
         )?;
         sandbox_info = Some(SandboxInfo {
@@ -3114,6 +3117,7 @@ async fn run_script(
             allow_network,
             allow_read: args.allow_read.clone(),
             allow_write: args.allow_write.clone(),
+            allow_env: guard.allow_env.clone(),
             default_deny_write: guard.default_deny_write.clone(),
             enforcement: guard.enforcement().to_string(),
             audit: None,
@@ -3291,6 +3295,7 @@ fn run_python_code(
                 allow_network,
                 allow_read: args.allow_read.clone(),
                 allow_write: args.allow_write.clone(),
+                allow_env: args.allow_env.clone(),
             },
         )?;
         sandbox_info = Some(SandboxInfo {
@@ -3298,6 +3303,7 @@ fn run_python_code(
             allow_network,
             allow_read: args.allow_read.clone(),
             allow_write: args.allow_write.clone(),
+            allow_env: guard.allow_env.clone(),
             default_deny_write: guard.default_deny_write.clone(),
             enforcement: guard.enforcement().to_string(),
             audit: None,

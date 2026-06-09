@@ -250,6 +250,7 @@ mod tests {
                 allow_network: false,
                 allow_read: Vec::new(),
                 allow_write: Vec::new(),
+                allow_env: Vec::new(),
                 profile: "dev".to_string(),
                 passthrough: Vec::new(),
             }),

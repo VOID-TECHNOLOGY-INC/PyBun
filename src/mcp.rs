@@ -816,6 +816,15 @@ impl McpServer {
                         .collect()
                 })
                 .unwrap_or_default(),
+            allow_env: p
+                .get("allow_env")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default(),
         });
 
         // Find Python interpreter
