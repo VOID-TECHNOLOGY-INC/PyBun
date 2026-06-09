@@ -4223,7 +4223,10 @@ fn run_module_find(args: &ModuleFindArgs, collector: &mut EventCollector) -> Res
         // Scan mode: list all modules in the search paths
         collector.info("Scanning for modules...");
 
-        let modules = finder.parallel_scan(&finder.config().search_paths.clone());
+        let crate::module_finder::ScanResult {
+            modules,
+            duration_us,
+        } = finder.parallel_scan_timed(&finder.config().search_paths.clone());
 
         let summary = format!("Found {} modules", modules.len());
 
@@ -4251,13 +4254,14 @@ fn run_module_find(args: &ModuleFindArgs, collector: &mut EventCollector) -> Res
 
         return Ok(RenderDetail::with_json(
             if args.benchmark {
-                format!("{}\n{}", summary, text_output)
+                format!("{}\n{}\nduration_us: {}", summary, text_output, duration_us)
             } else {
                 text_output
             },
             json!({
                 "modules": modules_json,
                 "count": modules.len(),
+                "duration_us": duration_us,
                 "search_paths": finder.config().search_paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
             }),
         ));

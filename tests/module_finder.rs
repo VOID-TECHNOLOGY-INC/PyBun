@@ -178,3 +178,87 @@ fn test_module_finder_benchmark_flag() {
         .success()
         .stdout(predicate::str::contains("Duration"));
 }
+
+#[test]
+fn test_scan_json_includes_duration_us() {
+    let temp = TempDir::new().unwrap();
+    create_python_packages(temp.path());
+
+    let output = pybun()
+        .args([
+            "--format=json",
+            "module-find",
+            "--scan",
+            "--path",
+            temp.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let json: serde_json::Value = serde_json::from_slice(&output).expect("valid JSON");
+    assert!(
+        json["detail"]["duration_us"].is_number(),
+        "scan JSON detail must include duration_us: got {:?}",
+        json["detail"]
+    );
+}
+
+#[test]
+fn test_scan_parallel_finds_all_modules_in_large_structure() {
+    let temp = TempDir::new().unwrap();
+
+    // Create 15+ top-level packages to trigger parallel subdirectory scanning
+    for i in 0..15 {
+        let pkg = temp.path().join(format!("pkg{i}"));
+        fs::create_dir_all(&pkg).unwrap();
+        fs::write(pkg.join("__init__.py"), "").unwrap();
+        fs::write(pkg.join("module.py"), "").unwrap();
+        let sub = pkg.join("sub");
+        fs::create_dir_all(&sub).unwrap();
+        fs::write(sub.join("__init__.py"), "").unwrap();
+        fs::write(sub.join("leaf.py"), "").unwrap();
+    }
+
+    let output = pybun()
+        .args([
+            "--format=json",
+            "module-find",
+            "--scan",
+            "--path",
+            temp.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let json: serde_json::Value = serde_json::from_slice(&output).expect("valid JSON");
+    let count = json["detail"]["count"].as_u64().unwrap_or(0);
+    // 15 packages × (package + module + sub-package + leaf) = 60 modules
+    assert!(
+        count >= 60,
+        "expected ≥60 modules from 15 packages, got {count}"
+    );
+}
+
+#[test]
+fn test_scan_benchmark_includes_duration_in_text_output() {
+    let temp = TempDir::new().unwrap();
+    create_python_packages(temp.path());
+
+    pybun()
+        .args([
+            "module-find",
+            "--scan",
+            "--benchmark",
+            "--path",
+            temp.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("duration_us").or(predicate::str::contains("µs")));
+}
