@@ -281,12 +281,14 @@ impl ModuleFinder {
     /// Scan a directory and return all discovered modules.
     ///
     /// Uses `DirEntry::file_type()` to avoid extra `stat` syscalls per entry,
-    /// and spawns threads for subdirectories when there are many of them.
+    /// and spawns threads for top-level subdirectories when there are many of them.
+    /// Only the top-level split is parallelised; deeper recursion is sequential
+    /// to bound the total number of live threads.
     pub fn scan_directory(&self, dir: &Path) -> Vec<ModuleInfo> {
         if !dir.is_dir() {
             return Vec::new();
         }
-        self.scan_directory_inner(dir, dir, "")
+        self.scan_directory_inner(dir, dir, "", true)
     }
 
     /// Scan a directory and return modules with timing information.
@@ -299,11 +301,21 @@ impl ModuleFinder {
         }
     }
 
-    /// Inner recursive scan using `file_type()` to avoid extra stat syscalls.
+    /// Inner recursive scan.
     ///
-    /// At each level we collect subdirectories first, then process them
-    /// in parallel when there are enough to amortize thread creation cost.
-    fn scan_directory_inner(&self, base_path: &Path, dir: &Path, prefix: &str) -> Vec<ModuleInfo> {
+    /// Uses `DirEntry::file_type()` for the common case (no extra stat syscall);
+    /// falls back to `path.metadata()` for symlinks so they are followed correctly.
+    ///
+    /// `parallel`: when true and there are enough top-level subdirectories,
+    /// spawn threads for that level only. Recursive calls always pass `false`
+    /// to bound the total number of live threads.
+    fn scan_directory_inner(
+        &self,
+        base_path: &Path,
+        dir: &Path,
+        prefix: &str,
+        parallel: bool,
+    ) -> Vec<ModuleInfo> {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return Vec::new();
         };
@@ -313,7 +325,7 @@ impl ModuleFinder {
         let mut subdirs: Vec<(PathBuf, String)> = Vec::new();
 
         for entry in entries.flatten() {
-            let Ok(file_type) = entry.file_type() else {
+            let Ok(raw_ft) = entry.file_type() else {
                 continue;
             };
             let file_name = match entry.file_name().into_string() {
@@ -327,14 +339,28 @@ impl ModuleFinder {
 
             let path = entry.path();
 
-            if file_type.is_dir() {
+            // Resolve symlinks: `file_type()` returns the link's own type, not its
+            // target's type. Follow the link so that symlinked .py files and
+            // package directories (common in venvs and editable installs) are found.
+            let effective_is_dir;
+            let effective_is_file;
+            if raw_ft.is_symlink() {
+                let Ok(meta) = path.metadata() else { continue };
+                effective_is_dir = meta.is_dir();
+                effective_is_file = meta.is_file();
+            } else {
+                effective_is_dir = raw_ft.is_dir();
+                effective_is_file = raw_ft.is_file();
+            }
+
+            if effective_is_dir {
                 let module_name = if prefix.is_empty() {
                     file_name.clone()
                 } else {
                     format!("{}.{}", prefix, file_name)
                 };
 
-                // __init__.py check: one stat per package dir, unavoidable.
+                // One stat per directory to detect package vs namespace package.
                 let init_py = path.join("__init__.py");
                 if init_py.exists() {
                     modules.push(ModuleInfo {
@@ -343,10 +369,18 @@ impl ModuleFinder {
                         module_type: ModuleType::Package,
                         search_path: base_path.to_path_buf(),
                     });
+                } else {
+                    // Directory without __init__.py is a namespace package (PEP 420).
+                    modules.push(ModuleInfo {
+                        name: module_name.clone(),
+                        path: path.clone(),
+                        module_type: ModuleType::NamespacePackage,
+                        search_path: base_path.to_path_buf(),
+                    });
                 }
 
                 subdirs.push((path, module_name));
-            } else if file_type.is_file() {
+            } else if effective_is_file {
                 for ext in &self.config.extensions {
                     if file_name.ends_with(ext.as_str()) {
                         let stem = file_name.strip_suffix(ext.as_str()).unwrap();
@@ -375,13 +409,16 @@ impl ModuleFinder {
             }
         }
 
-        // Dispatch subdirectory traversal: parallel when above threshold.
-        if subdirs.len() > PARALLEL_SUBDIR_THRESHOLD && self.config.threads > 1 {
+        // Dispatch subdirectory traversal: parallel only at the top-level call so
+        // that the total number of live threads stays bounded by the top-level
+        // subdirectory count (≤ PARALLEL_SUBDIR_THRESHOLD or the dir's width).
+        if parallel && subdirs.len() > PARALLEL_SUBDIR_THRESHOLD && self.config.threads > 1 {
             let sub_results: Vec<Vec<ModuleInfo>> = thread::scope(|s| {
                 let handles: Vec<_> = subdirs
                     .iter()
                     .map(|(path, name)| {
-                        s.spawn(|| self.scan_directory_inner(base_path, path, name))
+                        // Recursive calls use parallel=false to prevent unbounded spawning.
+                        s.spawn(|| self.scan_directory_inner(base_path, path, name, false))
                     })
                     .collect();
                 handles
@@ -394,7 +431,7 @@ impl ModuleFinder {
             }
         } else {
             for (path, name) in &subdirs {
-                modules.extend(self.scan_directory_inner(base_path, path, name));
+                modules.extend(self.scan_directory_inner(base_path, path, name, false));
             }
         }
 
@@ -895,5 +932,104 @@ mod tests {
         let finder = ModuleFinder::new(config);
         let modules = finder.scan_directory(temp.path());
         assert!(modules.len() >= 5);
+    }
+
+    #[test]
+    fn test_scan_reports_namespace_package() {
+        let temp = TempDir::new().unwrap();
+
+        // Namespace package: directory without __init__.py
+        let ns_dir = temp.path().join("mynamespace");
+        fs::create_dir_all(&ns_dir).unwrap();
+        fs::write(ns_dir.join("submodule.py"), "# submodule").unwrap();
+
+        let config = ModuleFinderConfig {
+            enabled: true,
+            search_paths: vec![temp.path().to_path_buf()],
+            ..Default::default()
+        };
+        let finder = ModuleFinder::new(config);
+        let modules = finder.scan_directory(temp.path());
+
+        let names: Vec<_> = modules.iter().map(|m| m.name.as_str()).collect();
+        assert!(
+            names.contains(&"mynamespace"),
+            "scan should report namespace package; got {:?}",
+            names
+        );
+        let ns_mod = modules.iter().find(|m| m.name == "mynamespace").unwrap();
+        assert_eq!(
+            ns_mod.module_type,
+            ModuleType::NamespacePackage,
+            "directory without __init__.py should be NamespacePackage"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_scan_follows_symlinked_py_files() {
+        use std::os::unix::fs::symlink;
+
+        let temp = TempDir::new().unwrap();
+        let real_file = temp.path().join("real_mod.py");
+        fs::write(&real_file, "# real module").unwrap();
+
+        // Create a symlink to the .py file
+        let link = temp.path().join("linked_mod.py");
+        symlink(&real_file, &link).unwrap();
+
+        let config = ModuleFinderConfig {
+            enabled: true,
+            search_paths: vec![temp.path().to_path_buf()],
+            ..Default::default()
+        };
+        let finder = ModuleFinder::new(config);
+        let modules = finder.scan_directory(temp.path());
+
+        let names: Vec<_> = modules.iter().map(|m| m.name.as_str()).collect();
+        assert!(
+            names.contains(&"linked_mod"),
+            "scan should follow symlinks to .py files; got {:?}",
+            names
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_scan_follows_symlinked_package_dirs() {
+        use std::os::unix::fs::symlink;
+
+        let temp = TempDir::new().unwrap();
+
+        // Create the real package in a separate dir
+        let real_pkg = temp.path().join("_real_pkg");
+        fs::create_dir_all(&real_pkg).unwrap();
+        fs::write(real_pkg.join("__init__.py"), "# pkg").unwrap();
+        fs::write(real_pkg.join("mod.py"), "# mod").unwrap();
+
+        // Symlink the package directory
+        let link = temp.path().join("linked_pkg");
+        symlink(&real_pkg, &link).unwrap();
+
+        let config = ModuleFinderConfig {
+            enabled: true,
+            search_paths: vec![temp.path().to_path_buf()],
+            ..Default::default()
+        };
+        let finder = ModuleFinder::new(config);
+        let modules = finder.scan_directory(temp.path());
+
+        let names: Vec<_> = modules.iter().map(|m| m.name.as_str()).collect();
+        assert!(
+            names.contains(&"linked_pkg"),
+            "scan should follow symlinked package dirs; got {:?}",
+            names
+        );
+        let pkg = modules.iter().find(|m| m.name == "linked_pkg").unwrap();
+        assert_eq!(
+            pkg.module_type,
+            ModuleType::Package,
+            "symlinked dir with __init__.py should be Package"
+        );
     }
 }
