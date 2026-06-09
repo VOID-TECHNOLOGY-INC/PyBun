@@ -582,3 +582,191 @@ fn run_no_warning_when_locked_wheel_matches_active_interpreter() {
         "expected no version mismatch diagnostic, got: {diags:?}"
     );
 }
+
+// --- Profile integration tests (Issue #124) ---
+
+#[test]
+fn run_with_prod_profile_json_includes_profile_info() {
+    let temp = tempdir().unwrap();
+    let script = temp.path().join("main.py");
+    fs::write(&script, "print('hello')").unwrap();
+
+    let output = bin()
+        .args([
+            "--format=json",
+            "run",
+            "--profile=prod",
+            script.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run pybun");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let value: Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|_| panic!("expected valid JSON, got: {stdout}"));
+
+    let profile = &value["detail"]["profile"];
+    assert!(
+        !profile.is_null(),
+        "expected profile in JSON detail, got: {value}"
+    );
+    assert_eq!(
+        profile["name"].as_str().unwrap_or(""),
+        "prod",
+        "expected profile name=prod, got: {profile}"
+    );
+    assert_eq!(
+        profile["optimization_level"].as_u64().unwrap_or(0),
+        2,
+        "expected optimization_level=2 for prod, got: {profile}"
+    );
+}
+
+#[test]
+fn run_with_prod_profile_applies_python_optimization() {
+    let temp = tempdir().unwrap();
+    let script = temp.path().join("check_opt.py");
+    // sys.flags.optimize is 2 when Python is run with -OO (PYTHONOPTIMIZE=2)
+    fs::write(
+        &script,
+        "import sys; print('optimize:', sys.flags.optimize)",
+    )
+    .unwrap();
+
+    let output = bin()
+        .args(["run", "--profile=prod", script.to_str().unwrap()])
+        .output()
+        .expect("run pybun");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("optimize: 2"),
+        "expected optimize: 2 in output, got: {stdout}"
+    );
+}
+
+#[test]
+fn run_with_dev_profile_does_not_set_optimization() {
+    let temp = tempdir().unwrap();
+    let script = temp.path().join("check_opt.py");
+    fs::write(
+        &script,
+        "import sys; print('optimize:', sys.flags.optimize)",
+    )
+    .unwrap();
+
+    let output = bin()
+        .args(["run", "--profile=dev", script.to_str().unwrap()])
+        .output()
+        .expect("run pybun");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("optimize: 0"),
+        "expected optimize: 0 in output for dev profile, got: {stdout}"
+    );
+}
+
+#[test]
+fn run_with_benchmark_profile_json_includes_profile_timing_flag() {
+    let temp = tempdir().unwrap();
+    let script = temp.path().join("main.py");
+    fs::write(&script, "print('hello')").unwrap();
+
+    let output = bin()
+        .args([
+            "--format=json",
+            "run",
+            "--profile=benchmark",
+            script.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run pybun");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let value: Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|_| panic!("expected valid JSON, got: {stdout}"));
+
+    let profile = &value["detail"]["profile"];
+    assert!(
+        !profile.is_null(),
+        "expected profile in JSON detail, got: {value}"
+    );
+    assert_eq!(
+        profile["name"].as_str().unwrap_or(""),
+        "benchmark",
+        "expected profile name=benchmark, got: {profile}"
+    );
+    assert!(
+        profile["timing"].as_bool().unwrap_or(false),
+        "expected timing=true for benchmark profile, got: {profile}"
+    );
+}
+
+#[test]
+fn run_default_profile_is_dev() {
+    let temp = tempdir().unwrap();
+    let script = temp.path().join("main.py");
+    fs::write(&script, "print('hello')").unwrap();
+
+    let output = bin()
+        .args(["--format=json", "run", script.to_str().unwrap()])
+        .output()
+        .expect("run pybun");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let value: Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|_| panic!("expected valid JSON, got: {stdout}"));
+
+    let profile = &value["detail"]["profile"];
+    assert_eq!(
+        profile["name"].as_str().unwrap_or(""),
+        "dev",
+        "default profile should be dev, got: {profile}"
+    );
+}
+
+#[test]
+fn run_with_prod_profile_lazy_imports_injected() {
+    let temp = tempdir().unwrap();
+    let script = temp.path().join("check_lazy.py");
+    // When lazy imports are injected, the LazyFinder will be in sys.meta_path
+    fs::write(
+        &script,
+        "import sys; finders = [type(f).__name__ for f in sys.meta_path]; print('finders:', finders)",
+    )
+    .unwrap();
+
+    let output = bin()
+        .args(["run", "--profile=prod", script.to_str().unwrap()])
+        .output()
+        .expect("run pybun");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("LazyFinder"),
+        "expected LazyFinder in sys.meta_path for prod profile with lazy_imports=true, got: {stdout}"
+    );
+}
+
+#[test]
+fn run_with_dev_profile_no_lazy_imports() {
+    let temp = tempdir().unwrap();
+    let script = temp.path().join("check_lazy.py");
+    fs::write(
+        &script,
+        "import sys; finders = [type(f).__name__ for f in sys.meta_path]; print('finders:', finders)",
+    )
+    .unwrap();
+
+    let output = bin()
+        .args(["run", "--profile=dev", script.to_str().unwrap()])
+        .output()
+        .expect("run pybun");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("LazyFinder"),
+        "expected no LazyFinder in sys.meta_path for dev profile, got: {stdout}"
+    );
+}

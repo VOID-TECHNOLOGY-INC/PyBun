@@ -276,6 +276,7 @@ pub async fn execute(cli: Cli) -> Result<()> {
                     stdout,
                     stderr,
                     sandbox,
+                    profile,
                 }) => {
                     collector.event(EventType::ScriptEnd);
                     let sandbox_detail = sandbox.as_ref().map(|s| {
@@ -288,6 +289,13 @@ pub async fn execute(cli: Cli) -> Result<()> {
                             "enforcement": s.enforcement,
                             "audit": s.audit,
                         })
+                    });
+                    let profile_detail = json!({
+                        "name": profile.name,
+                        "optimization_level": profile.optimization_level,
+                        "lazy_imports": profile.lazy_imports,
+                        "lazy_imports_injected": profile.lazy_imports_injected,
+                        "timing": profile.timing,
                     });
                     let detail = RenderDetail::with_json(
                         summary,
@@ -302,6 +310,7 @@ pub async fn execute(cli: Cli) -> Result<()> {
                             "stdout": stdout,
                             "stderr": stderr,
                             "sandbox": sandbox_detail,
+                            "profile": profile_detail,
                         }),
                     )
                     .with_process_exit_code(exit_code);
@@ -2325,6 +2334,17 @@ struct RunOutcome {
     stderr: Option<String>,
     /// Sandbox information when enabled
     sandbox: Option<SandboxInfo>,
+    /// Applied launch profile info
+    profile: RunProfileInfo,
+}
+
+#[derive(Debug, Clone)]
+struct RunProfileInfo {
+    name: String,
+    optimization_level: u8,
+    lazy_imports: bool,
+    lazy_imports_injected: bool,
+    timing: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -2419,6 +2439,14 @@ async fn run_script(
     collector: &mut EventCollector,
     format: OutputFormat,
 ) -> Result<RunOutcome> {
+    use crate::profiles::{Profile, ProfileConfig};
+
+    let profile: Profile = args
+        .profile
+        .parse()
+        .map_err(|e: String| eyre!("invalid --profile value: {}", e))?;
+    let profile_config = ProfileConfig::for_profile(profile);
+
     let target = args
         .target
         .as_ref()
@@ -3121,6 +3149,47 @@ async fn run_script(
         sandbox_guard = Some(guard);
     }
 
+    // Apply launch profile settings to the command.
+    // PYTHONOPTIMIZE maps optimization_level to Python's -O/-OO flag semantics.
+    let mut lazy_import_tempdir: Option<tempfile::TempDir> = None;
+    let mut lazy_imports_injected = false;
+    if profile_config.optimization_level > 0 && std::env::var_os("PYTHONOPTIMIZE").is_none() {
+        cmd.env(
+            "PYTHONOPTIMIZE",
+            profile_config.optimization_level.to_string(),
+        );
+    }
+    if profile_config.timing {
+        cmd.env("PYBUN_TIMING", "1");
+    }
+    for (key, value) in &profile_config.env_vars {
+        cmd.env(key, value);
+    }
+    // Inject lazy imports via sitecustomize.py when not sandboxed (sandbox has its own
+    // sitecustomize.py and merging them is deferred to a later PR).
+    if profile_config.lazy_imports && !args.sandbox && !is_uv_runner {
+        use crate::lazy_import::{LazyImportConfig, generate_lazy_import_python_code};
+        let lazy_config = LazyImportConfig::with_defaults();
+        let python_code = generate_lazy_import_python_code(&lazy_config);
+        match tempfile::tempdir() {
+            Ok(dir) => {
+                let sitecustomize = dir.path().join("sitecustomize.py");
+                if std::fs::write(&sitecustomize, &python_code).is_ok() {
+                    let new_path = join_python_path(dir.path());
+                    cmd.env("PYTHONPATH", new_path);
+                    lazy_imports_injected = true;
+                    lazy_import_tempdir = Some(dir);
+                }
+            }
+            Err(e) => {
+                collector.warning(format!(
+                    "failed to create lazy-import tempdir, skipping injection: {}",
+                    e
+                ));
+            }
+        }
+    }
+
     let cleanup = temp_env_dir.is_some();
 
     // Execute
@@ -3128,6 +3197,9 @@ async fn run_script(
     // (JSON mode requires wrapping to emit final summary)
     #[cfg(unix)]
     if !cleanup && format != OutputFormat::Json && sandbox_guard.is_none() {
+        // leak lazy_import_tempdir intentionally: exec replaces the process before Rust
+        // drop runs, so the directory remains accessible to the spawned Python process.
+        std::mem::forget(lazy_import_tempdir);
         let err = cmd.exec();
         return Err(eyre!("failed to exec runner: {}", err));
     }
@@ -3168,6 +3240,8 @@ async fn run_script(
         )
     };
 
+    drop(lazy_import_tempdir);
+
     Ok(RunOutcome {
         summary,
         target: Some(target.clone()),
@@ -3180,7 +3254,27 @@ async fn run_script(
         stdout,
         stderr,
         sandbox: sandbox_info,
+        profile: RunProfileInfo {
+            name: profile_config.profile.to_string(),
+            optimization_level: profile_config.optimization_level,
+            lazy_imports: profile_config.lazy_imports,
+            lazy_imports_injected,
+            timing: profile_config.timing,
+        },
     })
+}
+
+/// Build a PYTHONPATH string that prepends `dir` before the existing PYTHONPATH.
+fn join_python_path(dir: &std::path::Path) -> std::ffi::OsString {
+    let sep = if cfg!(windows) { ";" } else { ":" };
+    let mut paths = vec![dir.as_os_str().to_os_string()];
+    if let Ok(existing) = std::env::var("PYTHONPATH")
+        && !existing.is_empty()
+    {
+        paths.push(std::ffi::OsString::from(existing));
+    }
+    let joined: Vec<&std::ffi::OsStr> = paths.iter().map(|s| s.as_os_str()).collect();
+    joined.join(std::ffi::OsStr::new(sep))
 }
 
 /// Get Python version from a Python interpreter
@@ -3262,6 +3356,14 @@ fn run_python_code(
     collector: &mut EventCollector,
     format: OutputFormat,
 ) -> Result<RunOutcome> {
+    use crate::profiles::{Profile, ProfileConfig};
+
+    let profile: Profile = args
+        .profile
+        .parse()
+        .map_err(|e: String| eyre!("invalid --profile value: {}", e))?;
+    let profile_config = ProfileConfig::for_profile(profile);
+
     // pybun run -c "print('hello')" -- equivalent to python -c "..."
     let code = args
         .passthrough
@@ -3305,6 +3407,36 @@ fn run_python_code(
         sandbox_guard = Some(guard);
     }
 
+    // Apply profile settings (optimization, timing, env vars) — same as run_script.
+    let mut lazy_imports_injected = false;
+    if profile_config.optimization_level > 0 && std::env::var_os("PYTHONOPTIMIZE").is_none() {
+        cmd.env(
+            "PYTHONOPTIMIZE",
+            profile_config.optimization_level.to_string(),
+        );
+    }
+    if profile_config.timing {
+        cmd.env("PYBUN_TIMING", "1");
+    }
+    for (key, value) in &profile_config.env_vars {
+        cmd.env(key, value);
+    }
+    let mut lazy_import_tempdir: Option<tempfile::TempDir> = None;
+    if profile_config.lazy_imports && !args.sandbox {
+        use crate::lazy_import::{LazyImportConfig, generate_lazy_import_python_code};
+        let lazy_config = LazyImportConfig::with_defaults();
+        let python_code = generate_lazy_import_python_code(&lazy_config);
+        if let Ok(dir) = tempfile::tempdir() {
+            let sitecustomize = dir.path().join("sitecustomize.py");
+            if std::fs::write(&sitecustomize, &python_code).is_ok() {
+                let new_path = join_python_path(dir.path());
+                cmd.env("PYTHONPATH", new_path);
+                lazy_imports_injected = true;
+                lazy_import_tempdir = Some(dir);
+            }
+        }
+    }
+
     // Add remaining passthrough arguments
     for arg in args.passthrough.iter().skip(1) {
         cmd.arg(arg);
@@ -3312,6 +3444,7 @@ fn run_python_code(
 
     #[cfg(unix)]
     if format != OutputFormat::Json && sandbox_guard.is_none() {
+        std::mem::forget(lazy_import_tempdir);
         let err = cmd.exec();
         return Err(eyre!("failed to exec Python: {}", err));
     }
@@ -3351,6 +3484,8 @@ fn run_python_code(
         format!("inline code exited with code {}", exit_code)
     };
 
+    drop(lazy_import_tempdir);
+
     Ok(RunOutcome {
         summary,
         target: Some("-c".to_string()),
@@ -3363,6 +3498,13 @@ fn run_python_code(
         stdout,
         stderr,
         sandbox: sandbox_info,
+        profile: RunProfileInfo {
+            name: profile_config.profile.to_string(),
+            optimization_level: profile_config.optimization_level,
+            lazy_imports: profile_config.lazy_imports,
+            lazy_imports_injected,
+            timing: profile_config.timing,
+        },
     })
 }
 
