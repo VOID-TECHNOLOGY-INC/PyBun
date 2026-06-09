@@ -17,6 +17,48 @@ pub struct SandboxConfig {
     pub allow_read: Vec<String>,
     /// Paths allowed for writing. Empty = no write restriction (default deny applies).
     pub allow_write: Vec<String>,
+    /// Additional env var names to pass through into the sandbox beyond the safe default set.
+    /// Sandbox always filters env vars to prevent secret leakage; this allowlist extends the
+    /// default safe set (PATH, HOME, LANG, etc.) with caller-specified names.
+    pub allow_env: Vec<String>,
+}
+
+/// Returns the minimal set of environment variable names that are always safe to
+/// pass into a sandboxed process (Python runtime essentials + locale + temp dirs).
+///
+/// Intentionally excludes:
+/// - `SHELL`: subprocess creation is blocked; leaks host shell path unnecessarily.
+/// - `VIRTUAL_ENV` / `VIRTUAL_ENV_PROMPT`: expose host venv path; not needed in sandbox.
+/// - `PYTHONPATH`: PyBun constructs the child's PYTHONPATH from scratch (tempdir only).
+pub fn default_safe_env_vars() -> &'static [&'static str] {
+    &[
+        "PATH",
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "TERM",
+        "COLORTERM",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "LC_MESSAGES",
+        "LC_TIME",
+        "LC_COLLATE",
+        "LC_NUMERIC",
+        "LC_MONETARY",
+        "TMPDIR",
+        "TEMP",
+        "TMP",
+        "PYTHONDONTWRITEBYTECODE",
+        "PYTHONNOUSERSITE",
+        "PYTHONIOENCODING",
+        "PYTHONUTF8",
+        // PyBun's own non-secret runtime vars (secret values like tokens are never here)
+        "PYBUN_ENV",
+        "PYBUN_PYTHON",
+        "PYBUN_HOME",
+        "PYBUN_PROFILE",
+    ]
 }
 
 /// Returns the default system-critical paths that should be denied for writes
@@ -68,6 +110,8 @@ pub struct SandboxGuard {
     audit_file: PathBuf,
     /// Default system-critical paths denied for writes (empty when explicit allow_write is set).
     pub default_deny_write: Vec<String>,
+    /// Extra env var names allowed through the filter beyond the default safe set.
+    pub allow_env: Vec<String>,
 }
 
 impl SandboxGuard {
@@ -97,15 +141,36 @@ pub fn apply_python_sandbox(cmd: &mut Command, config: SandboxConfig) -> Result<
     fs::write(&sitecustomize_path, SITECUSTOMIZE_PY)
         .map_err(|e| eyre!("failed to write sandbox shim: {e}"))?;
 
-    // Ensure our tempdir is first on PYTHONPATH so sitecustomize is picked up.
-    let mut paths = vec![tempdir.path().to_path_buf()];
-    if let Ok(existing) = std::env::var("PYTHONPATH") {
-        paths.extend(std::env::split_paths(&existing));
+    // --- Environment variable filtering ---
+    // Clear all inherited env vars so the sandbox child doesn't inherit secrets.
+    // env_clear() only affects the *child* process env; std::env::var() below still
+    // reads from the *parent* process environment — this is intentional.
+    cmd.env_clear();
+
+    // Re-add the default safe set plus any caller-specified names.
+    // Use a HashSet to avoid duplicate cmd.env() calls when a name appears in both
+    // the default set and allow_env (harmless but wasteful).
+    let safe_names: std::collections::HashSet<String> = default_safe_env_vars()
+        .iter()
+        .map(|&s| s.to_string())
+        .chain(config.allow_env.iter().cloned())
+        .collect();
+    for name in &safe_names {
+        if let Ok(val) = std::env::var(name) {
+            cmd.env(name, val);
+        }
     }
-    let joined = std::env::join_paths(paths)
+
+    // Build PYTHONPATH from scratch: only the sandbox tempdir (for sitecustomize).
+    // The parent's PYTHONPATH is intentionally dropped — forwarding it would
+    // reintroduce potentially attacker-controlled paths into the sandbox.
+    let joined = std::env::join_paths(std::iter::once(tempdir.path()))
         .map_err(|e| eyre!("failed to join PYTHONPATH entries for sandbox: {e}"))?;
     cmd.env("PYTHONPATH", joined);
 
+    // Note: std::env::var reads from the *parent process* environment, not from `cmd`.
+    // env_clear() above only strips the *child's* inherited env, so reading
+    // PYBUN_SANDBOX_ALLOW_NETWORK here correctly reflects the caller's intent.
     let allow_network = config.allow_network
         || std::env::var("PYBUN_SANDBOX_ALLOW_NETWORK")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
@@ -150,6 +215,7 @@ pub fn apply_python_sandbox(cmd: &mut Command, config: SandboxConfig) -> Result<
         enforcement: "python-sitecustomize",
         audit_file,
         default_deny_write: default_deny,
+        allow_env: config.allow_env,
     })
 }
 
@@ -338,3 +404,41 @@ except Exception as exc:  # pragma: no cover - defensive, should not happen
     sys.stderr.write("[pybun] sandbox init failed: {}\n".format(exc))
     raise
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_safe_env_vars_includes_path_and_home() {
+        let safe = default_safe_env_vars();
+        assert!(
+            safe.contains(&"PATH"),
+            "PATH must be in the default safe set"
+        );
+        assert!(
+            safe.contains(&"HOME"),
+            "HOME must be in the default safe set"
+        );
+        assert!(
+            safe.contains(&"LANG"),
+            "LANG must be in the default safe set"
+        );
+    }
+
+    #[test]
+    fn default_safe_env_vars_excludes_secret_like_names() {
+        let safe = default_safe_env_vars();
+        // These look like secret names and must not be in the default allowlist.
+        // The test ensures we don't accidentally expose them by default.
+        assert!(!safe.contains(&"AWS_SECRET_ACCESS_KEY"));
+        assert!(!safe.contains(&"OPENAI_API_KEY"));
+        assert!(!safe.contains(&"DATABASE_URL"));
+    }
+
+    #[test]
+    fn sandbox_config_allow_env_defaults_to_empty() {
+        let config = SandboxConfig::default();
+        assert!(config.allow_env.is_empty());
+    }
+}

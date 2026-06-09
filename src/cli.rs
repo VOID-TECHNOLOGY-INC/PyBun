@@ -207,6 +207,11 @@ pub struct RunArgs {
     /// When set, writes outside these paths are blocked.
     #[arg(long, value_name = "PATH")]
     pub allow_write: Vec<String>,
+    /// Allow an environment variable through the sandbox filter (can be specified multiple times).
+    /// By default the sandbox strips all env vars except a minimal safe set; use this to pass
+    /// specific secrets or config values (e.g. --allow-env=API_KEY).
+    #[arg(long, value_name = "VAR")]
+    pub allow_env: Vec<String>,
     /// Optional profile (dev/prod/benchmark).
     #[arg(long, default_value = "dev")]
     pub profile: String,

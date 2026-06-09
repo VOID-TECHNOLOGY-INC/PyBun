@@ -440,6 +440,160 @@ fn sandbox_json_output_includes_default_deny_write_paths() {
     .stdout(predicate::str::contains("\"/etc\"").or(predicate::str::contains("\"/usr\"")));
 }
 
+// --- Environment variable filtering tests (Issue #153) ---
+
+#[test]
+fn sandbox_default_filters_sensitive_env_vars() {
+    let temp = tempdir().unwrap();
+    let script = temp.path().join("read_env.py");
+    // Script tries to read a fake secret env var; sandbox should have filtered it out
+    fs::write(
+        &script,
+        r#"
+import os
+val = os.environ.get("PYBUN_TEST_SECRET_KEY", "NOT_PRESENT")
+print("SECRET:", val)
+"#,
+    )
+    .unwrap();
+
+    // Set a fake secret in parent env for the test process, then run sandbox
+    bin()
+        .env("PYBUN_TEST_SECRET_KEY", "super_secret_value_12345")
+        .args([
+            "--format=json",
+            "run",
+            "--sandbox",
+            script.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("SECRET: NOT_PRESENT"));
+}
+
+#[test]
+fn sandbox_default_preserves_basic_env_vars() {
+    let temp = tempdir().unwrap();
+    let script = temp.path().join("check_env.py");
+    // PATH should always be available so Python can find executables
+    fs::write(
+        &script,
+        r#"
+import os
+path = os.environ.get("PATH", "")
+print("PATH_PRESENT:", bool(path))
+"#,
+    )
+    .unwrap();
+
+    run_sandbox(&[
+        "--format=json",
+        "run",
+        "--sandbox",
+        script.to_str().unwrap(),
+    ])
+    .success()
+    .stdout(predicate::str::contains("PATH_PRESENT: True"));
+}
+
+#[test]
+fn sandbox_allow_env_passes_specific_var_through() {
+    let temp = tempdir().unwrap();
+    let script = temp.path().join("read_allowed_env.py");
+    fs::write(
+        &script,
+        r#"
+import os
+val = os.environ.get("MY_ALLOWED_KEY", "NOT_PRESENT")
+print("KEY:", val)
+"#,
+    )
+    .unwrap();
+
+    bin()
+        .env("MY_ALLOWED_KEY", "allowed_value_xyz")
+        .args([
+            "--format=json",
+            "run",
+            "--sandbox",
+            "--allow-env=MY_ALLOWED_KEY",
+            script.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("KEY: allowed_value_xyz"));
+}
+
+#[test]
+fn sandbox_allow_env_does_not_pass_unlisted_var() {
+    let temp = tempdir().unwrap();
+    let script = temp.path().join("check_unlisted.py");
+    fs::write(
+        &script,
+        r#"
+import os
+unlisted = os.environ.get("ANOTHER_SECRET", "NOT_PRESENT")
+print("UNLISTED:", unlisted)
+"#,
+    )
+    .unwrap();
+
+    bin()
+        .env("ANOTHER_SECRET", "secret_that_must_not_leak")
+        .env("MY_ALLOWED_KEY", "allowed")
+        .args([
+            "--format=json",
+            "run",
+            "--sandbox",
+            "--allow-env=MY_ALLOWED_KEY",
+            script.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("UNLISTED: NOT_PRESENT"));
+}
+
+#[test]
+fn sandbox_json_output_includes_allow_env() {
+    let temp = tempdir().unwrap();
+    let script = temp.path().join("noop.py");
+    fs::write(&script, "print('hello')\n").unwrap();
+
+    run_sandbox(&[
+        "--format=json",
+        "run",
+        "--sandbox",
+        "--allow-env=MY_KEY",
+        script.to_str().unwrap(),
+    ])
+    .success()
+    .stdout(predicate::str::contains("\"allow_env\""))
+    .stdout(predicate::str::contains("\"MY_KEY\""));
+}
+
+#[test]
+fn sandbox_non_sandbox_mode_does_not_filter_env() {
+    let temp = tempdir().unwrap();
+    let script = temp.path().join("read_env_no_sandbox.py");
+    // Without --sandbox, the env var must be visible to the child process
+    fs::write(
+        &script,
+        r#"
+import os
+val = os.environ.get("PYBUN_TEST_SECRET_KEY", "NOT_PRESENT")
+print("SECRET:", val)
+"#,
+    )
+    .unwrap();
+
+    bin()
+        .env("PYBUN_TEST_SECRET_KEY", "visible_value")
+        .args(["--format=json", "run", script.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("SECRET: visible_value"));
+}
+
 #[test]
 fn sandbox_explicit_allow_write_yields_empty_default_deny_write_in_json() {
     let temp = tempdir().unwrap();
