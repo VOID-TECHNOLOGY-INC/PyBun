@@ -1,3 +1,4 @@
+use crate::sandbox::DEFAULT_SANDBOX_TIMEOUT_SECS;
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use serde_json::{Value, json};
 
@@ -212,6 +213,15 @@ pub struct RunArgs {
     /// specific secrets or config values (e.g. --allow-env=API_KEY).
     #[arg(long, value_name = "VAR")]
     pub allow_env: Vec<String>,
+    /// Maximum wall-clock execution time in seconds for sandboxed runs (0 = unlimited).
+    #[arg(long, value_name = "SECONDS", default_value_t = DEFAULT_SANDBOX_TIMEOUT_SECS)]
+    pub sandbox_timeout: u64,
+    /// Maximum memory (virtual address space) in megabytes for sandboxed runs (Unix only; 0 = unlimited).
+    #[arg(long, value_name = "MB", default_value_t = 0)]
+    pub sandbox_memory: u64,
+    /// Maximum CPU time in seconds for sandboxed runs (Unix only; 0 = unlimited).
+    #[arg(long, value_name = "SECONDS", default_value_t = 0)]
+    pub sandbox_cpu: u64,
     /// Optional profile (dev/prod/benchmark).
     #[arg(long, default_value = "dev")]
     pub profile: String,

@@ -1,8 +1,16 @@
 use color_eyre::eyre::{Result, eyre};
 use std::fs;
+use std::io::Read;
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, ExitStatus, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 use tempfile::TempDir;
+
+/// Default wall-clock timeout (in seconds) applied to sandboxed runs.
+pub const DEFAULT_SANDBOX_TIMEOUT_SECS: u64 = 60;
 
 fn serialize_policy_paths(paths: &[String]) -> Result<String> {
     serde_json::to_string(paths).map_err(|e| eyre!("failed to serialize sandbox policy paths: {e}"))
@@ -21,6 +29,37 @@ pub struct SandboxConfig {
     /// Sandbox always filters env vars to prevent secret leakage; this allowlist extends the
     /// default safe set (PATH, HOME, LANG, etc.) with caller-specified names.
     pub allow_env: Vec<String>,
+    /// Maximum wall-clock execution time in seconds (0 = unlimited).
+    pub timeout_secs: u64,
+    /// Maximum memory (virtual address space) in megabytes (Unix only; 0 = unlimited).
+    pub memory_limit_mb: u64,
+    /// Maximum CPU time in seconds (Unix only; 0 = unlimited).
+    pub cpu_limit_secs: u64,
+}
+
+/// Resource limits applied to a sandboxed process, reported back for diagnostics.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct ResourceLimits {
+    /// Configured wall-clock timeout in seconds (0 = unlimited).
+    pub timeout_secs: u64,
+    /// Configured memory limit in megabytes (0 = unlimited).
+    pub memory_limit_mb: u64,
+    /// Configured CPU time limit in seconds (0 = unlimited).
+    pub cpu_limit_secs: u64,
+    /// Names of requested limits that could not be enforced on this platform.
+    pub unsupported: Vec<String>,
+}
+
+/// Returns true if `RLIMIT_AS` (memory limit) is enforceable on this platform.
+/// macOS rejects `setrlimit(RLIMIT_AS, ...)` with `EINVAL`, so memory limits
+/// are only applied on other Unix platforms (e.g. Linux).
+fn memory_limit_supported() -> bool {
+    cfg!(all(unix, not(target_os = "macos")))
+}
+
+/// Returns true if `RLIMIT_CPU` (CPU time limit) is enforceable on this platform.
+fn cpu_limit_supported() -> bool {
+    cfg!(unix)
 }
 
 /// Returns the minimal set of environment variable names that are always safe to
@@ -112,6 +151,8 @@ pub struct SandboxGuard {
     pub default_deny_write: Vec<String>,
     /// Extra env var names allowed through the filter beyond the default safe set.
     pub allow_env: Vec<String>,
+    /// Resource limits requested for this sandbox, including any unsupported on this platform.
+    pub resource_limits: ResourceLimits,
 }
 
 impl SandboxGuard {
@@ -210,13 +251,162 @@ pub fn apply_python_sandbox(cmd: &mut Command, config: SandboxConfig) -> Result<
     cmd.env("PYBUN_SANDBOX_AUDIT_FILE", audit_file.as_os_str());
     cmd.env("PYBUN_SANDBOX_HELPER_DIR", tempdir.path().as_os_str());
 
+    // --- Resource limits ---
+    let mut unsupported = Vec::new();
+    if config.memory_limit_mb > 0 && !memory_limit_supported() {
+        unsupported.push("memory".to_string());
+    }
+    if config.cpu_limit_secs > 0 && !cpu_limit_supported() {
+        unsupported.push("cpu".to_string());
+    }
+
+    #[cfg(unix)]
+    {
+        let apply_memory = config.memory_limit_mb > 0 && memory_limit_supported();
+        let apply_cpu = config.cpu_limit_secs > 0 && cpu_limit_supported();
+        let memory_limit_mb = config.memory_limit_mb;
+        let cpu_limit_secs = config.cpu_limit_secs;
+        if apply_memory || apply_cpu {
+            // SAFETY: the closure only calls async-signal-safe libc functions
+            // (`setrlimit`) between fork and exec, as required by `pre_exec`.
+            unsafe {
+                cmd.pre_exec(move || {
+                    if apply_memory {
+                        let bytes = memory_limit_mb.saturating_mul(1024 * 1024);
+                        let limit = libc::rlimit {
+                            rlim_cur: bytes as libc::rlim_t,
+                            rlim_max: bytes as libc::rlim_t,
+                        };
+                        if libc::setrlimit(libc::RLIMIT_AS, &limit) != 0 {
+                            return Err(std::io::Error::last_os_error());
+                        }
+                    }
+                    if apply_cpu {
+                        let limit = libc::rlimit {
+                            rlim_cur: cpu_limit_secs as libc::rlim_t,
+                            rlim_max: cpu_limit_secs as libc::rlim_t,
+                        };
+                        if libc::setrlimit(libc::RLIMIT_CPU, &limit) != 0 {
+                            return Err(std::io::Error::last_os_error());
+                        }
+                    }
+                    Ok(())
+                });
+            }
+        }
+    }
+
+    let resource_limits = ResourceLimits {
+        timeout_secs: config.timeout_secs,
+        memory_limit_mb: config.memory_limit_mb,
+        cpu_limit_secs: config.cpu_limit_secs,
+        unsupported,
+    };
+
     Ok(SandboxGuard {
         _tempdir: tempdir,
         enforcement: "python-sitecustomize",
         audit_file,
         default_deny_write: default_deny,
         allow_env: config.allow_env,
+        resource_limits,
     })
+}
+
+/// Outcome of executing a sandboxed command, possibly subject to a wall-clock timeout.
+pub enum SandboxExecOutcome {
+    /// The process exited on its own (or no timeout was configured).
+    Completed {
+        status: ExitStatus,
+        stdout: Option<Vec<u8>>,
+        stderr: Option<Vec<u8>>,
+    },
+    /// The process was killed because it exceeded the configured timeout.
+    TimedOut,
+}
+
+/// Run `cmd` to completion, optionally capturing stdout/stderr, killing it if it
+/// exceeds `timeout_secs` (0 = unlimited). Mirrors
+/// `test_executor::run_with_timeout`'s spawn/poll/kill pattern so a chatty
+/// process can't deadlock on a full pipe buffer while we wait for exit.
+pub fn execute_sandboxed(
+    cmd: &mut Command,
+    timeout_secs: u64,
+    capture: bool,
+) -> std::io::Result<SandboxExecOutcome> {
+    if capture {
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+    }
+
+    let mut child = cmd.spawn()?;
+
+    let stdout_handle = child.stdout.take().map(spawn_pipe_reader);
+    let stderr_handle = child.stderr.take().map(spawn_pipe_reader);
+
+    let timeout = (timeout_secs > 0).then(|| Duration::from_secs(timeout_secs));
+    let poll_interval = Duration::from_millis(50);
+    let start = Instant::now();
+
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+
+        if let Some(timeout) = timeout
+            && start.elapsed() >= timeout
+        {
+            let _ = child.kill();
+            let _ = child.wait();
+            join_pipe_reader(stdout_handle);
+            join_pipe_reader(stderr_handle);
+            return Ok(SandboxExecOutcome::TimedOut);
+        }
+
+        thread::sleep(poll_interval);
+    };
+
+    let stdout = join_pipe_reader(stdout_handle);
+    let stderr = join_pipe_reader(stderr_handle);
+
+    Ok(SandboxExecOutcome::Completed {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+/// Synthesize an `ExitStatus` representing a timed-out process: exit code 124,
+/// matching the POSIX `timeout(1)` convention.
+pub fn timeout_exit_status() -> ExitStatus {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        ExitStatus::from_raw(124 << 8)
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::ExitStatusExt;
+        ExitStatus::from_raw(124)
+    }
+}
+
+/// Spawn a thread that reads a child process pipe to completion.
+fn spawn_pipe_reader<R>(mut reader: R) -> thread::JoinHandle<Vec<u8>>
+where
+    R: Read + Send + 'static,
+{
+    thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = reader.read_to_end(&mut buf);
+        buf
+    })
+}
+
+/// Join a pipe reader thread, discarding the handle. Returns `None` if there
+/// was no pipe to read or the thread panicked.
+fn join_pipe_reader(handle: Option<thread::JoinHandle<Vec<u8>>>) -> Option<Vec<u8>> {
+    handle.and_then(|h| h.join().ok())
 }
 
 /// The sitecustomize.py injected into every sandboxed Python process.

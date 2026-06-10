@@ -289,6 +289,8 @@ pub async fn execute(cli: Cli) -> Result<()> {
                             "default_deny_write": s.default_deny_write,
                             "enforcement": s.enforcement,
                             "audit": s.audit,
+                            "resource_limits": s.resource_limits,
+                            "timed_out": s.timed_out,
                         })
                     });
                     let profile_detail = json!({
@@ -2359,6 +2361,8 @@ struct SandboxInfo {
     default_deny_write: Vec<String>,
     enforcement: String,
     audit: Option<sandbox::SandboxAudit>,
+    resource_limits: sandbox::ResourceLimits,
+    timed_out: bool,
 }
 
 #[derive(Debug)]
@@ -3139,6 +3143,9 @@ async fn run_script(
                 allow_read: args.allow_read.clone(),
                 allow_write: args.allow_write.clone(),
                 allow_env: args.allow_env.clone(),
+                timeout_secs: args.sandbox_timeout,
+                memory_limit_mb: args.sandbox_memory,
+                cpu_limit_secs: args.sandbox_cpu,
             },
         )?;
         sandbox_info = Some(SandboxInfo {
@@ -3150,6 +3157,8 @@ async fn run_script(
             default_deny_write: guard.default_deny_write.clone(),
             enforcement: guard.enforcement().to_string(),
             audit: None,
+            resource_limits: guard.resource_limits.clone(),
+            timed_out: false,
         });
         sandbox_guard = Some(guard);
     }
@@ -3209,29 +3218,66 @@ async fn run_script(
         return Err(eyre!("failed to exec runner: {}", err));
     }
 
-    let (status, stdout, stderr) = match format {
-        OutputFormat::Json => {
-            let output = cmd
-                .output()
-                .map_err(|e| eyre!("failed to execute runner: {}", e))?;
-            (
-                output.status,
-                capture_stdio(&output.stdout),
-                capture_stdio(&output.stderr),
-            )
+    let mut timed_out = false;
+    let (status, stdout, stderr) = if let Some(guard) = &sandbox_guard {
+        match sandbox::execute_sandboxed(
+            &mut cmd,
+            guard.resource_limits.timeout_secs,
+            format == OutputFormat::Json,
+        )
+        .map_err(|e| eyre!("failed to execute runner: {}", e))?
+        {
+            sandbox::SandboxExecOutcome::Completed {
+                status,
+                stdout,
+                stderr,
+            } => (
+                status,
+                stdout.as_deref().and_then(capture_stdio),
+                stderr.as_deref().and_then(capture_stdio),
+            ),
+            sandbox::SandboxExecOutcome::TimedOut => {
+                timed_out = true;
+                (sandbox::timeout_exit_status(), None, None)
+            }
         }
-        OutputFormat::Text => (
-            cmd.status()
-                .map_err(|e| eyre!("failed to execute runner: {}", e))?,
-            None,
-            None,
-        ),
+    } else {
+        match format {
+            OutputFormat::Json => {
+                let output = cmd
+                    .output()
+                    .map_err(|e| eyre!("failed to execute runner: {}", e))?;
+                (
+                    output.status,
+                    capture_stdio(&output.stdout),
+                    capture_stdio(&output.stderr),
+                )
+            }
+            OutputFormat::Text => (
+                cmd.status()
+                    .map_err(|e| eyre!("failed to execute runner: {}", e))?,
+                None,
+                None,
+            ),
+        }
     };
     // Read audit before dropping the guard (guard keeps the audit file alive).
     if let (Some(guard), Some(info)) = (&sandbox_guard, &mut sandbox_info) {
         info.audit = Some(guard.read_audit());
+        info.timed_out = timed_out;
     }
     drop(sandbox_guard);
+
+    if timed_out {
+        collector.diagnostic(
+            Diagnostic::error(format!(
+                "sandboxed process killed after exceeding --sandbox-timeout={}s",
+                args.sandbox_timeout
+            ))
+            .with_code("E_SANDBOX_TIMEOUT")
+            .with_suggestion("increase --sandbox-timeout, set --sandbox-timeout=0 to disable, or optimize the script to finish sooner"),
+        );
+    }
 
     let exit_code = status.code().unwrap_or(-1);
 
@@ -3399,6 +3445,9 @@ fn run_python_code(
                 allow_read: args.allow_read.clone(),
                 allow_write: args.allow_write.clone(),
                 allow_env: args.allow_env.clone(),
+                timeout_secs: args.sandbox_timeout,
+                memory_limit_mb: args.sandbox_memory,
+                cpu_limit_secs: args.sandbox_cpu,
             },
         )?;
         sandbox_info = Some(SandboxInfo {
@@ -3410,6 +3459,8 @@ fn run_python_code(
             default_deny_write: guard.default_deny_write.clone(),
             enforcement: guard.enforcement().to_string(),
             audit: None,
+            resource_limits: guard.resource_limits.clone(),
+            timed_out: false,
         });
         sandbox_guard = Some(guard);
     }
@@ -3456,28 +3507,65 @@ fn run_python_code(
         return Err(eyre!("failed to exec Python: {}", err));
     }
 
-    let (status, stdout, stderr) = match format {
-        OutputFormat::Json => {
-            let output = cmd
-                .output()
-                .map_err(|e| eyre!("failed to execute Python: {}", e))?;
-            (
-                output.status,
-                capture_stdio(&output.stdout),
-                capture_stdio(&output.stderr),
-            )
+    let mut timed_out = false;
+    let (status, stdout, stderr) = if let Some(guard) = &sandbox_guard {
+        match sandbox::execute_sandboxed(
+            &mut cmd,
+            guard.resource_limits.timeout_secs,
+            format == OutputFormat::Json,
+        )
+        .map_err(|e| eyre!("failed to execute Python: {}", e))?
+        {
+            sandbox::SandboxExecOutcome::Completed {
+                status,
+                stdout,
+                stderr,
+            } => (
+                status,
+                stdout.as_deref().and_then(capture_stdio),
+                stderr.as_deref().and_then(capture_stdio),
+            ),
+            sandbox::SandboxExecOutcome::TimedOut => {
+                timed_out = true;
+                (sandbox::timeout_exit_status(), None, None)
+            }
         }
-        OutputFormat::Text => (
-            cmd.status()
-                .map_err(|e| eyre!("failed to execute Python: {}", e))?,
-            None,
-            None,
-        ),
+    } else {
+        match format {
+            OutputFormat::Json => {
+                let output = cmd
+                    .output()
+                    .map_err(|e| eyre!("failed to execute Python: {}", e))?;
+                (
+                    output.status,
+                    capture_stdio(&output.stdout),
+                    capture_stdio(&output.stderr),
+                )
+            }
+            OutputFormat::Text => (
+                cmd.status()
+                    .map_err(|e| eyre!("failed to execute Python: {}", e))?,
+                None,
+                None,
+            ),
+        }
     };
     if let (Some(guard), Some(info)) = (&sandbox_guard, &mut sandbox_info) {
         info.audit = Some(guard.read_audit());
+        info.timed_out = timed_out;
     }
     drop(sandbox_guard);
+
+    if timed_out {
+        collector.diagnostic(
+            Diagnostic::error(format!(
+                "sandboxed process killed after exceeding --sandbox-timeout={}s",
+                args.sandbox_timeout
+            ))
+            .with_code("E_SANDBOX_TIMEOUT")
+            .with_suggestion("increase --sandbox-timeout, set --sandbox-timeout=0 to disable, or optimize the script to finish sooner"),
+        );
+    }
 
     let exit_code = status.code().unwrap_or(-1);
 

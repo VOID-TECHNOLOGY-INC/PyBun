@@ -7,13 +7,16 @@ Arguments:
   [PASSTHROUGH]...  Pass additional args to the target
 
 Options:
-      --format <FORMAT>      Output format for machine readability [default: text] [possible values: text, json]
-      --sandbox              Run in sandboxed mode for untrusted code
-      --allow-network        Allow network access inside the sandbox (escape hatch)
-      --progress <PROGRESS>  Progress UI mode (auto hides on non-TTY) [env: PYBUN_PROGRESS=] [default: auto] [possible values: auto, always, never]
-      --allow-read <PATH>    Allow reading from a path inside the sandbox (can be specified multiple times). When set, reads outside these paths are blocked. Python stdlib is always allowed
-      --no-progress          Disable progress UI
-      --allow-write <PATH>   Allow writing to a path inside the sandbox (can be specified multiple times). When set, writes outside these paths are blocked
-      --allow-env <VAR>      Allow an environment variable through the sandbox filter (can be specified multiple times). By default the sandbox strips all env vars except a minimal safe set; use this to pass specific secrets or config values (e.g. --allow-env=API_KEY)
-      --profile <PROFILE>    Optional profile (dev/prod/benchmark) [default: dev]
-  -h, --help                 Print help
+      --format <FORMAT>            Output format for machine readability [default: text] [possible values: text, json]
+      --sandbox                    Run in sandboxed mode for untrusted code
+      --allow-network              Allow network access inside the sandbox (escape hatch)
+      --progress <PROGRESS>        Progress UI mode (auto hides on non-TTY) [env: PYBUN_PROGRESS=] [default: auto] [possible values: auto, always, never]
+      --allow-read <PATH>          Allow reading from a path inside the sandbox (can be specified multiple times). When set, reads outside these paths are blocked. Python stdlib is always allowed
+      --no-progress                Disable progress UI
+      --allow-write <PATH>         Allow writing to a path inside the sandbox (can be specified multiple times). When set, writes outside these paths are blocked
+      --allow-env <VAR>            Allow an environment variable through the sandbox filter (can be specified multiple times). By default the sandbox strips all env vars except a minimal safe set; use this to pass specific secrets or config values (e.g. --allow-env=API_KEY)
+      --sandbox-timeout <SECONDS>  Maximum wall-clock execution time in seconds for sandboxed runs (0 = unlimited) [default: 60]
+      --sandbox-memory <MB>        Maximum memory (virtual address space) in megabytes for sandboxed runs (Unix only; 0 = unlimited) [default: 0]
+      --sandbox-cpu <SECONDS>      Maximum CPU time in seconds for sandboxed runs (Unix only; 0 = unlimited) [default: 0]
+      --profile <PROFILE>          Optional profile (dev/prod/benchmark) [default: dev]
+  -h, --help                       Print help

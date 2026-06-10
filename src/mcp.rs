@@ -831,6 +831,7 @@ impl McpServer {
                         .collect()
                 })
                 .unwrap_or_default(),
+            ..Default::default()
         });
 
         // Find Python interpreter
