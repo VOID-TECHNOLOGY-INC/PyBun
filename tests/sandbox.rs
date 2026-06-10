@@ -612,3 +612,166 @@ fn sandbox_explicit_allow_write_yields_empty_default_deny_write_in_json() {
     .success()
     .stdout(predicate::str::contains("\"default_deny_write\":[]"));
 }
+
+// --- Resource limit tests (Issue #152) ---
+
+#[test]
+fn sandbox_json_output_includes_resource_limits_with_default_timeout() {
+    let temp = tempdir().unwrap();
+    let script = temp.path().join("noop.py");
+    fs::write(&script, "print('hello')\n").unwrap();
+
+    run_sandbox(&[
+        "--format=json",
+        "run",
+        "--sandbox",
+        script.to_str().unwrap(),
+    ])
+    .success()
+    .stdout(predicate::str::contains("\"resource_limits\""))
+    .stdout(predicate::str::contains("\"timeout_secs\":60"))
+    .stdout(predicate::str::contains("\"memory_limit_mb\":0"))
+    .stdout(predicate::str::contains("\"cpu_limit_secs\":0"))
+    .stdout(predicate::str::contains("\"timed_out\":false"));
+}
+
+#[test]
+fn sandbox_timeout_kills_long_running_script() {
+    let temp = tempdir().unwrap();
+    let script = temp.path().join("sleep_forever.py");
+    fs::write(
+        &script,
+        r#"
+import time
+time.sleep(30)
+print("should not reach here")
+"#,
+    )
+    .unwrap();
+
+    let start = std::time::Instant::now();
+    run_sandbox(&[
+        "--format=json",
+        "run",
+        "--sandbox",
+        "--sandbox-timeout=1",
+        script.to_str().unwrap(),
+    ])
+    .code(124)
+    .stdout(predicate::str::contains("\"timeout_secs\":1"))
+    .stdout(predicate::str::contains("\"timed_out\":true"))
+    .stdout(predicate::str::contains("\"exit_code\":124"));
+
+    // Must be killed promptly, not run for the full 30s sleep.
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(15),
+        "sandboxed process was not killed promptly on timeout"
+    );
+}
+
+#[test]
+fn sandbox_timeout_zero_disables_timeout() {
+    let temp = tempdir().unwrap();
+    let script = temp.path().join("short_sleep.py");
+    fs::write(
+        &script,
+        r#"
+import time
+time.sleep(1.5)
+print("done")
+"#,
+    )
+    .unwrap();
+
+    run_sandbox(&[
+        "--format=json",
+        "run",
+        "--sandbox",
+        "--sandbox-timeout=0",
+        script.to_str().unwrap(),
+    ])
+    .success()
+    .stdout(predicate::str::contains("\"timeout_secs\":0"))
+    .stdout(predicate::str::contains("\"timed_out\":false"))
+    .stdout(predicate::str::contains("done"));
+}
+
+#[cfg(unix)]
+#[test]
+fn sandbox_cpu_limit_kills_busy_loop() {
+    let temp = tempdir().unwrap();
+    let script = temp.path().join("busy_loop.py");
+    fs::write(
+        &script,
+        r#"
+i = 0
+while True:
+    i += 1
+"#,
+    )
+    .unwrap();
+
+    let start = std::time::Instant::now();
+    run_sandbox(&[
+        "--format=json",
+        "run",
+        "--sandbox",
+        "--sandbox-cpu=1",
+        script.to_str().unwrap(),
+    ])
+    .failure()
+    .stdout(predicate::str::contains("\"cpu_limit_secs\":1"))
+    .stdout(predicate::str::contains("\"timed_out\":false"));
+
+    // RLIMIT_CPU should terminate the busy loop well before the default
+    // 60s wall-clock --sandbox-timeout.
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(30),
+        "sandboxed process was not killed promptly by the CPU limit"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn sandbox_memory_limit_reports_unsupported_on_macos() {
+    let temp = tempdir().unwrap();
+    let script = temp.path().join("noop.py");
+    fs::write(&script, "print('hello')\n").unwrap();
+
+    run_sandbox(&[
+        "--format=json",
+        "run",
+        "--sandbox",
+        "--sandbox-memory=256",
+        script.to_str().unwrap(),
+    ])
+    .success()
+    .stdout(predicate::str::contains("\"memory_limit_mb\":256"))
+    .stdout(predicate::str::contains("\"unsupported\":[\"memory\"]"));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn sandbox_memory_limit_kills_excessive_allocation() {
+    let temp = tempdir().unwrap();
+    let script = temp.path().join("alloc_too_much.py");
+    fs::write(
+        &script,
+        r#"
+data = bytearray(1024 * 1024 * 1024)  # 1 GiB
+print(len(data))
+"#,
+    )
+    .unwrap();
+
+    run_sandbox(&[
+        "--format=json",
+        "run",
+        "--sandbox",
+        "--sandbox-memory=128",
+        script.to_str().unwrap(),
+    ])
+    .failure()
+    .stdout(predicate::str::contains("\"memory_limit_mb\":128"))
+    .stdout(predicate::str::contains("\"unsupported\":[]"));
+}
