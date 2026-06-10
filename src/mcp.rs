@@ -776,7 +776,7 @@ impl McpServer {
 
     fn call_run(&self, args: Value) -> Result<String, String> {
         use crate::env::find_python_env;
-        use crate::sandbox::{SandboxConfig, apply_python_sandbox};
+        use crate::sandbox::{self, SandboxConfig, apply_python_sandbox};
 
         let script = args.get("script").and_then(|s| s.as_str());
         let code = args.get("code").and_then(|c| c.as_str());
@@ -831,6 +831,13 @@ impl McpServer {
                         .collect()
                 })
                 .unwrap_or_default(),
+            // MCP-invoked sandboxes default to the same wall-clock timeout as the CLI
+            // (`pybun run --sandbox`); memory/cpu limits remain opt-in via future
+            // sandbox_policy fields (PR-A3 MCP/CLI parity tracks the rest).
+            timeout_secs: p
+                .get("timeout_secs")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(crate::sandbox::DEFAULT_SANDBOX_TIMEOUT_SECS),
             ..Default::default()
         });
 
@@ -850,19 +857,41 @@ impl McpServer {
                 .map(|c| apply_python_sandbox(&mut cmd, c).map_err(|e| e.to_string()))
                 .transpose()?;
 
-            let output = cmd
-                .output()
-                .map_err(|e| format!("Failed to execute: {}", e))?;
+            let (status, stdout, stderr, timed_out) = if let Some(guard) = &guard {
+                match sandbox::execute_sandboxed(&mut cmd, guard.resource_limits.timeout_secs, true)
+                    .map_err(|e| format!("Failed to execute: {}", e))?
+                {
+                    sandbox::SandboxExecOutcome::Completed {
+                        status,
+                        stdout,
+                        stderr,
+                    } => (
+                        status,
+                        stdout.unwrap_or_default(),
+                        stderr.unwrap_or_default(),
+                        false,
+                    ),
+                    sandbox::SandboxExecOutcome::TimedOut => {
+                        (sandbox::timeout_exit_status(), Vec::new(), Vec::new(), true)
+                    }
+                }
+            } else {
+                let output = cmd
+                    .output()
+                    .map_err(|e| format!("Failed to execute: {}", e))?;
+                (output.status, output.stdout, output.stderr, false)
+            };
 
             let audit = guard.as_ref().map(|g| g.read_audit());
+            let resource_limits = guard.as_ref().map(|g| g.resource_limits.clone());
             drop(guard);
 
-            let exit_code = output.status.code().unwrap_or(-1);
-            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            let exit_code = status.code().unwrap_or(-1);
+            let stdout = String::from_utf8_lossy(&stdout).to_string();
+            let stderr = String::from_utf8_lossy(&stderr).to_string();
 
             Ok(json!({
-                "status": if output.status.success() { "success" } else { "error" },
+                "status": if status.success() { "success" } else { "error" },
                 "target": target,
                 "exit_code": exit_code,
                 "stdout": stdout,
@@ -870,6 +899,8 @@ impl McpServer {
                 "python": python_path,
                 "sandboxed": use_sandbox,
                 "audit": audit,
+                "resource_limits": resource_limits,
+                "timed_out": timed_out,
             })
             .to_string())
         };
