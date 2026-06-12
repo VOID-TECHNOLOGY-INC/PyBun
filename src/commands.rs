@@ -348,9 +348,6 @@ pub async fn execute(cli: Cli) -> Result<()> {
                     cleanup,
                 }) => (
                     "x".to_string(),
-                    // TODO: propagate exit_code for `pybun x` the same way
-                    // `pybun run` does (with_process_exit_code). Tracked
-                    // separately to keep this PR scoped to issue #148.
                     RenderDetail::with_json(
                         summary,
                         json!({
@@ -362,7 +359,8 @@ pub async fn execute(cli: Cli) -> Result<()> {
                             "exit_code": exit_code,
                             "cleanup": cleanup,
                         }),
-                    ),
+                    )
+                    .with_process_exit_code(exit_code),
                 ),
                 Err(e) => {
                     collector.error(e.to_string());
@@ -3794,7 +3792,13 @@ fn execute_tool(args: &crate::cli::ToolArgs, _collector: &mut EventCollector) ->
     let temp_env_path = temp_dir.path().to_string_lossy().to_string();
 
     if dry_run {
-        // In dry-run mode, just return the planned actions
+        // In dry-run mode, just return the planned actions. Tests can set
+        // PYBUN_X_DRY_RUN_EXIT_CODE to simulate a tool that exits non-zero
+        // without needing network access / a real pip install.
+        let exit_code = std::env::var("PYBUN_X_DRY_RUN_EXIT_CODE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
         return Ok(XOutcome {
             summary: format!("would execute {} (dry-run)", package_name),
             package: package_name,
@@ -3802,7 +3806,7 @@ fn execute_tool(args: &crate::cli::ToolArgs, _collector: &mut EventCollector) ->
             passthrough: args.passthrough.clone(),
             temp_env: temp_env_path,
             python_version,
-            exit_code: 0,
+            exit_code,
             cleanup: true,
         });
     }
