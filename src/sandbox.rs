@@ -536,6 +536,25 @@ def _block_subprocesses():
         if hasattr(os, _name):
             setattr(os, _name, lambda *_a, **_kw: _deny("process execution", "blocked_subprocesses"))
 
+    # os.posix_spawn / os.posix_spawnp and the os.spawn* family create
+    # processes without going through subprocess.* or os.exec*, and were
+    # previously left unblocked (sandbox escape via os.posix_spawn).
+    for _name in (
+        "posix_spawn",
+        "posix_spawnp",
+        "spawnv",
+        "spawnve",
+        "spawnvp",
+        "spawnvpe",
+        "spawnl",
+        "spawnle",
+        "spawnlp",
+        "spawnlpe",
+        "startfile",
+    ):
+        if hasattr(os, _name):
+            setattr(os, _name, lambda *_a, **_kw: _deny("process creation", "blocked_subprocesses"))
+
 
 def _block_network():
     def _blocked(*_a, **_kw):
