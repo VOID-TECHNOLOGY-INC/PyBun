@@ -775,3 +775,90 @@ print(len(data))
     .stdout(predicate::str::contains("\"memory_limit_mb\":128"))
     .stdout(predicate::str::contains("\"unsupported\":[]"));
 }
+
+#[test]
+fn sandbox_blocks_posix_spawn() {
+    let temp = tempdir().unwrap();
+    let script = temp.path().join("posix_spawn.py");
+    let proof = temp.path().join("escape_proof.txt");
+    fs::write(
+        &script,
+        format!(
+            r#"
+import os
+
+blocked = 0
+
+try:
+    os.posix_spawn("/bin/sh", ["/bin/sh", "-c", "echo escaped > {proof}"], os.environ)
+except PermissionError:
+    blocked += 1
+
+try:
+    os.posix_spawnp("sh", ["sh", "-c", "echo escaped > {proof}"], os.environ)
+except PermissionError:
+    blocked += 1
+
+assert blocked == 2, "expected both posix_spawn and posix_spawnp to be blocked"
+"#,
+            proof = proof.to_str().unwrap(),
+        ),
+    )
+    .unwrap();
+
+    run_sandbox(&[
+        "--format=json",
+        "run",
+        "--sandbox",
+        script.to_str().unwrap(),
+    ])
+    .success()
+    .stdout(predicate::str::contains("\"blocked_subprocesses\":2"));
+
+    assert!(
+        !proof.exists(),
+        "sandbox escape: process spawned via os.posix_spawn/posix_spawnp"
+    );
+}
+
+#[test]
+fn sandbox_blocks_spawn_family() {
+    let temp = tempdir().unwrap();
+    let script = temp.path().join("spawn_family.py");
+    fs::write(
+        &script,
+        r#"
+import os
+
+blocked = 0
+calls = [
+    lambda: os.spawnv(os.P_WAIT, "/bin/sh", ["/bin/sh", "-c", "true"]),
+    lambda: os.spawnve(os.P_WAIT, "/bin/sh", ["/bin/sh", "-c", "true"], os.environ),
+    lambda: os.spawnvp(os.P_WAIT, "sh", ["sh", "-c", "true"]),
+    lambda: os.spawnvpe(os.P_WAIT, "sh", ["sh", "-c", "true"], os.environ),
+    lambda: os.spawnl(os.P_WAIT, "/bin/sh", "/bin/sh", "-c", "true"),
+    lambda: os.spawnle(os.P_WAIT, "/bin/sh", "/bin/sh", "-c", "true", os.environ),
+    lambda: os.spawnlp(os.P_WAIT, "sh", "sh", "-c", "true"),
+    lambda: os.spawnlpe(os.P_WAIT, "sh", "sh", "-c", "true", os.environ),
+]
+
+for call in calls:
+    try:
+        call()
+    except PermissionError:
+        blocked += 1
+
+assert blocked == len(calls), "expected all os.spawn* variants to be blocked, got {}".format(blocked)
+"#,
+    )
+    .unwrap();
+
+    run_sandbox(&[
+        "--format=json",
+        "run",
+        "--sandbox",
+        script.to_str().unwrap(),
+    ])
+    .success()
+    .stdout(predicate::str::contains("\"blocked_subprocesses\":8"));
+}
