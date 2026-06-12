@@ -602,13 +602,11 @@ fn parse_requires_dist(raw: String) -> Option<Requirement> {
 
     if let Some((name, rest)) = without_extras.split_once('(') {
         let spec = rest.trim_end_matches(')').trim();
-        let first_spec = spec.split(',').next().unwrap_or("").trim();
-        let normalized = format!("{}{}", name.trim(), first_spec.replace(' ', ""));
+        let normalized = format!("{}{}", name.trim(), spec.replace(' ', ""));
         Requirement::from_str(&normalized).ok()
     } else {
         let normalized = without_extras.replace(' ', "");
-        let first = normalized.split(',').next().unwrap_or("").trim();
-        Requirement::from_str(first).ok()
+        Requirement::from_str(&normalized).ok()
     }
 }
 

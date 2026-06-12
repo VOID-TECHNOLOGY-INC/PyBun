@@ -2247,15 +2247,16 @@ fn add_package(args: &crate::cli::PackageArgs) -> Result<AddOutcome> {
     Ok(AddOutcome {
         summary: format!("added {} to {}", package_spec, project.path().display()),
         package: req.name.clone(),
-        version: match &req.spec {
-            crate::resolver::VersionSpec::Exact(v) => Some(v.clone()),
-            crate::resolver::VersionSpec::Minimum(v) => Some(format!(">={}", v)),
-            crate::resolver::VersionSpec::MinimumExclusive(v) => Some(format!(">{}", v)),
-            crate::resolver::VersionSpec::MaximumInclusive(v) => Some(format!("<={}", v)),
-            crate::resolver::VersionSpec::Maximum(v) => Some(format!("<{}", v)),
-            crate::resolver::VersionSpec::NotEqual(v) => Some(format!("!={}", v)),
-            crate::resolver::VersionSpec::Compatible(v) => Some(format!("~={}", v)),
-            crate::resolver::VersionSpec::Any => None,
+        version: match req.specs.as_slice() {
+            [crate::resolver::VersionSpec::Any] => None,
+            [crate::resolver::VersionSpec::Exact(v)] => Some(v.clone()),
+            specs => Some(
+                specs
+                    .iter()
+                    .map(crate::resolver::VersionSpec::operator_display)
+                    .collect::<Vec<_>>()
+                    .join(","),
+            ),
         },
         added_deps,
     })

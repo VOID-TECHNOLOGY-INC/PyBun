@@ -26,80 +26,10 @@ pub enum VersionSpec {
     Any,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Requirement {
-    pub name: String,
-    pub spec: VersionSpec,
-    pub marker: Option<String>,
-}
-
-impl Requirement {
-    pub fn exact(name: impl Into<String>, version: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            spec: VersionSpec::Exact(version.into()),
-            marker: None,
-        }
-    }
-
-    pub fn minimum(name: impl Into<String>, version: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            spec: VersionSpec::Minimum(version.into()),
-            marker: None,
-        }
-    }
-
-    pub fn minimum_exclusive(name: impl Into<String>, version: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            spec: VersionSpec::MinimumExclusive(version.into()),
-            marker: None,
-        }
-    }
-
-    pub fn maximum_inclusive(name: impl Into<String>, version: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            spec: VersionSpec::MaximumInclusive(version.into()),
-            marker: None,
-        }
-    }
-
-    pub fn maximum(name: impl Into<String>, version: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            spec: VersionSpec::Maximum(version.into()),
-            marker: None,
-        }
-    }
-
-    pub fn not_equal(name: impl Into<String>, version: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            spec: VersionSpec::NotEqual(version.into()),
-            marker: None,
-        }
-    }
-
-    pub fn compatible(name: impl Into<String>, version: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            spec: VersionSpec::Compatible(version.into()),
-            marker: None,
-        }
-    }
-
-    pub fn any(name: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            spec: VersionSpec::Any,
-            marker: None,
-        }
-    }
-
-    fn constraint_display(&self) -> String {
-        match &self.spec {
+impl VersionSpec {
+    /// Render the operator and version, e.g. `>=1.0` or `*` for [`VersionSpec::Any`].
+    pub fn operator_display(&self) -> String {
+        match self {
             VersionSpec::Exact(v) => format!("=={v}"),
             VersionSpec::Minimum(v) => format!(">={v}"),
             VersionSpec::MinimumExclusive(v) => format!(">{v}"),
@@ -111,8 +41,9 @@ impl Requirement {
         }
     }
 
-    pub fn is_satisfied_by(&self, version: &str) -> bool {
-        match &self.spec {
+    /// Check whether `version` satisfies this single constraint.
+    pub fn matches(&self, version: &str) -> bool {
+        match self {
             VersionSpec::Exact(v) => v == version,
             VersionSpec::Minimum(min) => compare_versions(version, min) != Ordering::Less,
             VersionSpec::MinimumExclusive(min) => {
@@ -126,6 +57,99 @@ impl Requirement {
             VersionSpec::Compatible(base) => is_compatible_release(version, base),
             VersionSpec::Any => true,
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Requirement {
+    pub name: String,
+    /// All version constraints that must hold simultaneously (e.g. `>=1.0,<2.0`
+    /// becomes `[Minimum("1.0"), Maximum("2.0")]`). A bare requirement with no
+    /// operator is represented as `[VersionSpec::Any]`.
+    pub specs: Vec<VersionSpec>,
+    pub marker: Option<String>,
+}
+
+impl Requirement {
+    pub fn exact(name: impl Into<String>, version: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            specs: vec![VersionSpec::Exact(version.into())],
+            marker: None,
+        }
+    }
+
+    pub fn minimum(name: impl Into<String>, version: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            specs: vec![VersionSpec::Minimum(version.into())],
+            marker: None,
+        }
+    }
+
+    pub fn minimum_exclusive(name: impl Into<String>, version: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            specs: vec![VersionSpec::MinimumExclusive(version.into())],
+            marker: None,
+        }
+    }
+
+    pub fn maximum_inclusive(name: impl Into<String>, version: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            specs: vec![VersionSpec::MaximumInclusive(version.into())],
+            marker: None,
+        }
+    }
+
+    pub fn maximum(name: impl Into<String>, version: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            specs: vec![VersionSpec::Maximum(version.into())],
+            marker: None,
+        }
+    }
+
+    pub fn not_equal(name: impl Into<String>, version: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            specs: vec![VersionSpec::NotEqual(version.into())],
+            marker: None,
+        }
+    }
+
+    pub fn compatible(name: impl Into<String>, version: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            specs: vec![VersionSpec::Compatible(version.into())],
+            marker: None,
+        }
+    }
+
+    pub fn any(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            specs: vec![VersionSpec::Any],
+            marker: None,
+        }
+    }
+
+    fn constraint_display(&self) -> String {
+        if self.specs.iter().all(|s| *s == VersionSpec::Any) {
+            return "*".to_string();
+        }
+        self.specs
+            .iter()
+            .filter(|s| **s != VersionSpec::Any)
+            .map(VersionSpec::operator_display)
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    /// Check whether `version` satisfies **all** constraints in this requirement.
+    pub fn is_satisfied_by(&self, version: &str) -> bool {
+        self.specs.iter().all(|spec| spec.matches(version))
     }
 
     /// Evaluate if the environment marker applies to the current platform.
@@ -151,16 +175,40 @@ impl Requirement {
 
 impl fmt::Display for Requirement {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &self.spec {
-            VersionSpec::Exact(v) => write!(f, "{}=={}", self.name, v),
-            VersionSpec::Minimum(v) => write!(f, "{}>={}", self.name, v),
-            VersionSpec::MinimumExclusive(v) => write!(f, "{}>{}", self.name, v),
-            VersionSpec::MaximumInclusive(v) => write!(f, "{}<={}", self.name, v),
-            VersionSpec::Maximum(v) => write!(f, "{}<{}", self.name, v),
-            VersionSpec::NotEqual(v) => write!(f, "{}!={}", self.name, v),
-            VersionSpec::Compatible(v) => write!(f, "{}~={}", self.name, v),
-            VersionSpec::Any => write!(f, "{}", self.name),
+        if self.specs.iter().all(|s| *s == VersionSpec::Any) {
+            write!(f, "{}", self.name)
+        } else {
+            write!(f, "{}{}", self.name, self.constraint_display())
         }
+    }
+}
+
+/// Find the byte index where a version constraint operator begins, e.g. the
+/// `>` in `"requests>=2.0"`. Returns `None` if no operator is present.
+fn find_constraint_start(s: &str) -> Option<usize> {
+    const OPERATORS: [&str; 7] = ["~=", "==", "!=", ">=", "<=", ">", "<"];
+    OPERATORS.iter().filter_map(|op| s.find(op)).min()
+}
+
+/// Parse a single comma-separated version specifier such as `>=1.0` or `!=1.4.*`.
+fn parse_version_spec(s: &str) -> Result<VersionSpec, String> {
+    let s = s.trim();
+    if let Some(v) = s.strip_prefix("~=") {
+        Ok(VersionSpec::Compatible(v.trim().to_string()))
+    } else if let Some(v) = s.strip_prefix("==") {
+        Ok(VersionSpec::Exact(v.trim().to_string()))
+    } else if let Some(v) = s.strip_prefix("!=") {
+        Ok(VersionSpec::NotEqual(v.trim().to_string()))
+    } else if let Some(v) = s.strip_prefix(">=") {
+        Ok(VersionSpec::Minimum(v.trim().to_string()))
+    } else if let Some(v) = s.strip_prefix("<=") {
+        Ok(VersionSpec::MaximumInclusive(v.trim().to_string()))
+    } else if let Some(v) = s.strip_prefix('>') {
+        Ok(VersionSpec::MinimumExclusive(v.trim().to_string()))
+    } else if let Some(v) = s.strip_prefix('<') {
+        Ok(VersionSpec::Maximum(v.trim().to_string()))
+    } else {
+        Err(format!("unrecognized version specifier: {s}"))
     }
 }
 
@@ -181,66 +229,48 @@ impl FromStr for Requirement {
             (normalized, None)
         };
 
-        // Parse version spec (handle "package (>=1.0)" format)
-        // First, try to split by space to separate name from version spec in parentheses
-        let (name_part, version_part) = if let Some(idx) = requirement_part.find('(') {
-            // Format: "package (>=1.0)" or "package(>=1.0)"
+        // Split into package name and the (possibly compound, comma-separated)
+        // constraint string, handling both "package (>=1.0,<2.0)" and
+        // "package>=1.0,<2.0" forms.
+        let (name, constraint_str) = if let Some(idx) = requirement_part.find('(') {
             let name = requirement_part[..idx].trim();
             let version_with_parens = requirement_part[idx..].trim();
-            let version = version_with_parens
+            let constraints = version_with_parens
                 .trim_start_matches('(')
                 .trim_end_matches(')')
                 .trim();
-            (name, version)
+            (name, constraints)
         } else {
-            // Format: "package>=1.0" (no space, no parentheses)
-            (requirement_part, requirement_part)
+            match find_constraint_start(requirement_part) {
+                Some(idx) => (
+                    requirement_part[..idx].trim(),
+                    requirement_part[idx..].trim(),
+                ),
+                None => (requirement_part, ""),
+            }
         };
 
-        // Parse version spec operators in order of specificity (longer operators first)
-        let mut req = if let Some((name, version)) = version_part.split_once("~=") {
-            Requirement::compatible(
-                if name.is_empty() { name_part } else { name },
-                version.trim(),
-            )
-        } else if let Some((name, version)) = version_part.split_once("==") {
-            Requirement::exact(
-                if name.is_empty() { name_part } else { name },
-                version.trim(),
-            )
-        } else if let Some((name, version)) = version_part.split_once("!=") {
-            Requirement::not_equal(
-                if name.is_empty() { name_part } else { name },
-                version.trim(),
-            )
-        } else if let Some((name, version)) = version_part.split_once(">=") {
-            Requirement::minimum(
-                if name.is_empty() { name_part } else { name },
-                version.trim(),
-            )
-        } else if let Some((name, version)) = version_part.split_once("<=") {
-            Requirement::maximum_inclusive(
-                if name.is_empty() { name_part } else { name },
-                version.trim(),
-            )
-        } else if let Some((name, version)) = version_part.split_once('>') {
-            Requirement::minimum_exclusive(
-                if name.is_empty() { name_part } else { name },
-                version.trim(),
-            )
-        } else if let Some((name, version)) = version_part.split_once('<') {
-            Requirement::maximum(
-                if name.is_empty() { name_part } else { name },
-                version.trim(),
-            )
+        let specs = if constraint_str.is_empty() {
+            vec![VersionSpec::Any]
         } else {
-            // No operator - any version
-            Requirement::any(name_part)
+            constraint_str
+                .split(',')
+                .map(str::trim)
+                .filter(|part| !part.is_empty())
+                .map(parse_version_spec)
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        let specs = if specs.is_empty() {
+            vec![VersionSpec::Any]
+        } else {
+            specs
         };
 
-        // Attach marker if present
-        req.marker = marker_part;
-        Ok(req)
+        Ok(Requirement {
+            name: name.to_string(),
+            specs,
+            marker: marker_part,
+        })
     }
 }
 
@@ -1137,7 +1167,7 @@ mod tests {
         let req = Requirement::from_str(req_str).unwrap();
 
         assert_eq!(req.name, "polars-runtime-32");
-        assert_eq!(req.spec, VersionSpec::Exact("1.39.2".to_string()));
+        assert_eq!(req.specs, vec![VersionSpec::Exact("1.39.2".to_string())]);
         assert_eq!(req.marker, Some("platform_machine == 'i386'".to_string()));
     }
 
@@ -1147,8 +1177,91 @@ mod tests {
         let req = Requirement::from_str(req_str).unwrap();
 
         assert_eq!(req.name, "requests");
-        assert_eq!(req.spec, VersionSpec::Minimum("2.28.0".to_string()));
+        assert_eq!(req.specs, vec![VersionSpec::Minimum("2.28.0".to_string())]);
         assert_eq!(req.marker, None);
+    }
+
+    // ====================================================================
+    // Issue #181: compound version constraints (e.g. >=1.0,<2.0)
+    // ====================================================================
+
+    #[test]
+    fn test_parse_requirement_compound_constraints() {
+        let req = Requirement::from_str("foo>=1.0,<2.0").unwrap();
+
+        assert_eq!(req.name, "foo");
+        assert_eq!(
+            req.specs,
+            vec![
+                VersionSpec::Minimum("1.0".to_string()),
+                VersionSpec::Maximum("2.0".to_string()),
+            ]
+        );
+        assert!(req.is_satisfied_by("1.5.0"));
+        assert!(req.is_satisfied_by("1.0.0"));
+        assert!(!req.is_satisfied_by("2.0.0"));
+        assert!(!req.is_satisfied_by("3.0.0"));
+        assert!(!req.is_satisfied_by("0.9.0"));
+    }
+
+    #[test]
+    fn test_parse_requirement_compound_constraints_with_parens() {
+        let req = Requirement::from_str("package (>=1.20, <2.0)").unwrap();
+
+        assert_eq!(req.name, "package");
+        assert_eq!(
+            req.specs,
+            vec![
+                VersionSpec::Minimum("1.20".to_string()),
+                VersionSpec::Maximum("2.0".to_string()),
+            ]
+        );
+        assert!(req.is_satisfied_by("1.20.0"));
+        assert!(!req.is_satisfied_by("2.0.0"));
+    }
+
+    #[test]
+    fn test_parse_requirement_three_way_compound_constraint() {
+        let req = Requirement::from_str("foo>=1.0,<2.0,!=1.5.0").unwrap();
+
+        assert!(req.is_satisfied_by("1.4.0"));
+        assert!(!req.is_satisfied_by("1.5.0"));
+        assert!(!req.is_satisfied_by("2.0.0"));
+    }
+
+    #[test]
+    fn test_compound_requirement_display_roundtrip() {
+        let req = Requirement::from_str("foo>=1.0,<2.0").unwrap();
+        assert_eq!(req.to_string(), "foo>=1.0,<2.0");
+    }
+
+    #[test]
+    fn test_single_spec_requirement_still_parses_and_roundtrips() {
+        let req = Requirement::from_str("requests>=2.28.0").unwrap();
+        assert_eq!(req.specs, vec![VersionSpec::Minimum("2.28.0".to_string())]);
+        assert_eq!(req.to_string(), "requests>=2.28.0");
+
+        let req = Requirement::from_str("requests").unwrap();
+        assert_eq!(req.specs, vec![VersionSpec::Any]);
+        assert_eq!(req.to_string(), "requests");
+    }
+
+    #[tokio::test]
+    async fn test_resolve_respects_compound_constraint_upper_bound() {
+        let mut index = InMemoryIndex::default();
+        index.add("pkg", "1.0.0", Vec::<String>::new());
+        index.add("pkg", "1.5.0", Vec::<String>::new());
+        index.add("pkg", "2.5.0", Vec::<String>::new());
+
+        // Without an upper bound, the resolver would pick 2.5.0.
+        let req = Requirement::from_str("pkg>=1.0,<2.0").unwrap();
+        let resolution = resolve(vec![req], &index).await.unwrap();
+
+        assert_eq!(
+            resolution.packages.get("pkg").map(|p| p.version.as_str()),
+            Some("1.5.0"),
+            "resolver must respect the <2.0 upper bound and not select 2.5.0"
+        );
     }
 
     #[test]
@@ -1196,7 +1309,7 @@ mod tests {
         // "requests; python_version < '4.0'" — no version spec, just a marker
         let req = Requirement::from_str("requests; python_version < '4.0'").unwrap();
         assert_eq!(req.name, "requests");
-        assert_eq!(req.spec, VersionSpec::Any);
+        assert_eq!(req.specs, vec![VersionSpec::Any]);
         assert_eq!(req.marker, Some("python_version < '4.0'".to_string()));
     }
 
