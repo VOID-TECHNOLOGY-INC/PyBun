@@ -1955,6 +1955,25 @@ fn test_pybun_backend_timeout_kills_hanging_test() {
         "test exceeding --timeout should be reported as timeout: {}",
         slow
     );
+
+    // Issue #191: status == "error" must always carry a coded diagnostic,
+    // including for timeout-only failures.
+    let diagnostics = json
+        .get("diagnostics")
+        .and_then(|d| d.as_array())
+        .expect("diagnostics field must be a non-null array");
+    assert!(
+        diagnostics.iter().any(|diag| {
+            diag.get("level").and_then(|l| l.as_str()) == Some("error")
+                && diag.get("code").and_then(|c| c.as_str()) == Some("E_TEST_TIMEOUT")
+                && diag
+                    .get("suggestion")
+                    .and_then(|s| s.as_str())
+                    .is_some_and(|s| !s.is_empty())
+        }),
+        "expected an E_TEST_TIMEOUT diagnostic with a suggestion: {}",
+        json
+    );
 }
 
 #[test]

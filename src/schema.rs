@@ -452,6 +452,22 @@ impl EventCollector {
         self.diagnostics.push(Diagnostic::error(message));
     }
 
+    /// Record an error diagnostic with a stable `E_*` code and a suggested
+    /// remediation, so agents can act on failures without parsing free-form
+    /// text.
+    pub fn error_with_code(
+        &mut self,
+        code: impl Into<String>,
+        message: impl Into<String>,
+        suggestion: impl Into<String>,
+    ) {
+        self.diagnostics.push(
+            Diagnostic::error(message)
+                .with_code(code)
+                .with_suggestion(suggestion),
+        );
+    }
+
     /// Record a warning diagnostic
     pub fn warning(&mut self, message: impl Into<String>) {
         self.diagnostics.push(Diagnostic::warning(message));
@@ -576,6 +592,20 @@ mod tests {
         assert_eq!(parsed["duration_ms"], 123);
         assert!(parsed["events"].is_array());
         assert!(parsed["diagnostics"].is_array());
+    }
+
+    #[test]
+    fn test_error_with_code() {
+        let mut collector = EventCollector::new();
+        collector.error_with_code("E_EXAMPLE_FAILED", "something broke", "try this fix");
+
+        let diags = collector.into_diagnostics();
+        assert_eq!(diags.len(), 1);
+        let diag = &diags[0];
+        assert_eq!(diag.level, DiagnosticLevel::Error);
+        assert_eq!(diag.code, Some("E_EXAMPLE_FAILED".to_string()));
+        assert_eq!(diag.message, "something broke");
+        assert_eq!(diag.suggestion, Some("try this fix".to_string()));
     }
 
     #[test]
