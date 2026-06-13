@@ -93,9 +93,10 @@
   - Current: `src/sandbox.rs::SITECUSTOMIZE_PY` の `_block_subprocesses()` に `os.posix_spawn`/`os.posix_spawnp`/`os.spawnv`/`os.spawnve`/`os.spawnvp`/`os.spawnvpe`/`os.spawnl`/`os.spawnle`/`os.spawnlp`/`os.spawnlpe`/`os.startfile`（Windows）を追加し、いずれも `_deny("process creation", "blocked_subprocesses")` を呼ぶよう `setattr` で上書き。
   - Tests: `tests/sandbox.rs` に2件追加（`sandbox_blocks_posix_spawn` — `os.posix_spawn`/`os.posix_spawnp` が `PermissionError` を発生させ `blocked_subprocesses:2` を記録し、エスケープ証跡ファイルが作成されないことを確認、`sandbox_blocks_spawn_family` — `os.spawnv`/`spawnve`/`spawnvp`/`spawnvpe`/`spawnl`/`spawnle`/`spawnlp`/`spawnlpe` の8系統がすべて `PermissionError` で `blocked_subprocesses:8` を記録することを確認）。全sandboxテスト(29件)・`cargo clippy --all-targets --all-features -- -D warnings`・`cargo fmt -- --check` がパス。
 
-- PR-A6: `pybun watch` の標準ビルド fallback 監視
+- [DONE] PR-A6: `pybun watch` の標準ビルド fallback 監視 (Issue #190)
   - Goal: `native-watch` 無効でも poll-based で監視再実行できるようにする。
-  - Tests: feature無効CIで実監視E2E（previewではなく変更検知→再実行）。
+  - Current: `src/hot_reload.rs` に `scan_watch_paths` / `diff_snapshots` / `run_polling_watch_loop` を追加。include/exclude パターンは既存の `should_watch_path`（旧 `HotReloadWatcher::should_watch` から抽出）で判定し、`debounce_ms`（最小 `MIN_POLL_INTERVAL_MS=100ms`）をポーリング間隔として再利用。`src/commands.rs::run_watch()` の `#[cfg(not(feature = "native-watch"))]` 経路を、従来の "Would watch... (requires native-watch)" プレビュー出力から実際にブロッキングするポーリングループへ置き換え、変更検知時に対象コマンドを再実行する。E2E テスト用に `PYBUN_WATCH_MAX_ITERATIONS` を導入してループを有限回で終了可能にした。`native-watch` 有効時は従来どおり `run_native_watch_loop`（`notify` クレート）を使用。
+  - Tests: `cargo test --lib hot_reload::tests::polling_watch_tests`（9件: include/exclude判定、snapshotスキャン、Created/Modified/Deleted差分検出、ループ動作）。`cargo test --test hot_reload`（polling fallbackのE2E: ファイル変更検知→再実行、不正パスでのエラー）。`cargo test --features native-watch --test hot_reload` / `--lib hot_reload` でnative-watch経路が継続動作することを確認。`cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo fmt -- --check`。
 - PR-A7: install の安全な既定ターゲット（プロジェクト隔離環境）
   - Goal: プロジェクト検出時に system Python へ直接入る経路を避け、`.pybun/venv` を既定化。
   - Tests: 既存venv無しプロジェクトでの install E2E（system汚染しないことを確認）。

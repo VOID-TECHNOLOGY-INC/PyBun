@@ -4434,6 +4434,8 @@ fn run_module_find(args: &ModuleFindArgs, collector: &mut EventCollector) -> Res
 
 #[cfg(feature = "native-watch")]
 use crate::hot_reload::run_native_watch_loop;
+#[cfg(not(feature = "native-watch"))]
+use crate::hot_reload::run_polling_watch_loop;
 use crate::hot_reload::{HotReloadConfig, HotReloadWatcher, generate_shell_watcher_command};
 use crate::lazy_import::{
     LazyImportConfig, LazyImportDecision, generate_lazy_import_python_code_with_module_name,
@@ -4785,13 +4787,17 @@ fn run_watch(args: &WatchArgs, collector: &mut EventCollector) -> Result<RenderD
 
     #[cfg(not(feature = "native-watch"))]
     {
-        // Native watching not available - show preview
+        collector.info("Starting polling file watcher");
+
+        // Build the command to run
+        let run_cmd = format!("pybun run {}", target_script);
+
         let text = format!(
-            "Would watch {} paths for changes to run: {}\n\
+            "Watching {} paths for changes to run: {}\n\
             Patterns: {} include, {} exclude\n\
-            Debounce: {}ms\n\n\
-            Note: Native file watching requires building with --features native-watch.\n\
-            Use --shell-command for external watcher instead.",
+            Debounce: {}ms\n\
+            Native watching: disabled (using polling fallback)\n\
+            Press Ctrl+C to stop.",
             stats.watched_paths,
             target_script,
             stats.include_patterns,
@@ -4799,25 +4805,37 @@ fn run_watch(args: &WatchArgs, collector: &mut EventCollector) -> Result<RenderD
             stats.debounce_ms
         );
 
-        collector.info(&text);
+        eprintln!("{}", text);
 
-        Ok(RenderDetail::with_json(
-            text,
-            json!({
-                "status": "preview",
-                "target": target_script,
-                "watch_paths": config.watch_paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
-                "include_patterns": config.include_patterns,
-                "exclude_patterns": config.exclude_patterns,
-                "debounce_ms": config.debounce_ms,
-                "native_watch_available": false,
-                "stats": {
-                    "watched_paths": stats.watched_paths,
-                    "include_patterns": stats.include_patterns,
-                    "exclude_patterns": stats.exclude_patterns,
-                },
-            }),
-        ))
+        // Test-only escape hatch: bound the loop so E2E tests can observe
+        // change detection without running forever.
+        let max_iterations = std::env::var("PYBUN_WATCH_MAX_ITERATIONS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok());
+
+        match run_polling_watch_loop(&config, &run_cmd, max_iterations) {
+            Ok(outcome) => Ok(RenderDetail::with_json(
+                "File watching stopped".to_string(),
+                json!({
+                    "status": "stopped",
+                    "target": target_script,
+                    "native_watch": false,
+                    "polling": true,
+                    "iterations": outcome.iterations,
+                    "runs": outcome.runs,
+                }),
+            )),
+            Err(e) => {
+                collector.error(&e);
+                Ok(RenderDetail::error(
+                    format!("Watch failed: {}", e),
+                    json!({
+                        "error": e,
+                        "status": "error",
+                    }),
+                ))
+            }
+        }
     }
 }
 

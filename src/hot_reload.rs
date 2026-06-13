@@ -11,10 +11,10 @@
 //! - Native file watching with `notify` crate (optional feature: `native-watch`)
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 #[cfg(feature = "native-watch")]
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
@@ -199,27 +199,7 @@ impl HotReloadWatcher {
 
     /// Check if a path should be watched based on include/exclude patterns.
     pub fn should_watch(&self, path: &Path) -> bool {
-        let path_str = path.to_string_lossy();
-
-        // Check exclude patterns first
-        for pattern in &self.config.exclude_patterns {
-            if matches_pattern(&path_str, pattern) {
-                return false;
-            }
-        }
-
-        // Check include patterns
-        if self.config.include_patterns.is_empty() {
-            return true;
-        }
-
-        for pattern in &self.config.include_patterns {
-            if matches_pattern(&path_str, pattern) {
-                return true;
-            }
-        }
-
-        false
+        should_watch_path(&self.config, path)
     }
 
     /// Start watching (stub implementation - actual fs watching would use notify crate).
@@ -506,6 +486,213 @@ fn matches_pattern(path: &str, pattern: &str) -> bool {
 
     // Exact match or contains
     path.contains(pattern)
+}
+
+/// Check if a path should be watched based on the configuration's
+/// include/exclude patterns.
+pub fn should_watch_path(config: &HotReloadConfig, path: &Path) -> bool {
+    let path_str = path.to_string_lossy();
+
+    // Check exclude patterns first
+    for pattern in &config.exclude_patterns {
+        if matches_pattern(&path_str, pattern) {
+            return false;
+        }
+    }
+
+    // Check include patterns
+    if config.include_patterns.is_empty() {
+        return true;
+    }
+
+    config
+        .include_patterns
+        .iter()
+        .any(|pattern| matches_pattern(&path_str, pattern))
+}
+
+/// Current time in milliseconds since the Unix epoch.
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// A snapshot of watched files: path -> (modification time, size in bytes).
+pub type FileSnapshot = HashMap<PathBuf, (SystemTime, u64)>;
+
+/// Recursively scan the configured watch paths and return a snapshot of
+/// all files that pass the include/exclude pattern filters.
+///
+/// Directories matching an exclude pattern are not descended into.
+pub fn scan_watch_paths(config: &HotReloadConfig) -> FileSnapshot {
+    let mut snapshot = FileSnapshot::new();
+    let mut stack: Vec<PathBuf> = config.watch_paths.clone();
+
+    while let Some(path) = stack.pop() {
+        let metadata = match std::fs::metadata(&path) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+
+        if metadata.is_dir() {
+            let dir_str = path.to_string_lossy();
+            if config
+                .exclude_patterns
+                .iter()
+                .any(|pattern| matches_pattern(&dir_str, pattern))
+            {
+                continue;
+            }
+
+            if let Ok(entries) = std::fs::read_dir(&path) {
+                for entry in entries.flatten() {
+                    stack.push(entry.path());
+                }
+            }
+        } else if should_watch_path(config, &path)
+            && let Ok(mtime) = metadata.modified()
+        {
+            snapshot.insert(path, (mtime, metadata.len()));
+        }
+    }
+
+    snapshot
+}
+
+/// Compare two snapshots and return the file change events between them.
+pub fn diff_snapshots(old: &FileSnapshot, new: &FileSnapshot) -> Vec<FileChangeEvent> {
+    let timestamp_ms = now_ms();
+    let mut events = Vec::new();
+
+    for (path, (mtime, size)) in new {
+        match old.get(path) {
+            None => events.push(FileChangeEvent::new(
+                path.clone(),
+                ChangeType::Created,
+                timestamp_ms,
+            )),
+            Some((old_mtime, old_size)) => {
+                if old_mtime != mtime || old_size != size {
+                    events.push(FileChangeEvent::new(
+                        path.clone(),
+                        ChangeType::Modified,
+                        timestamp_ms,
+                    ));
+                }
+            }
+        }
+    }
+
+    for path in old.keys() {
+        if !new.contains_key(path) {
+            events.push(FileChangeEvent::new(
+                path.clone(),
+                ChangeType::Deleted,
+                timestamp_ms,
+            ));
+        }
+    }
+
+    events
+}
+
+/// Minimum interval between polling scans, regardless of configured debounce.
+const MIN_POLL_INTERVAL_MS: u64 = 100;
+
+/// Outcome of a polling watch loop run.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PollingWatchOutcome {
+    /// Number of poll iterations performed.
+    pub iterations: u64,
+    /// Number of times the command was run in response to a detected change.
+    pub runs: u64,
+}
+
+/// Run a poll-based watch loop, re-running `command` whenever a watched
+/// file is created, modified, or deleted.
+///
+/// This is the fallback used when the `native-watch` feature is not
+/// compiled in. Unlike [`run_native_watch_loop`], this function works on
+/// all platforms without the `notify` crate.
+///
+/// If `max_iterations` is `Some(n)`, the loop stops after `n` poll
+/// iterations (used by tests). If `None`, it runs until the process is
+/// interrupted (e.g. Ctrl+C).
+pub fn run_polling_watch_loop(
+    config: &HotReloadConfig,
+    command: &str,
+    max_iterations: Option<u64>,
+) -> Result<PollingWatchOutcome, String> {
+    use std::process::Command;
+
+    if config.watch_paths.is_empty() {
+        return Err("No paths to watch".to_string());
+    }
+
+    if !config.watch_paths.iter().any(|p| p.exists()) {
+        return Err("No valid paths to watch".to_string());
+    }
+
+    let poll_interval = Duration::from_millis(config.debounce_ms.max(MIN_POLL_INTERVAL_MS));
+    let mut snapshot = scan_watch_paths(config);
+    let mut outcome = PollingWatchOutcome::default();
+    eprintln!("info: watching for changes...");
+
+    loop {
+        std::thread::sleep(poll_interval);
+        outcome.iterations += 1;
+
+        let new_snapshot = scan_watch_paths(config);
+        let events = diff_snapshots(&snapshot, &new_snapshot);
+        snapshot = new_snapshot;
+
+        if !events.is_empty() {
+            for event in &events {
+                eprintln!("info: {:?} {}", event.change_type, event.path.display());
+            }
+
+            if config.clear_on_reload {
+                // ANSI escape sequence to clear screen
+                print!("\x1B[2J\x1B[1;1H");
+            }
+
+            eprintln!("info: running: {}", command);
+            let status = if cfg!(windows) {
+                Command::new("cmd").args(["/C", command]).status()
+            } else {
+                Command::new("sh").args(["-c", command]).status()
+            };
+
+            match status {
+                Ok(s) => {
+                    if s.success() {
+                        eprintln!("info: command completed successfully");
+                    } else {
+                        eprintln!(
+                            "warning: command exited with code {}",
+                            s.code().unwrap_or(-1)
+                        );
+                    }
+                }
+                Err(e) => {
+                    eprintln!("error: failed to run command: {}", e);
+                }
+            }
+
+            outcome.runs += 1;
+            eprintln!("info: watching for changes...");
+        }
+
+        if let Some(max) = max_iterations
+            && outcome.iterations >= max
+        {
+            break;
+        }
+    }
+
+    Ok(outcome)
 }
 
 impl HotReloadConfig {
@@ -891,6 +1078,179 @@ mod tests {
         assert!(available);
         #[cfg(not(feature = "native-watch"))]
         assert!(!available);
+    }
+
+    mod polling_watch_tests {
+        use super::*;
+        use std::fs::File;
+        use std::io::Write;
+        use std::thread;
+        use tempfile::TempDir;
+
+        #[test]
+        fn test_should_watch_path_respects_include_exclude() {
+            let config = HotReloadConfig::dev();
+            assert!(should_watch_path(&config, Path::new("foo.py")));
+            assert!(!should_watch_path(&config, Path::new("foo.rs")));
+            assert!(!should_watch_path(
+                &config,
+                Path::new("__pycache__/foo.pyc")
+            ));
+        }
+
+        #[test]
+        fn test_scan_watch_paths_finds_python_files_and_ignores_others() {
+            let temp = TempDir::new().unwrap();
+
+            let py_file = temp.path().join("main.py");
+            File::create(&py_file).unwrap();
+
+            let txt_file = temp.path().join("notes.txt");
+            File::create(&txt_file).unwrap();
+
+            let mut config = HotReloadConfig::dev();
+            config.watch_paths = vec![temp.path().to_path_buf()];
+
+            let snapshot = scan_watch_paths(&config);
+
+            assert!(snapshot.contains_key(&py_file));
+            assert!(!snapshot.contains_key(&txt_file));
+        }
+
+        #[test]
+        fn test_scan_watch_paths_excludes_pycache_dir() {
+            let temp = TempDir::new().unwrap();
+
+            let pycache = temp.path().join("__pycache__");
+            std::fs::create_dir(&pycache).unwrap();
+            let pyc_file = pycache.join("main.cpython-311.pyc");
+            File::create(&pyc_file).unwrap();
+
+            let main_py = temp.path().join("main.py");
+            File::create(&main_py).unwrap();
+
+            let mut config = HotReloadConfig::dev();
+            config.watch_paths = vec![temp.path().to_path_buf()];
+
+            let snapshot = scan_watch_paths(&config);
+
+            assert!(snapshot.contains_key(&main_py));
+            assert!(!snapshot.contains_key(&pyc_file));
+        }
+
+        #[test]
+        fn test_diff_snapshots_detects_created_modified_and_deleted() {
+            let now = SystemTime::now();
+            let created = PathBuf::from("created.py");
+            let modified = PathBuf::from("modified.py");
+            let deleted = PathBuf::from("deleted.py");
+
+            let mut old: FileSnapshot = HashMap::new();
+            old.insert(modified.clone(), (now, 10));
+            old.insert(deleted.clone(), (now, 5));
+
+            let mut new: FileSnapshot = HashMap::new();
+            new.insert(modified.clone(), (now, 20));
+            new.insert(created.clone(), (now, 1));
+
+            let events = diff_snapshots(&old, &new);
+
+            let created_event = events
+                .iter()
+                .find(|e| e.path == created)
+                .expect("created event");
+            assert_eq!(created_event.change_type, ChangeType::Created);
+
+            let modified_event = events
+                .iter()
+                .find(|e| e.path == modified)
+                .expect("modified event");
+            assert_eq!(modified_event.change_type, ChangeType::Modified);
+
+            let deleted_event = events
+                .iter()
+                .find(|e| e.path == deleted)
+                .expect("deleted event");
+            assert_eq!(deleted_event.change_type, ChangeType::Deleted);
+        }
+
+        #[test]
+        fn test_diff_snapshots_no_changes_returns_empty() {
+            let now = SystemTime::now();
+            let path = PathBuf::from("stable.py");
+
+            let mut snapshot: FileSnapshot = HashMap::new();
+            snapshot.insert(path, (now, 10));
+
+            let events = diff_snapshots(&snapshot, &snapshot);
+            assert!(events.is_empty());
+        }
+
+        #[test]
+        fn test_run_polling_watch_loop_no_paths_errors() {
+            let mut config = HotReloadConfig::dev();
+            config.watch_paths.clear();
+
+            let result = run_polling_watch_loop(&config, "true", Some(1));
+            assert!(result.is_err());
+            assert!(result.unwrap_err().contains("No paths to watch"));
+        }
+
+        #[test]
+        fn test_run_polling_watch_loop_no_valid_paths_errors() {
+            let mut config = HotReloadConfig::dev();
+            config.watch_paths = vec![PathBuf::from("/nonexistent/path/for/pybun/tests")];
+
+            let result = run_polling_watch_loop(&config, "true", Some(1));
+            assert!(result.is_err());
+            assert!(result.unwrap_err().contains("No valid paths to watch"));
+        }
+
+        #[test]
+        fn test_run_polling_watch_loop_detects_change_and_runs_command() {
+            let temp = TempDir::new().unwrap();
+            let py_file = temp.path().join("main.py");
+            File::create(&py_file).unwrap();
+
+            let mut config = HotReloadConfig::dev();
+            config.watch_paths = vec![temp.path().to_path_buf()];
+            config.debounce_ms = 50;
+
+            // Modify the watched file shortly after the loop starts so the
+            // first poll iteration (after debounce) observes the change.
+            let watched_file = py_file.clone();
+            let writer = thread::spawn(move || {
+                thread::sleep(Duration::from_millis(75));
+                let mut file = File::create(&watched_file).unwrap();
+                writeln!(file, "print('changed')").unwrap();
+                file.sync_all().unwrap();
+            });
+
+            let outcome = run_polling_watch_loop(&config, "true", Some(6)).unwrap();
+
+            writer.join().unwrap();
+
+            assert_eq!(outcome.iterations, 6);
+            assert!(
+                outcome.runs >= 1,
+                "expected at least one command run for detected change"
+            );
+        }
+
+        #[test]
+        fn test_run_polling_watch_loop_respects_max_iterations_without_changes() {
+            let temp = TempDir::new().unwrap();
+            File::create(temp.path().join("main.py")).unwrap();
+
+            let mut config = HotReloadConfig::dev();
+            config.watch_paths = vec![temp.path().to_path_buf()];
+            config.debounce_ms = 50;
+
+            let outcome = run_polling_watch_loop(&config, "true", Some(3)).unwrap();
+
+            assert_eq!(outcome.iterations, 3);
+            assert_eq!(outcome.runs, 0);
+        }
     }
 
     #[cfg(feature = "native-watch")]
