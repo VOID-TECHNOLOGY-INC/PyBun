@@ -6137,18 +6137,28 @@ fn run_tests_native(
         )
     };
 
-    // Emit diagnostics for failed tests
-    for failed in result.failed_tests() {
+    // Emit diagnostics for failed and timed-out tests
+    for failed in result.failed_or_timed_out_tests() {
+        let (code, prefix, suggestion) = if failed.outcome == TestOutcome::Timeout {
+            (
+                "E_TEST_TIMEOUT",
+                "TIMEOUT",
+                "This test exceeded its timeout; increase --timeout if the test is legitimately slow, or fix the hang and re-run `pybun test`.",
+            )
+        } else {
+            (
+                "E_TEST_FAILED",
+                "FAILED",
+                "Inspect the file/line and stderr context, fix the failing test or implementation, and re-run `pybun test`.",
+            )
+        };
         let diag = Diagnostic {
             level: crate::schema::DiagnosticLevel::Error,
-            code: Some("E_TEST_FAILED".to_string()),
-            message: format!("FAILED {}", failed.name),
+            code: Some(code.to_string()),
+            message: format!("{prefix} {}", failed.name),
             file: Some(failed.path.display().to_string()),
             line: Some(failed.line as u32),
-            suggestion: Some(
-                "Inspect the file/line and stderr context, fix the failing test or implementation, and re-run `pybun test`."
-                    .to_string(),
-            ),
+            suggestion: Some(suggestion.to_string()),
             context: if failed.stderr.is_empty() {
                 None
             } else {

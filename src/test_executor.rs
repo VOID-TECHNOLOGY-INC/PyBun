@@ -648,6 +648,20 @@ impl ExecutionResult {
             .collect()
     }
 
+    /// Get failed, errored, and timed-out tests — i.e. every test outcome
+    /// that contributes to `ExecutionSummary::all_passed()` returning false.
+    pub fn failed_or_timed_out_tests(&self) -> Vec<&TestResult> {
+        self.results
+            .iter()
+            .filter(|r| {
+                matches!(
+                    r.outcome,
+                    TestOutcome::Failed | TestOutcome::Error | TestOutcome::Timeout
+                )
+            })
+            .collect()
+    }
+
     /// Convert to JSON value
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::json!({
