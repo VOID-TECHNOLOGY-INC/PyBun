@@ -196,6 +196,41 @@ CLI の出力を構造化データとして提供するモード。
   * **Schema:** 成功/失敗を問わず `version`, `command`, `duration_ms`, `events[]`, `diagnostics[]` を含む。`events` はビルド/ダウンロード/テスト結果などを時系列で提供。
   * **MCP サーバー:** 段階導入として `pybun mcp serve --stdio` を先行し、依存解決・インストール・実行・診断などを RPC 経由で実行できるようにする。HTTP mode（`pybun mcp serve --port 9999`）は運用/セキュリティ要件を満たした後に追加する。
 
+### 5.1.1 エラーエンベロープ規約 (Error Envelope Convention)
+
+エージェントが失敗を機械的に処理できるよう、`status == "error"` のレスポンスは必ず `diagnostics[]` に少なくとも1つの `level: "error"` エントリを含み、各エントリは次の3フィールドを備える:
+
+  * `code`: 安定した `E_*` 識別子（例: `E_LOCKFILE_NOT_FOUND`, `E_INSTALL_FAILED`, `E_SELF_UPDATE_APPLY_FAILED`）。`detail.error` などの自由形式文字列を主要なエラーチャネルにしてはならない。
+  * `message`: 人間が読めるエラー内容。
+  * `suggestion`: 次に取るべきアクション（リトライ用のコマンド例を含む）。
+
+例: ロックファイルが存在しない状態での `pybun --format=json outdated`:
+
+```json
+{
+  "version": "1",
+  "command": "pybun outdated",
+  "status": "error",
+  "detail": {
+    "error": "pybun.lockb not found. Run 'pybun install' first."
+  },
+  "events": [
+    { "type": "command_start", "timestamp_ms": 0 },
+    { "type": "command_end", "timestamp_ms": 0 }
+  ],
+  "diagnostics": [
+    {
+      "level": "error",
+      "code": "E_LOCKFILE_NOT_FOUND",
+      "message": "pybun.lockb not found. Run 'pybun install' first.",
+      "suggestion": "Run `pybun install` to generate pybun.lockb, then re-run `pybun outdated`."
+    }
+  ]
+}
+```
+
+この不変条件は `tests/error_envelope.rs` で回帰テストされている。
+
 ### 5.2 Self-Healing Context
 
 エラー発生時、単なるスタックトレースではなく「解決策」を含むコンテキストを提供する。

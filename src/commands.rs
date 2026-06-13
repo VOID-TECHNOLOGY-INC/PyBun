@@ -102,7 +102,11 @@ pub async fn execute(cli: Cli) -> Result<()> {
                     // Only push a generic fallback error if install() did not already
                     // record an error-level diagnostic (e.g. resolve errors).
                     if collector.error_diagnostic_count() == pre_error_count {
-                        collector.error(e.to_string());
+                        collector.error_with_code(
+                            "E_INSTALL_FAILED",
+                            e.to_string(),
+                            "Check --index/--require and network connectivity, then re-run `pybun install`. Use --format=json for full diagnostics.",
+                        );
                     }
                     (
                         "install".to_string(),
@@ -138,6 +142,7 @@ pub async fn execute(cli: Cli) -> Result<()> {
                         group: None,
                     };
 
+                    let pre_error_count = collector.error_diagnostic_count();
                     match install(&install_args, &mut collector).await {
                         Ok(_) => (
                             "add".to_string(),
@@ -156,7 +161,15 @@ pub async fn execute(cli: Cli) -> Result<()> {
                                 "Added {} to pyproject.toml but failed to install: {}",
                                 package, e
                             );
-                            collector.error(err_msg.clone());
+                            // Only push a generic fallback error if install() did not
+                            // already record an error-level diagnostic (e.g. resolve errors).
+                            if collector.error_diagnostic_count() == pre_error_count {
+                                collector.error_with_code(
+                                    "E_ADD_INSTALL_FAILED",
+                                    err_msg.clone(),
+                                    "pyproject.toml was updated; fix the underlying issue (see other diagnostics) and run `pybun install` to finish installing dependencies.",
+                                );
+                            }
                             (
                                 "add".to_string(),
                                 RenderDetail::error(
@@ -172,7 +185,11 @@ pub async fn execute(cli: Cli) -> Result<()> {
                     }
                 }
                 Err(e) => {
-                    collector.error(e.to_string());
+                    collector.error_with_code(
+                        "E_ADD_FAILED",
+                        e.to_string(),
+                        "Verify the package name/version and pyproject.toml, then retry `pybun add <package>`.",
+                    );
                     (
                         "add".to_string(),
                         RenderDetail::error(
@@ -203,7 +220,11 @@ pub async fn execute(cli: Cli) -> Result<()> {
                     ),
                 ),
                 Err(e) => {
-                    collector.error(e.to_string());
+                    collector.error_with_code(
+                        "E_REMOVE_FAILED",
+                        e.to_string(),
+                        "Verify the package is listed in pyproject.toml, then retry `pybun remove <package>`.",
+                    );
                     (
                         "remove".to_string(),
                         RenderDetail::error(
@@ -246,7 +267,11 @@ pub async fn execute(cli: Cli) -> Result<()> {
                     // Only push a generic fallback error if lock_dependencies did not
                     // already record an error-level diagnostic (e.g. resolve errors).
                     if collector.error_diagnostic_count() == pre_error_count {
-                        collector.error(e.to_string());
+                        collector.error_with_code(
+                            "E_LOCK_FAILED",
+                            e.to_string(),
+                            "Check --index/--require and network connectivity, then re-run `pybun lock`.",
+                        );
                     }
                     (
                         "lock".to_string(),
@@ -320,7 +345,11 @@ pub async fn execute(cli: Cli) -> Result<()> {
                     ("run".to_string(), detail)
                 }
                 Err(e) => {
-                    collector.error(e.to_string());
+                    collector.error_with_code(
+                        "E_RUN_FAILED",
+                        e.to_string(),
+                        "Check the script path and any PEP 723 inline metadata, then re-run `pybun run <script>`.",
+                    );
                     (
                         "run".to_string(),
                         RenderDetail::error(
@@ -363,7 +392,11 @@ pub async fn execute(cli: Cli) -> Result<()> {
                     .with_process_exit_code(exit_code),
                 ),
                 Err(e) => {
-                    collector.error(e.to_string());
+                    collector.error_with_code(
+                        "E_X_FAILED",
+                        e.to_string(),
+                        "Verify the tool/package name and that it provides a console entry point, then retry `pybun x <tool>`.",
+                    );
                     (
                         "x".to_string(),
                         RenderDetail::error(
@@ -382,7 +415,11 @@ pub async fn execute(cli: Cli) -> Result<()> {
             match result {
                 Ok(detail) => ("test".to_string(), detail),
                 Err(e) => {
-                    collector.error(e.to_string());
+                    collector.error_with_code(
+                        "E_TEST_RUN_FAILED",
+                        e.to_string(),
+                        "Check that the test runner and target paths are valid, then re-run `pybun test`.",
+                    );
                     (
                         "test".to_string(),
                         RenderDetail::error(
@@ -440,7 +477,11 @@ pub async fn execute(cli: Cli) -> Result<()> {
                     // Only push a generic fallback error if run_build did not already
                     // record an error-level diagnostic (e.g. E_BUILD_MISSING_BUILD_PKG).
                     if collector.error_diagnostic_count() == pre_error_count {
-                        collector.error(e.to_string());
+                        collector.error_with_code(
+                            "E_BUILD_FAILED",
+                            e.to_string(),
+                            "Ensure the `build` package is installed (`pybun add build --dev`) and pyproject.toml is valid, then re-run `pybun build`.",
+                        );
                     }
                     RenderDetail::error(
                         e.to_string(),
@@ -462,7 +503,11 @@ pub async fn execute(cli: Cli) -> Result<()> {
                 if args.stdio {
                     // Run MCP server in stdio mode - this blocks until shutdown
                     if let Err(e) = crate::mcp::run_stdio_server().await {
-                        collector.error(e.to_string());
+                        collector.error_with_code(
+                            "E_MCP_SERVE_FAILED",
+                            e.to_string(),
+                            "Ensure stdin/stdout are not redirected elsewhere and retry `pybun mcp serve --stdio`.",
+                        );
                         (
                             "mcp serve".to_string(),
                             RenderDetail::error(e.to_string(), json!({"error": e.to_string()})),
@@ -500,7 +545,11 @@ pub async fn execute(cli: Cli) -> Result<()> {
             match result {
                 Ok(detail) => ("gc".to_string(), detail),
                 Err(e) => {
-                    collector.error(e.to_string());
+                    collector.error_with_code(
+                        "E_GC_FAILED",
+                        e.to_string(),
+                        "Check cache directory permissions (see $PYBUN_HOME or the default cache dir), then re-run `pybun gc`.",
+                    );
                     (
                         "gc".to_string(),
                         RenderDetail::error(
@@ -517,7 +566,6 @@ pub async fn execute(cli: Cli) -> Result<()> {
             match handle_python_command(cmd, &mut collector) {
                 Ok((subcmd, detail)) => (format!("python {}", subcmd), detail),
                 Err(e) => {
-                    collector.error(e.to_string());
                     // Determine subcommand name for error reporting
                     let subcmd = match cmd {
                         PythonCommands::List(_) => "list",
@@ -525,6 +573,11 @@ pub async fn execute(cli: Cli) -> Result<()> {
                         PythonCommands::Remove(_) => "remove",
                         PythonCommands::Which(_) => "which",
                     };
+                    collector.error_with_code(
+                        format!("E_PYTHON_{}_FAILED", subcmd.to_uppercase()),
+                        e.to_string(),
+                        "Run `pybun doctor` to check Python discovery, then retry `pybun python <subcommand>`.",
+                    );
                     (
                         format!("python {}", subcmd),
                         RenderDetail::error(
@@ -544,7 +597,11 @@ pub async fn execute(cli: Cli) -> Result<()> {
             match result {
                 Ok(detail) => ("module-find".to_string(), detail),
                 Err(e) => {
-                    collector.error(e.to_string());
+                    collector.error_with_code(
+                        "E_MODULE_FIND_FAILED",
+                        e.to_string(),
+                        "Verify the module name and that the target environment is set up, then re-run `pybun module-find`.",
+                    );
                     (
                         "module-find".to_string(),
                         RenderDetail::error(
@@ -564,7 +621,11 @@ pub async fn execute(cli: Cli) -> Result<()> {
             match result {
                 Ok(detail) => ("lazy-import".to_string(), detail),
                 Err(e) => {
-                    collector.error(e.to_string());
+                    collector.error_with_code(
+                        "E_LAZY_IMPORT_FAILED",
+                        e.to_string(),
+                        "Verify the target script/module path, then re-run `pybun lazy-import`.",
+                    );
                     (
                         "lazy-import".to_string(),
                         RenderDetail::error(
@@ -583,7 +644,11 @@ pub async fn execute(cli: Cli) -> Result<()> {
             match result {
                 Ok(detail) => ("watch".to_string(), detail),
                 Err(e) => {
-                    collector.error(e.to_string());
+                    collector.error_with_code(
+                        "E_WATCH_FAILED",
+                        e.to_string(),
+                        "Verify the watch target and include/exclude patterns, then re-run `pybun watch`.",
+                    );
                     (
                         "watch".to_string(),
                         RenderDetail::error(
@@ -601,7 +666,11 @@ pub async fn execute(cli: Cli) -> Result<()> {
             match result {
                 Ok(detail) => ("profile".to_string(), detail),
                 Err(e) => {
-                    collector.error(e.to_string());
+                    collector.error_with_code(
+                        "E_PROFILE_FAILED",
+                        e.to_string(),
+                        "Check the profile name and the [tool.pybun.profiles] section of pyproject.toml, then re-run `pybun profile`.",
+                    );
                     (
                         "profile".to_string(),
                         RenderDetail::error(
@@ -638,7 +707,7 @@ pub async fn execute(cli: Cli) -> Result<()> {
                 ("schema print".to_string(), detail)
             }
             Some(SchemaCommands::Check(args)) => {
-                let detail = run_schema_check(args);
+                let detail = run_schema_check(args, &mut collector);
                 ("schema check".to_string(), detail)
             }
         },
@@ -647,7 +716,11 @@ pub async fn execute(cli: Cli) -> Result<()> {
             match result {
                 Ok(detail) => ("telemetry".to_string(), detail),
                 Err(e) => {
-                    collector.error(e.to_string());
+                    collector.error_with_code(
+                        "E_TELEMETRY_FAILED",
+                        e.to_string(),
+                        "Check $PYBUN_HOME permissions and the telemetry configuration, then re-run `pybun telemetry`.",
+                    );
                     (
                         "telemetry".to_string(),
                         RenderDetail::error(
@@ -669,7 +742,11 @@ pub async fn execute(cli: Cli) -> Result<()> {
                     // Only push a generic fallback error if init_project did not already
                     // record an error-level diagnostic (e.g. E_INIT_NOT_INTERACTIVE).
                     if collector.error_diagnostic_count() == pre_error_count {
-                        collector.error(e.to_string());
+                        collector.error_with_code(
+                            "E_INIT_FAILED",
+                            e.to_string(),
+                            "Check directory permissions and that pyproject.toml does not already exist, then re-run `pybun init`.",
+                        );
                     }
                     (
                         "init".to_string(),
@@ -684,11 +761,20 @@ pub async fn execute(cli: Cli) -> Result<()> {
             }
         }
         Commands::Outdated(args) => {
+            let pre_error_count = collector.error_diagnostic_count();
             let result = run_outdated(args, &mut collector).await;
             match result {
                 Ok(detail) => ("outdated".to_string(), detail),
                 Err(e) => {
-                    collector.error(e.to_string());
+                    // Only push a generic fallback error if run_outdated did not already
+                    // record an error-level diagnostic (e.g. E_LOCKFILE_NOT_FOUND).
+                    if collector.error_diagnostic_count() == pre_error_count {
+                        collector.error_with_code(
+                            "E_OUTDATED_FAILED",
+                            e.to_string(),
+                            "Run `pybun install` to generate pybun.lockb, then re-run `pybun outdated`.",
+                        );
+                    }
                     (
                         "outdated".to_string(),
                         RenderDetail::error(
@@ -702,11 +788,20 @@ pub async fn execute(cli: Cli) -> Result<()> {
             }
         }
         Commands::Upgrade(args) => {
+            let pre_error_count = collector.error_diagnostic_count();
             let result = run_upgrade(args, &mut collector).await;
             match result {
                 Ok(detail) => ("upgrade".to_string(), detail),
                 Err(e) => {
-                    collector.error(e.to_string());
+                    // Only push a generic fallback error if run_upgrade did not already
+                    // record an error-level diagnostic (e.g. E_LOCKFILE_NOT_FOUND).
+                    if collector.error_diagnostic_count() == pre_error_count {
+                        collector.error_with_code(
+                            "E_UPGRADE_FAILED",
+                            e.to_string(),
+                            "Run `pybun install` to generate the lockfile, then re-run `pybun upgrade`.",
+                        );
+                    }
                     (
                         "upgrade".to_string(),
                         RenderDetail::error(
@@ -832,17 +927,26 @@ fn schema_version_from(schema: &Value) -> Option<String> {
         })
 }
 
-fn run_schema_check(args: &crate::cli::SchemaCheckArgs) -> RenderDetail {
+fn run_schema_check(
+    args: &crate::cli::SchemaCheckArgs,
+    collector: &mut EventCollector,
+) -> RenderDetail {
     let embedded = crate::schema::schema_v1_json();
     let embedded_version = schema_version_from(&embedded);
     let expected_version = crate::schema::SCHEMA_VERSION.to_string();
 
     let mut issues = Vec::new();
     if embedded_version.as_deref() != Some(expected_version.as_str()) {
-        issues.push(format!(
+        let message = format!(
             "embedded schema version mismatch (found {:?}, expected {})",
             embedded_version, expected_version
-        ));
+        );
+        collector.error_with_code(
+            "E_SCHEMA_VERSION_MISMATCH",
+            message.clone(),
+            "Update crate::schema::SCHEMA_VERSION or schema_v1_json() so the embedded schema version matches, then rebuild.",
+        );
+        issues.push(message);
     }
 
     let default_path = PathBuf::from("schema/schema_v1.json");
@@ -865,18 +969,36 @@ fn run_schema_check(args: &crate::cli::SchemaCheckArgs) -> RenderDetail {
                 Ok(on_disk) => {
                     if on_disk != embedded {
                         mismatch = Some(true);
-                        issues.push("schema file differs from embedded definition".to_string());
+                        let message = "schema file differs from embedded definition".to_string();
+                        collector.error_with_code(
+                            "E_SCHEMA_FILE_MISMATCH",
+                            message.clone(),
+                            "Regenerate the schema file with `pybun schema print --format=json` to match the embedded schema, or update the embedded schema to match the file.",
+                        );
+                        issues.push(message);
                     } else {
                         mismatch = Some(false);
                     }
                 }
                 Err(e) => {
-                    file_error = Some(format!("failed to parse schema file: {}", e));
+                    let message = format!("failed to parse schema file: {}", e);
+                    collector.error_with_code(
+                        "E_SCHEMA_FILE_PARSE",
+                        message.clone(),
+                        "Fix the JSON syntax in the schema file, or regenerate it with `pybun schema print --format=json`.",
+                    );
+                    file_error = Some(message);
                     issues.push("schema file is not valid JSON".to_string());
                 }
             },
             Err(e) => {
-                file_error = Some(format!("failed to read schema file: {}", e));
+                let message = format!("failed to read schema file: {}", e);
+                collector.error_with_code(
+                    "E_SCHEMA_FILE_READ",
+                    message.clone(),
+                    "Check that the schema file path exists and is readable, then re-run `pybun schema check`.",
+                );
+                file_error = Some(message);
                 issues.push("schema file could not be read".to_string());
             }
         }
@@ -1129,7 +1251,11 @@ fn run_doctor(args: &crate::cli::DoctorArgs, collector: &mut EventCollector) -> 
                 });
             }
             Err(err) => {
-                collector.warning(format!("Support bundle failed: {:?}", err));
+                collector.error_with_code(
+                    "E_DOCTOR_BUNDLE_FAILED",
+                    format!("Support bundle failed: {:?}", err),
+                    "Check that the bundle output path (or system temp directory) is writable, then re-run `pybun doctor --bundle <path>`.",
+                );
                 return RenderDetail::error(
                     "Support bundle failed".to_string(),
                     json!({
@@ -1498,7 +1624,11 @@ async fn install(
             "The following packages have no pre-built wheel for your platform and require source builds (not yet supported): {}",
             sdist_only_packages.join(", ")
         );
-        collector.error(message.clone());
+        collector.error_with_code(
+            "E_INSTALL_SDIST_ONLY",
+            message.clone(),
+            "Source builds are not yet supported; choose packages/versions with prebuilt wheels for your platform, or use a different index.",
+        );
         return Err(eyre!(message));
     }
 
@@ -4012,14 +4142,26 @@ fn run_self_update(
 
     if !args.dry_run {
         if let Some(error) = manifest_error.as_deref() {
-            update_error = Some(format!("failed to load release manifest: {error}"));
+            let message = format!("failed to load release manifest: {error}");
+            collector.error_with_code(
+                "E_SELF_UPDATE_MANIFEST",
+                message.clone(),
+                "Check network connectivity and the release manifest URL (--channel or PYBUN_SELF_UPDATE_MANIFEST_URL), then retry `pybun self update`.",
+            );
+            update_error = Some(message);
         } else if update_available {
             let Some(asset) = selected_asset else {
                 let target_text = target
                     .as_deref()
                     .map(|value| value.to_string())
                     .unwrap_or_else(|| "unknown".to_string());
-                update_error = Some(format!("no release asset found for target {target_text}"));
+                let message = format!("no release asset found for target {target_text}");
+                collector.error_with_code(
+                    "E_SELF_UPDATE_NO_ASSET",
+                    message.clone(),
+                    "Pass --target explicitly to select a supported platform/arch, or check that a release asset exists for your platform.",
+                );
+                update_error = Some(message);
                 let summary = "Update failed: no release asset found".to_string();
                 let json_detail = json!({
                     "current_version": current_version,
@@ -4062,7 +4204,11 @@ fn run_self_update(
                 Err(error) => {
                     rollback_performed = error.rollback_performed;
                     update_error = Some(error.to_string());
-                    collector.error(error.to_string());
+                    collector.error_with_code(
+                        "E_SELF_UPDATE_APPLY_FAILED",
+                        error.to_string(),
+                        "Check write permissions to the install path and retry `pybun self update`. If a backup exists, rollback may have already been performed.",
+                    );
                 }
             }
         }
@@ -4773,7 +4919,11 @@ fn run_watch(args: &WatchArgs, collector: &mut EventCollector) -> Result<RenderD
                 }),
             )),
             Err(e) => {
-                collector.error(&e);
+                collector.error_with_code(
+                    "E_WATCH_LOOP_FAILED",
+                    e.clone(),
+                    "Check the watch target and filesystem permissions, then re-run `pybun watch`.",
+                );
                 Ok(RenderDetail::error(
                     format!("Watch failed: {}", e),
                     json!({
@@ -4826,7 +4976,11 @@ fn run_watch(args: &WatchArgs, collector: &mut EventCollector) -> Result<RenderD
                 }),
             )),
             Err(e) => {
-                collector.error(&e);
+                collector.error_with_code(
+                    "E_WATCH_LOOP_FAILED",
+                    e.clone(),
+                    "Check the watch target and filesystem permissions, then re-run `pybun watch`.",
+                );
                 Ok(RenderDetail::error(
                     format!("Watch failed: {}", e),
                     json!({
@@ -5761,6 +5915,11 @@ fn run_tests(args: &crate::cli::TestArgs, collector: &mut EventCollector) -> Res
     });
 
     if tests_failed {
+        collector.error_with_code(
+            "E_TEST_FAILED",
+            summary.clone(),
+            "Inspect stdout/stderr in the response for failing test output, fix the failing tests, and re-run `pybun test`.",
+        );
         Ok(RenderDetail::error(summary, detail))
     } else {
         Ok(RenderDetail::with_json(summary, detail))
@@ -5986,7 +6145,10 @@ fn run_tests_native(
             message: format!("FAILED {}", failed.name),
             file: Some(failed.path.display().to_string()),
             line: Some(failed.line as u32),
-            suggestion: None,
+            suggestion: Some(
+                "Inspect the file/line and stderr context, fix the failing test or implementation, and re-run `pybun test`."
+                    .to_string(),
+            ),
             context: if failed.stderr.is_empty() {
                 None
             } else {
@@ -6289,7 +6451,13 @@ async fn run_outdated(args: &OutdatedArgs, collector: &mut EventCollector) -> Re
     let lock_path = cwd.join("pybun.lockb");
 
     if !lock_path.exists() {
-        return Err(eyre!("pybun.lockb not found. Run 'pybun install' first."));
+        let message = "pybun.lockb not found. Run 'pybun install' first.".to_string();
+        collector.error_with_code(
+            "E_LOCKFILE_NOT_FOUND",
+            message.clone(),
+            "Run `pybun install` to generate pybun.lockb, then re-run `pybun outdated`.",
+        );
+        return Err(eyre!(message));
     }
 
     let lockfile = Lockfile::load_from_path(&lock_path)
@@ -6484,10 +6652,16 @@ async fn run_upgrade(args: &UpgradeArgs, collector: &mut EventCollector) -> Resu
     };
 
     if !lock_path.exists() {
-        return Err(eyre!(
+        let message = format!(
             "lockfile not found at {}. Run 'pybun install' first.",
             lock_path.display()
-        ));
+        );
+        collector.error_with_code(
+            "E_LOCKFILE_NOT_FOUND",
+            message.clone(),
+            "Run `pybun install` to generate the lockfile, then re-run `pybun upgrade`.",
+        );
+        return Err(eyre!(message));
     }
 
     // Load project to get constraints, optionally scoped by --member/--group
