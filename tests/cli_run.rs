@@ -37,10 +37,19 @@ fn run_script_with_args() {
 #[test]
 fn run_inline_code() {
     bin()
-        .args(["run", "-c", "--", "print('inline')"])
+        .args(["run", "-c", "print('inline')"])
         .assert()
         .success()
         .stdout(predicate::str::contains("inline"));
+}
+
+#[test]
+fn run_inline_code_long_flag() {
+    bin()
+        .args(["run", "--code", "print('inline-long')"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("inline-long"));
 }
 
 #[test]
@@ -132,7 +141,7 @@ fn run_script_propagates_nonzero_exit_code() {
 #[test]
 fn run_inline_code_propagates_nonzero_exit_code() {
     let output = bin()
-        .args(["run", "-c", "--", "import sys; sys.exit(7)"])
+        .args(["run", "-c", "import sys; sys.exit(7)"])
         .output()
         .expect("run pybun");
     assert_eq!(
@@ -425,13 +434,7 @@ fn run_json_mode_nonzero_exit_reports_error_status() {
 #[test]
 fn run_json_mode_inline_nonzero_reports_error_status() {
     let output = bin()
-        .args([
-            "--format=json",
-            "run",
-            "-c",
-            "--",
-            "import sys; sys.exit(7)",
-        ])
+        .args(["--format=json", "run", "-c", "import sys; sys.exit(7)"])
         .output()
         .expect("run pybun");
 

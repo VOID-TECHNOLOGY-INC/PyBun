@@ -2453,6 +2453,11 @@ async fn run_script(
         .map_err(|e: String| eyre!("invalid --profile value: {}", e))?;
     let profile_config = ProfileConfig::for_profile(profile);
 
+    // -c/--code: execute inline Python code, like `python -c "..."`.
+    if let Some(code) = &args.code {
+        return run_python_code(args, code, collector, format);
+    }
+
     let target = args
         .target
         .as_ref()
@@ -2460,11 +2465,6 @@ async fn run_script(
 
     // Check if it's a Python file
     let script_path = PathBuf::from(target);
-
-    // Check for -c flag style execution
-    if target == "-c" {
-        return run_python_code(args, collector, format);
-    }
 
     // Ensure the script exists
     if !script_path.exists() {
@@ -3403,6 +3403,7 @@ fn check_lockfile_python_compatibility(python_path: &str, collector: &mut EventC
 
 fn run_python_code(
     args: &crate::cli::RunArgs,
+    code: &str,
     collector: &mut EventCollector,
     format: OutputFormat,
 ) -> Result<RunOutcome> {
@@ -3413,12 +3414,6 @@ fn run_python_code(
         .parse()
         .map_err(|e: String| eyre!("invalid --profile value: {}", e))?;
     let profile_config = ProfileConfig::for_profile(profile);
-
-    // pybun run -c "print('hello')" -- equivalent to python -c "..."
-    let code = args
-        .passthrough
-        .first()
-        .ok_or_else(|| eyre!("code argument required after -c"))?;
 
     let (python, env_source) = find_python_interpreter()?;
     eprintln!("info: using Python from {}", env_source);

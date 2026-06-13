@@ -52,11 +52,11 @@ Type "pybun add requests httpx"
 Enter
 Sleep 2s
 
-Type "pybun run -c -- \"import requests; print('Hello from PyBun!')\""
+Type "pybun run -c \"import requests; print('Hello from PyBun!')\""
 Enter
 Sleep 1s
 
-Type "pybun --format=json run -c -- \"print('JSON output!')\""
+Type "pybun --format=json run -c \"print('JSON output!')\""
 Enter
 Sleep 2s
 ```
@@ -99,7 +99,7 @@ convert +append demo_left.gif demo_right.gif demo_combined.gif
 デモ内で表示するPyBun JSON出力例:
 
 ```bash
-pybun --format=json run -c -- "print('Hello')"
+pybun --format=json run -c "print('Hello')"
 ```
 
 ```json
