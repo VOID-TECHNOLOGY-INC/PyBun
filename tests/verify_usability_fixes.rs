@@ -21,7 +21,6 @@ fn test_env_source_display_labels() {
         .env_remove("PYBUN_PYTHON")
         .arg("run")
         .arg("-c")
-        .arg("--")
         .arg("pass")
         .output()
         .expect("Failed to run pybun");

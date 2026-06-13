@@ -3,16 +3,17 @@ Run a script with import/runtime optimizations
 Usage: pybun run [OPTIONS] [TARGET] [-- <PASSTHROUGH>...]
 
 Arguments:
-  [TARGET]          Script or module to execute. Use -c for inline code
+  [TARGET]          Script or module to execute. Use -c/--code for inline code
   [PASSTHROUGH]...  Pass additional args to the target
 
 Options:
+  -c, --code <CODE>                Execute the given Python code inline, like `python -c "..."`
       --format <FORMAT>            Output format for machine readability [default: text] [possible values: text, json]
+      --progress <PROGRESS>        Progress UI mode (auto hides on non-TTY) [env: PYBUN_PROGRESS=] [default: auto] [possible values: auto, always, never]
       --sandbox                    Run in sandboxed mode for untrusted code
       --allow-network              Allow network access inside the sandbox (escape hatch)
-      --progress <PROGRESS>        Progress UI mode (auto hides on non-TTY) [env: PYBUN_PROGRESS=] [default: auto] [possible values: auto, always, never]
-      --allow-read <PATH>          Allow reading from a path inside the sandbox (can be specified multiple times). When set, reads outside these paths are blocked. Python stdlib is always allowed
       --no-progress                Disable progress UI
+      --allow-read <PATH>          Allow reading from a path inside the sandbox (can be specified multiple times). When set, reads outside these paths are blocked. Python stdlib is always allowed
       --allow-write <PATH>         Allow writing to a path inside the sandbox (can be specified multiple times). When set, writes outside these paths are blocked
       --allow-env <VAR>            Allow an environment variable through the sandbox filter (can be specified multiple times). By default the sandbox strips all env vars except a minimal safe set; use this to pass specific secrets or config values (e.g. --allow-env=API_KEY)
       --sandbox-timeout <SECONDS>  Maximum wall-clock execution time in seconds for sandboxed runs (0 = unlimited) [default: 60]

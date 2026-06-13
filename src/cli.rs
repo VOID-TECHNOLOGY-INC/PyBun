@@ -191,9 +191,12 @@ pub struct PackageArgs {
 
 #[derive(Args, Debug)]
 pub struct RunArgs {
-    /// Script or module to execute. Use -c for inline code.
+    /// Script or module to execute. Use -c/--code for inline code.
     #[arg(value_name = "TARGET", allow_hyphen_values = true)]
     pub target: Option<String>,
+    /// Execute the given Python code inline, like `python -c "..."`.
+    #[arg(short = 'c', long = "code", value_name = "CODE")]
+    pub code: Option<String>,
     /// Run in sandboxed mode for untrusted code.
     #[arg(long)]
     pub sandbox: bool,

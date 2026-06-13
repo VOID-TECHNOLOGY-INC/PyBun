@@ -246,6 +246,7 @@ mod tests {
             no_progress: false,
             command: Commands::Run(RunArgs {
                 target: Some("script.py".to_string()),
+                code: None,
                 sandbox: false,
                 allow_network: false,
                 allow_read: Vec::new(),

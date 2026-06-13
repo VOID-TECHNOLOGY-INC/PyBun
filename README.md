@@ -60,7 +60,7 @@ pip install pybun-cli
 **Then run:**
 ```bash
 pybun add requests
-pybun run -c -- "import requests; print('Hello, PyBun!')"
+pybun run -c "import requests; print('Hello, PyBun!')"
 ```
 
 ---
@@ -91,7 +91,7 @@ Existing Python tools are built for **humans**. PyBun is designed for **both AI 
 $ pybun --format=json add pandas
 {"status": "ok", "detail": {"added": ["pandas==2.2.0"], ...}}
 
-$ pybun --format=json run -c -- "import pandas; print(pandas.__version__)"
+$ pybun --format=json run -c "import pandas; print(pandas.__version__)"
 {"status": "ok", "stdout": "2.2.0\n", ...}
 ```
 
@@ -166,7 +166,7 @@ pybun run script.py
 pybun run script.py -- arg1 arg2
 
 # Run inline code
-pybun run -c -- "import sys; print(sys.version)"
+pybun run -c "import sys; print(sys.version)"
 
 # Run with profile
 pybun run --profile=prod script.py
@@ -399,7 +399,7 @@ Requires `pip install pybun-cli`.
 All commands support the `--format=json` option (schema v1). Examples:
 
 ```bash
-pybun --format=json run -c -- "print('hello')"
+pybun --format=json run -c "print('hello')"
 ```
 
 ```json
