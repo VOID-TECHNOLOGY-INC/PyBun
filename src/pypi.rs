@@ -610,7 +610,7 @@ fn parse_requires_dist(raw: String) -> Option<Requirement> {
     }
 }
 
-fn marker_allows(marker: &str, py_version: &str) -> bool {
+pub(crate) fn marker_allows(marker: &str, py_version: &str) -> bool {
     let marker = marker.to_lowercase();
 
     // Skip extras we didn't request
