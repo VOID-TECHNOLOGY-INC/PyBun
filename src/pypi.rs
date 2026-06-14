@@ -734,10 +734,12 @@ fn now_epoch_seconds() -> u64 {
 ///
 /// Returns `(entry, stale_notice)`. A `bincode` decode failure on an
 /// existing `.bin` file is treated as a cache miss (`entry = None`) rather
-/// than a fatal error, since it most likely indicates a cache written by an
-/// incompatible older `pybun` version (the `CacheEntry` layout changed in
-/// v0.1.19). `stale_notice` is set in that case so callers can surface an
-/// informational diagnostic without failing the command.
+/// than a fatal error - most likely it is incompatible with the current
+/// `CacheEntry` layout (e.g. written by a pre-v0.1.19 `pybun`), but it could
+/// also be a truncated write from an earlier crash. Either way, re-fetching
+/// from the index is the correct recovery. `stale_notice` is set in that
+/// case so callers can surface an informational diagnostic without failing
+/// the command.
 fn load_cache_from_paths(
     path: &Path,
     legacy_path: &Path,
@@ -749,7 +751,7 @@ fn load_cache_from_paths(
             Ok(entry) => Ok((Some(entry), None)),
             Err(e) => {
                 let notice = format!(
-                    "discarded incompatible PyPI cache entry at {} ({}); re-fetching from index",
+                    "discarded unreadable PyPI cache entry at {} ({}); re-fetching from index",
                     path.display(),
                     e
                 );
@@ -793,6 +795,17 @@ pub fn pypi_cache_dir() -> Option<PathBuf> {
     dirs::cache_dir().map(|p| p.join("pybun").join("pypi"))
 }
 
+/// Returns `true` if `path` is a `.bin` PyPI cache entry that fails to
+/// deserialize as the current [`CacheEntry`] layout (e.g. left over from a
+/// pre-v0.1.19 pybun install, see issue #202). Such entries are never used
+/// (see [`load_cache_from_paths`]) and are safe to remove.
+fn is_stale_pypi_cache_entry(path: &Path) -> bool {
+    path.extension().and_then(|e| e.to_str()) == Some("bin")
+        && fs::read(path)
+            .map(|data| bincode::deserialize::<CacheEntry>(&data).is_err())
+            .unwrap_or(false)
+}
+
 /// Summary statistics for the PyPI metadata cache directory.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct PypiCacheStats {
@@ -802,8 +815,7 @@ pub struct PypiCacheStats {
 }
 
 /// Scans the PyPI metadata cache directory and reports its size and how many
-/// `.bin` entries fail to deserialize as the current [`CacheEntry`] layout
-/// (e.g. left over from a pre-v0.1.19 pybun install, see issue #202).
+/// entries are stale (see [`is_stale_pypi_cache_entry`]).
 pub fn pypi_cache_stats(dir: &Path) -> PypiCacheStats {
     let mut stats = PypiCacheStats::default();
     let Ok(read_dir) = fs::read_dir(dir) else {
@@ -819,10 +831,7 @@ pub fn pypi_cache_stats(dir: &Path) -> PypiCacheStats {
         }
         stats.entry_count += 1;
         stats.total_bytes += metadata.len();
-        if path.extension().and_then(|e| e.to_str()) == Some("bin")
-            && let Ok(data) = fs::read(&path)
-            && bincode::deserialize::<CacheEntry>(&data).is_err()
-        {
+        if is_stale_pypi_cache_entry(&path) {
             stats.stale_count += 1;
         }
     }
@@ -837,10 +846,9 @@ pub struct PypiCacheGcResult {
     pub would_remove: Vec<String>,
 }
 
-/// Removes (or, in `dry_run` mode, reports) `.bin` entries in the PyPI
-/// metadata cache that fail to deserialize as the current [`CacheEntry`]
-/// layout. These stale entries are never used (see
-/// [`load_cache_from_paths`]) and otherwise accumulate indefinitely.
+/// Removes (or, in `dry_run` mode, reports) stale entries (see
+/// [`is_stale_pypi_cache_entry`]) in the PyPI metadata cache, which
+/// otherwise accumulate indefinitely.
 pub fn gc_stale_pypi_cache(dir: &Path, dry_run: bool) -> PypiCacheGcResult {
     let mut result = PypiCacheGcResult::default();
     let Ok(read_dir) = fs::read_dir(dir) else {
@@ -848,13 +856,7 @@ pub fn gc_stale_pypi_cache(dir: &Path, dry_run: bool) -> PypiCacheGcResult {
     };
     for entry in read_dir.flatten() {
         let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("bin") {
-            continue;
-        }
-        let Ok(data) = fs::read(&path) else {
-            continue;
-        };
-        if bincode::deserialize::<CacheEntry>(&data).is_ok() {
+        if !is_stale_pypi_cache_entry(&path) {
             continue;
         }
         let Ok(metadata) = entry.metadata() else {

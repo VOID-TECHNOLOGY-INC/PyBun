@@ -5741,11 +5741,11 @@ async fn run_upgrade(args: &UpgradeArgs, collector: &mut EventCollector) -> Resu
             .map_err(|e| eyre!("failed to create PyPI client: {}", e))?;
         source_index_url = pypi_client.index_url();
         let pypi_index = PyPiIndex::new(pypi_client);
-        let resolved = resolve(requirements.clone(), &pypi_index).await?;
+        let resolve_result = resolve(requirements.clone(), &pypi_index).await;
         for notice in pypi_index.take_stale_cache_notices() {
             collector.warning(notice);
         }
-        resolved
+        resolve_result?
     };
 
     collector.event(EventType::ResolveComplete);
