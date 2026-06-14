@@ -155,6 +155,12 @@
   - Current: `src/commands.rs` の `Commands::X` 分岐で `RenderDetail::with_json(...)` に `.with_process_exit_code(exit_code)` を追加（`run` と同じパターン）。これにより既存の `render()`/`execute()` の共通ロジック（JSON `status` を非ゼロ exit code で `"error"` にする判定、`std::process::exit(code)` での伝播）がそのまま適用される。`execute_tool()` の dry-run 分岐に `PYBUN_X_DRY_RUN_EXIT_CODE` テスト用環境変数を追加し、ネットワーク/実パッケージインストールなしで非ゼロ終了コードをシミュレートできるようにした。
   - Tests: `tests/cli_x.rs` に4件追加 — `x_dry_run_exit_zero_still_succeeds`（exit 0 のリグレッションガード）、`x_propagates_nonzero_exit_code`（`PYBUN_X_DRY_RUN_EXIT_CODE=3` でテキストモードの終了コードが3になることを確認）、`x_json_mode_nonzero_exit_reports_error_status`（JSON モードで `status == "error"` かつプロセス終了コードが3であることを確認）、`x_json_mode_zero_exit_reports_ok_status`（exit 0 で `status == "ok"` のリグレッションガード）。全テスト・`cargo clippy --all-targets --all-features -- -D warnings`・`cargo fmt -- --check` がパス。
 
+- [IN PROGRESS] PR-A10: `src/commands.rs` を per-command モジュールへ分割 (Issue #186)
+  - Goal: `src/commands.rs`（6841行）を thin な `execute()` dispatcher として残し、各コマンドの実装をドメイン別モジュールへ段階的に抽出する。挙動変更なし、純粋なコード移動であることを既存テストスイートで保証する。
+  - Current: `src/commands.rs` を `src/commands/mod.rs` へ `git mv`。テスト実行系（discovery/native executor/snapshot正規化/compat診断/`run_tests` 本体、約1076行）を `src/commands/test.rs` へ抽出し、`mod test;` を宣言。`mod.rs` 側の呼び出しを `test::run_tests(...)` に更新。`RenderDetail`（コンストラクタ含む）と `find_python_interpreter()` は `mod.rs` に private のまま残し、Rust の子モジュールから祖先モジュールの private 項目へアクセス可能というルールにより `super::` 経由で参照（追加の `pub(crate)` 化は不要）。`#[cfg(test)] mod tests` 内の重複していたテスト関数群（shard parsing / snapshot normalization / compat diagnostic、8件）を `mod.rs` から削除し `commands/test.rs` の `#[cfg(test)] mod tests` へ移動。`mod.rs` は 7043行 → 5855行に縮小。
+  - Tests: `cargo build` / `cargo clippy --all-targets --all-features -- -D warnings` / `cargo fmt -- --check` / `cargo test --lib`（351 passed）/ `cargo test --lib commands::test::`（8/8 passed）/ `cargo test`（フルスイート、E2E含む全テストパス）。JSON/CLI の公開挙動・schema に変更なし。
+  - Remaining: `install.rs` / `lock.rs` / `run.rs` / `build.rs` / `x.rs` / `maintenance.rs`（gc/doctor）/ `python_env.rs` / `tooling.rs`（module-find/lazy-import/watch/profile）/ `project.rs`（init/outdated/upgrade）への抽出は follow-up PR で対応する。
+
 ### P2 (Post-GA Improvement)
 - PR-A8: Runtime catalog hardening（実チェックサム管理 + 3.13 preview）
   - Goal: 埋め込み runtime metadata の完全性・更新性を強化し、3.13 preview を段階導入。
