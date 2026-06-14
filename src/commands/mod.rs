@@ -1153,6 +1153,35 @@ fn run_doctor(args: &crate::cli::DoctorArgs, collector: &mut EventCollector) -> 
         }
     }
 
+    // Check PyPI metadata cache directory (separate from the main cache
+    // root above - see issue #202). Flag stale entries written by
+    // incompatible older pybun versions.
+    if let Some(pypi_cache_dir) = crate::pypi::pypi_cache_dir() {
+        let stats = crate::pypi::pypi_cache_stats(&pypi_cache_dir);
+        let status = if stats.stale_count > 0 { "info" } else { "ok" };
+        checks.push(json!({
+            "name": "pypi_cache",
+            "status": status,
+            "message": format!(
+                "PyPI metadata cache: {} ({} entries, {} stale)",
+                pypi_cache_dir.display(),
+                stats.entry_count,
+                stats.stale_count,
+            ),
+            "path": pypi_cache_dir.display().to_string(),
+            "entry_count": stats.entry_count,
+            "total_bytes": stats.total_bytes,
+            "stale_count": stats.stale_count,
+        }));
+        if stats.stale_count > 0 {
+            collector.info(format!(
+                "{} stale PyPI cache entries found in {} - run `pybun gc` to remove them",
+                stats.stale_count,
+                pypi_cache_dir.display(),
+            ));
+        }
+    }
+
     // Check for pyproject.toml
     match Project::discover(&working_dir) {
         Ok(project) => {
@@ -1538,7 +1567,11 @@ async fn install(
             source_index_url, offline
         ));
         let index = PyPiIndex::new(client);
-        match resolve(requirements.clone(), &index).await {
+        let resolve_result = resolve(requirements.clone(), &index).await;
+        for notice in index.take_stale_cache_notices() {
+            collector.warning(notice);
+        }
+        match resolve_result {
             Ok(r) => r,
             Err(e) => {
                 for d in crate::self_heal::diagnostics_for_resolve_error(&requirements, &e) {
@@ -1991,7 +2024,11 @@ async fn lock_dependencies(args: &LockArgs, collector: &mut EventCollector) -> R
             source_index_url, offline
         ));
         let index = PyPiIndex::new(client);
-        match resolve(requirements.clone(), &index).await {
+        let resolve_result = resolve(requirements.clone(), &index).await;
+        for notice in index.take_stale_cache_notices() {
+            collector.warning(notice);
+        }
+        match resolve_result {
             Ok(r) => r,
             Err(e) => {
                 for d in crate::self_heal::diagnostics_for_resolve_error(&requirements, &e) {
@@ -3020,9 +3057,12 @@ async fn run_script(
                         // But PyPiClient::from_env handles env vars.
                         let client = PyPiClient::from_env(false).map_err(|e| eyre!(e))?;
                         let index = PyPiIndex::new(client);
-                        let resolution = resolve(requirements, &index)
-                            .await
-                            .map_err(|e: crate::resolver::ResolveError| eyre!(e))?;
+                        let resolution = resolve(requirements, &index).await;
+                        for notice in index.take_stale_cache_notices() {
+                            collector.warning(notice);
+                        }
+                        let resolution =
+                            resolution.map_err(|e: crate::resolver::ResolveError| eyre!(e))?;
 
                         // Prepare site-packages path
                         let major_minor = python_version
@@ -4318,14 +4358,25 @@ fn run_gc(args: &crate::cli::GcArgs, collector: &mut EventCollector) -> Result<R
         .gc(max_bytes, args.dry_run)
         .map_err(|e| eyre!("PEP 723 GC failed: {}", e))?;
 
+    // Remove stale/corrupt PyPI metadata cache entries (see issue #202).
+    // This directory is separate from `cache.root()` and is not covered by
+    // `cache.gc()` above.
+    let pypi_cache_gc = crate::pypi::pypi_cache_dir()
+        .map(|dir| crate::pypi::gc_stale_pypi_cache(&dir, args.dry_run))
+        .unwrap_or_default();
+
     // Combine results
-    let total_freed = gc_result.freed_bytes + pep723_gc_result.freed_bytes;
-    let total_removed = gc_result.files_removed + pep723_gc_result.envs_removed;
+    let total_freed =
+        gc_result.freed_bytes + pep723_gc_result.freed_bytes + pypi_cache_gc.freed_bytes;
+    let total_removed =
+        gc_result.files_removed + pep723_gc_result.envs_removed + pypi_cache_gc.files_removed;
     let total_size_before = gc_result.size_before + pep723_gc_result.size_before;
     let total_size_after = gc_result.size_after + pep723_gc_result.size_after;
 
     let summary = if args.dry_run {
-        let would_remove_count = gc_result.would_remove.len() + pep723_gc_result.would_remove.len();
+        let would_remove_count = gc_result.would_remove.len()
+            + pep723_gc_result.would_remove.len()
+            + pypi_cache_gc.would_remove.len();
         if would_remove_count == 0 {
             format!(
                 "Cache is within limits ({} used)",
@@ -4370,6 +4421,12 @@ fn run_gc(args: &crate::cli::GcArgs, collector: &mut EventCollector) -> Result<R
             "envs_removed": pep723_gc_result.envs_removed,
             "size_before": pep723_gc_result.size_before,
             "size_after": pep723_gc_result.size_after,
+        },
+        "pypi_cache": {
+            "path": crate::pypi::pypi_cache_dir().map(|p| p.display().to_string()),
+            "freed_bytes": pypi_cache_gc.freed_bytes,
+            "files_removed": pypi_cache_gc.files_removed,
+            "would_remove": pypi_cache_gc.would_remove,
         },
     });
 
@@ -5459,6 +5516,10 @@ async fn run_outdated(args: &OutdatedArgs, collector: &mut EventCollector) -> Re
         .collect::<Vec<_>>()
         .await;
 
+    for notice in client.take_stale_cache_notices() {
+        collector.warning(notice);
+    }
+
     for (name, pkg, res) in results {
         match res {
             Ok(all_versions) => {
@@ -5680,7 +5741,11 @@ async fn run_upgrade(args: &UpgradeArgs, collector: &mut EventCollector) -> Resu
             .map_err(|e| eyre!("failed to create PyPI client: {}", e))?;
         source_index_url = pypi_client.index_url();
         let pypi_index = PyPiIndex::new(pypi_client);
-        resolve(requirements.clone(), &pypi_index).await?
+        let resolve_result = resolve(requirements.clone(), &pypi_index).await;
+        for notice in pypi_index.take_stale_cache_notices() {
+            collector.warning(notice);
+        }
+        resolve_result?
     };
 
     collector.event(EventType::ResolveComplete);

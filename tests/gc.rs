@@ -148,6 +148,99 @@ fn gc_parse_size_units() {
 }
 
 #[test]
+fn gc_dry_run_reports_stale_pypi_cache_entries() {
+    // Regression test for issue #202: a `.bin` PyPI metadata cache entry
+    // written by a pre-v0.1.19 pybun (incompatible `CacheEntry` layout)
+    // should be reported as a removal candidate by `pybun gc --dry-run`,
+    // and `pybun doctor` should surface it as a stale entry.
+    let temp = tempdir().unwrap();
+    let pypi_cache = temp.path().join("pypi-cache");
+    fs::create_dir_all(&pypi_cache).unwrap();
+    let stale_entry = pypi_cache.join("requests.bin");
+    fs::write(&stale_entry, b"\xff\xff\xff\xffnot-bincode").unwrap();
+
+    let output = pybun_bin()
+        .env("PYBUN_HOME", temp.path().join("home"))
+        .env("PYBUN_PYPI_CACHE_DIR", &pypi_cache)
+        .args(["--format=json", "gc", "--dry-run"])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "gc --dry-run should succeed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let would_remove = json["detail"]["pypi_cache"]["would_remove"]
+        .as_array()
+        .expect("pypi_cache.would_remove should be an array");
+    assert!(
+        would_remove
+            .iter()
+            .any(|p| p.as_str().unwrap().contains("requests.bin")),
+        "expected requests.bin in would_remove: {:?}",
+        would_remove
+    );
+
+    // The stale entry must not have been deleted in dry-run mode.
+    assert!(stale_entry.exists());
+}
+
+#[test]
+fn gc_removes_stale_pypi_cache_entries() {
+    let temp = tempdir().unwrap();
+    let pypi_cache = temp.path().join("pypi-cache");
+    fs::create_dir_all(&pypi_cache).unwrap();
+    let stale_entry = pypi_cache.join("requests.bin");
+    fs::write(&stale_entry, b"\xff\xff\xff\xffnot-bincode").unwrap();
+
+    let output = pybun_bin()
+        .env("PYBUN_HOME", temp.path().join("home"))
+        .env("PYBUN_PYPI_CACHE_DIR", &pypi_cache)
+        .args(["--format=json", "gc"])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "gc should succeed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(json["detail"]["pypi_cache"]["files_removed"], 1);
+
+    // The stale entry should have been deleted.
+    assert!(!stale_entry.exists());
+}
+
+#[test]
+fn doctor_reports_stale_pypi_cache_count() {
+    let temp = tempdir().unwrap();
+    let pypi_cache = temp.path().join("pypi-cache");
+    fs::create_dir_all(&pypi_cache).unwrap();
+    fs::write(
+        pypi_cache.join("requests.bin"),
+        b"\xff\xff\xff\xffnot-bincode",
+    )
+    .unwrap();
+
+    let output = pybun_bin()
+        .env("PYBUN_HOME", temp.path().join("home"))
+        .env("PYBUN_PYPI_CACHE_DIR", &pypi_cache)
+        .args(["--format=json", "doctor"])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "doctor should succeed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let checks = json["detail"]["checks"]
+        .as_array()
+        .expect("checks should be an array");
+    let pypi_check = checks
+        .iter()
+        .find(|c| c["name"] == "pypi_cache")
+        .expect("doctor should report a pypi_cache check");
+    assert_eq!(pypi_check["stale_count"], 1);
+    assert_eq!(pypi_check["path"], pypi_cache.display().to_string());
+}
+
+#[test]
 fn gc_dry_run_shows_what_would_be_deleted() {
     let temp = tempdir().unwrap();
 
