@@ -731,6 +731,36 @@ while True:
     );
 }
 
+// --- Diagnostic surfacing tests (Issue #203) ---
+
+#[cfg(unix)]
+#[test]
+fn sandbox_cpu_limit_kill_emits_diagnostic() {
+    let temp = tempdir().unwrap();
+    let script = temp.path().join("busy_loop.py");
+    fs::write(
+        &script,
+        r#"
+i = 0
+while True:
+    i += 1
+"#,
+    )
+    .unwrap();
+
+    run_sandbox(&[
+        "--format=json",
+        "run",
+        "--sandbox",
+        "--sandbox-cpu=1",
+        script.to_str().unwrap(),
+    ])
+    .failure()
+    .stdout(predicate::str::contains("\"code\":\"E_SANDBOX_CPU_LIMIT\""))
+    .stdout(predicate::str::contains("\"level\":\"error\""))
+    .stdout(predicate::str::contains("--sandbox-cpu"));
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn sandbox_memory_limit_reports_unsupported_on_macos() {
@@ -748,6 +778,30 @@ fn sandbox_memory_limit_reports_unsupported_on_macos() {
     .success()
     .stdout(predicate::str::contains("\"memory_limit_mb\":256"))
     .stdout(predicate::str::contains("\"unsupported\":[\"memory\"]"));
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn sandbox_memory_limit_unsupported_emits_warning_diagnostic() {
+    let temp = tempdir().unwrap();
+    let script = temp.path().join("noop.py");
+    fs::write(&script, "print('hello')\n").unwrap();
+
+    run_sandbox(&[
+        "--format=json",
+        "run",
+        "--sandbox",
+        "--sandbox-memory=256",
+        script.to_str().unwrap(),
+    ])
+    .success()
+    .stdout(predicate::str::contains(
+        "\"code\":\"W_SANDBOX_LIMIT_UNSUPPORTED\"",
+    ))
+    .stdout(predicate::str::contains("\"level\":\"warning\""))
+    .stdout(predicate::str::contains(
+        "sandbox memory limit is not enforced on this platform",
+    ));
 }
 
 #[cfg(target_os = "linux")]
