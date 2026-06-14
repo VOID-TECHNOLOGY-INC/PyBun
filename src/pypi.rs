@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, thiserror::Error)]
@@ -52,6 +52,12 @@ impl PyPiIndex {
             client,
             memory: Arc::new(DashMap::new()),
         }
+    }
+
+    /// Drain and return any notices about stale/corrupt cache entries that
+    /// were discarded (treated as cache misses) since the last call.
+    pub fn take_stale_cache_notices(&self) -> Vec<String> {
+        self.client.take_stale_cache_notices()
     }
 }
 
@@ -127,6 +133,7 @@ pub struct PyPiClient {
     offline: bool,
     package_once: Arc<OnceMap<String, Vec<CachedPackage>>>,
     deps_once: Arc<OnceMap<String, Vec<String>>>,
+    stale_cache_notices: Arc<Mutex<Vec<String>>>,
 }
 
 impl PyPiClient {
@@ -148,7 +155,14 @@ impl PyPiClient {
             offline,
             package_once: Arc::new(OnceMap::new()),
             deps_once: Arc::new(OnceMap::new()),
+            stale_cache_notices: Arc::new(Mutex::new(Vec::new())),
         })
+    }
+
+    /// Drain and return any notices about stale/corrupt cache entries that
+    /// were discarded (treated as cache misses) since the last call.
+    pub fn take_stale_cache_notices(&self) -> Vec<String> {
+        std::mem::take(&mut *self.stale_cache_notices.lock().unwrap())
     }
 
     async fn get_or_fetch(
@@ -291,9 +305,14 @@ impl PyPiClient {
         let path = self.cache_path(name);
         let legacy_path = self.legacy_cache_path(name);
         let now = now_epoch_seconds();
-        tokio::task::spawn_blocking(move || load_cache_from_paths(&path, &legacy_path, now))
-            .await
-            .map_err(|e| PyPiError::Parse(format!("cache join error: {}", e)))?
+        let (entry, stale_notice) =
+            tokio::task::spawn_blocking(move || load_cache_from_paths(&path, &legacy_path, now))
+                .await
+                .map_err(|e| PyPiError::Parse(format!("cache join error: {}", e)))??;
+        if let Some(notice) = stale_notice {
+            self.stale_cache_notices.lock().unwrap().push(notice);
+        }
+        Ok(entry)
     }
 
     async fn save_cache(&self, name: &str, entry: CacheEntry) -> Result<(), PyPiError> {
@@ -711,35 +730,146 @@ fn now_epoch_seconds() -> u64 {
         .as_secs()
 }
 
+/// Loads a cached package entry from disk.
+///
+/// Returns `(entry, stale_notice)`. A `bincode` decode failure on an
+/// existing `.bin` file is treated as a cache miss (`entry = None`) rather
+/// than a fatal error, since it most likely indicates a cache written by an
+/// incompatible older `pybun` version (the `CacheEntry` layout changed in
+/// v0.1.19). `stale_notice` is set in that case so callers can surface an
+/// informational diagnostic without failing the command.
 fn load_cache_from_paths(
     path: &Path,
     legacy_path: &Path,
     now: u64,
-) -> Result<Option<CacheEntry>, PyPiError> {
+) -> Result<(Option<CacheEntry>, Option<String>), PyPiError> {
     if path.exists() {
         let data = fs::read(path)?;
-        let entry: CacheEntry = bincode::deserialize(&data)
-            .map_err(|e| PyPiError::Parse(format!("cache decode error: {}", e)))?;
-        return Ok(Some(entry));
+        return match bincode::deserialize::<CacheEntry>(&data) {
+            Ok(entry) => Ok((Some(entry), None)),
+            Err(e) => {
+                let notice = format!(
+                    "discarded incompatible PyPI cache entry at {} ({}); re-fetching from index",
+                    path.display(),
+                    e
+                );
+                Ok((None, Some(notice)))
+            }
+        };
     }
     if legacy_path.exists() {
         let data = fs::read_to_string(legacy_path)?;
         let entry: LegacyCacheEntry = serde_json::from_str(&data)
             .map_err(|e| PyPiError::Parse(format!("cache decode error: {}", e)))?;
-        return Ok(Some(CacheEntry {
-            policy: HttpCachePolicy {
-                etag: entry.etag,
-                last_modified: entry.last_modified,
-                max_age: None,
-                no_cache: false,
-                no_store: false,
-                fetched_at: now,
-            },
-            body: Vec::new(),
-            packages: entry.packages,
-        }));
+        return Ok((
+            Some(CacheEntry {
+                policy: HttpCachePolicy {
+                    etag: entry.etag,
+                    last_modified: entry.last_modified,
+                    max_age: None,
+                    no_cache: false,
+                    no_store: false,
+                    fetched_at: now,
+                },
+                body: Vec::new(),
+                packages: entry.packages,
+            }),
+            None,
+        ));
     }
-    Ok(None)
+    Ok((None, None))
+}
+
+/// Resolves the directory used for the PyPI package metadata cache
+/// (`.bin`/`.json` files), matching the resolution logic in
+/// [`PyPiClient::from_env`]:
+/// 1. `PYBUN_PYPI_CACHE_DIR` environment variable
+/// 2. `dirs::cache_dir()/pybun/pypi` (e.g. `~/Library/Caches/pybun/pypi` on
+///    macOS, `~/.cache/pybun/pypi` on Linux)
+pub fn pypi_cache_dir() -> Option<PathBuf> {
+    if let Ok(dir) = std::env::var("PYBUN_PYPI_CACHE_DIR") {
+        return Some(PathBuf::from(dir));
+    }
+    dirs::cache_dir().map(|p| p.join("pybun").join("pypi"))
+}
+
+/// Summary statistics for the PyPI metadata cache directory.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct PypiCacheStats {
+    pub entry_count: usize,
+    pub total_bytes: u64,
+    pub stale_count: usize,
+}
+
+/// Scans the PyPI metadata cache directory and reports its size and how many
+/// `.bin` entries fail to deserialize as the current [`CacheEntry`] layout
+/// (e.g. left over from a pre-v0.1.19 pybun install, see issue #202).
+pub fn pypi_cache_stats(dir: &Path) -> PypiCacheStats {
+    let mut stats = PypiCacheStats::default();
+    let Ok(read_dir) = fs::read_dir(dir) else {
+        return stats;
+    };
+    for entry in read_dir.flatten() {
+        let path = entry.path();
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        if !metadata.is_file() {
+            continue;
+        }
+        stats.entry_count += 1;
+        stats.total_bytes += metadata.len();
+        if path.extension().and_then(|e| e.to_str()) == Some("bin")
+            && let Ok(data) = fs::read(&path)
+            && bincode::deserialize::<CacheEntry>(&data).is_err()
+        {
+            stats.stale_count += 1;
+        }
+    }
+    stats
+}
+
+/// Result of running garbage collection on the PyPI metadata cache directory.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct PypiCacheGcResult {
+    pub freed_bytes: u64,
+    pub files_removed: usize,
+    pub would_remove: Vec<String>,
+}
+
+/// Removes (or, in `dry_run` mode, reports) `.bin` entries in the PyPI
+/// metadata cache that fail to deserialize as the current [`CacheEntry`]
+/// layout. These stale entries are never used (see
+/// [`load_cache_from_paths`]) and otherwise accumulate indefinitely.
+pub fn gc_stale_pypi_cache(dir: &Path, dry_run: bool) -> PypiCacheGcResult {
+    let mut result = PypiCacheGcResult::default();
+    let Ok(read_dir) = fs::read_dir(dir) else {
+        return result;
+    };
+    for entry in read_dir.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("bin") {
+            continue;
+        }
+        let Ok(data) = fs::read(&path) else {
+            continue;
+        };
+        if bincode::deserialize::<CacheEntry>(&data).is_ok() {
+            continue;
+        }
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        if dry_run {
+            result.would_remove.push(path.display().to_string());
+        } else if fs::remove_file(&path).is_ok() {
+            result.files_removed += 1;
+        } else {
+            continue;
+        }
+        result.freed_bytes += metadata.len();
+    }
+    result
 }
 
 fn save_cache_to_path(path: &Path, entry: &CacheEntry) -> Result<(), PyPiError> {
@@ -847,6 +977,7 @@ mod tests {
             offline: false,
             package_once: Arc::new(OnceMap::new()),
             deps_once: Arc::new(OnceMap::new()),
+            stale_cache_notices: Arc::new(Mutex::new(Vec::new())),
         };
         let entry = CacheEntry {
             policy: HttpCachePolicy {
@@ -865,5 +996,40 @@ mod tests {
         assert_eq!(loaded.policy.etag, entry.policy.etag);
         assert_eq!(loaded.policy.max_age, entry.policy.max_age);
         assert_eq!(loaded.body, entry.body);
+    }
+
+    #[tokio::test]
+    async fn stale_bincode_cache_is_treated_as_cache_miss() {
+        let temp = tempdir().unwrap();
+        let cache_dir = temp.path().join("cache");
+        fs::create_dir_all(&cache_dir).unwrap();
+        // Write a `.bin` file with a layout incompatible with the current
+        // `CacheEntry` struct, simulating a cache written by a pre-v0.1.19
+        // pybun binary (before the `body: Vec<u8>` field was added).
+        fs::write(cache_dir.join("demo.bin"), b"\xff\xff\xff\xffnot-bincode").unwrap();
+
+        let client = PyPiClient {
+            base: Url::parse("https://pypi.org").unwrap(),
+            cache_dir,
+            http: reqwest::Client::new(),
+            offline: false,
+            package_once: Arc::new(OnceMap::new()),
+            deps_once: Arc::new(OnceMap::new()),
+            stale_cache_notices: Arc::new(Mutex::new(Vec::new())),
+        };
+
+        // Must not error - the stale entry is discarded and treated as a
+        // cache miss so callers can re-fetch from the index.
+        let loaded = client.load_cache("demo").await.unwrap();
+        assert!(loaded.is_none());
+
+        // A notice about the discarded entry should be available for
+        // callers to surface as an info/warn diagnostic.
+        let notices = client.take_stale_cache_notices();
+        assert_eq!(notices.len(), 1);
+        assert!(notices[0].contains("demo.bin"));
+
+        // Notices are drained after being taken.
+        assert!(client.take_stale_cache_notices().is_empty());
     }
 }
