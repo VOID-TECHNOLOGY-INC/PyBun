@@ -282,9 +282,15 @@ pub fn apply_python_sandbox(cmd: &mut Command, config: SandboxConfig) -> Result<
                         }
                     }
                     if apply_cpu {
+                        // Give the hard limit one extra second of headroom over the soft
+                        // limit. On Linux, `rlim_cur == rlim_max` causes the kernel to
+                        // send SIGKILL alongside SIGXCPU as soon as the limit is hit,
+                        // and SIGKILL (which can't be caught) wins the race — so
+                        // `cpu_limit_exceeded` would never see SIGXCPU. With headroom,
+                        // SIGXCPU's default terminate action fires first.
                         let limit = libc::rlimit {
                             rlim_cur: cpu_limit_secs as libc::rlim_t,
-                            rlim_max: cpu_limit_secs as libc::rlim_t,
+                            rlim_max: (cpu_limit_secs + 1) as libc::rlim_t,
                         };
                         if libc::setrlimit(libc::RLIMIT_CPU, &limit) != 0 {
                             return Err(std::io::Error::last_os_error());
