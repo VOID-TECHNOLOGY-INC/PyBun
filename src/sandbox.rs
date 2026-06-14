@@ -391,6 +391,22 @@ pub fn timeout_exit_status() -> ExitStatus {
     }
 }
 
+/// Returns true if `status` indicates the process was terminated by `SIGXCPU`,
+/// i.e. it exceeded the CPU time limit configured via `--sandbox-cpu`
+/// (enforced through `RLIMIT_CPU`, see [`cpu_limit_supported`]).
+#[cfg(unix)]
+pub fn cpu_limit_exceeded(status: &ExitStatus) -> bool {
+    use std::os::unix::process::ExitStatusExt;
+    status.signal() == Some(libc::SIGXCPU)
+}
+
+/// `RLIMIT_CPU` is only enforced on Unix, so a non-Unix process can never be
+/// killed by `SIGXCPU`.
+#[cfg(not(unix))]
+pub fn cpu_limit_exceeded(_status: &ExitStatus) -> bool {
+    false
+}
+
 /// Spawn a thread that reads a child process pipe to completion.
 fn spawn_pipe_reader<R>(mut reader: R) -> thread::JoinHandle<Vec<u8>>
 where
@@ -649,5 +665,24 @@ mod tests {
     fn sandbox_config_allow_env_defaults_to_empty() {
         let config = SandboxConfig::default();
         assert!(config.allow_env.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cpu_limit_exceeded_detects_sigxcpu() {
+        use std::os::unix::process::ExitStatusExt;
+        let killed_by_sigxcpu = ExitStatus::from_raw(libc::SIGXCPU);
+        assert!(cpu_limit_exceeded(&killed_by_sigxcpu));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cpu_limit_exceeded_ignores_other_signals_and_normal_exit() {
+        use std::os::unix::process::ExitStatusExt;
+        let killed_by_sigterm = ExitStatus::from_raw(libc::SIGTERM);
+        assert!(!cpu_limit_exceeded(&killed_by_sigterm));
+
+        let exited_zero = ExitStatus::from_raw(0);
+        assert!(!cpu_limit_exceeded(&exited_zero));
     }
 }

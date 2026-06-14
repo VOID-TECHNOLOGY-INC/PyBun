@@ -2518,6 +2518,22 @@ struct RunProfileInfo {
     timing: bool,
 }
 
+/// Emit a `warn`-level diagnostic for each resource limit that was requested
+/// but cannot be enforced on the current platform (Issue #203).
+fn emit_unsupported_resource_limit_diagnostics(
+    collector: &mut EventCollector,
+    resource_limits: &sandbox::ResourceLimits,
+) {
+    for limit in &resource_limits.unsupported {
+        collector.diagnostic(
+            Diagnostic::warning(format!(
+                "sandbox {limit} limit is not enforced on this platform and will have no effect"
+            ))
+            .with_code("W_SANDBOX_LIMIT_UNSUPPORTED"),
+        );
+    }
+}
+
 #[derive(Debug, Clone)]
 struct SandboxInfo {
     enabled: bool,
@@ -3319,6 +3335,7 @@ async fn run_script(
                 cpu_limit_secs: args.sandbox_cpu,
             },
         )?;
+        emit_unsupported_resource_limit_diagnostics(collector, &guard.resource_limits);
         sandbox_info = Some(SandboxInfo {
             enabled: true,
             allow_network,
@@ -3447,6 +3464,15 @@ async fn run_script(
             ))
             .with_code("E_SANDBOX_TIMEOUT")
             .with_suggestion("increase --sandbox-timeout, set --sandbox-timeout=0 to disable, or optimize the script to finish sooner"),
+        );
+    } else if args.sandbox_cpu > 0 && sandbox::cpu_limit_exceeded(&status) {
+        collector.diagnostic(
+            Diagnostic::error(format!(
+                "sandboxed process killed after exceeding --sandbox-cpu={}s of CPU time",
+                args.sandbox_cpu
+            ))
+            .with_code("E_SANDBOX_CPU_LIMIT")
+            .with_suggestion("increase --sandbox-cpu, set --sandbox-cpu=0 to disable, or optimize the script to use less CPU time"),
         );
     }
 
@@ -3616,6 +3642,7 @@ fn run_python_code(
                 cpu_limit_secs: args.sandbox_cpu,
             },
         )?;
+        emit_unsupported_resource_limit_diagnostics(collector, &guard.resource_limits);
         sandbox_info = Some(SandboxInfo {
             enabled: true,
             allow_network,
@@ -3730,6 +3757,15 @@ fn run_python_code(
             ))
             .with_code("E_SANDBOX_TIMEOUT")
             .with_suggestion("increase --sandbox-timeout, set --sandbox-timeout=0 to disable, or optimize the script to finish sooner"),
+        );
+    } else if args.sandbox_cpu > 0 && sandbox::cpu_limit_exceeded(&status) {
+        collector.diagnostic(
+            Diagnostic::error(format!(
+                "sandboxed process killed after exceeding --sandbox-cpu={}s of CPU time",
+                args.sandbox_cpu
+            ))
+            .with_code("E_SANDBOX_CPU_LIMIT")
+            .with_suggestion("increase --sandbox-cpu, set --sandbox-cpu=0 to disable, or optimize the script to use less CPU time"),
         );
     }
 
