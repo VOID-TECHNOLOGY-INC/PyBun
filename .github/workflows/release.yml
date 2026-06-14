@@ -205,12 +205,15 @@ jobs:
         id: minisign
         shell: bash
         run: |
-          if [[ "${{ inputs.dry_run }}" == "true" || -z "${{ secrets.PYBUN_MINISIGN_PRIVATE_KEY }}" ]]; then
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.dry_run }}" == "true" ]]; then
             # -W: do not encrypt/decrypt the secret key with a password (for CI)
             minisign -G -W -p /tmp/pybun-release.pub -s /tmp/pybun-release.key -c "pybun dry-run"
             echo "public_key=/tmp/pybun-release.pub" >> $GITHUB_OUTPUT
             echo "private_key=/tmp/pybun-release.key" >> $GITHUB_OUTPUT
             echo "mode=dummy" >> $GITHUB_OUTPUT
+          elif [[ -z "${{ secrets.PYBUN_MINISIGN_PRIVATE_KEY }}" ]]; then
+            echo "PYBUN_MINISIGN_PRIVATE_KEY is required for non-dry-run releases" >&2
+            exit 1
           else
             echo "${{ secrets.PYBUN_MINISIGN_PRIVATE_KEY }}" > /tmp/pybun-release.key
             chmod 600 /tmp/pybun-release.key

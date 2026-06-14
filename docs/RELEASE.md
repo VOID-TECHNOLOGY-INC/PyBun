@@ -115,4 +115,4 @@ Expected output: `X.Y.Z`
 
 - **Snapshot mismatch in CI**: `tests/snapshots/compat/json_self_update_dry_run.json` must be updated on every version bump (step 5). Forgetting this causes `compat_snapshots` to fail on all platforms.
 - **PyPI Trusted Publisher not configured**: The `publish-pypi` workflow will fail on first run for a new repo fork. Configure the trusted publisher at pypi.org before releasing.
-- **`PYBUN_MINISIGN_PRIVATE_KEY` missing**: The metadata job will use a dummy key and log a warning, but artifacts will still be signed with a throwaway key — do not ship such a release.
+- **`PYBUN_MINISIGN_PRIVATE_KEY` missing**: Tagged and non-dry-run releases fail before signing. Dummy keys are allowed only for an explicit `workflow_dispatch` dry run.

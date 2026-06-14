@@ -22,5 +22,7 @@
 3. Commit the updated `security/pybun-release.pub` and note the rotation in `SECURITY.md`/release notes.
 4. Run the release workflow to publish artifacts signed with the new key; invalidate the previous key in downstream distribution channels if applicable.
 
+Current production key: `4DC0D9C844937D2D`, activated for v0.1.20 on June 14, 2026. The v0.1.19 GitHub artifacts used a CI-generated throwaway key and were not published as a stable GitHub Release.
+
 ## Dependency and License Scanning
 - CI enforces `cargo audit`, `cargo deny check licenses`, and `pip-audit --project .` to block known vulnerabilities and incompatible licenses before merge.

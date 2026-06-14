@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.1.20
+
+### Security / Release Integrity
+- configure the production minisign public key and require the matching GitHub secret for tagged releases
+- republish the v0.1.19 code changes with verifiable release signatures after the incomplete v0.1.19 release attempt
+
 ## v0.1.19
 
 ### Features
