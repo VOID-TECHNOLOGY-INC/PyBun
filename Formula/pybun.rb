@@ -2,7 +2,7 @@
 class Pybun < Formula
   desc "Rust-based single-binary Python toolchain."
   homepage "https://github.com/VOID-TECHNOLOGY-INC/PyBun"
-  version "0.1.18"
+  version "0.1.20"
   license "MIT"
 
   if ENV["HOMEBREW_PYBUN_TEST_TARBALL"]
@@ -11,21 +11,21 @@ class Pybun < Formula
   else
     on_macos do
       if Hardware::CPU.arm?
-        url "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.1.18/pybun-aarch64-apple-darwin.tar.gz"
-        sha256 "131a5f28ebdd5e9e6c535cb22913a4ea11312c3401babf0c984b34bc548c33fa"
+        url "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.1.20/pybun-aarch64-apple-darwin.tar.gz"
+        sha256 "cc1f40ffc120efc781ca4605eb82fd95dc775e60924ab82e0061d5f855ade9c8"
       else
-        url "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.1.18/pybun-x86_64-apple-darwin.tar.gz"
-        sha256 "560150de196ec0b8673ae76d9ac5a0bc6fb0054b874c1e092fef973e5a9f127d"
+        url "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.1.20/pybun-x86_64-apple-darwin.tar.gz"
+        sha256 "e6c2efce8e0e643c15633edf74fbd94a9f47b0dbb875464ae1f1665eba8d7dd8"
       end
     end
 
     on_linux do
       if Hardware::CPU.arm?
-        url "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.1.18/pybun-aarch64-unknown-linux-gnu.tar.gz"
-        sha256 "f0a32b4e86bbd4286925c0c06eb7173f1320b8fbe596a38bfbe3a64e383d14bc"
+        url "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.1.20/pybun-aarch64-unknown-linux-gnu.tar.gz"
+        sha256 "665f5156a85abf24fb22dc7cafa22c4bbe847c34008933c342072309c1efdebb"
       else
-        url "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.1.18/pybun-x86_64-unknown-linux-gnu.tar.gz"
-        sha256 "910ac179bcb769459b106bb782f02b6bef693760ca4e4923300af8cf041a8827"
+        url "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.1.20/pybun-x86_64-unknown-linux-gnu.tar.gz"
+        sha256 "3d8fc572bbd9e148a5ab22eda482cd6a53464b63ad31d01b3a0073fb406e5e57"
       end
     end
   end
