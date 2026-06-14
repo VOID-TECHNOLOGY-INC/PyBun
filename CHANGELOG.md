@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.1.19
+
+### Features
+- feat(schema): standardize error envelopes with stable `E_*` codes and actionable hints (#198)
+- feat(watch): add a polling fallback when native file watching is unavailable (#197)
+- feat(sandbox): add resource limits for timeout, memory, and CPU usage (#180)
+- feat(sandbox): filter environment variables by default to prevent secret leakage (#178)
+- feat(run): wire launch profiles and lazy-import injection into `pybun run` (#177)
+- feat(lock): support locking project dependencies without `--script` (#176)
+- feat(test): integrate and harden the native PyBun test executor with timeouts, retries, snapshots, and compatibility diagnostics (#166, #167, #174, #175)
+- feat(workspace): add dependency groups, member globs, and workspace selectors (#171)
+
+### Fixes
+- fix(resolver): implement compound constraints, complete PEP 508 marker evaluation, and Python ABI-matched wheel selection (#192, #196, #161)
+- fix(run): add Python-compatible `-c`/`--code`, propagate child exit codes, and warn on lock/interpreter version mismatches (#151, #173, #194, #195)
+- fix(sandbox): restrict system-critical writes and block `os.posix_spawn` and the `os.spawn*` family (#150, #193)
+- fix(cli): make JSON help and diagnostics consistent and actionable (#164, #165, #170)
+- fix(benchmark): make benchmark execution independent of the invocation directory (#157)
+- perf(module-find): eliminate redundant stat calls and scan subdirectories in parallel (#179)
+
+### Security
+- fix(security): require `rustls-webpki` 0.103.13 or newer to address four RustSec advisories (#156)
+
 ## v0.1.18
 
 ### Features
