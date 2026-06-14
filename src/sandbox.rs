@@ -290,7 +290,7 @@ pub fn apply_python_sandbox(cmd: &mut Command, config: SandboxConfig) -> Result<
                         // SIGXCPU's default terminate action fires first.
                         let limit = libc::rlimit {
                             rlim_cur: cpu_limit_secs as libc::rlim_t,
-                            rlim_max: (cpu_limit_secs + 1) as libc::rlim_t,
+                            rlim_max: cpu_limit_secs.saturating_add(1) as libc::rlim_t,
                         };
                         if libc::setrlimit(libc::RLIMIT_CPU, &limit) != 0 {
                             return Err(std::io::Error::last_os_error());
