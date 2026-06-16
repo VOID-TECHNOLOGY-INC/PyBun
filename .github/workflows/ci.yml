@@ -133,6 +133,47 @@ jobs:
       - name: Pip audit
         run: pip-audit --progress-spinner off .
 
+  coverage:
+    name: code coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install minisign
+        run: sudo apt-get update && sudo apt-get install -y minisign
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-targets: true
+          cache-on-failure: true
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Generate coverage report
+        run: |
+          cargo llvm-cov \
+            --workspace \
+            --lcov \
+            --output-path lcov.info \
+            --exclude-from-report "pypi_integration"
+      - name: Upload coverage report as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lcov-report
+          path: lcov.info
+          retention-days: 30
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: lcov.info
+          fail_ci_if_error: false
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+      - name: Print coverage summary (report-only, no threshold gate yet)
+        run: cargo llvm-cov report 2>&1 | tail -10 || true
+
   winget-validate:
     name: winget validate
     runs-on: windows-latest

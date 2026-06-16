@@ -131,3 +131,16 @@ deps-outdated:
 audit:
     cargo audit || echo "Note: Install cargo-audit with 'cargo install cargo-audit'"
 
+# Generate code coverage report (requires cargo-llvm-cov)
+# Install with: cargo install cargo-llvm-cov --locked
+coverage:
+    cargo llvm-cov --workspace --lcov --output-path lcov.info \
+        --exclude-from-report "pypi_integration"
+    @echo "LCOV report written to lcov.info"
+    cargo llvm-cov report
+
+# Generate HTML coverage report and open in browser
+coverage-html:
+    cargo llvm-cov --workspace --html --open \
+        --exclude-from-report "pypi_integration"
+
