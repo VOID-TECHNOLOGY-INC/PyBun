@@ -169,7 +169,9 @@
   - Tests: `cargo build` / `cargo clippy --all-targets --all-features -- -D warnings` / `cargo fmt -- --check` / `cargo test --lib`（351 passed）/ `cargo test --lib commands::test::`（8/8 passed）/ `cargo test`（フルスイート、E2E含む全テストパス）。JSON/CLI の公開挙動・schema に変更なし。
   - Current: `pybun module-find` / `pybun lazy-import` / `pybun watch` / `pybun profile` の実装（`run_module_find` / `run_lazy_import` / `run_watch` / `run_profile`、約715行、関連する `module_finder` / `hot_reload` / `lazy_import` / `profiles` の局所 `use` を含む）を `src/commands/tooling.rs` へ抽出し、`mod tooling;` を宣言。`mod.rs` 側の呼び出しを `tooling::run_module_find(...)` 等に更新し、`ModuleFindArgs` / `LazyImportArgs` / `WatchArgs` / `ProfileArgs` の import を `mod.rs` から削除して `tooling.rs` 側に移動。`RenderDetail`（コンストラクタ含む）は `super::RenderDetail` 経由で参照。`mod.rs` は 5957行 → 5241行に縮小。
   - Tests: `cargo build` / `cargo clippy --all-targets --all-features -- -D warnings` / `cargo fmt -- --check` / `cargo test --lib`（354 passed）/ `cargo test`（フルスイート、E2E含む全テストパス）。JSON/CLI の公開挙動・schema に変更なし。
-  - Remaining: `install.rs` / `lock.rs` / `run.rs` / `build.rs` / `x.rs` / `maintenance.rs`（gc/doctor）/ `python_env.rs` / `project.rs`（init/outdated/upgrade）への抽出は follow-up PR で対応する。
+  - Current: `pybun doctor` / `pybun gc` の実装（`run_doctor` / `run_gc`、support bundle / PyPI cache stale check / PEP 723 cache GC 連携を含む）を `src/commands/maintenance.rs` へ抽出し、`mod.rs` 側の dispatcher を `maintenance::run_doctor(...)` / `maintenance::run_gc(...)` 呼び出しへ更新。`support_bundle` と cache size formatting の局所 import を新モジュール側へ移動し、JSON detail / diagnostics / summary は変更なし。`mod.rs` は 5241行 → 4903行に縮小。
+  - Tests: `cargo check` / `cargo fmt -- --check` / `just lint` / `cargo test --test gc`（10 passed）/ `cargo test --test support_bundle`（2 passed）/ `cargo test --test self_update doctor`（4 passed, 10 filtered）/ `cargo test`（フルスイートパス）/ `cargo audit` で `gc` / `doctor` / support bundle 経路が継続動作することを確認。
+  - Remaining: `install.rs` / `lock.rs` / `run.rs` / `build.rs` / `x.rs` / `python_env.rs` / `project.rs`（init/outdated/upgrade）への抽出は follow-up PR で対応する。
 
 ### P2 (Post-GA Improvement)
 - PR-A8: Runtime catalog hardening（実チェックサム管理 + 3.13 preview）
