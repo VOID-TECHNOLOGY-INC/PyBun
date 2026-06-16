@@ -88,8 +88,11 @@ impl PackageIndex for PyPiIndex {
                 .await
                 .map_err(|e| crate::resolver::ResolveError::Io(e.to_string()))?;
             let source = this.client.package_source();
+            let Some(cached) = cached else {
+                return Ok(None);
+            };
             Ok(Some(this.client.build_resolved(
-                cached.expect("checked"),
+                cached,
                 &dependencies,
                 &source,
             )))
@@ -162,7 +165,11 @@ impl PyPiClient {
     /// Drain and return any notices about stale/corrupt cache entries that
     /// were discarded (treated as cache misses) since the last call.
     pub fn take_stale_cache_notices(&self) -> Vec<String> {
-        std::mem::take(&mut *self.stale_cache_notices.lock().unwrap())
+        let mut notices = self
+            .stale_cache_notices
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::mem::take(&mut *notices)
     }
 
     async fn get_or_fetch(
@@ -310,7 +317,10 @@ impl PyPiClient {
                 .await
                 .map_err(|e| PyPiError::Parse(format!("cache join error: {}", e)))??;
         if let Some(notice) = stale_notice {
-            self.stale_cache_notices.lock().unwrap().push(notice);
+            self.stale_cache_notices
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(notice);
         }
         Ok(entry)
     }
@@ -1032,6 +1042,32 @@ mod tests {
         assert!(notices[0].contains("demo.bin"));
 
         // Notices are drained after being taken.
+        assert!(client.take_stale_cache_notices().is_empty());
+    }
+
+    #[test]
+    fn stale_cache_notice_drain_recovers_from_poisoned_mutex() {
+        let temp = tempdir().unwrap();
+        let client = PyPiClient {
+            base: Url::parse("https://pypi.org").unwrap(),
+            cache_dir: temp.path().join("cache"),
+            http: reqwest::Client::new(),
+            offline: false,
+            package_once: Arc::new(OnceMap::new()),
+            deps_once: Arc::new(OnceMap::new()),
+            stale_cache_notices: Arc::new(Mutex::new(Vec::new())),
+        };
+
+        let notices = Arc::clone(&client.stale_cache_notices);
+        let poison = std::panic::catch_unwind(move || {
+            let mut guard = notices.lock().unwrap();
+            guard.push("discarded stale cache entry".to_string());
+            panic!("poison stale notice lock");
+        });
+        assert!(poison.is_err());
+
+        let drained = client.take_stale_cache_notices();
+        assert_eq!(drained, vec!["discarded stale cache entry"]);
         assert!(client.take_stale_cache_notices().is_empty());
     }
 }

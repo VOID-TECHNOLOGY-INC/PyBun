@@ -415,7 +415,9 @@ pub(super) fn run_watch(args: &WatchArgs, collector: &mut EventCollector) -> Res
         ));
     }
 
-    let target_script = target.unwrap();
+    let Some(target_script) = target else {
+        return Err(eyre!("watch target is required"));
+    };
     let mut watcher = HotReloadWatcher::new(config.clone());
 
     // Add watch paths

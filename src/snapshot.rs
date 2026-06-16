@@ -8,7 +8,7 @@
 //! Snapshot files are stored in a `__snapshots__` directory adjacent to the test file.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, hash_map::Entry};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -206,12 +206,13 @@ impl SnapshotManager {
     pub fn load_for(&mut self, source_file: &Path) -> Result<&mut SnapshotFile, SnapshotError> {
         let snap_path = self.snapshot_path_for(source_file);
 
-        if !self.files.contains_key(&snap_path) {
-            let file = SnapshotFile::load(&snap_path)?;
-            self.files.insert(snap_path.clone(), file);
+        match self.files.entry(snap_path.clone()) {
+            Entry::Occupied(entry) => Ok(entry.into_mut()),
+            Entry::Vacant(entry) => {
+                let file = SnapshotFile::load(&snap_path)?;
+                Ok(entry.insert(file))
+            }
         }
-
-        Ok(self.files.get_mut(&snap_path).unwrap())
     }
 
     /// Assert that a value matches its snapshot
