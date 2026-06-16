@@ -403,9 +403,10 @@ impl EventCollector {
     /// Record an event
     pub fn event(&mut self, event_type: EventType) -> &mut Event {
         let timestamp_ms = self.start.elapsed().as_millis() as u64;
+        let event_index = self.events.len();
         self.events.push(Event::new(event_type, timestamp_ms));
         self.notify_listener();
-        self.events.last_mut().unwrap()
+        &mut self.events[event_index]
     }
 
     /// Record an event with custom fields

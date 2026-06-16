@@ -382,8 +382,7 @@ impl ModuleFinder {
                 subdirs.push((path, module_name));
             } else if effective_is_file {
                 for ext in &self.config.extensions {
-                    if file_name.ends_with(ext.as_str()) {
-                        let stem = file_name.strip_suffix(ext.as_str()).unwrap();
+                    if let Some(stem) = file_name.strip_suffix(ext.as_str()) {
                         if stem == "__init__" {
                             break; // already emitted as package above
                         }

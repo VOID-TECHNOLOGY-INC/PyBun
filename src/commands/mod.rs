@@ -1661,10 +1661,18 @@ fn ensure_selection_is_verifiable(
         return Err(eyre!(message));
     }
 
-    let verified_hash = selection
-        .hash
-        .clone()
-        .expect("hash must be present after strict verification");
+    let Some(verified_hash) = selection.hash.clone() else {
+        let message = format!(
+            "missing SHA-256 hash for {} {} after verification",
+            pkg.name, pkg.version
+        );
+        collector.error_with_code(
+            "E_VERIFY_MISSING_HASH",
+            message.clone(),
+            "Choose a package artifact that includes a SHA-256 digest or use an index that exposes artifact hashes.",
+        );
+        return Err(eyre!(message));
+    };
     Ok((
         verified_hash.clone(),
         verification_artifact_value(pkg, selection, index_url, &verified_hash),

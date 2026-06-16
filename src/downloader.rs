@@ -101,7 +101,7 @@ impl Downloader {
                 // Connection timeout for faster failure detection
                 .connect_timeout(Duration::from_secs(10))
                 .build()
-                .expect("failed to build reqwest client"),
+                .unwrap_or_else(|_| Client::new()),
             inflight: Arc::new(OnceMap::new()),
         }
     }
