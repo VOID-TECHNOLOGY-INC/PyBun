@@ -14,3 +14,6 @@ scripts/benchmark/results/
 ref/uv
 
 .venv/
+
+# Coverage reports (generated locally by `just coverage`)
+lcov.info

@@ -139,6 +139,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install minisign
+        # Required so self_update integration tests cover the minisign verification path
         run: sudo apt-get update && sudo apt-get install -y minisign
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -157,7 +158,7 @@ jobs:
             --workspace \
             --lcov \
             --output-path lcov.info \
-            --exclude-from-report "pypi_integration"
+            --exclude-from-report "downloader_integration"
       - name: Upload coverage report as artifact
         uses: actions/upload-artifact@v4
         with:
@@ -165,14 +166,15 @@ jobs:
           path: lcov.info
           retention-days: 30
       - name: Upload to Codecov
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v5
         with:
           files: lcov.info
           fail_ci_if_error: false
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
       - name: Print coverage summary (report-only, no threshold gate yet)
-        run: cargo llvm-cov report 2>&1 | tail -10 || true
+        continue-on-error: true
+        run: cargo llvm-cov report 2>&1 | tail -10
 
   winget-validate:
     name: winget validate
