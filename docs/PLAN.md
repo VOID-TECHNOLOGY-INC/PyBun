@@ -128,6 +128,11 @@
   - Current: `rustls-webpki` を `Cargo.lock` で `0.103.13` に固定（RUSTSEC-2026-0104/0098/0099/0049 をクリア）。`Cargo.toml` に `rustls-webpki = { version = ">=0.103.13", optional = true }` を追加してバージョン floor を明示。`tests/security_features.rs` に `rustls_webpki_version_is_at_least_patched_floor` テストを追加（Cargo.lock を parse してバージョンを検証するリグレッションガード）。
   - Tests: `rustls_webpki_version_is_at_least_patched_floor` — Cargo.lock の `rustls-webpki` バージョンが `>= 0.103.13` であることをアサート。`cargo audit` exit 0 確認。`cargo clippy --all-targets --all-features -- -D warnings` 0 エラー。
 
+- [DONE] PR-CI1: Dependabot dependency update automation (Issue #188)
+  - Goal: Cargo / Python packaging / GitHub Actions の依存更新を手動追跡から週次の自動PRへ移し、`cargo audit` / `cargo deny` が失敗する前にパッチ更新を取り込めるようにする。
+  - Current: `.github/dependabot.yml` を追加し、`cargo` / `pip` / `github-actions` の3 ecosystemを `directory: "/"` で監視。各更新は weekly schedule、`open-pull-requests-limit: 5`、minor/patch grouping を設定し、更新PRのノイズを抑えながらセキュリティ・パッチ更新を継続的に拾える構成にした。
+  - Tests: `tests/dependabot_config.rs` を追加し、Dependabot設定が3 ecosystemを含むこと、weekly schedule、open PR上限、minor/patch grouping を持つことを検証。Red確認後、`cargo test --test dependabot_config` がパス。`ruby -e 'require "yaml"; ...'` で `.github/dependabot.yml` をYAMLとして読み込み、3 ecosystem が解決されることも確認。
+
 - [DONE] PR-UX1: `pybun init` non-TTY actionable error (Issue #133)
   - Goal: non-TTY 環境で `pybun init`（`--yes` なし）を実行した際、"IO error: not a terminal" の代わりに `--yes` フラグを案内する actionable diagnostic を返す。
   - Current: `init_project()` に `&mut EventCollector` を追加し、stdin が TTY でない場合は `E_INIT_NOT_INTERACTIVE` diagnostic（`suggestion` フィールドに `pybun init --yes` 案内）を push してから早期 return。テキストモードの stderr にも `--yes` を含むメッセージを出力。
