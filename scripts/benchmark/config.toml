@@ -50,7 +50,10 @@ modules = ["os", "json", "requests", "numpy", "pandas"]
 
 [scenarios.lazy_import]
 enabled = true
-heavy_modules = ["numpy", "pandas", "matplotlib"]
+# pandas/matplotlib are excluded: they are in PyBun's lazy-import default
+# denylist (Issue #136) since lazy-import hook overhead outweighs their
+# already-fast CPython import time.
+heavy_modules = ["numpy"]
 
 [scenarios.test]
 enabled = true
