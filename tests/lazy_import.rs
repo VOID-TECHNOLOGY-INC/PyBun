@@ -59,11 +59,24 @@ fn test_lazy_import_check_allowed_module() {
 #[test]
 fn test_lazy_import_check_json() {
     pybun()
-        .args(["--format=json", "lazy-import", "--check", "pandas"])
+        .args(["--format=json", "lazy-import", "--check", "scipy"])
         .assert()
         .success()
         .stdout(predicate::str::contains("\"decision\""))
         .stdout(predicate::str::contains("\"lazy\""));
+}
+
+#[test]
+fn test_lazy_import_check_pandas_denied() {
+    // pandas/matplotlib are denylisted by default: their own import time is
+    // already fast, so the lazy-import hook overhead outweighs any benefit
+    // (Issue #136).
+    pybun()
+        .args(["--format=json", "lazy-import", "--check", "pandas"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"decision\""))
+        .stdout(predicate::str::contains("\"denied\""));
 }
 
 #[test]
