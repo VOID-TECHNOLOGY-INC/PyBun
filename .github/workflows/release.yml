@@ -269,7 +269,7 @@ jobs:
             --public-key "${{ steps.minisign.outputs.public_key }}"
 
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@v1
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: |
             artifacts/**/*.tar.gz
