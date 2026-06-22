@@ -58,5 +58,5 @@ fn doctor_upload_posts_bundle() {
         .stdout(predicate::str::contains("\"upload\""))
         .stdout(predicate::str::contains("\"status\":\"uploaded\""));
 
-    upload.assert_hits(1);
+    upload.assert_calls(1);
 }
