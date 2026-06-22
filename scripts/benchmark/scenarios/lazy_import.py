@@ -4,9 +4,15 @@ B6: Lazy Import Benchmark
 Measures lazy import effectiveness.
 
 Scenarios:
-- B6.1: Heavy module import (numpy/pandas)
+- B6.1: Heavy module import (numpy)
 - B6.2: Many small module imports
 - B6.3: Actual access timing
+
+Note: pandas/matplotlib are excluded from the default `heavy_modules` list
+(see config.toml) because they are in PyBun's lazy-import default denylist
+(Issue #136): their own CPython import is already fast enough that the
+lazy-import hook overhead outweighs any deferred-load benefit, so measuring
+them here would no longer reflect lazy-import behavior.
 """
 
 from __future__ import annotations
@@ -120,7 +126,7 @@ def lazy_import_benchmark(config: dict, scenario_config: dict, base_dir: Path) -
     pybun_path = find_tool("pybun", config)
     python_path = find_tool("python3", config) or find_tool("python", config)
     
-    heavy_modules = scenario_config.get("heavy_modules", ["numpy", "pandas", "matplotlib"])
+    heavy_modules = scenario_config.get("heavy_modules", ["numpy"])
     
     with tempfile.TemporaryDirectory(prefix="pybun_lazy_bench_") as tmpdir:
         tmp = Path(tmpdir)

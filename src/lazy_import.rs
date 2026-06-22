@@ -75,6 +75,11 @@ fn default_denylist() -> HashSet<String> {
         "gc",
         "traceback",
         "logging",
+        // Heavy modules whose own import time is already fast relative to the
+        // lazy-import hook overhead (Issue #136 benchmarks: pandas/matplotlib
+        // showed no improvement, and a slight regression, under lazy-import).
+        "pandas",
+        "matplotlib",
     ]
     .iter()
     .map(|s| s.to_string())
@@ -481,6 +486,29 @@ mod tests {
     }
 
     #[test]
+    fn test_default_denylist_excludes_modules_with_no_lazy_benefit() {
+        // Benchmarks (Issue #136) showed pandas/matplotlib are slightly slower
+        // with lazy-import enabled: their own import time is already fast, so
+        // the lazy-import hook overhead outweighs any deferred-load savings.
+        let denylist = default_denylist();
+        assert!(denylist.contains("pandas"));
+        assert!(denylist.contains("matplotlib"));
+    }
+
+    #[test]
+    fn test_should_lazy_import_denies_pandas_and_matplotlib() {
+        let config = LazyImportConfig::with_defaults();
+        assert_eq!(
+            config.should_lazy_import("pandas"),
+            LazyImportDecision::Denied
+        );
+        assert_eq!(
+            config.should_lazy_import("matplotlib"),
+            LazyImportDecision::Denied
+        );
+    }
+
+    #[test]
     fn test_should_lazy_import_when_disabled() {
         let config = LazyImportConfig::default();
         assert_eq!(
@@ -500,10 +528,7 @@ mod tests {
     fn test_should_lazy_import_allowed_module() {
         let config = LazyImportConfig::with_defaults();
         assert_eq!(config.should_lazy_import("numpy"), LazyImportDecision::Lazy);
-        assert_eq!(
-            config.should_lazy_import("pandas"),
-            LazyImportDecision::Lazy
-        );
+        assert_eq!(config.should_lazy_import("scipy"), LazyImportDecision::Lazy);
     }
 
     #[test]
@@ -520,7 +545,7 @@ mod tests {
     fn test_allowlist_mode() {
         let mut config = LazyImportConfig::with_defaults();
         config.allow("numpy");
-        config.allow("pandas");
+        config.allow("scipy");
 
         // Allowed modules
         assert_eq!(config.should_lazy_import("numpy"), LazyImportDecision::Lazy);
@@ -528,14 +553,11 @@ mod tests {
             config.should_lazy_import("numpy.core"),
             LazyImportDecision::Lazy
         );
-        assert_eq!(
-            config.should_lazy_import("pandas"),
-            LazyImportDecision::Lazy
-        );
+        assert_eq!(config.should_lazy_import("scipy"), LazyImportDecision::Lazy);
 
         // Not in allowlist
         assert_eq!(
-            config.should_lazy_import("scipy"),
+            config.should_lazy_import("requests"),
             LazyImportDecision::Eager
         );
     }

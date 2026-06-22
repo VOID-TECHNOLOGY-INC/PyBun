@@ -129,7 +129,7 @@ graph TD
 
 `python` コマンドを代替する `pybun run`。ここが最大の差別化要因。
 
-  * **Lazy Import Injection:** ユーザーコードを変更することなく、設定ベースで重量級ライブラリ（Pandas, Torch, Terraform-cdkなど）を遅延読み込み（Lazy Loading）し、CLI起動速度を10〜100倍高速化する。
+  * **Lazy Import Injection:** ユーザーコードを変更することなく、設定ベースで重量級ライブラリ（NumPy, Torch, Terraform-cdkなど）を遅延読み込み（Lazy Loading）し、CLI起動速度を10〜100倍高速化する。Pandas/Matplotlib は自身の import コストがフックのオーバーヘッドより小さいため、デフォルトの denylist で除外されている（Issue #136）。`--allow` で個別に上書き可能。
   * **Rust-based Module Finder:** `sys.meta_path` を Rust 実装に置き換え、ファイルシステム探索を並列化・最適化。
   * **Runtime Hot Reloading:** ファイル変更を検知し、プロセスを落とさずにモジュールをリロード（FastAPI/Django等の開発効率向上）。段階導入として、外部ウォッチャー生成 → ネイティブ監視（notify 等）を許容。
   * **PEP 723 (Script Support):** 依存関係が記述された単一の `.py` ファイルを、事前の install なしで即座に仮想環境構築・実行する（段階導入として、まず依存解析/診断 → 自動インストール→実行へ）。

@@ -254,6 +254,10 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
   - Depends on: PR2.1.  
   - Current: `src/lazy_import.rs` implements lazy import configuration with allowlist/denylist, default denylist for core modules (sys, os, importlib, etc.). Python code generation for `sys.meta_path` injection with LazyModule proxy, LazyFinder, LazyLoader classes. `pybun lazy-import` command with `--generate`, `--check`, `--show-config`, `--allow`, `--deny`, `--log-imports`, `--no-fallback` options. Config file support (TOML).
   - Tests: 17 unit tests (config, allowlist/denylist logic, stats, serialization); 12 E2E tests (help, config, check, generate, file output).
+- [DONE] PR-A12: lazy-import default denylist excludes pandas/matplotlib (Issue #136)
+  - Goal: B6.1/B6.2/B6.3 ベンチマークで pandas/matplotlib が lazy-import 有効時にわずかに悪化（1.05x〜1.08x slower）していた問題を解消する。両モジュールは CPython 標準の import 自体が高速なため、lazy-import フックのオーバーヘッドが遅延ロードの利益を上回っていた。
+  - Current: `src/lazy_import.rs::default_denylist()` に `pandas` / `matplotlib` を追加。denylist は allowlist より優先されるため、`--allow pandas` 等で明示的に上書き可能。numpy は引き続きデフォルトで lazy（実測 1.87x speedup）。
+  - Tests: `src/lazy_import.rs` に2件追加（`test_default_denylist_excludes_modules_with_no_lazy_benefit`, `test_should_lazy_import_denies_pandas_and_matplotlib`）。既存の `test_should_lazy_import_allowed_module` / `test_allowlist_mode` を pandas 依存から scipy/numpy/requests に置き換え。`tests/lazy_import.rs` に `test_lazy_import_check_pandas_denied` を追加し、既存 `test_lazy_import_check_json` を scipy ベースに変更。`cargo test`（全件）、`cargo clippy --all-targets --all-features -- -D warnings`、`cargo fmt` がパス。
 - [DONE] PR2.3: Hot reload watcher (fs notify abstraction per OS, reload strategy) with dev profile toggle.  
   - Depends on: PR2.1.  
   - Current: `src/hot_reload.rs` implements file watcher configuration with include/exclude patterns, debouncing, and platform abstraction. `pybun watch` command with `--show-config`, `--shell-command` for external watcher generation, customizable include/exclude patterns, debounce timing. Dev profile configuration. Shell command generation for fswatch (macOS) and inotifywait (Linux).
