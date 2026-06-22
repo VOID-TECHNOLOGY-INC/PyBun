@@ -216,8 +216,8 @@ async fn concurrent_metadata_fetch_is_deduped() {
     assert!(r2.unwrap().is_some());
     assert!(r3.unwrap().is_some());
 
-    assert_eq!(project_mock.hits(), 1);
-    assert_eq!(meta_mock.hits(), 1);
+    assert_eq!(project_mock.calls(), 1);
+    assert_eq!(meta_mock.calls(), 1);
 
     unsafe {
         if let Some(value) = prev_base {
@@ -328,7 +328,7 @@ dependencies = ["app==1.0.0"]
         .assert()
         .success();
 
-    assert_eq!(unused_meta.hits(), 0);
+    assert_eq!(unused_meta.calls(), 0);
 }
 
 #[test]
@@ -510,6 +510,6 @@ dependencies = ["app==1.0.0"]
         .assert()
         .success();
 
-    assert_eq!(project_mock.hits(), 1);
-    assert_eq!(meta_mock.hits(), 1);
+    assert_eq!(project_mock.calls(), 1);
+    assert_eq!(meta_mock.calls(), 1);
 }
