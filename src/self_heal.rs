@@ -1,6 +1,44 @@
 use crate::resolver::{Requirement, ResolveError};
-use crate::schema::Diagnostic;
+use crate::schema::{Diagnostic, FixCandidate, RiskLevel};
 use serde_json::json;
+
+/// Build the fix candidate(s) for a missing/undetected Python runtime.
+///
+/// We cannot safely guess which version a project needs, so the suggested
+/// command is informational only (`auto_applicable: false`) — an agent or
+/// human still has to pick a version before `pybun python install` runs.
+pub fn fix_candidates_for_missing_python() -> Vec<FixCandidate> {
+    vec![FixCandidate::new(
+        "pybun python list --all",
+        "List installable Python versions, then run `pybun python install <version>`",
+        RiskLevel::Medium,
+        false,
+    )]
+}
+
+/// Build the fix candidate for stale PyPI metadata cache entries
+/// (see Issue #202). Safe to run unattended: it only deletes cache
+/// files that are already known to be stale.
+pub fn fix_candidates_for_stale_pypi_cache() -> Vec<FixCandidate> {
+    vec![FixCandidate::new(
+        "pybun gc",
+        "Remove stale PyPI metadata cache entries",
+        RiskLevel::Low,
+        true,
+    )]
+}
+
+/// Build the fix candidate for a lockfile containing placeholder hashes
+/// instead of verified sha256 digests. Re-resolving touches the lockfile
+/// and may hit the network, so this is not auto-applied.
+pub fn fix_candidates_for_lock_drift() -> Vec<FixCandidate> {
+    vec![FixCandidate::new(
+        "pybun install",
+        "Re-resolve and re-lock dependencies against an index that provides sha256 digests",
+        RiskLevel::Medium,
+        false,
+    )]
+}
 
 pub fn diagnostics_for_resolve_error(
     requirements: &[Requirement],
@@ -92,5 +130,36 @@ pub fn diagnostics_for_resolve_error(
                 .with_context(json!({ "error": msg })),
             ]
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_python_fix_is_not_auto_applicable() {
+        let candidates = fix_candidates_for_missing_python();
+        assert_eq!(candidates.len(), 1);
+        assert!(!candidates[0].auto_applicable);
+        assert_eq!(candidates[0].risk, RiskLevel::Medium);
+        assert!(candidates[0].command.starts_with("pybun python"));
+    }
+
+    #[test]
+    fn stale_pypi_cache_fix_is_low_risk_and_auto_applicable() {
+        let candidates = fix_candidates_for_stale_pypi_cache();
+        assert_eq!(candidates.len(), 1);
+        assert!(candidates[0].auto_applicable);
+        assert_eq!(candidates[0].risk, RiskLevel::Low);
+        assert_eq!(candidates[0].command, "pybun gc");
+    }
+
+    #[test]
+    fn lock_drift_fix_requires_manual_confirmation() {
+        let candidates = fix_candidates_for_lock_drift();
+        assert_eq!(candidates.len(), 1);
+        assert!(!candidates[0].auto_applicable);
+        assert_eq!(candidates[0].command, "pybun install");
     }
 }

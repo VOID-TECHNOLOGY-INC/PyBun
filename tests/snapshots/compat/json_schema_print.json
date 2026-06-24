@@ -22,6 +22,12 @@
             "file": {
               "type": "string"
             },
+            "fix_candidates": {
+              "items": {
+                "$ref": "#/$defs/fix_candidate"
+              },
+              "type": "array"
+            },
             "level": {
               "enum": [
                 "error",
@@ -122,6 +128,35 @@
           "required": [
             "type",
             "timestamp_ms"
+          ],
+          "type": "object"
+        },
+        "fix_candidate": {
+          "additionalProperties": false,
+          "properties": {
+            "auto_applicable": {
+              "type": "boolean"
+            },
+            "command": {
+              "type": "string"
+            },
+            "description": {
+              "type": "string"
+            },
+            "risk": {
+              "enum": [
+                "low",
+                "medium",
+                "high"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "command",
+            "description",
+            "risk",
+            "auto_applicable"
           ],
           "type": "object"
         }

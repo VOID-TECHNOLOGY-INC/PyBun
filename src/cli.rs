@@ -325,6 +325,15 @@ pub struct DoctorArgs {
     /// Override the support bundle upload endpoint.
     #[arg(long, value_name = "URL")]
     pub upload_url: Option<String>,
+    /// Compute a structured remediation plan for any detected issues.
+    /// Preview-only unless combined with `--apply`.
+    #[arg(long)]
+    pub fix: bool,
+    /// Apply safe, auto-applicable fixes from the remediation plan.
+    /// Requires `--fix`. Fixes classified above low risk are never
+    /// applied automatically and must be run manually.
+    #[arg(long, requires = "fix")]
+    pub apply: bool,
 }
 
 #[derive(Subcommand, Debug)]

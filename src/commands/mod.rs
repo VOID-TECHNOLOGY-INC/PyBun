@@ -1636,6 +1636,7 @@ fn missing_hash_diagnostic(
             "use an index that provides sha256 digests, then rerun install/lock/upgrade"
                 .to_string(),
         ),
+        fix_candidates: None,
         context: Some(json!({
             "package": pkg.name,
             "version": pkg.version,
@@ -1712,6 +1713,7 @@ fn emit_lockfile_verification_drift(lockfile: &Lockfile, collector: &mut EventCo
                 .to_string(),
         ),
         context: Some(json!({ "packages": drifted_packages })),
+        fix_candidates: Some(crate::self_heal::fix_candidates_for_lock_drift()),
     });
 }
 
@@ -1753,6 +1755,7 @@ async fn lock_dependencies(args: &LockArgs, collector: &mut EventCollector) -> R
                             .to_string(),
                     ),
                     context: None,
+                    fix_candidates: None,
                 });
                 return Err(eyre!(message));
             };
@@ -4252,6 +4255,7 @@ fn init_project(args: &InitArgs, collector: &mut EventCollector) -> Result<Rende
                         .to_string(),
                 ),
                 context: None,
+                fix_candidates: None,
             });
             return Err(eyre!(
                 "Interactive prompt requires a terminal. Run with --yes to accept defaults non-interactively: pybun init --yes"

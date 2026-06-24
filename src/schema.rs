@@ -58,6 +58,49 @@ pub enum DiagnosticLevel {
     Hint,
 }
 
+/// Risk level of an automated remediation, used to decide whether
+/// `pybun doctor --fix --apply` may run it without further confirmation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RiskLevel {
+    Low,
+    Medium,
+    High,
+}
+
+/// A machine-actionable remediation suggestion attached to a diagnostic.
+///
+/// `auto_applicable` only signals that the command is *safe to preview*;
+/// callers (e.g. `doctor --fix --apply`) must still gate execution on the
+/// risk level before running it unattended.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FixCandidate {
+    /// Exact CLI command an agent or human can run to apply the fix.
+    pub command: String,
+    /// Human-readable explanation of what the command does.
+    pub description: String,
+    /// Risk classification for the remediation.
+    pub risk: RiskLevel,
+    /// Whether this fix is considered safe to run automatically.
+    pub auto_applicable: bool,
+}
+
+impl FixCandidate {
+    pub fn new(
+        command: impl Into<String>,
+        description: impl Into<String>,
+        risk: RiskLevel,
+        auto_applicable: bool,
+    ) -> Self {
+        Self {
+            command: command.into(),
+            description: description.into(),
+            risk,
+            auto_applicable,
+        }
+    }
+}
+
 /// A diagnostic message with structured information
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Diagnostic {
@@ -80,6 +123,9 @@ pub struct Diagnostic {
     /// Additional context
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context: Option<Value>,
+    /// Structured, machine-actionable remediation candidates
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fix_candidates: Option<Vec<FixCandidate>>,
 }
 
 impl Diagnostic {
@@ -92,6 +138,7 @@ impl Diagnostic {
             line: None,
             suggestion: None,
             context: None,
+            fix_candidates: None,
         }
     }
 
@@ -104,6 +151,7 @@ impl Diagnostic {
             line: None,
             suggestion: None,
             context: None,
+            fix_candidates: None,
         }
     }
 
@@ -116,6 +164,7 @@ impl Diagnostic {
             line: None,
             suggestion: None,
             context: None,
+            fix_candidates: None,
         }
     }
 
@@ -128,6 +177,7 @@ impl Diagnostic {
             line: None,
             suggestion: None,
             context: None,
+            fix_candidates: None,
         }
     }
 
@@ -153,6 +203,11 @@ impl Diagnostic {
 
     pub fn with_context(mut self, context: Value) -> Self {
         self.context = Some(context);
+        self
+    }
+
+    pub fn with_fix_candidates(mut self, fix_candidates: Vec<FixCandidate>) -> Self {
+        self.fix_candidates = Some(fix_candidates);
         self
     }
 }
@@ -559,6 +614,44 @@ mod tests {
         assert_eq!(diag.file, Some("src/main.rs".to_string()));
         assert_eq!(diag.line, Some(42));
         assert_eq!(diag.suggestion, Some("try this instead".to_string()));
+    }
+
+    #[test]
+    fn test_diagnostic_with_fix_candidates() {
+        let diag = Diagnostic::error("Python 3.11 is required but not installed")
+            .with_code("E_MISSING_RUNTIME")
+            .with_fix_candidates(vec![FixCandidate::new(
+                "pybun python install 3.11",
+                "Install the missing Python runtime",
+                RiskLevel::Low,
+                true,
+            )]);
+
+        assert_eq!(diag.fix_candidates.as_ref().map(Vec::len), Some(1));
+        let candidate = &diag.fix_candidates.as_ref().unwrap()[0];
+        assert_eq!(candidate.command, "pybun python install 3.11");
+        assert_eq!(candidate.risk, RiskLevel::Low);
+        assert!(candidate.auto_applicable);
+    }
+
+    #[test]
+    fn test_fix_candidate_serializes_with_snake_case_risk() {
+        let candidate = FixCandidate::new(
+            "pybun gc",
+            "Clean stale cache entries",
+            RiskLevel::Low,
+            true,
+        );
+        let value = serde_json::to_value(&candidate).unwrap();
+        assert_eq!(value["risk"], json!("low"));
+        assert_eq!(value["auto_applicable"], json!(true));
+    }
+
+    #[test]
+    fn test_diagnostic_without_fix_candidates_omits_field() {
+        let diag = Diagnostic::warning("no action needed");
+        let value = serde_json::to_value(&diag).unwrap();
+        assert!(value.get("fix_candidates").is_none());
     }
 
     #[test]
