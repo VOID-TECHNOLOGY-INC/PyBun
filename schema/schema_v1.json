@@ -143,6 +143,32 @@
         },
         "context": {
           "type": ["object", "array", "string", "number", "boolean", "null"]
+        },
+        "fix_candidates": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/fix_candidate"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "fix_candidate": {
+      "type": "object",
+      "required": ["command", "description", "risk", "auto_applicable"],
+      "properties": {
+        "command": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "risk": {
+          "type": "string",
+          "enum": ["low", "medium", "high"]
+        },
+        "auto_applicable": {
+          "type": "boolean"
         }
       },
       "additionalProperties": false

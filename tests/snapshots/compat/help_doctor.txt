@@ -10,4 +10,6 @@ Options:
       --no-progress          Disable progress UI
       --upload               Upload support bundle to the configured endpoint
       --upload-url <URL>     Override the support bundle upload endpoint
+      --fix                  Compute a structured remediation plan for any detected issues. Preview-only unless combined with `--apply`
+      --apply                Apply safe, auto-applicable fixes from the remediation plan. Requires `--fix`. Fixes classified above low risk are never applied automatically and must be run manually
   -h, --help                 Print help

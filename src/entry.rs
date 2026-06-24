@@ -134,6 +134,8 @@ mod tests {
                 bundle: None,
                 upload: false,
                 upload_url: None,
+                fix: false,
+                apply: false,
             }),
         }
     }

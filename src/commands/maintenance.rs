@@ -3,7 +3,8 @@ use crate::cache::{Cache, format_size, parse_size};
 use crate::env::find_python_env;
 use crate::pep723_cache::Pep723Cache;
 use crate::project::Project;
-use crate::schema::EventCollector;
+use crate::schema::{Diagnostic, EventCollector};
+use crate::self_heal::{fix_candidates_for_missing_python, fix_candidates_for_stale_pypi_cache};
 use crate::support_bundle::{BundleContext, BundleReport, build_support_bundle, upload_bundle};
 use color_eyre::eyre::{Result, eyre};
 use serde_json::{Value, json};
@@ -19,6 +20,7 @@ pub(super) fn run_doctor(
     let mut checks: Vec<Value> = Vec::new();
     let mut all_ok = true;
     let mut bundle_report: Option<BundleReport> = None;
+    let mut fix_diagnostics: Vec<Diagnostic> = Vec::new();
 
     // Check pybun binary
     if let Ok(exe) = std::env::current_exe() {
@@ -50,6 +52,11 @@ pub(super) fn run_doctor(
             }));
             collector.warning(format!("Python not found: {}", e));
             all_ok = false;
+            fix_diagnostics.push(
+                Diagnostic::error(format!("Python not found: {}", e))
+                    .with_code("E_DOCTOR_MISSING_PYTHON")
+                    .with_fix_candidates(fix_candidates_for_missing_python()),
+            );
         }
     }
 
@@ -101,6 +108,15 @@ pub(super) fn run_doctor(
                 stats.stale_count,
                 pypi_cache_dir.display(),
             ));
+            fix_diagnostics.push(
+                Diagnostic::info(format!(
+                    "{} stale PyPI cache entries found in {}",
+                    stats.stale_count,
+                    pypi_cache_dir.display(),
+                ))
+                .with_code("I_DOCTOR_STALE_PYPI_CACHE")
+                .with_fix_candidates(fix_candidates_for_stale_pypi_cache()),
+            );
         }
     }
 
@@ -122,6 +138,59 @@ pub(super) fn run_doctor(
                 "message": "No pyproject.toml found in current directory",
             }));
             collector.info("No pyproject.toml found");
+        }
+    }
+
+    for diag in &fix_diagnostics {
+        collector.diagnostic(diag.clone());
+    }
+
+    let mut applied_fixes: Vec<Value> = Vec::new();
+    if args.apply {
+        for diag in &fix_diagnostics {
+            let Some(candidates) = &diag.fix_candidates else {
+                continue;
+            };
+            for candidate in candidates {
+                if !candidate.auto_applicable || candidate.risk != crate::schema::RiskLevel::Low {
+                    continue;
+                }
+                if candidate.command == "pybun gc" {
+                    match crate::pypi::pypi_cache_dir() {
+                        Some(dir) => {
+                            let gc_outcome = crate::pypi::gc_stale_pypi_cache(&dir, false);
+                            let applied = gc_outcome.files_removed > 0;
+                            applied_fixes.push(json!({
+                                "command": candidate.command,
+                                "applied": applied,
+                                "files_removed": gc_outcome.files_removed,
+                                "freed_bytes": gc_outcome.freed_bytes,
+                            }));
+                            if applied {
+                                collector.info(format!("Applied fix: {}", candidate.command));
+                            } else {
+                                collector.info(format!(
+                                    "No-op: {} found nothing to remove",
+                                    candidate.command
+                                ));
+                            }
+                        }
+                        None => {
+                            applied_fixes.push(json!({
+                                "command": candidate.command,
+                                "applied": false,
+                                "files_removed": null,
+                                "freed_bytes": null,
+                                "reason": "could not resolve PyPI cache directory",
+                            }));
+                            collector.warning(format!(
+                                "Could not apply fix '{}': PyPI cache directory could not be resolved",
+                                candidate.command
+                            ));
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -232,8 +301,31 @@ pub(super) fn run_doctor(
         detail["bundle"] = bundle.to_json();
     }
 
+    if args.fix {
+        let fix_plan: Vec<Value> = fix_diagnostics
+            .iter()
+            .map(|d| {
+                json!({
+                    "code": d.code,
+                    "message": d.message,
+                    "fix_candidates": d.fix_candidates,
+                })
+            })
+            .collect();
+        detail["fix_plan"] = json!(fix_plan);
+        if args.apply {
+            detail["applied_fixes"] = json!(applied_fixes);
+        }
+    }
+
     let summary = if bundle_report.is_some() {
         format!("{}. Support bundle captured", summary)
+    } else if args.fix && !fix_diagnostics.is_empty() {
+        format!(
+            "{}. Remediation plan available ({} item(s))",
+            summary,
+            fix_diagnostics.len()
+        )
     } else {
         summary
     };
