@@ -156,16 +156,39 @@ pub(super) fn run_doctor(
                     continue;
                 }
                 if candidate.command == "pybun gc" {
-                    let gc_outcome = crate::pypi::pypi_cache_dir()
-                        .map(|dir| crate::pypi::gc_stale_pypi_cache(&dir, false));
-                    let applied = gc_outcome.is_some();
-                    applied_fixes.push(json!({
-                        "command": candidate.command,
-                        "applied": applied,
-                        "files_removed": gc_outcome.as_ref().map(|r| r.files_removed),
-                        "freed_bytes": gc_outcome.as_ref().map(|r| r.freed_bytes),
-                    }));
-                    collector.info(format!("Applied fix: {}", candidate.command));
+                    match crate::pypi::pypi_cache_dir() {
+                        Some(dir) => {
+                            let gc_outcome = crate::pypi::gc_stale_pypi_cache(&dir, false);
+                            let applied = gc_outcome.files_removed > 0;
+                            applied_fixes.push(json!({
+                                "command": candidate.command,
+                                "applied": applied,
+                                "files_removed": gc_outcome.files_removed,
+                                "freed_bytes": gc_outcome.freed_bytes,
+                            }));
+                            if applied {
+                                collector.info(format!("Applied fix: {}", candidate.command));
+                            } else {
+                                collector.info(format!(
+                                    "No-op: {} found nothing to remove",
+                                    candidate.command
+                                ));
+                            }
+                        }
+                        None => {
+                            applied_fixes.push(json!({
+                                "command": candidate.command,
+                                "applied": false,
+                                "files_removed": null,
+                                "freed_bytes": null,
+                                "reason": "could not resolve PyPI cache directory",
+                            }));
+                            collector.warning(format!(
+                                "Could not apply fix '{}': PyPI cache directory could not be resolved",
+                                candidate.command
+                            ));
+                        }
+                    }
                 }
             }
         }
