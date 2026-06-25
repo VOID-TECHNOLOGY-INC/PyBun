@@ -276,7 +276,7 @@ jobs:
             artifacts/**/*.zip
 
       - name: Attest SBOM
-        uses: actions/attest-sbom@v1
+        uses: actions/attest-sbom@v4
         with:
           sbom-path: pybun-sbom.json
           subject-path: |
