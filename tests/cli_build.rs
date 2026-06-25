@@ -248,7 +248,7 @@ fn build_json_reports_artifacts_and_cyclonedx_sbom() {
     let hash_for = |path: &Path| {
         let mut hasher = Sha256::new();
         hasher.update(fs::read(path).expect("artifact readable"));
-        format!("{:x}", hasher.finalize())
+        hex::encode(hasher.finalize())
     };
 
     for artifact in [
