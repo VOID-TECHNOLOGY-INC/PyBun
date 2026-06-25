@@ -101,7 +101,7 @@ async fn download_detects_signature_mismatch_even_when_checksum_matches() {
     // Checksum matches the tampered body so only signature detects mismatch.
     let mut checksum_hasher = Sha256::new();
     checksum_hasher.update(b"tampered wheel bytes");
-    let checksum = format!("{:x}", checksum_hasher.finalize());
+    let checksum = hex::encode(checksum_hasher.finalize());
 
     let downloader = Downloader::new();
     let request = DownloadRequest {

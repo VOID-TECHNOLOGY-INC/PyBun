@@ -78,7 +78,7 @@ fn create_release_archive(root: &Path, target: &str, binary_bytes: &[u8]) -> Pat
 
 fn archive_sha256(path: &Path) -> String {
     let bytes = fs::read(path).unwrap();
-    format!("{:x}", Sha256::digest(bytes))
+    hex::encode(Sha256::digest(bytes))
 }
 
 fn sign_payload(payload: &[u8]) -> (String, String) {

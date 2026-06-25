@@ -61,14 +61,14 @@ pub fn sha256_file(path: &Path) -> std::io::Result<String> {
         }
         hasher.update(&buffer[..read]);
     }
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(hex::encode(hasher.finalize()))
 }
 
 /// Compute SHA-256 hash for raw bytes.
 pub fn sha256_bytes(data: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(data);
-    format!("{:x}", hasher.finalize())
+    hex::encode(hasher.finalize())
 }
 
 /// Rewind a file handle and compute its SHA-256 hash without closing it.
@@ -84,7 +84,7 @@ pub fn sha256_and_rewind(file: &mut File) -> std::io::Result<String> {
         hasher.update(&buffer[..read]);
     }
     file.rewind()?;
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(hex::encode(hasher.finalize()))
 }
 
 /// Check if a hash string is missing usable SHA-256 metadata.

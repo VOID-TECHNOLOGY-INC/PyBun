@@ -163,7 +163,7 @@ impl BuildCache {
             hasher.update(&data);
         }
 
-        Ok(format!("{:x}", hasher.finalize()))
+        Ok(hex::encode(hasher.finalize()))
     }
 
     pub fn restore_dist(&self, cache_key: &str, dist_dir: &Path) -> Result<bool> {
