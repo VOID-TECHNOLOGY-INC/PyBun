@@ -146,6 +146,10 @@ cargo install --path .
 ### Package Management
 
 ```bash
+# Initialize a new project (pyproject.toml)
+pybun init
+pybun init --name my-project --python ">=3.11" --template package
+
 # Install dependencies (generates lockfile)
 pybun install --require requests==2.31.0 --index fixtures/index.json
 
@@ -154,6 +158,17 @@ pybun add requests
 
 # Remove a package
 pybun remove requests
+
+# Lock dependencies for a PEP 723 script
+pybun lock --script script.py
+
+# Check for outdated dependencies
+pybun outdated
+
+# Upgrade dependencies within constraints (or specific packages)
+pybun upgrade
+pybun upgrade requests
+pybun upgrade --dry-run
 ```
 
 ### Script Execution
@@ -299,10 +314,20 @@ MCP server for AI agents:
 pybun mcp serve --stdio
 ```
 
-Tools: `pybun_resolve`, `pybun_install`, `pybun_run`, `pybun_gc`, `pybun_doctor`  
+Tools: `pybun_resolve`, `pybun_install`, `pybun_run`, `pybun_gc`, `pybun_doctor`, `pybun_lint`, `pybun_type_check`, `pybun_profile`, `pybun_fix`  
 Resources: `pybun://cache/info`, `pybun://env/info`
 
-※ Currently **`pybun_gc`, `pybun_doctor`, `pybun_run`, `pybun_resolve`, and resources are operational**. `pybun_install` generates lockfiles via resolution. HTTP mode is not yet implemented.
+※ Currently **`pybun_gc`, `pybun_doctor`, `pybun_run`, `pybun_resolve`, `pybun_lint`, `pybun_type_check`, `pybun_profile`, `pybun_fix`, and resources are operational**. `pybun_install` generates lockfiles via resolution. HTTP mode is not yet implemented.
+
+### Build
+
+```bash
+# Build sdist/wheel artifacts (wraps `python -m build`)
+pybun build
+
+# Build and emit a CycloneDX SBOM alongside artifacts
+pybun build --sbom
+```
 
 ### Diagnostics & Maintenance
 
@@ -310,6 +335,12 @@ Resources: `pybun://cache/info`, `pybun://env/info`
 # Environment diagnostics
 pybun doctor
 pybun doctor --verbose
+
+# Compute a remediation plan for detected issues (preview)
+pybun doctor --fix
+
+# Apply safe, auto-applicable fixes from the remediation plan
+pybun doctor --fix --apply
 
 # Cache garbage collection
 pybun gc
@@ -351,7 +382,7 @@ Operate PyBun as an MCP server for agents/IDEs:
 pybun mcp serve --stdio
 pybun --format=json mcp serve --stdio  # JSON envelope for tooling
 ```
-Tools: `pybun_resolve`, `pybun_install`, `pybun_run`, `pybun_gc`, `pybun_doctor`. Resources: `pybun://cache/info`, `pybun://env/info`.
+Tools: `pybun_resolve`, `pybun_install`, `pybun_run`, `pybun_gc`, `pybun_doctor`, `pybun_lint`, `pybun_type_check`, `pybun_profile`, `pybun_fix`. Resources: `pybun://cache/info`, `pybun://env/info`.
 
 ### Configuration (Claude Desktop)
 
