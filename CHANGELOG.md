@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.1.21
+
+### Features
+- feat(doctor): self-healing diagnostics — structured remediation plans and `doctor --fix`/`--apply` (#118, #222)
+
+### Fixes
+- fix(runtime): exclude pandas/matplotlib from the lazy-import default denylist (#136, #221)
+- fix(runtime): reduce production `unwrap()` panics (#209)
+- fix(sandbox): surface `E_SANDBOX_CPU_LIMIT` and unsupported resource limit warnings (#203, #205)
+- fix(pypi): treat stale pre-0.1.19 bincode cache as a miss and surface PyPI cache state in `doctor`/`gc` (#202, #204)
+
+### Refactor
+- refactor(commands): extract maintenance, test execution, and module-find/lazy-import/watch/profile commands into focused modules (#186, #201, #206, #208)
+
+### Chores
+- chore(ci): add Dependabot update automation and code coverage measurement via cargo-llvm-cov (#189, #207, #210)
+- chore(deps): routine dependency updates (actions/checkout, actions/setup-python, actions/download-artifact, codecov-action, actions/attest-build-provenance, httpmock, dirs, tikv-jemallocator, and the cargo minor/patch group)
+
 ## v0.1.20
 
 ### Security / Release Integrity
