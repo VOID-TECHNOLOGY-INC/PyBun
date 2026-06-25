@@ -16,7 +16,7 @@
 
 ### Chores
 - chore(ci): add Dependabot update automation and code coverage measurement via cargo-llvm-cov (#189, #207, #210)
-- chore(deps): routine dependency updates (actions/checkout, actions/setup-python, actions/download-artifact, codecov-action, actions/attest-build-provenance, httpmock, dirs, tikv-jemallocator, and the cargo minor/patch group)
+- chore(deps): routine dependency updates (sha2, reqwest, notify, console, dirs, tikv-jemallocator, httpmock, actions/checkout, actions/setup-python, actions/download-artifact, actions/upload-artifact, actions/attest-build-provenance, actions/attest-sbom, codecov-action, peter-evans/create-pull-request, softprops/action-gh-release, and the cargo minor/patch groups) (#211-#220, #223-#231)
 
 ## v0.1.20
 
