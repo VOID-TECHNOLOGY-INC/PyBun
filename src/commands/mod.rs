@@ -2509,7 +2509,15 @@ async fn run_script(
             }
         }
 
-        if !dry_run && !no_cache && !args.sandbox && pep723_backend_setting != "pybun" {
+        // When a PyBun binary lockfile exists next to the script, bypass uv entirely.
+        // uv would detect the .lock file, attempt to parse it as TOML, and crash
+        // because the file uses PyBun's binary format (Issue #234).
+        if !dry_run
+            && !no_cache
+            && !args.sandbox
+            && pep723_backend_setting != "pybun"
+            && script_lock.is_none()
+        {
             if let Some(uv_path) = crate::env::find_uv_executable() {
                 let (base_python, env_source) = find_python_interpreter()?;
                 eprintln!("info: using Python from {} for uv run backend", env_source);
