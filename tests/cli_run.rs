@@ -773,3 +773,200 @@ fn run_with_dev_profile_no_lazy_imports() {
         "expected no LazyFinder in sys.meta_path for dev profile, got: {stdout}"
     );
 }
+
+// =============================================================================
+// Issue #234: PEP 723 script lockfile collides with uv run backend
+// When a PyBun script lockfile (<script>.lock) exists, the uv backend must be
+// bypassed to prevent uv from attempting to parse the binary lockfile as TOML.
+// =============================================================================
+
+#[test]
+fn run_pep723_with_script_lock_bypasses_uv_backend() {
+    let temp = tempdir().unwrap();
+    let script = temp.path().join("locked.py");
+
+    // Script with a dep from the fixture index so the lock step succeeds.
+    let lock_script_content = r#"# /// script
+# dependencies = ["app==1.0.0"]
+# ///
+print("hello locked")
+"#;
+    fs::write(&script, lock_script_content).unwrap();
+
+    // Fake uv that fails only when called as "uv run" (the collision case).
+    // It must succeed for "uv pip install" so the pybun backend can use it for
+    // fast package installation after bypassing the uv run backend.
+    let uv_dir = temp.path().join("uv-bin");
+    fs::create_dir_all(&uv_dir).unwrap();
+    let uv_path = if cfg!(windows) {
+        uv_dir.join("uv.bat")
+    } else {
+        uv_dir.join("uv")
+    };
+
+    if cfg!(windows) {
+        fs::write(
+            &uv_path,
+            "@echo off\r\nif \"%1\"==\"run\" (\r\n  echo UV_RUN_WAS_CALLED_UNEXPECTEDLY 1>&2\r\n  exit /b 1\r\n)\r\nexit /b 0\r\n",
+        )
+        .unwrap();
+    } else {
+        fs::write(
+            &uv_path,
+            "#!/usr/bin/env sh\nif [ \"$1\" = \"run\" ]; then\n  echo UV_RUN_WAS_CALLED_UNEXPECTEDLY >&2\n  exit 1\nfi\nexit 0\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&uv_path).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&uv_path, perms).unwrap();
+        }
+    }
+
+    let mut path_entries = vec![uv_dir.clone()];
+    if let Some(existing) = std::env::var_os("PATH") {
+        path_entries.extend(std::env::split_paths(&existing));
+    }
+    let new_path = std::env::join_paths(path_entries).unwrap();
+
+    // Create the PyBun binary lockfile next to the script.
+    let index_path = std::path::PathBuf::from("tests/fixtures/index.json");
+    bin()
+        .env("PATH", &new_path)
+        .args([
+            "--format=json",
+            "lock",
+            "--script",
+            script.to_str().unwrap(),
+            "--index",
+            index_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let lock_path = {
+        let mut p = script.as_os_str().to_os_string();
+        p.push(".lock");
+        std::path::PathBuf::from(p)
+    };
+    assert!(lock_path.exists(), "lockfile must exist before running");
+
+    // Run the script WITHOUT dry-run so the uv-selection path is fully exercised.
+    // With the fix, pybun must choose the built-in backend (lockfile present) and
+    // must NOT call "uv run" even though fake uv is on PATH with PYBUN_PEP723_BACKEND=auto.
+    let output = bin()
+        .env("PATH", &new_path)
+        .args(["--format=json", "run", script.to_str().unwrap()])
+        .output()
+        .expect("run pybun");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        !stderr.contains("UV_RUN_WAS_CALLED_UNEXPECTEDLY"),
+        "uv run must not be invoked when a PyBun script lockfile exists, stderr: {stderr}"
+    );
+
+    let value: Value =
+        serde_json::from_str(&stdout).unwrap_or_else(|_| panic!("valid JSON, got: {stdout}"));
+    assert_eq!(
+        value["status"], "ok",
+        "run should succeed; stdout: {stdout}"
+    );
+    assert_ne!(
+        value["detail"]["pep723_backend"], "uv_run",
+        "pep723_backend must not be uv_run when a script lockfile exists; output: {stdout}"
+    );
+}
+
+#[test]
+fn run_pep723_explicit_uv_backend_with_lockfile_emits_warning() {
+    // When PYBUN_PEP723_BACKEND=uv is explicitly set but a PyBun lockfile exists,
+    // pybun must warn the user and fall back to the pybun backend (Issue #234).
+    let temp = tempdir().unwrap();
+    let script = temp.path().join("locked_explicit_uv.py");
+    let content = r#"# /// script
+# dependencies = ["app==1.0.0"]
+# ///
+print("hello explicit uv lockfile")
+"#;
+    fs::write(&script, content).unwrap();
+
+    // Fake uv: succeeds for all subcommands (install), fails only for run.
+    let uv_dir = temp.path().join("uv-bin");
+    fs::create_dir_all(&uv_dir).unwrap();
+    let uv_path = if cfg!(windows) {
+        uv_dir.join("uv.bat")
+    } else {
+        uv_dir.join("uv")
+    };
+    if cfg!(windows) {
+        fs::write(
+            &uv_path,
+            "@echo off\r\nif \"%1\"==\"run\" (\r\n  echo UV_RUN_WAS_CALLED_UNEXPECTEDLY 1>&2\r\n  exit /b 1\r\n)\r\nexit /b 0\r\n",
+        )
+        .unwrap();
+    } else {
+        fs::write(
+            &uv_path,
+            "#!/usr/bin/env sh\nif [ \"$1\" = \"run\" ]; then\n  echo UV_RUN_WAS_CALLED_UNEXPECTEDLY >&2\n  exit 1\nfi\nexit 0\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&uv_path).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&uv_path, perms).unwrap();
+        }
+    }
+
+    let mut path_entries = vec![uv_dir];
+    if let Some(existing) = std::env::var_os("PATH") {
+        path_entries.extend(std::env::split_paths(&existing));
+    }
+    let new_path = std::env::join_paths(path_entries).unwrap();
+
+    let index_path = std::path::PathBuf::from("tests/fixtures/index.json");
+    bin()
+        .env("PATH", &new_path)
+        .args([
+            "--format=json",
+            "lock",
+            "--script",
+            script.to_str().unwrap(),
+            "--index",
+            index_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let output = bin()
+        .env("PYBUN_PEP723_BACKEND", "uv")
+        .env("PATH", new_path)
+        .args(["--format=json", "run", script.to_str().unwrap()])
+        .output()
+        .expect("run pybun with explicit uv backend and lockfile");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // Must NOT invoke uv run.
+    assert!(
+        !stderr.contains("UV_RUN_WAS_CALLED_UNEXPECTEDLY"),
+        "uv run must not be called when a lockfile exists; stderr: {stderr}"
+    );
+    // Must emit a warning so the user knows their setting was overridden.
+    assert!(
+        stderr.contains("warning:") && stderr.contains("lockfile"),
+        "expected a warning about uv being bypassed due to lockfile; stderr: {stderr}"
+    );
+    // Must succeed.
+    let value: Value =
+        serde_json::from_str(&stdout).unwrap_or_else(|_| panic!("valid JSON, got: {stdout}"));
+    assert_eq!(value["status"], "ok", "stdout: {stdout}");
+    assert_ne!(value["detail"]["pep723_backend"], "uv_run");
+}
