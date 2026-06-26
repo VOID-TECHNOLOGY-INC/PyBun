@@ -2512,6 +2512,12 @@ async fn run_script(
         // When a PyBun binary lockfile exists next to the script, bypass uv entirely.
         // uv would detect the .lock file, attempt to parse it as TOML, and crash
         // because the file uses PyBun's binary format (Issue #234).
+        if pep723_backend_setting == "uv" && script_lock.is_some() {
+            eprintln!(
+                "warning: PYBUN_PEP723_BACKEND=uv is set but a PyBun script lockfile exists; \
+                 uv cannot parse the binary .lock file — falling back to the pybun backend"
+            );
+        }
         if !dry_run
             && !no_cache
             && !args.sandbox
