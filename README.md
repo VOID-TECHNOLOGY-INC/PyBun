@@ -84,6 +84,18 @@ Existing Python tools are built for **humans**. PyBun is designed for **both AI 
 - 🛡️ **Sandbox Mode:** Run untrusted AI-generated code safely with `--sandbox`.
 - 📦 **Single Binary:** No dependencies. Just download and run.
 
+### ⚡ Performance vs uv (Apple M1, v0.1.21)
+
+| Scenario | PyBun | uv | Result |
+|----------|-------|----|--------|
+| Binary startup (`--version`) | **3.9ms** | 7.1ms | PyBun **1.8x faster** |
+| PEP 723 script — cold cache | **597ms** | 926ms | PyBun **1.6x faster** |
+| PEP 723 script — warm cache | 628ms | **123ms** | uv 5.1x faster |
+| Dependency resolution | 748ms | **24ms** | uv 30.7x faster† |
+
+†Resolution speed is a known roadmap item — see [Issue #117](https://github.com/VOID-TECHNOLOGY-INC/PyBun/issues/117).  
+Full benchmark: [docs/BENCHMARK_UV_COMPARISON.md](docs/BENCHMARK_UV_COMPARISON.md)
+
 ### 💡 Example: AI Agent Workflow
 
 ```bash

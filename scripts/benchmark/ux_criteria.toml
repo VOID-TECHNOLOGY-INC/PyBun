@@ -41,3 +41,22 @@ tool = "pybun"
 compare_to = "python"
 max_ratio = 2.0
 
+# C-series: PyBun vs uv head-to-head regression gates
+[[rules]]
+scenario = "C4_startup"
+tool = "pybun"
+compare_to = "uv"
+max_ratio = 1.5
+
+[[rules]]
+scenario = "C1_warm"
+tool = "pybun"
+compare_to = "uv"
+max_ratio = 2.0
+
+[[rules]]
+scenario = "C1_cold"
+tool = "pybun"
+compare_to = "uv"
+max_ratio = 5.0
+
