@@ -970,3 +970,85 @@ print("hello explicit uv lockfile")
     assert_eq!(value["status"], "ok", "stdout: {stdout}");
     assert_ne!(value["detail"]["pep723_backend"], "uv_run");
 }
+
+// =============================================================================
+// Issue #238: warm cache speedup — uv backend must NOT pass --python <venv>
+// =============================================================================
+
+/// When pybun delegates PEP 723 execution to uv, it must call `uv run --script`
+/// WITHOUT a `--python` argument.  Passing `--python <venv_python>` causes uv to
+/// create a brand-new environment on every warm run (cache never reused), so
+/// warm latency equals cold latency (~600 ms instead of the expected ~120 ms).
+#[test]
+fn run_pep723_uv_backend_does_not_pass_python_flag() {
+    let temp = tempdir().unwrap();
+    let script = temp.path().join("pep723_no_python_flag.py");
+    fs::write(
+        &script,
+        "# /// script\n# dependencies = [\"requests>=2.28.0\"]\n# ///\nprint('ok')\n",
+    )
+    .unwrap();
+
+    // Fake uv that records its argv to a file and exits 0.
+    let args_log = temp.path().join("uv_args.txt");
+    let uv_dir = temp.path().join("uv-bin");
+    fs::create_dir_all(&uv_dir).unwrap();
+    let uv_path = uv_dir.join("uv");
+
+    let args_log_str = args_log.to_str().unwrap();
+    // Write argv (one arg per line) to the log file.
+    let script_body = format!(
+        "#!/usr/bin/env sh\nfor arg in \"$@\"; do printf '%s\\n' \"$arg\"; done > {}\necho 'ok'\nexit 0\n",
+        args_log_str
+    );
+    fs::write(&uv_path, &script_body).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&uv_path).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&uv_path, perms).unwrap();
+    }
+
+    let mut path_entries = vec![uv_dir];
+    if let Some(existing) = std::env::var_os("PATH") {
+        path_entries.extend(std::env::split_paths(&existing));
+    }
+    let new_path = std::env::join_paths(path_entries).unwrap();
+
+    let output = bin()
+        .env("PATH", &new_path)
+        // Ensure pybun backend is not forced — we want the auto/uv path
+        .env("PYBUN_PEP723_BACKEND", "auto")
+        .args(["--format=json", "run", script.to_str().unwrap()])
+        .output()
+        .expect("run pybun with auto (uv) backend");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let value: Value =
+        serde_json::from_str(&stdout).unwrap_or_else(|_| panic!("valid JSON, got: {stdout}"));
+    assert_eq!(value["status"], "ok", "pybun run failed: {stdout}");
+    assert_eq!(
+        value["detail"]["pep723_backend"], "uv_run",
+        "expected uv_run backend: {stdout}"
+    );
+
+    // Read the recorded uv argv
+    let uv_args = fs::read_to_string(&args_log)
+        .unwrap_or_else(|_| panic!("uv args log not written to {args_log_str}"));
+    let args: Vec<&str> = uv_args.lines().collect();
+
+    // uv must be called as `uv run --script <path>` — NOT `uv run --python ...`
+    assert!(
+        args.contains(&"run"),
+        "uv must be called with 'run' subcommand; args: {args:?}"
+    );
+    assert!(
+        args.contains(&"--script"),
+        "uv must be called with '--script' flag; args: {args:?}"
+    );
+    assert!(
+        !args.contains(&"--python"),
+        "uv must NOT be called with '--python' (causes cache miss on every warm run); args: {args:?}"
+    );
+}
