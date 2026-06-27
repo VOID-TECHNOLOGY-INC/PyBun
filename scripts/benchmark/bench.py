@@ -379,6 +379,7 @@ def load_scenarios(base_dir: Path):
         "lazy_import": "lazy_import_benchmark",
         "test": "test_benchmark",
         "mcp": "mcp_benchmark",
+        "uv_comparison": "uv_comparison_benchmark",
     }
     
     for py_file in scenarios_dir.glob("*.py"):

@@ -63,6 +63,14 @@ parallel_workers = [1, 2, 4, 8]
 enabled = true
 tools = ["doctor", "run", "resolve", "gc"]
 
+[scenarios.uv_comparison]
+enabled = true
+iterations = 20       # more samples than standard B-series (10)
+warmup = 3            # align with hyperfine default
+trim_ratio = 0.05     # remove 5% outliers per tail
+cv_threshold = 0.15   # skip result annotation if CV > 15%
+adhoc_package = "ruff"
+
 [output]
 format = "json"                     # json, markdown, csv
 include_system_info = true
