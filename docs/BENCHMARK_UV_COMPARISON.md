@@ -1,8 +1,8 @@
 # PyBun vs uv — Head-to-Head Benchmark
 
-> **Generated**: 2026-06-27  
-> **Environment**: Apple M1 · macOS 25.5.0 · Python 3.11.15  
-> **pybun**: 0.1.21 · **uv**: 0.11.21  
+> **Generated**: 2026-06-27 (post Issue #238 fix — 20 iterations, 3 warmup)
+> **Environment**: Apple M1 · macOS 25.5.0
+> **pybun**: 0.1.21 · **uv**: 0.11.21
 > **Source**: `scripts/benchmark/scenarios/uv_comparison.py`
 
 This document presents a focused, head-to-head comparison of PyBun and uv across the scenarios where the two tools overlap directly.
@@ -29,12 +29,11 @@ PATH=$(pwd)/../../target/release:$PATH \
 
 | Scenario | PyBun p50 (ms) | uv p50 (ms) | Speedup | Winner | Note |
 |----------|---------------|-------------|---------|--------|------|
-| C4_startup | 3.9 | 7.1 | **1.83x** | **pybun** | binary startup: `pybun --version` vs `uv --version` |
-| C1_warm | 628.0 | 122.6 | **5.12x** | **uv** | PEP 723 warm cache: `pybun run` vs `uv run --with` |
-| C1_cold | 596.5 | 925.8 | **1.55x** | **pybun** | PEP 723 cold cache (network + env creation) |
-| C5_resolution | 748.4 | 24.4 | **30.70x** | **uv** | dependency resolution: `pybun install` vs `uv lock` |
+| C4_startup | 3.5 | 7.2 | **2.03x** | **pybun** | binary startup: `pybun --version` vs `uv --version` |
+| C1_warm | **124.1** | 117.5 | **1.06x** | uv | PEP 723 warm cache: essentially parity after Issue #238 fix |
+| C5_resolution | 883.9 | 19.6 | **45.1x** | **uv** | dependency resolution: `pybun install` vs `uv lock` |
 
-*p50 = median wall-clock time across 5 runs on Apple M1*
+*p50 = median wall-clock time across 20 runs on Apple M1. C1_warm improved from 628ms → 124ms after Issue #238 fix.*
 
 ---
 
@@ -55,18 +54,18 @@ This reflects PyBun's minimal startup path with no heavy Python import required.
 ### C1_warm — PEP 723 Script Execution (warm cache)
 
 ```bash
-# PyBun: reads inline deps from # /// script block, reuses env-cache
-pybun run script.py          →  p50=628ms  p95=725ms
+# PyBun: delegates to `uv run --script` (fix: no longer passes --python <venv>)
+pybun run script.py               →  p50=124ms  p95=129ms  ✅ (was 628ms before #238 fix)
 
 # uv: resolves deps inline, reuses its own venv cache
-uv run --with requests script.py  →  p50=123ms  p95=141ms
+uv run --with requests script.py  →  p50=118ms  p95=121ms
 ```
 
-**uv is 5.12x faster** on warm-cache PEP 723 execution.  
-uv's venv activation path is highly optimized; PyBun's env-cache lookup adds overhead.  
-This is the most important scenario for typical agent workflows.
+**Essentially parity** (1.06x) on warm-cache PEP 723 execution after Issue #238 fix.
 
-> **Priority improvement area for PyBun**: reducing warm-cache env reuse latency.
+**Root cause fixed**: The previous code passed `--python <venv_python_path>` to `uv run --script`,
+which caused uv to create a new isolated environment on every invocation (cache never reused).
+Removing the `--python` argument lets uv discover Python itself and properly cache the env.
 
 ---
 
@@ -118,15 +117,14 @@ uvx ruff --version       →  p50=22.9ms  (reference)
 
 | Area | Advantage | Why |
 |------|-----------|-----|
-| Binary startup | 1.83x faster | Minimal Rust startup path |
-| Cold PEP 723 | 1.55x faster | Faster first-run env init without package download |
+| Binary startup | 2.0x faster | Minimal Rust startup path |
+| Warm PEP 723 | Parity (1.06x) | Fixed in Issue #238 — was 5x slower before |
 
 ### Where uv wins today
 
 | Area | Advantage | Root cause & roadmap |
 |------|-----------|---------------------|
-| Warm PEP 723 | 5.12x faster | PyBun env-cache hit path needs optimization |
-| Dependency resolution | 30.7x faster | PubGrub SAT solver vs greedy resolver — tracked in Issue #117 |
+| Dependency resolution | 45x faster | PubGrub SAT solver vs greedy resolver — tracked in Issue #117 |
 
 ### What this means for AI agent use cases
 
@@ -157,9 +155,9 @@ python ux_gate.py results/benchmark_latest.json
 
 ## Raw Data
 
-- **JSON**: [`scripts/benchmark/results/benchmark_20260627_095218.json`](../scripts/benchmark/results/benchmark_20260627_095218.json)
-- **CSV**: [`scripts/benchmark/results/benchmark_20260627_095218.csv`](../scripts/benchmark/results/benchmark_20260627_095218.csv)
-- **Markdown**: [`scripts/benchmark/results/benchmark_20260627_095218.md`](../scripts/benchmark/results/benchmark_20260627_095218.md)
+- **JSON**: [`scripts/benchmark/results/benchmark_20260627_232039.json`](../scripts/benchmark/results/benchmark_20260627_232039.json)
+- **CSV**: [`scripts/benchmark/results/benchmark_20260627_232039.csv`](../scripts/benchmark/results/benchmark_20260627_232039.csv)
+- **Markdown**: [`scripts/benchmark/results/benchmark_20260627_232039.md`](../scripts/benchmark/results/benchmark_20260627_232039.md)
 
 ---
 

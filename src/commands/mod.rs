@@ -2334,7 +2334,7 @@ struct SandboxInfo {
 #[derive(Debug)]
 enum RunProgram {
     Python(String),
-    Uv { uv_path: PathBuf, python: String },
+    Uv { uv_path: PathBuf },
 }
 
 fn script_lock_path(script_path: &Path) -> PathBuf {
@@ -2525,17 +2525,8 @@ async fn run_script(
             && script_lock.is_none()
         {
             if let Some(uv_path) = crate::env::find_uv_executable() {
-                let (base_python, env_source) = find_python_interpreter()?;
-                eprintln!("info: using Python from {} for uv run backend", env_source);
                 pep723_backend = "uv_run".to_string();
-                (
-                    RunProgram::Uv {
-                        uv_path,
-                        python: base_python,
-                    },
-                    None,
-                    false,
-                )
+                (RunProgram::Uv { uv_path }, None, false)
             } else if pep723_backend_setting == "uv" {
                 return Err(eyre!(
                     "PYBUN_PEP723_BACKEND=uv requires `uv` to be available in PATH"
@@ -3083,11 +3074,9 @@ async fn run_script(
             }
             (cmd, false)
         }
-        RunProgram::Uv { uv_path, python } => {
+        RunProgram::Uv { uv_path } => {
             let mut cmd = ProcessCommand::new(uv_path);
-            cmd.args(["run", "--python"]);
-            cmd.arg(python);
-            cmd.arg("--script");
+            cmd.args(["run", "--script"]);
             cmd.arg(&script_path);
             if let Some(dir) = &wheel_cache_dir {
                 if std::env::var_os("UV_CACHE_DIR").is_none() {
