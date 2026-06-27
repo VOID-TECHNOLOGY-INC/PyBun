@@ -15,6 +15,7 @@
   <a href="#why-pybun">Why PyBun?</a> •
   <a href="#mcp-server">MCP Server</a> •
   <a href="#command-reference">Commands</a> •
+  <a href="#benchmarks">Benchmarks</a> •
   <a href="#roadmap">Roadmap</a>
 </p>
 
@@ -74,9 +75,9 @@ Tools like uv and pip are excellent at what they do. PyBun doesn't try to replac
 ### ✨ What PyBun adds that other tools don't
 
 - 🤖 **JSON-first output:** Every command supports `--format=json` as a first-class citizen. LLMs can parse outputs reliably — no regex, no brittle string matching.
-- 🔌 **Built-in MCP Server:** [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) lets AI tools like Cursor and Claude Desktop operate your Python environment directly — no extra setup, no glue code.
-- 📋 **Structured diagnostics:** Errors come with machine-readable `kind`, `message`, and `hint` fields. Agents can act on failures without guessing what went wrong.
-- 🛡️ **Sandbox Mode:** Run untrusted AI-generated code safely with `--sandbox`. File and network access is isolated by default.
+- 🔌 **Built-in MCP Server:** [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) lets AI tools like Cursor and Claude Desktop operate your Python environment directly via stdio — no extra glue code required.
+- 📋 **Structured diagnostics:** Errors come with machine-readable `code`, `level`, and `message` fields. Agents can act on failures without guessing what went wrong.
+- 🛡️ **Sandbox Mode:** Run untrusted AI-generated code safely with `--sandbox`. File and network access are restricted when the flag is set.
 - 📦 **Single binary:** No runtime dependencies. Download and run anywhere.
 
 ### 💡 Example: AI Agent Workflow
@@ -532,7 +533,7 @@ cargo test mcp
 
 ## Benchmarks
 
-PyBun uses uv as an optional execution backend for some operations (e.g. PEP 723 script runs). Where uv is available, PyBun delegates to it transparently — so warm-cache script execution is at parity with uv directly.
+PyBun is not a speed competitor to uv — it's an interface layer. PyBun uses uv as an optional execution backend for some operations (e.g. PEP 723 script runs). Where uv is available, PyBun delegates to it transparently — so warm-cache script execution is at parity with running uv directly.
 
 The areas where PyBun intentionally differs from uv (JSON output, MCP, sandbox) are not speed-sensitive. For raw dependency resolution speed, uv's PubGrub solver is significantly faster than PyBun's current greedy resolver — this is a known roadmap item tracked in [Issue #117](https://github.com/VOID-TECHNOLOGY-INC/PyBun/issues/117).
 
