@@ -15,6 +15,7 @@
   <a href="#why-pybun">Why PyBun?</a> •
   <a href="#mcp-server">MCP Server</a> •
   <a href="#command-reference">Commands</a> •
+  <a href="#benchmarks">Benchmarks</a> •
   <a href="#roadmap">Roadmap</a>
 </p>
 
@@ -67,33 +68,17 @@ pybun run -c "import requests; print('Hello, PyBun!')"
 
 ## Why PyBun?
 
-Existing Python tools are built for **humans**. PyBun is designed for **both AI Agents and humans**.
+Existing Python tools are built for **humans**. PyBun is designed for **AI agents** — and humans who work alongside them.
 
-| Feature | Traditional Tools (pip, uv, Poetry) | PyBun |
-|---------|-------------------------------------|-------|
-| **Output Format** | Human-readable text | 🤖 **JSON-first** (`--format=json`) |
-| **AI Integration** | Manual parsing required | 🔌 **Built-in MCP Server** |
-| **Error Handling** | Unstructured error messages | 📋 **Structured diagnostics with hints** |
-| **Agent Automation** | Fragile text scraping | ✅ **Reliable machine-readable output** |
+Tools like uv and pip are excellent at what they do. PyBun doesn't try to replace them. Instead, it adds the **agent-facing interface layer** that those tools lack: structured output, MCP integration, and safe execution primitives that AI systems can rely on without fragile text scraping.
 
-### ✨ Key Differentiators
+### ✨ What PyBun adds that other tools don't
 
-- 🤖 **AI Native:** Every command supports `--format=json` as a first-class citizen. LLMs can parse outputs reliably without fragile regex.
-- 🔌 **MCP Server Built-in:** [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) lets AI tools like Cursor and Claude Desktop operate your Python environment directly—no extra setup.
-- ⚡ **Rust Speed:** Blazingly fast dependency resolution and installation.
-- 🛡️ **Sandbox Mode:** Run untrusted AI-generated code safely with `--sandbox`.
-- 📦 **Single Binary:** No dependencies. Just download and run.
-
-### ⚡ Performance vs uv (Apple M1, v0.1.21)
-
-| Scenario | PyBun | uv | Result |
-|----------|-------|----|--------|
-| Binary startup (`--version`) | **3.5ms** | 7.2ms | PyBun **2.0x faster** |
-| PEP 723 script — warm cache | **124ms** | 118ms | Essentially parity ✅ |
-| Dependency resolution | 884ms | **20ms** | uv 45x faster† |
-
-†Resolution speed is a known roadmap item — see [Issue #117](https://github.com/VOID-TECHNOLOGY-INC/PyBun/issues/117).
-Full benchmark: [docs/BENCHMARK_UV_COMPARISON.md](docs/BENCHMARK_UV_COMPARISON.md)
+- 🤖 **JSON-first output:** Every command supports `--format=json` as a first-class citizen. LLMs can parse outputs reliably — no regex, no brittle string matching.
+- 🔌 **Built-in MCP Server:** [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) lets AI tools like Cursor and Claude Desktop operate your Python environment directly via stdio — no extra glue code required.
+- 📋 **Structured diagnostics:** Errors come with machine-readable `code`, `level`, and `message` fields. Agents can act on failures without guessing what went wrong.
+- 🛡️ **Sandbox Mode:** Run untrusted AI-generated code safely with `--sandbox`. File and network access are restricted when the flag is set.
+- 📦 **Single binary:** No runtime dependencies. Download and run anywhere.
 
 ### 💡 Example: AI Agent Workflow
 
@@ -106,7 +91,7 @@ $ pybun --format=json run -c "import pandas; print(pandas.__version__)"
 {"status": "ok", "stdout": "2.2.0\n", ...}
 ```
 
-The AI receives structured JSON—no regex parsing needed.
+The AI receives structured JSON — no parsing required, no ambiguity.
 
 ---
 
@@ -545,6 +530,16 @@ cargo test cli_smoke
 cargo test json_schema
 cargo test mcp
 ```
+
+## Benchmarks
+
+PyBun is not a speed competitor to uv — it's an interface layer. PyBun uses uv as an optional execution backend for some operations (e.g. PEP 723 script runs). Where uv is available, PyBun delegates to it transparently — so warm-cache script execution is at parity with running uv directly.
+
+The areas where PyBun intentionally differs from uv (JSON output, MCP, sandbox) are not speed-sensitive. For raw dependency resolution speed, uv's PubGrub solver is significantly faster than PyBun's current greedy resolver — this is a known roadmap item tracked in [Issue #117](https://github.com/VOID-TECHNOLOGY-INC/PyBun/issues/117).
+
+Full numbers: [docs/BENCHMARK_UV_COMPARISON.md](docs/BENCHMARK_UV_COMPARISON.md)
+
+---
 
 ## Roadmap
 
