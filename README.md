@@ -88,9 +88,9 @@ Existing Python tools are built for **humans**. PyBun is designed for **both AI 
 
 | Scenario | PyBun | uv | Result |
 |----------|-------|----|--------|
-| Binary startup (`--version`) | **3.9ms** | 7.6ms | PyBun **1.9x faster** |
-| PEP 723 script — warm cache | **134ms** | 128ms | Essentially parity ✅ |
-| Dependency resolution | 907ms | **28ms** | uv 32x faster† |
+| Binary startup (`--version`) | **3.5ms** | 7.2ms | PyBun **2.0x faster** |
+| PEP 723 script — warm cache | **124ms** | 118ms | Essentially parity ✅ |
+| Dependency resolution | 884ms | **20ms** | uv 45x faster† |
 
 †Resolution speed is a known roadmap item — see [Issue #117](https://github.com/VOID-TECHNOLOGY-INC/PyBun/issues/117).
 Full benchmark: [docs/BENCHMARK_UV_COMPARISON.md](docs/BENCHMARK_UV_COMPARISON.md)

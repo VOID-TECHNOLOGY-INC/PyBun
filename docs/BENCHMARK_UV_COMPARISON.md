@@ -1,8 +1,8 @@
 # PyBun vs uv — Head-to-Head Benchmark
 
-> **Generated**: 2026-06-27 (updated after Issue #238 fix)
-> **Environment**: Apple M1 · macOS 25.5.0  
-> **pybun**: 0.1.21 · **uv**: 0.11.21  
+> **Generated**: 2026-06-27 (post Issue #238 fix — 20 iterations, 3 warmup)
+> **Environment**: Apple M1 · macOS 25.5.0
+> **pybun**: 0.1.21 · **uv**: 0.11.21
 > **Source**: `scripts/benchmark/scenarios/uv_comparison.py`
 
 This document presents a focused, head-to-head comparison of PyBun and uv across the scenarios where the two tools overlap directly.
@@ -29,11 +29,11 @@ PATH=$(pwd)/../../target/release:$PATH \
 
 | Scenario | PyBun p50 (ms) | uv p50 (ms) | Speedup | Winner | Note |
 |----------|---------------|-------------|---------|--------|------|
-| C4_startup | 3.9 | 7.6 | **1.95x** | **pybun** | binary startup: `pybun --version` vs `uv --version` |
-| C1_warm | **133.6** | 127.9 | **1.04x** | uv | PEP 723 warm cache: essentially parity after Issue #238 fix |
-| C5_resolution | 907.6 | 27.9 | **32.5x** | **uv** | dependency resolution: `pybun install` vs `uv lock` |
+| C4_startup | 3.5 | 7.2 | **2.03x** | **pybun** | binary startup: `pybun --version` vs `uv --version` |
+| C1_warm | **124.1** | 117.5 | **1.06x** | uv | PEP 723 warm cache: essentially parity after Issue #238 fix |
+| C5_resolution | 883.9 | 19.6 | **45.1x** | **uv** | dependency resolution: `pybun install` vs `uv lock` |
 
-*p50 = median wall-clock time on Apple M1. C1_warm improved from 628ms → 134ms after fix in Issue #238.*
+*p50 = median wall-clock time across 20 runs on Apple M1. C1_warm improved from 628ms → 124ms after Issue #238 fix.*
 
 ---
 
@@ -55,13 +55,13 @@ This reflects PyBun's minimal startup path with no heavy Python import required.
 
 ```bash
 # PyBun: delegates to `uv run --script` (fix: no longer passes --python <venv>)
-pybun run script.py               →  p50=134ms  p95=162ms  ✅ (was 628ms before #238 fix)
+pybun run script.py               →  p50=124ms  p95=129ms  ✅ (was 628ms before #238 fix)
 
 # uv: resolves deps inline, reuses its own venv cache
-uv run --with requests script.py  →  p50=128ms  p95=131ms
+uv run --with requests script.py  →  p50=118ms  p95=121ms
 ```
 
-**Essentially parity** (1.04x) on warm-cache PEP 723 execution after Issue #238 fix.
+**Essentially parity** (1.06x) on warm-cache PEP 723 execution after Issue #238 fix.
 
 **Root cause fixed**: The previous code passed `--python <venv_python_path>` to `uv run --script`,
 which caused uv to create a new isolated environment on every invocation (cache never reused).
@@ -117,14 +117,14 @@ uvx ruff --version       →  p50=22.9ms  (reference)
 
 | Area | Advantage | Why |
 |------|-----------|-----|
-| Binary startup | 1.95x faster | Minimal Rust startup path |
-| Warm PEP 723 | Parity (1.04x) | Fixed in Issue #238 — was 5x slower before |
+| Binary startup | 2.0x faster | Minimal Rust startup path |
+| Warm PEP 723 | Parity (1.06x) | Fixed in Issue #238 — was 5x slower before |
 
 ### Where uv wins today
 
 | Area | Advantage | Root cause & roadmap |
 |------|-----------|---------------------|
-| Dependency resolution | 32.5x faster | PubGrub SAT solver vs greedy resolver — tracked in Issue #117 |
+| Dependency resolution | 45x faster | PubGrub SAT solver vs greedy resolver — tracked in Issue #117 |
 
 ### What this means for AI agent use cases
 
@@ -155,9 +155,9 @@ python ux_gate.py results/benchmark_latest.json
 
 ## Raw Data
 
-- **JSON**: [`scripts/benchmark/results/benchmark_20260627_095218.json`](../scripts/benchmark/results/benchmark_20260627_095218.json)
-- **CSV**: [`scripts/benchmark/results/benchmark_20260627_095218.csv`](../scripts/benchmark/results/benchmark_20260627_095218.csv)
-- **Markdown**: [`scripts/benchmark/results/benchmark_20260627_095218.md`](../scripts/benchmark/results/benchmark_20260627_095218.md)
+- **JSON**: [`scripts/benchmark/results/benchmark_20260627_232039.json`](../scripts/benchmark/results/benchmark_20260627_232039.json)
+- **CSV**: [`scripts/benchmark/results/benchmark_20260627_232039.csv`](../scripts/benchmark/results/benchmark_20260627_232039.csv)
+- **Markdown**: [`scripts/benchmark/results/benchmark_20260627_232039.md`](../scripts/benchmark/results/benchmark_20260627_232039.md)
 
 ---
 
