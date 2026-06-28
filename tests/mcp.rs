@@ -1059,3 +1059,160 @@ fn mcp_pybun_run_syntax_error_has_diagnostics() {
         "Expected syntax_error diagnostic. Got: {stdout}"
     );
 }
+
+// ── pybun_context tests ──────────────────────────────────────────────────────
+
+#[test]
+fn mcp_tools_list_includes_pybun_context() {
+    let stdout = mcp_call(&[r#"{"jsonrpc":"2.0","method":"tools/list","id":2,"params":{}}"#]);
+    assert!(
+        stdout.contains("pybun_context"),
+        "tools/list should include pybun_context. Got: {stdout}"
+    );
+}
+
+#[test]
+fn mcp_pybun_context_returns_required_fields() {
+    let call_req = r#"{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_context","arguments":{}}}"#;
+    let stdout = mcp_call(&[call_req]);
+    let result = tool_result_json(&stdout, 2);
+
+    assert!(
+        result["python_version"].is_string() || result["python_version"].is_null(),
+        "pybun_context must include python_version field. Got: {result}"
+    );
+    assert!(
+        result["venv_status"].is_string(),
+        "pybun_context must include venv_status field. Got: {result}"
+    );
+    assert!(
+        result["lockfile_status"].is_string(),
+        "pybun_context must include lockfile_status field. Got: {result}"
+    );
+    assert!(
+        result["installed_packages"].is_array() || result["installed_packages"].is_null(),
+        "pybun_context must include installed_packages field. Got: {result}"
+    );
+    assert!(
+        result["doctor_warnings"].is_array(),
+        "pybun_context must include doctor_warnings field. Got: {result}"
+    );
+    assert!(
+        result["snapshot_at_ms"].is_number(),
+        "pybun_context must include snapshot_at_ms field. Got: {result}"
+    );
+}
+
+#[test]
+fn mcp_pybun_context_summary_only_returns_counts() {
+    let call_req = r#"{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_context","arguments":{"summary_only":true}}}"#;
+    let stdout = mcp_call(&[call_req]);
+    let result = tool_result_json(&stdout, 2);
+
+    // In summary_only mode, installed_packages should be absent and counts should appear
+    assert!(
+        result["installed_count"].is_number(),
+        "summary_only mode should include installed_count. Got: {result}"
+    );
+    assert!(
+        result["declared_count"].is_number(),
+        "summary_only mode should include declared_count. Got: {result}"
+    );
+    assert!(
+        result.get("installed_packages").is_none() || result["installed_packages"].is_null(),
+        "summary_only mode should not include installed_packages array. Got: {result}"
+    );
+}
+
+#[test]
+fn mcp_pybun_context_venv_status_missing_in_empty_dir() {
+    let project = tempdir().unwrap();
+    let call_req = r#"{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_context","arguments":{}}}"#;
+    let stdout = mcp_call_in(&[call_req], project.path(), &[]);
+    let result = tool_result_json(&stdout, 2);
+
+    let venv_status = result["venv_status"].as_str().unwrap_or("");
+    assert!(
+        ["ok", "missing", "corrupt"].contains(&venv_status),
+        "venv_status must be one of ok/missing/corrupt. Got: {venv_status}"
+    );
+}
+
+#[test]
+fn mcp_pybun_context_lockfile_status_missing_in_empty_dir() {
+    let project = tempdir().unwrap();
+    let call_req = r#"{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_context","arguments":{}}}"#;
+    let stdout = mcp_call_in(&[call_req], project.path(), &[]);
+    let result = tool_result_json(&stdout, 2);
+
+    let lockfile_status = result["lockfile_status"].as_str().unwrap_or("");
+    assert!(
+        ["in_sync", "drift", "missing"].contains(&lockfile_status),
+        "lockfile_status must be one of in_sync/drift/missing. Got: {lockfile_status}"
+    );
+    assert_eq!(
+        lockfile_status, "missing",
+        "empty dir should have lockfile_status=missing"
+    );
+}
+
+#[test]
+fn mcp_resources_list_includes_project_snapshot() {
+    let stdout = mcp_call(&[r#"{"jsonrpc":"2.0","method":"resources/list","id":2,"params":{}}"#]);
+    assert!(
+        stdout.contains("pybun://project/snapshot"),
+        "resources/list should include pybun://project/snapshot. Got: {stdout}"
+    );
+}
+
+#[test]
+fn mcp_pybun_context_corrupt_lockfile_returns_corrupt_status() {
+    let project = tempdir().unwrap();
+    // Write an invalid lockfile (not valid binary format)
+    std::fs::write(project.path().join("pybun.lock"), b"not a valid lockfile").unwrap();
+    let call_req = r#"{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_context","arguments":{}}}"#;
+    let stdout = mcp_call_in(&[call_req], project.path(), &[]);
+    let result = tool_result_json(&stdout, 2);
+
+    assert_eq!(
+        result["lockfile_status"].as_str(),
+        Some("corrupt"),
+        "invalid lockfile content should yield lockfile_status=corrupt, not drift. Got: {result}"
+    );
+    let warnings = result["doctor_warnings"].as_array().unwrap();
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w["code"].as_str() == Some("W_LOCKFILE_CORRUPT")),
+        "W_LOCKFILE_CORRUPT warning should be present. Got: {warnings:?}"
+    );
+}
+
+#[test]
+fn mcp_project_snapshot_resource_returns_context_data() {
+    let project = tempdir().unwrap();
+    let requests = [
+        r#"{"jsonrpc":"2.0","method":"resources/read","id":2,"params":{"uri":"pybun://project/snapshot"}}"#,
+    ];
+    let stdout = mcp_call_in(&requests, project.path(), &[]);
+    let responses = json_rpc_lines(&stdout);
+    let response = responses
+        .iter()
+        .find(|v| v["id"].as_i64() == Some(2))
+        .expect("resources/read response should be present");
+
+    let text = response["result"]["contents"][0]["text"]
+        .as_str()
+        .expect("resource content should be text");
+    let body: serde_json::Value =
+        serde_json::from_str(text).expect("project snapshot should be JSON");
+
+    assert!(
+        body["venv_status"].is_string(),
+        "project snapshot should include venv_status. Got: {body}"
+    );
+    assert!(
+        body["lockfile_status"].is_string(),
+        "project snapshot should include lockfile_status. Got: {body}"
+    );
+}
