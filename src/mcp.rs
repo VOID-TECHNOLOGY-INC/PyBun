@@ -2293,6 +2293,7 @@ impl McpServer {
         use crate::env::{EnvSource, find_python_env};
         use crate::lockfile::Lockfile;
         use crate::project::Project;
+        use std::collections::HashSet;
         use std::time::{SystemTime, UNIX_EPOCH};
 
         let summary_only = args
@@ -2306,6 +2307,25 @@ impl McpServer {
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
+
+        // PEP 503: normalize [-_.] sequences to a single hyphen for package name comparison.
+        fn normalize_pkg_name(name: &str) -> String {
+            let lower = name.to_lowercase();
+            let mut result = String::with_capacity(lower.len());
+            let mut prev_was_sep = false;
+            for ch in lower.chars() {
+                if ch == '-' || ch == '_' || ch == '.' {
+                    if !prev_was_sep {
+                        result.push('-');
+                    }
+                    prev_was_sep = true;
+                } else {
+                    result.push(ch);
+                    prev_was_sep = false;
+                }
+            }
+            result
+        }
 
         // ── Python / venv info ────────────────────────────────────────────────
         let (python_version, venv_path, venv_status) = match find_python_env(&working_dir) {
@@ -2322,13 +2342,16 @@ impl McpServer {
                 (env.version, venv, "ok".to_string())
             }
             Err(_) => {
-                // Check if a venv directory exists but is corrupt
-                let candidate = working_dir.join(".pybun").join("venv");
-                let status = if candidate.is_dir() {
+                // Mirror find_project_venv's probe list: directory exists but no Python binary = corrupt.
+                let venv_candidates = [
+                    working_dir.join(".pybun").join("venv"),
+                    working_dir.join(".venv"),
+                    working_dir.join("venv"),
+                ];
+                let status = if venv_candidates.iter().any(|p| p.is_dir()) {
                     "corrupt"
                 } else {
-                    let venv2 = working_dir.join(".venv");
-                    if venv2.is_dir() { "corrupt" } else { "missing" }
+                    "missing"
                 };
                 (None, None, status.to_string())
             }
@@ -2338,51 +2361,52 @@ impl McpServer {
         let declared_deps: Vec<String> = Project::discover(&working_dir)
             .map(|p| p.dependencies())
             .unwrap_or_default();
-        let declared_names: std::collections::HashSet<String> = declared_deps
+        let declared_names: HashSet<String> = declared_deps
             .iter()
             .map(|d| {
-                d.split(['>', '<', '=', '!', '~', ';', '['])
+                let bare = d
+                    .split(['>', '<', '=', '!', '~', ';', '['])
                     .next()
                     .unwrap_or(d)
-                    .trim()
-                    .to_lowercase()
+                    .trim();
+                normalize_pkg_name(bare)
             })
             .collect();
 
         // ── Lockfile ──────────────────────────────────────────────────────────
         let lockfile_path = working_dir.join("pybun.lock");
-        let (lockfile_status, locked_packages) = if let Ok(bytes) = std::fs::read(&lockfile_path) {
-            match Lockfile::from_bytes(&bytes) {
-                Ok(lf) => {
-                    let locked: Vec<Value> = lf
-                        .packages
-                        .values()
-                        .map(|pkg| {
-                            let name_lower = pkg.name.to_lowercase();
-                            let declared = declared_names.contains(&name_lower);
-                            json!({
-                                "name": pkg.name,
-                                "version": pkg.version,
-                                "declared": declared,
-                                "locked": true
+        let (lockfile_status, locked_packages, locked_names) =
+            if let Ok(bytes) = std::fs::read(&lockfile_path) {
+                match Lockfile::from_bytes(&bytes) {
+                    Ok(lf) => {
+                        let locked_names: HashSet<String> =
+                            lf.packages.keys().map(|k| normalize_pkg_name(k)).collect();
+                        let locked: Vec<Value> = lf
+                            .packages
+                            .values()
+                            .map(|pkg| {
+                                let norm = normalize_pkg_name(&pkg.name);
+                                let declared = declared_names.contains(&norm);
+                                json!({
+                                    "name": pkg.name,
+                                    "version": pkg.version,
+                                    "declared": declared,
+                                    "locked": true
+                                })
                             })
-                        })
-                        .collect();
-
-                    let locked_names: std::collections::HashSet<String> =
-                        lf.packages.keys().map(|k| k.to_lowercase()).collect();
-
-                    let has_drift = declared_names
-                        .iter()
-                        .any(|d| !locked_names.contains(d.as_str()));
-                    let status = if has_drift { "drift" } else { "in_sync" };
-                    (status.to_string(), locked)
+                            .collect();
+                        let has_drift = declared_names
+                            .iter()
+                            .any(|d| !locked_names.contains(d.as_str()));
+                        let status = if has_drift { "drift" } else { "in_sync" };
+                        (status.to_string(), locked, Some(locked_names))
+                    }
+                    // Parse failure = lockfile exists but is unreadable/corrupt, distinct from drift.
+                    Err(_) => ("corrupt".to_string(), vec![], None),
                 }
-                Err(_) => ("drift".to_string(), vec![]),
-            }
-        } else {
-            ("missing".to_string(), vec![])
-        };
+            } else {
+                ("missing".to_string(), vec![], None)
+            };
 
         // ── Doctor warnings ───────────────────────────────────────────────────
         let mut doctor_warnings: Vec<Value> = Vec::new();
@@ -2407,6 +2431,13 @@ impl McpServer {
                 "severity": "info"
             }));
         }
+        if lockfile_status == "corrupt" {
+            doctor_warnings.push(json!({
+                "code": "W_LOCKFILE_CORRUPT",
+                "message": "pybun.lock exists but cannot be parsed. Run `pybun install` to regenerate.",
+                "severity": "error"
+            }));
+        }
         if lockfile_status == "drift" {
             doctor_warnings.push(json!({
                 "code": "W_LOCKFILE_DRIFT",
@@ -2419,17 +2450,12 @@ impl McpServer {
         if summary_only {
             let declared_count = declared_names.len();
             let installed_count = locked_packages.len();
-            let drift_count = declared_names
-                .iter()
-                .filter(|d| {
-                    !locked_packages.iter().any(|p| {
-                        p["name"]
-                            .as_str()
-                            .map(|n| n.to_lowercase() == **d)
-                            .unwrap_or(false)
-                    })
-                })
-                .count();
+            let drift_count = locked_names.as_ref().map_or(0, |names| {
+                declared_names
+                    .iter()
+                    .filter(|d| !names.contains(d.as_str()))
+                    .count()
+            });
 
             Ok(json!({
                 "python_version": python_version,

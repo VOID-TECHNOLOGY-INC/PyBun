@@ -1166,6 +1166,29 @@ fn mcp_resources_list_includes_project_snapshot() {
 }
 
 #[test]
+fn mcp_pybun_context_corrupt_lockfile_returns_corrupt_status() {
+    let project = tempdir().unwrap();
+    // Write an invalid lockfile (not valid binary format)
+    std::fs::write(project.path().join("pybun.lock"), b"not a valid lockfile").unwrap();
+    let call_req = r#"{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_context","arguments":{}}}"#;
+    let stdout = mcp_call_in(&[call_req], project.path(), &[]);
+    let result = tool_result_json(&stdout, 2);
+
+    assert_eq!(
+        result["lockfile_status"].as_str(),
+        Some("corrupt"),
+        "invalid lockfile content should yield lockfile_status=corrupt, not drift. Got: {result}"
+    );
+    let warnings = result["doctor_warnings"].as_array().unwrap();
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w["code"].as_str() == Some("W_LOCKFILE_CORRUPT")),
+        "W_LOCKFILE_CORRUPT warning should be present. Got: {warnings:?}"
+    );
+}
+
+#[test]
 fn mcp_project_snapshot_resource_returns_context_data() {
     let project = tempdir().unwrap();
     let requests = [
