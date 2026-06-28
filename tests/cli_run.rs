@@ -104,6 +104,40 @@ fn run_json_output() {
 }
 
 #[test]
+fn run_json_traceback_diagnostic_matches_mcp_shape() {
+    let temp = tempdir().unwrap();
+    let script = temp.path().join("main.py");
+    fs::write(&script, "import pybun_missing_package_for_traceback_test").unwrap();
+
+    let output = bin()
+        .current_dir(temp.path())
+        .args(["--format=json", "run", script.to_str().unwrap()])
+        .output()
+        .expect("run pybun");
+
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let value: Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|_| panic!("expected valid JSON, got: {stdout}"));
+    let diagnostics = value["diagnostics"].as_array().expect("diagnostics array");
+    let diagnostic = diagnostics
+        .first()
+        .unwrap_or_else(|| panic!("expected traceback diagnostic, got: {value}"));
+
+    assert_eq!(diagnostic["level"], "error");
+    assert_eq!(diagnostic["code"], "runtime.module_not_found");
+    assert_eq!(diagnostic["exception_type"], "ModuleNotFoundError");
+    assert_eq!(diagnostic["location"]["file"], "main.py");
+    assert_eq!(diagnostic["location"]["line"], 1);
+    assert_eq!(diagnostic["location"]["function"], "<module>");
+    assert_eq!(diagnostic["next_action"]["tool"], "pybun_add");
+    assert_eq!(
+        diagnostic["next_action"]["args"]["package"],
+        "pybun_missing_package_for_traceback_test"
+    );
+}
+
+#[test]
 fn run_script_with_exit_code() {
     let temp = tempdir().unwrap();
     let script = temp.path().join("exit_nonzero.py");

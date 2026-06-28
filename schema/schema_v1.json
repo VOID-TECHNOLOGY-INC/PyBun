@@ -144,6 +144,39 @@
         "context": {
           "type": ["object", "array", "string", "number", "boolean", "null"]
         },
+        "exception_type": {
+          "type": "string"
+        },
+        "location": {
+          "type": ["object", "null"],
+          "properties": {
+            "file": {
+              "type": "string"
+            },
+            "line": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "function": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "next_action": {
+          "type": ["object", "null"],
+          "required": ["tool", "args"],
+          "properties": {
+            "tool": {
+              "type": "string"
+            },
+            "args": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "additionalProperties": false
+        },
         "fix_candidates": {
           "type": "array",
           "items": {

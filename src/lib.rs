@@ -37,5 +37,6 @@ pub mod support_bundle;
 pub mod telemetry;
 pub mod test_discovery;
 pub mod test_executor;
+pub mod traceback;
 pub mod wheel_cache;
 pub mod workspace;

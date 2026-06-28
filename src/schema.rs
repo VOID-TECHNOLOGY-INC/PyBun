@@ -123,6 +123,15 @@ pub struct Diagnostic {
     /// Additional context
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context: Option<Value>,
+    /// Python exception type for structured runtime diagnostics.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exception_type: Option<String>,
+    /// Structured source location for runtime diagnostics.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub location: Option<Value>,
+    /// Machine-actionable next step for runtime diagnostics.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_action: Option<Value>,
     /// Structured, machine-actionable remediation candidates
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fix_candidates: Option<Vec<FixCandidate>>,
@@ -138,6 +147,9 @@ impl Diagnostic {
             line: None,
             suggestion: None,
             context: None,
+            exception_type: None,
+            location: None,
+            next_action: None,
             fix_candidates: None,
         }
     }
@@ -151,6 +163,9 @@ impl Diagnostic {
             line: None,
             suggestion: None,
             context: None,
+            exception_type: None,
+            location: None,
+            next_action: None,
             fix_candidates: None,
         }
     }
@@ -164,6 +179,9 @@ impl Diagnostic {
             line: None,
             suggestion: None,
             context: None,
+            exception_type: None,
+            location: None,
+            next_action: None,
             fix_candidates: None,
         }
     }
@@ -177,6 +195,9 @@ impl Diagnostic {
             line: None,
             suggestion: None,
             context: None,
+            exception_type: None,
+            location: None,
+            next_action: None,
             fix_candidates: None,
         }
     }
@@ -203,6 +224,21 @@ impl Diagnostic {
 
     pub fn with_context(mut self, context: Value) -> Self {
         self.context = Some(context);
+        self
+    }
+
+    pub fn with_exception_type(mut self, exception_type: impl Into<String>) -> Self {
+        self.exception_type = Some(exception_type.into());
+        self
+    }
+
+    pub fn with_location(mut self, location: Value) -> Self {
+        self.location = Some(location);
+        self
+    }
+
+    pub fn with_next_action(mut self, next_action: Value) -> Self {
+        self.next_action = Some(next_action);
         self
     }
 

@@ -19,6 +19,9 @@
                 "null"
               ]
             },
+            "exception_type": {
+              "type": "string"
+            },
             "file": {
               "type": "string"
             },
@@ -41,8 +44,47 @@
               "minimum": 0,
               "type": "integer"
             },
+            "location": {
+              "additionalProperties": false,
+              "properties": {
+                "file": {
+                  "type": "string"
+                },
+                "function": {
+                  "type": "string"
+                },
+                "line": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "type": [
+                "object",
+                "null"
+              ]
+            },
             "message": {
               "type": "string"
+            },
+            "next_action": {
+              "additionalProperties": false,
+              "properties": {
+                "args": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "tool": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "tool",
+                "args"
+              ],
+              "type": [
+                "object",
+                "null"
+              ]
             },
             "suggestion": {
               "type": "string"
