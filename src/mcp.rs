@@ -1120,6 +1120,23 @@ impl McpServer {
                     "required": ["script"]
                 }),
             },
+            Tool {
+                name: "pybun_context".to_string(),
+                description: "Return a single-call project state snapshot for agent consumption. Aggregates Python version, venv status, lockfile status, installed packages, and doctor warnings into one structured response.".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "summary_only": {
+                            "type": "boolean",
+                            "description": "Return package counts instead of the full installed_packages list (reduces output size for low-token contexts)"
+                        },
+                        "include_drift": {
+                            "type": "boolean",
+                            "description": "Include AST-based import drift analysis (reserved for future use; currently returns null)"
+                        }
+                    }
+                }),
+            },
         ];
 
         JsonRpcResponse::success(id, json!({ "tools": tools }))
@@ -1144,6 +1161,7 @@ impl McpServer {
                 "pybun_type_check" => self.call_type_check(tool_args.clone()),
                 "pybun_profile" => self.call_profile(tool_args.clone()),
                 "pybun_fix" => self.call_fix(tool_args.clone()),
+                "pybun_context" => self.call_context(tool_args.clone()),
                 _ => Err(format!("Unknown tool: {}", tool_name)),
             }
         };
@@ -1205,6 +1223,12 @@ impl McpServer {
                 description: Some("Last 20 audited tool calls for this MCP session".to_string()),
                 mime_type: Some("application/json".to_string()),
             },
+            Resource {
+                uri: "pybun://project/snapshot".to_string(),
+                name: "Project State Snapshot".to_string(),
+                description: Some("Single-call project state: Python version, venv, lockfile, installed packages, and doctor warnings".to_string()),
+                mime_type: Some("application/json".to_string()),
+            },
         ];
 
         JsonRpcResponse::success(id, json!({ "resources": resources }))
@@ -1217,6 +1241,7 @@ impl McpServer {
             "pybun://cache/info" => self.read_cache_info(),
             "pybun://env/info" => self.read_env_info(),
             "pybun://audit/recent" => Ok(self.read_audit_recent()),
+            "pybun://project/snapshot" => self.call_context(json!({})),
             _ => Err(format!("Unknown resource: {}", uri)),
         };
 
@@ -2261,6 +2286,182 @@ impl McpServer {
                 "message": "No Python environment found"
             })
             .to_string()),
+        }
+    }
+
+    fn call_context(&self, args: Value) -> Result<String, String> {
+        use crate::env::{EnvSource, find_python_env};
+        use crate::lockfile::Lockfile;
+        use crate::project::Project;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let summary_only = args
+            .get("summary_only")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        let working_dir = std::env::current_dir().map_err(|e| e.to_string())?;
+
+        let snapshot_at_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+
+        // ── Python / venv info ────────────────────────────────────────────────
+        let (python_version, venv_path, venv_status) = match find_python_env(&working_dir) {
+            Ok(env) => {
+                let is_local = matches!(env.source, EnvSource::ProjectLocal | EnvSource::PybunEnv);
+                let venv = if is_local {
+                    env.python_path
+                        .parent()
+                        .and_then(|p| p.parent())
+                        .map(|p| p.display().to_string())
+                } else {
+                    None
+                };
+                (env.version, venv, "ok".to_string())
+            }
+            Err(_) => {
+                // Check if a venv directory exists but is corrupt
+                let candidate = working_dir.join(".pybun").join("venv");
+                let status = if candidate.is_dir() {
+                    "corrupt"
+                } else {
+                    let venv2 = working_dir.join(".venv");
+                    if venv2.is_dir() { "corrupt" } else { "missing" }
+                };
+                (None, None, status.to_string())
+            }
+        };
+
+        // ── Project declared dependencies ─────────────────────────────────────
+        let declared_deps: Vec<String> = Project::discover(&working_dir)
+            .map(|p| p.dependencies())
+            .unwrap_or_default();
+        let declared_names: std::collections::HashSet<String> = declared_deps
+            .iter()
+            .map(|d| {
+                d.split(['>', '<', '=', '!', '~', ';', '['])
+                    .next()
+                    .unwrap_or(d)
+                    .trim()
+                    .to_lowercase()
+            })
+            .collect();
+
+        // ── Lockfile ──────────────────────────────────────────────────────────
+        let lockfile_path = working_dir.join("pybun.lock");
+        let (lockfile_status, locked_packages) = if let Ok(bytes) = std::fs::read(&lockfile_path) {
+            match Lockfile::from_bytes(&bytes) {
+                Ok(lf) => {
+                    let locked: Vec<Value> = lf
+                        .packages
+                        .values()
+                        .map(|pkg| {
+                            let name_lower = pkg.name.to_lowercase();
+                            let declared = declared_names.contains(&name_lower);
+                            json!({
+                                "name": pkg.name,
+                                "version": pkg.version,
+                                "declared": declared,
+                                "locked": true
+                            })
+                        })
+                        .collect();
+
+                    let locked_names: std::collections::HashSet<String> =
+                        lf.packages.keys().map(|k| k.to_lowercase()).collect();
+
+                    let has_drift = declared_names
+                        .iter()
+                        .any(|d| !locked_names.contains(d.as_str()));
+                    let status = if has_drift { "drift" } else { "in_sync" };
+                    (status.to_string(), locked)
+                }
+                Err(_) => ("drift".to_string(), vec![]),
+            }
+        } else {
+            ("missing".to_string(), vec![])
+        };
+
+        // ── Doctor warnings ───────────────────────────────────────────────────
+        let mut doctor_warnings: Vec<Value> = Vec::new();
+        if venv_status == "missing" {
+            doctor_warnings.push(json!({
+                "code": "W_VENV_MISSING",
+                "message": "No virtual environment found. Run `pybun install` to create one.",
+                "severity": "warn"
+            }));
+        }
+        if venv_status == "corrupt" {
+            doctor_warnings.push(json!({
+                "code": "W_VENV_CORRUPT",
+                "message": "Virtual environment directory exists but Python binary is missing or invalid.",
+                "severity": "error"
+            }));
+        }
+        if lockfile_status == "missing" {
+            doctor_warnings.push(json!({
+                "code": "W_LOCKFILE_MISSING",
+                "message": "No pybun.lock found. Run `pybun install` to generate one.",
+                "severity": "info"
+            }));
+        }
+        if lockfile_status == "drift" {
+            doctor_warnings.push(json!({
+                "code": "W_LOCKFILE_DRIFT",
+                "message": "Declared dependencies differ from lockfile. Run `pybun install` to sync.",
+                "severity": "warn"
+            }));
+        }
+
+        // ── Assemble response ─────────────────────────────────────────────────
+        if summary_only {
+            let declared_count = declared_names.len();
+            let installed_count = locked_packages.len();
+            let drift_count = declared_names
+                .iter()
+                .filter(|d| {
+                    !locked_packages.iter().any(|p| {
+                        p["name"]
+                            .as_str()
+                            .map(|n| n.to_lowercase() == **d)
+                            .unwrap_or(false)
+                    })
+                })
+                .count();
+
+            Ok(json!({
+                "python_version": python_version,
+                "venv_path": venv_path,
+                "venv_status": venv_status,
+                "lockfile_status": lockfile_status,
+                "installed_count": installed_count,
+                "declared_count": declared_count,
+                "drift_count": drift_count,
+                "doctor_warnings": doctor_warnings,
+                "drift_summary": {
+                    "undeclared_imports": null,
+                    "outdated_packages": []
+                },
+                "snapshot_at_ms": snapshot_at_ms
+            })
+            .to_string())
+        } else {
+            Ok(json!({
+                "python_version": python_version,
+                "venv_path": venv_path,
+                "venv_status": venv_status,
+                "lockfile_status": lockfile_status,
+                "installed_packages": locked_packages,
+                "doctor_warnings": doctor_warnings,
+                "drift_summary": {
+                    "undeclared_imports": null,
+                    "outdated_packages": []
+                },
+                "snapshot_at_ms": snapshot_at_ms
+            })
+            .to_string())
         }
     }
 }
