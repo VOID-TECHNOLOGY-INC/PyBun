@@ -311,9 +311,11 @@ pybun mcp serve --stdio
 ```
 
 Tools: `pybun_resolve`, `pybun_install`, `pybun_run`, `pybun_gc`, `pybun_doctor`, `pybun_lint`, `pybun_type_check`, `pybun_profile`, `pybun_fix`  
-Resources: `pybun://cache/info`, `pybun://env/info`
+Resources: `pybun://cache/info`, `pybun://env/info`, `pybun://audit/recent`
 
 ※ Currently **`pybun_gc`, `pybun_doctor`, `pybun_run`, `pybun_resolve`, `pybun_lint`, `pybun_type_check`, `pybun_profile`, `pybun_fix`, and resources are operational**. `pybun_install` generates lockfiles via resolution. HTTP mode is not yet implemented.
+
+`pybun_run` is sandboxed by default for MCP-originated calls. To preview code without executing it, pass `dry_run: true`; to disable the sandbox, pass `unsafe_no_sandbox: true` and treat the warning in the response as an approval checkpoint.
 
 ### Build
 
@@ -378,7 +380,9 @@ Operate PyBun as an MCP server for agents/IDEs:
 pybun mcp serve --stdio
 pybun --format=json mcp serve --stdio  # JSON envelope for tooling
 ```
-Tools: `pybun_resolve`, `pybun_install`, `pybun_run`, `pybun_gc`, `pybun_doctor`, `pybun_lint`, `pybun_type_check`, `pybun_profile`, `pybun_fix`. Resources: `pybun://cache/info`, `pybun://env/info`.
+Tools: `pybun_resolve`, `pybun_install`, `pybun_run`, `pybun_gc`, `pybun_doctor`, `pybun_lint`, `pybun_type_check`, `pybun_profile`, `pybun_fix`. Resources: `pybun://cache/info`, `pybun://env/info`, `pybun://audit/recent`.
+
+MCP `pybun_run` applies the sandbox by default, including process/file-size limits and secret-like environment variable filtering. Use `sandbox_policy` to allow network/path/env exceptions, `dry_run: true` for a non-executing plan, or `unsafe_no_sandbox: true` only in controlled environments.
 
 ### Configuration (Claude Desktop)
 

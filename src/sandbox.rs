@@ -11,13 +11,17 @@ use tempfile::TempDir;
 
 /// Default wall-clock timeout (in seconds) applied to sandboxed runs.
 pub const DEFAULT_SANDBOX_TIMEOUT_SECS: u64 = 60;
+/// Default maximum subprocess count for sandboxed runs on Unix.
+pub const DEFAULT_SANDBOX_MAX_PROCESSES: u64 = 0;
+/// Default maximum file size a sandboxed run may create, in MiB, on Unix.
+pub const DEFAULT_SANDBOX_FILE_SIZE_LIMIT_MB: u64 = 10;
 
 fn serialize_policy_paths(paths: &[String]) -> Result<String> {
     serde_json::to_string(paths).map_err(|e| eyre!("failed to serialize sandbox policy paths: {e}"))
 }
 
 /// Configuration for a sandboxed Python process.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct SandboxConfig {
     /// Whether network access should be allowed inside the sandbox.
     pub allow_network: bool,
@@ -35,6 +39,26 @@ pub struct SandboxConfig {
     pub memory_limit_mb: u64,
     /// Maximum CPU time in seconds (Unix only; 0 = unlimited).
     pub cpu_limit_secs: u64,
+    /// Maximum subprocess count (Unix only; 0 = no fork/exec children).
+    pub max_processes: u64,
+    /// Maximum file size that may be written, in megabytes (Unix only; 0 = unlimited).
+    pub file_size_limit_mb: u64,
+}
+
+impl Default for SandboxConfig {
+    fn default() -> Self {
+        Self {
+            allow_network: false,
+            allow_read: Vec::new(),
+            allow_write: Vec::new(),
+            allow_env: Vec::new(),
+            timeout_secs: DEFAULT_SANDBOX_TIMEOUT_SECS,
+            memory_limit_mb: 0,
+            cpu_limit_secs: 0,
+            max_processes: DEFAULT_SANDBOX_MAX_PROCESSES,
+            file_size_limit_mb: DEFAULT_SANDBOX_FILE_SIZE_LIMIT_MB,
+        }
+    }
 }
 
 /// Resource limits applied to a sandboxed process, reported back for diagnostics.
@@ -46,6 +70,10 @@ pub struct ResourceLimits {
     pub memory_limit_mb: u64,
     /// Configured CPU time limit in seconds (0 = unlimited).
     pub cpu_limit_secs: u64,
+    /// Configured maximum subprocess count (0 = no fork/exec children).
+    pub max_processes: u64,
+    /// Configured maximum file size in megabytes (0 = unlimited).
+    pub file_size_limit_mb: u64,
     /// Names of requested limits that could not be enforced on this platform.
     pub unsupported: Vec<String>,
 }
@@ -100,6 +128,16 @@ pub fn default_safe_env_vars() -> &'static [&'static str] {
     ]
 }
 
+/// Returns true when an environment variable name is likely to carry credentials
+/// and must not be passed through even if a caller includes it in allow_env.
+pub fn is_credential_env_name(name: &str) -> bool {
+    let upper = name.to_ascii_uppercase();
+    upper.starts_with("AWS_")
+        || upper.contains("_SECRET")
+        || upper.ends_with("_TOKEN")
+        || upper.ends_with("_KEY")
+}
+
 /// Returns the default system-critical paths that should be denied for writes
 /// when sandbox mode is active and no explicit `--allow-write` policy is set.
 pub fn default_system_deny_write_paths() -> Vec<String> {
@@ -145,6 +183,7 @@ pub struct SandboxAudit {
 #[derive(Debug)]
 pub struct SandboxGuard {
     _tempdir: TempDir,
+    _audit_tempdir: TempDir,
     enforcement: &'static str,
     audit_file: PathBuf,
     /// Default system-critical paths denied for writes (empty when explicit allow_write is set).
@@ -176,7 +215,12 @@ impl SandboxGuard {
 /// filesystem read/write policies.
 pub fn apply_python_sandbox(cmd: &mut Command, config: SandboxConfig) -> Result<SandboxGuard> {
     let tempdir = tempfile::tempdir()?;
-    let audit_file = tempdir.path().join("pybun_audit.json");
+    let audit_tempdir = tempfile::Builder::new()
+        .prefix("pybun-sandbox-audit-")
+        .tempdir()?;
+    let audit_file = audit_tempdir.path().join("audit.json");
+    fs::write(&audit_file, "{}")
+        .map_err(|e| eyre!("failed to initialize sandbox audit file: {e}"))?;
 
     let sitecustomize_path: PathBuf = tempdir.path().join("sitecustomize.py");
     fs::write(&sitecustomize_path, SITECUSTOMIZE_PY)
@@ -191,10 +235,16 @@ pub fn apply_python_sandbox(cmd: &mut Command, config: SandboxConfig) -> Result<
     // Re-add the default safe set plus any caller-specified names.
     // Use a HashSet to avoid duplicate cmd.env() calls when a name appears in both
     // the default set and allow_env (harmless but wasteful).
+    let filtered_allow_env: Vec<String> = config
+        .allow_env
+        .iter()
+        .filter(|name| !is_credential_env_name(name))
+        .cloned()
+        .collect();
     let safe_names: std::collections::HashSet<String> = default_safe_env_vars()
         .iter()
         .map(|&s| s.to_string())
-        .chain(config.allow_env.iter().cloned())
+        .chain(filtered_allow_env.iter().cloned())
         .collect();
     for name in &safe_names {
         if let Ok(val) = std::env::var(name) {
@@ -259,18 +309,49 @@ pub fn apply_python_sandbox(cmd: &mut Command, config: SandboxConfig) -> Result<
     if config.cpu_limit_secs > 0 && !cpu_limit_supported() {
         unsupported.push("cpu".to_string());
     }
+    if !cfg!(unix) {
+        if config.max_processes == 0 {
+            unsupported.push("process".to_string());
+        }
+        if config.file_size_limit_mb > 0 {
+            unsupported.push("file_size".to_string());
+        }
+    }
 
     #[cfg(unix)]
     {
         let apply_memory = config.memory_limit_mb > 0 && memory_limit_supported();
         let apply_cpu = config.cpu_limit_secs > 0 && cpu_limit_supported();
+        let apply_process = true;
+        let apply_file_size = config.file_size_limit_mb > 0;
         let memory_limit_mb = config.memory_limit_mb;
         let cpu_limit_secs = config.cpu_limit_secs;
-        if apply_memory || apply_cpu {
+        let max_processes = config.max_processes;
+        let file_size_limit_mb = config.file_size_limit_mb;
+        if apply_memory || apply_cpu || apply_process || apply_file_size {
             // SAFETY: the closure only calls async-signal-safe libc functions
             // (`setrlimit`) between fork and exec, as required by `pre_exec`.
             unsafe {
                 cmd.pre_exec(move || {
+                    if apply_process {
+                        let limit = libc::rlimit {
+                            rlim_cur: max_processes as libc::rlim_t,
+                            rlim_max: max_processes as libc::rlim_t,
+                        };
+                        if libc::setrlimit(libc::RLIMIT_NPROC, &limit) != 0 {
+                            return Err(std::io::Error::last_os_error());
+                        }
+                    }
+                    if apply_file_size {
+                        let bytes = file_size_limit_mb.saturating_mul(1024 * 1024);
+                        let limit = libc::rlimit {
+                            rlim_cur: bytes as libc::rlim_t,
+                            rlim_max: bytes as libc::rlim_t,
+                        };
+                        if libc::setrlimit(libc::RLIMIT_FSIZE, &limit) != 0 {
+                            return Err(std::io::Error::last_os_error());
+                        }
+                    }
                     if apply_memory {
                         let bytes = memory_limit_mb.saturating_mul(1024 * 1024);
                         let limit = libc::rlimit {
@@ -306,15 +387,18 @@ pub fn apply_python_sandbox(cmd: &mut Command, config: SandboxConfig) -> Result<
         timeout_secs: config.timeout_secs,
         memory_limit_mb: config.memory_limit_mb,
         cpu_limit_secs: config.cpu_limit_secs,
+        max_processes: config.max_processes,
+        file_size_limit_mb: config.file_size_limit_mb,
         unsupported,
     };
 
     Ok(SandboxGuard {
         _tempdir: tempdir,
+        _audit_tempdir: audit_tempdir,
         enforcement: "python-sitecustomize",
         audit_file,
         default_deny_write: default_deny,
-        allow_env: config.allow_env,
+        allow_env: filtered_allow_env,
         resource_limits,
     })
 }
@@ -475,6 +559,7 @@ def _path_within(path, allowed_root):
 _ALLOW_READ = [_normalize_path(p) for p in _load_policy_paths("PYBUN_SANDBOX_ALLOW_READ")]
 _ALLOW_WRITE = [_normalize_path(p) for p in _load_policy_paths("PYBUN_SANDBOX_ALLOW_WRITE")]
 _DEFAULT_DENY_WRITE = [_normalize_path(p) for p in _load_policy_paths("PYBUN_SANDBOX_DEFAULT_DENY_WRITE")]
+_AUDIT_FILE_PATH = _normalize_path(_AUDIT_FILE) if _AUDIT_FILE else ""
 _HAS_READ_POLICY = bool(_ALLOW_READ)
 _HAS_WRITE_POLICY = bool(_ALLOW_WRITE)
 _HAS_DEFAULT_DENY_WRITE = bool(_DEFAULT_DENY_WRITE)
@@ -595,6 +680,8 @@ def _patch_filesystem():
         decoded = os.fsdecode(os.fspath(path))
         if not decoded:
             return
+        if _AUDIT_FILE_PATH and _normalize_path(decoded) == _AUDIT_FILE_PATH:
+            _deny(action + " sandbox audit file", "blocked_file_writes")
         if _HAS_WRITE_POLICY:
             if not _is_allowed(decoded, _ALLOW_WRITE):
                 _deny(action + " " + decoded, "blocked_file_writes")

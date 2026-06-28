@@ -15,7 +15,7 @@ Options:
       --no-progress                Disable progress UI
       --allow-read <PATH>          Allow reading from a path inside the sandbox (can be specified multiple times). When set, reads outside these paths are blocked. Python stdlib is always allowed
       --allow-write <PATH>         Allow writing to a path inside the sandbox (can be specified multiple times). When set, writes outside these paths are blocked
-      --allow-env <VAR>            Allow an environment variable through the sandbox filter (can be specified multiple times). By default the sandbox strips all env vars except a minimal safe set; use this to pass specific secrets or config values (e.g. --allow-env=API_KEY)
+      --allow-env <VAR>            Allow an environment variable through the sandbox filter (can be specified multiple times). By default the sandbox strips all env vars except a minimal safe set; use this to pass non-secret config values (e.g. --allow-env=PYBUN_PROFILE)
       --sandbox-timeout <SECONDS>  Maximum wall-clock execution time in seconds for sandboxed runs (0 = unlimited) [default: 60]
       --sandbox-memory <MB>        Maximum memory (virtual address space) in megabytes for sandboxed runs (Unix only; 0 = unlimited) [default: 0]
       --sandbox-cpu <SECONDS>      Maximum CPU time in seconds for sandboxed runs (Unix only; 0 = unlimited) [default: 0]

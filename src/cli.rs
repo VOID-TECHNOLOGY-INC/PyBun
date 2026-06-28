@@ -213,7 +213,7 @@ pub struct RunArgs {
     pub allow_write: Vec<String>,
     /// Allow an environment variable through the sandbox filter (can be specified multiple times).
     /// By default the sandbox strips all env vars except a minimal safe set; use this to pass
-    /// specific secrets or config values (e.g. --allow-env=API_KEY).
+    /// non-secret config values (e.g. --allow-env=PYBUN_PROFILE).
     #[arg(long, value_name = "VAR")]
     pub allow_env: Vec<String>,
     /// Maximum wall-clock execution time in seconds for sandboxed runs (0 = unlimited).
