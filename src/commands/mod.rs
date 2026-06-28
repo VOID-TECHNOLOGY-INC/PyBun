@@ -3163,6 +3163,7 @@ async fn run_script(
                 timeout_secs: args.sandbox_timeout,
                 memory_limit_mb: args.sandbox_memory,
                 cpu_limit_secs: args.sandbox_cpu,
+                ..Default::default()
             },
         )?;
         emit_unsupported_resource_limit_diagnostics(collector, &guard.resource_limits);
@@ -3470,6 +3471,7 @@ fn run_python_code(
                 timeout_secs: args.sandbox_timeout,
                 memory_limit_mb: args.sandbox_memory,
                 cpu_limit_secs: args.sandbox_cpu,
+                ..Default::default()
             },
         )?;
         emit_unsupported_resource_limit_diagnostics(collector, &guard.resource_limits);

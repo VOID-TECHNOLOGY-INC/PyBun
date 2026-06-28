@@ -504,6 +504,34 @@ fn sandbox_allow_env_passes_specific_var_through() {
         &script,
         r#"
 import os
+val = os.environ.get("MY_ALLOWED_CONFIG", "NOT_PRESENT")
+print("CONFIG:", val)
+"#,
+    )
+    .unwrap();
+
+    bin()
+        .env("MY_ALLOWED_CONFIG", "allowed_value_xyz")
+        .args([
+            "--format=json",
+            "run",
+            "--sandbox",
+            "--allow-env=MY_ALLOWED_CONFIG",
+            script.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("CONFIG: allowed_value_xyz"));
+}
+
+#[test]
+fn sandbox_allow_env_rejects_credential_like_names() {
+    let temp = tempdir().unwrap();
+    let script = temp.path().join("read_blocked_env.py");
+    fs::write(
+        &script,
+        r#"
+import os
 val = os.environ.get("MY_ALLOWED_KEY", "NOT_PRESENT")
 print("KEY:", val)
 "#,
@@ -511,7 +539,7 @@ print("KEY:", val)
     .unwrap();
 
     bin()
-        .env("MY_ALLOWED_KEY", "allowed_value_xyz")
+        .env("MY_ALLOWED_KEY", "must_not_leak")
         .args([
             "--format=json",
             "run",
@@ -521,7 +549,7 @@ print("KEY:", val)
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("KEY: allowed_value_xyz"));
+        .stdout(predicate::str::contains("KEY: NOT_PRESENT"));
 }
 
 #[test]
@@ -540,12 +568,12 @@ print("UNLISTED:", unlisted)
 
     bin()
         .env("ANOTHER_SECRET", "secret_that_must_not_leak")
-        .env("MY_ALLOWED_KEY", "allowed")
+        .env("MY_ALLOWED_CONFIG", "allowed")
         .args([
             "--format=json",
             "run",
             "--sandbox",
-            "--allow-env=MY_ALLOWED_KEY",
+            "--allow-env=MY_ALLOWED_CONFIG",
             script.to_str().unwrap(),
         ])
         .assert()
@@ -563,12 +591,12 @@ fn sandbox_json_output_includes_allow_env() {
         "--format=json",
         "run",
         "--sandbox",
-        "--allow-env=MY_KEY",
+        "--allow-env=MY_CONFIG",
         script.to_str().unwrap(),
     ])
     .success()
     .stdout(predicate::str::contains("\"allow_env\""))
-    .stdout(predicate::str::contains("\"MY_KEY\""));
+    .stdout(predicate::str::contains("\"MY_CONFIG\""));
 }
 
 #[test]

@@ -657,6 +657,118 @@ fn snapshot_for_tool(tool_name: &str, tool_args: &Value) -> FileSnapshot {
     snapshot
 }
 
+fn string_array_arg(value: &Value, key: &str) -> Vec<String> {
+    value
+        .get(key)
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str())
+                .filter(|name| !name.is_empty() && !name.contains('=') && !name.contains('\0'))
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn mcp_sandbox_config_from_policy(policy: &Value) -> crate::sandbox::SandboxConfig {
+    crate::sandbox::SandboxConfig {
+        allow_network: policy
+            .get("allow_network")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        allow_read: string_array_arg(policy, "allow_read"),
+        allow_write: string_array_arg(policy, "allow_write"),
+        allow_env: string_array_arg(policy, "allow_env")
+            .into_iter()
+            .filter(|name| !crate::sandbox::is_credential_env_name(name))
+            .collect(),
+        timeout_secs: policy
+            .get("timeout_secs")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(crate::sandbox::DEFAULT_SANDBOX_TIMEOUT_SECS),
+        ..Default::default()
+    }
+}
+
+fn sandbox_policy_json(config: &crate::sandbox::SandboxConfig) -> Value {
+    json!({
+        "allow_network": config.allow_network,
+        "allow_read": config.allow_read,
+        "allow_write": config.allow_write,
+        "allow_env": config.allow_env,
+        "timeout_secs": config.timeout_secs,
+        "memory_limit_mb": config.memory_limit_mb,
+        "cpu_limit_secs": config.cpu_limit_secs,
+        "max_processes": config.max_processes,
+        "file_size_limit_mb": config.file_size_limit_mb,
+    })
+}
+
+fn unsafe_no_sandbox_warning(enabled: bool) -> Vec<Value> {
+    if enabled {
+        vec![json!({
+            "level": "warning",
+            "code": "W_MCP_UNSAFE_NO_SANDBOX",
+            "message": "pybun_run executed without the default MCP sandbox because unsafe_no_sandbox=true was set",
+            "suggestion": "Only set unsafe_no_sandbox=true in controlled environments."
+        })]
+    } else {
+        vec![]
+    }
+}
+
+fn describe_run_target(script: Option<&str>, code: Option<&str>) -> String {
+    if let Some(script) = script {
+        format!("Python script: {script}")
+    } else if let Some(code) = code {
+        format!("Python inline code ({} bytes)", code.len())
+    } else {
+        "No Python target".to_string()
+    }
+}
+
+fn estimate_run_risk(
+    script: Option<&str>,
+    code: Option<&str>,
+    sandboxed: bool,
+) -> (String, Vec<String>) {
+    let mut reasons = Vec::new();
+    let source = code.or(script).unwrap_or_default();
+    for (needle, reason) in [
+        (
+            "shutil.rmtree",
+            "recursive file deletion detected: shutil.rmtree",
+        ),
+        ("os.remove", "file deletion detected: os.remove"),
+        ("os.unlink", "file deletion detected: os.unlink"),
+        ("subprocess", "subprocess execution detected"),
+        ("socket", "network access detected"),
+        ("ctypes", "native library access detected: ctypes"),
+        ("cffi", "native library access detected: cffi"),
+    ] {
+        if source.contains(needle) {
+            reasons.push(reason.to_string());
+        }
+    }
+    if !sandboxed {
+        reasons.push("sandbox disabled by unsafe_no_sandbox=true".to_string());
+    }
+
+    let risk = if reasons
+        .iter()
+        .any(|reason| reason.contains("deletion") || reason.contains("sandbox disabled"))
+    {
+        "high"
+    } else if reasons.is_empty() {
+        "low"
+    } else {
+        "medium"
+    };
+
+    (risk.to_string(), reasons)
+}
+
 fn collect_file_snapshot(path: &Path, snapshot: &mut FileSnapshot) {
     let Ok(metadata) = fs::metadata(path) else {
         return;
@@ -834,7 +946,7 @@ impl McpServer {
             },
             Tool {
                 name: "pybun_run".to_string(),
-                description: "Run a Python script, optionally inside a sandbox.".to_string(),
+                description: "Run a Python script inside the default MCP sandbox unless explicitly opted out.".to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -851,9 +963,17 @@ impl McpServer {
                             "items": {"type": "string"},
                             "description": "Arguments to pass to the script"
                         },
+                        "dry_run": {
+                            "type": "boolean",
+                            "description": "Return an execution plan and risk summary without running code"
+                        },
+                        "unsafe_no_sandbox": {
+                            "type": "boolean",
+                            "description": "Disable the default MCP sandbox. Use only in controlled environments."
+                        },
                         "sandbox_policy": {
                             "type": "object",
-                            "description": "Enable sandboxed execution with optional policy",
+                            "description": "Optional sandbox policy. MCP pybun_run is sandboxed by default; use unsafe_no_sandbox only for explicit opt-out.",
                             "properties": {
                                 "allow_network": {
                                     "type": "boolean",
@@ -868,6 +988,15 @@ impl McpServer {
                                     "type": "array",
                                     "items": {"type": "string"},
                                     "description": "Paths allowed for writing (empty = no restriction)"
+                                },
+                                "allow_env": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": "Additional non-secret environment variable names to pass through"
+                                },
+                                "timeout_secs": {
+                                    "type": "integer",
+                                    "description": "Maximum wall-clock execution time in seconds"
                                 }
                             }
                         }
@@ -1336,56 +1465,46 @@ impl McpServer {
             })
             .unwrap_or_default();
 
-        // Parse optional sandbox_policy
-        let sandbox_policy = args.get("sandbox_policy");
-        let use_sandbox = sandbox_policy.is_some();
-        let sandbox_config = sandbox_policy.map(|p| SandboxConfig {
-            allow_network: p
-                .get("allow_network")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false),
-            allow_read: p
-                .get("allow_read")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(String::from))
-                        .collect()
-                })
-                .unwrap_or_default(),
-            allow_write: p
-                .get("allow_write")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(String::from))
-                        .collect()
-                })
-                .unwrap_or_default(),
-            allow_env: p
-                .get("allow_env")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str())
-                        // Reject names that are empty, contain '=' (invalid on POSIX), or NUL bytes
-                        // to prevent cmd.env() from panicking or misbehaving on some platforms.
-                        .filter(|name| {
-                            !name.is_empty() && !name.contains('=') && !name.contains('\0')
-                        })
-                        .map(String::from)
-                        .collect()
-                })
-                .unwrap_or_default(),
-            // MCP-invoked sandboxes default to the same wall-clock timeout as the CLI
-            // (`pybun run --sandbox`); memory/cpu limits remain opt-in via future
-            // sandbox_policy fields (PR-A3 MCP/CLI parity tracks the rest).
-            timeout_secs: p
-                .get("timeout_secs")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(crate::sandbox::DEFAULT_SANDBOX_TIMEOUT_SECS),
-            ..Default::default()
-        });
+        let unsafe_no_sandbox = args
+            .get("unsafe_no_sandbox")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let use_sandbox = !unsafe_no_sandbox;
+        let policy = args
+            .get("sandbox_policy")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        let effective_sandbox_config = mcp_sandbox_config_from_policy(&policy);
+        let warnings = unsafe_no_sandbox_warning(unsafe_no_sandbox);
+
+        let dry_run = args
+            .get("dry_run")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if script.is_none() && code.is_none() {
+            return Err("Either 'script' or 'code' must be provided".to_string());
+        }
+        if let Some(script_path) = script
+            && !PathBuf::from(script_path).exists()
+        {
+            return Err(format!("Script not found: {}", script_path));
+        }
+        if dry_run {
+            let (risk_level, risk_reasons) = estimate_run_risk(script, code, use_sandbox);
+            return Ok(json!({
+                "status": "dry_run",
+                "dry_run": true,
+                "would_execute": describe_run_target(script, code),
+                "sandboxed": use_sandbox,
+                "sandbox_policy": use_sandbox.then(|| sandbox_policy_json(&effective_sandbox_config)),
+                "risk_level": risk_level,
+                "risk_reasons": risk_reasons,
+                "warnings": warnings,
+            })
+            .to_string());
+        }
+
+        let sandbox_config = use_sandbox.then_some(effective_sandbox_config);
 
         // Find Python interpreter
         let working_dir = std::env::current_dir().map_err(|e| e.to_string())?;
@@ -1471,6 +1590,7 @@ impl McpServer {
                 "resource_limits": resource_limits,
                 "timed_out": timed_out,
                 "diagnostics": diagnostics,
+                "warnings": warnings,
             })
             .to_string())
         };
@@ -1478,9 +1598,6 @@ impl McpServer {
         match (script, code) {
             (Some(script_path), _) => {
                 let path = PathBuf::from(script_path);
-                if !path.exists() {
-                    return Err(format!("Script not found: {}", script_path));
-                }
                 let mut cmd = ProcessCommand::new(&python_path);
                 cmd.arg(&path);
                 build_result(cmd, script_path, sandbox_config)

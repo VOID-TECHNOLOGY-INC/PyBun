@@ -328,6 +328,20 @@ fn audit_log_entries(path: &Path) -> Vec<serde_json::Value> {
         .collect()
 }
 
+fn tool_result_json(stdout: &str, id: i64) -> serde_json::Value {
+    let responses = json_rpc_lines(stdout);
+    let response = responses
+        .iter()
+        .find(|value| value["id"].as_i64() == Some(id))
+        .unwrap_or_else(|| panic!("tools/call response with id {id} should be present: {stdout}"));
+    let text = response["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_else(|| panic!("tools/call response should contain text content: {response}"));
+    serde_json::from_str(text).unwrap_or_else(|err| {
+        panic!("tools/call text should be JSON ({err}): {text}\nstdout: {stdout}")
+    })
+}
+
 #[test]
 fn mcp_tools_list_includes_new_tools() {
     let stdout = mcp_call(&[r#"{"jsonrpc":"2.0","method":"tools/list","id":2,"params":{}}"#]);
@@ -620,15 +634,168 @@ fn mcp_pybun_run_sandbox_policy_audit_present() {
 }
 
 #[test]
-fn mcp_pybun_run_without_sandbox_policy_no_restriction() {
-    // Without sandbox_policy, normal code should run freely
-    let call_req = r#"{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_run","arguments":{"code":"print('unrestricted')"}}}"#;
+fn mcp_pybun_run_defaults_to_sandbox_without_policy() {
+    let call_req = r#"{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_run","arguments":{"code":"import subprocess\ntry:\n    subprocess.run(['echo','hi'])\nexcept PermissionError:\n    print('blocked-default')"}}}"#;
     let stdout = mcp_call(&[call_req]);
+    let result = tool_result_json(&stdout, 2);
 
+    assert_eq!(result["sandboxed"].as_bool(), Some(true), "{result}");
     assert!(
-        stdout.contains("unrestricted") || stdout.contains("exit_code"),
-        "pybun_run without sandbox should run freely. Got: {}",
-        stdout
+        result["stdout"]
+            .as_str()
+            .is_some_and(|stdout| stdout.contains("blocked-default")),
+        "{result}"
+    );
+    assert_eq!(
+        result["audit"]["blocked_subprocesses"].as_u64(),
+        Some(1),
+        "{result}"
+    );
+}
+
+#[test]
+fn mcp_pybun_run_unsafe_no_sandbox_allows_explicit_opt_out_with_warning() {
+    let call_req = r#"{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_run","arguments":{"code":"import subprocess, sys\nsubprocess.run([sys.executable, '-c', \"print('optout-child')\"])", "unsafe_no_sandbox": true}}}"#;
+    let stdout = mcp_call(&[call_req]);
+    let result = tool_result_json(&stdout, 2);
+
+    assert_eq!(result["sandboxed"].as_bool(), Some(false), "{result}");
+    assert!(
+        result["stdout"]
+            .as_str()
+            .is_some_and(|stdout| stdout.contains("optout-child")),
+        "{result}"
+    );
+    assert_eq!(
+        result["warnings"][0]["code"].as_str(),
+        Some("W_MCP_UNSAFE_NO_SANDBOX"),
+        "{result}"
+    );
+}
+
+#[test]
+fn mcp_pybun_run_dry_run_returns_plan_without_executing() {
+    let project = tempdir().unwrap();
+    let marker = project.path().join("dry-run-marker.txt");
+    let marker_json = serde_json::to_string(marker.to_str().unwrap()).unwrap();
+    let code = format!("open({marker_json}, 'w').write('executed')");
+    let code_json = serde_json::to_string(&code).unwrap();
+    let call_req = format!(
+        r#"{{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{{"name":"pybun_run","arguments":{{"code":{code_json},"dry_run":true}}}}}}"#
+    );
+    let stdout = mcp_call(&[&call_req]);
+    let result = tool_result_json(&stdout, 2);
+
+    assert_eq!(result["dry_run"].as_bool(), Some(true), "{result}");
+    assert_eq!(result["sandboxed"].as_bool(), Some(true), "{result}");
+    assert!(
+        result["would_execute"]
+            .as_str()
+            .is_some_and(|summary| summary.contains("Python inline code")),
+        "{result}"
+    );
+    assert!(
+        !marker.exists(),
+        "dry_run must not execute code or create marker at {}",
+        marker.display()
+    );
+}
+
+#[test]
+fn mcp_pybun_run_dry_run_requires_target() {
+    let call_req = r#"{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_run","arguments":{"dry_run":true}}}"#;
+    let stdout = mcp_call(&[call_req]);
+    let responses = json_rpc_lines(&stdout);
+    let response = responses
+        .iter()
+        .find(|value| value["id"].as_i64() == Some(2))
+        .expect("tools/call response should be present");
+
+    assert_eq!(
+        response["result"]["isError"].as_bool(),
+        Some(true),
+        "{response}"
+    );
+    assert!(
+        response["result"]["content"][0]["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("Either 'script' or 'code' must be provided")),
+        "{response}"
+    );
+}
+
+#[test]
+fn mcp_pybun_run_allow_env_rejects_credential_names() {
+    let call_req = r#"{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_run","arguments":{"code":"import os\nprint(os.environ.get('AWS_SECRET_ACCESS_KEY', 'missing'))","sandbox_policy":{"allow_env":["AWS_SECRET_ACCESS_KEY"]}}}}"#;
+    let project = tempdir().unwrap();
+    let stdout = mcp_call_in(
+        &[call_req],
+        project.path(),
+        &[("AWS_SECRET_ACCESS_KEY", OsString::from("should-not-leak"))],
+    );
+    let result = tool_result_json(&stdout, 2);
+
+    assert_eq!(result["sandboxed"].as_bool(), Some(true), "{result}");
+    assert!(
+        result["stdout"]
+            .as_str()
+            .is_some_and(|stdout| stdout.contains("missing") && !stdout.contains("should-not-leak")),
+        "{result}"
+    );
+}
+
+#[test]
+fn mcp_pybun_run_blocks_writes_to_sandbox_audit_file() {
+    let call_req = r#"{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_run","arguments":{"code":"import os\npath = os.environ['PYBUN_SANDBOX_AUDIT_FILE']\ntry:\n    open(path, 'w').write('tampered')\nexcept PermissionError:\n    print('audit-write-blocked')"}}}"#;
+    let stdout = mcp_call(&[call_req]);
+    let result = tool_result_json(&stdout, 2);
+
+    assert_eq!(result["sandboxed"].as_bool(), Some(true), "{result}");
+    assert!(
+        result["stdout"]
+            .as_str()
+            .is_some_and(|stdout| stdout.contains("audit-write-blocked")),
+        "{result}"
+    );
+    assert_eq!(
+        result["audit"]["blocked_file_writes"].as_u64(),
+        Some(1),
+        "{result}"
+    );
+}
+
+#[test]
+fn mcp_pybun_run_sandbox_policy_preserves_allow_network() {
+    let call_req = r#"{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_run","arguments":{"code":"import os\nprint(os.environ.get('PYBUN_SANDBOX_ALLOW_NETWORK', 'missing'))","sandbox_policy":{"allow_network":true}}}}"#;
+    let stdout = mcp_call(&[call_req]);
+    let result = tool_result_json(&stdout, 2);
+
+    assert_eq!(result["sandboxed"].as_bool(), Some(true), "{result}");
+    assert!(
+        result["stdout"]
+            .as_str()
+            .is_some_and(|stdout| stdout.trim() == "1"),
+        "{result}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn mcp_pybun_run_default_sandbox_reports_process_and_file_size_limits() {
+    let call_req = r#"{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_run","arguments":{"code":"print('limits')"}}}"#;
+    let stdout = mcp_call(&[call_req]);
+    let result = tool_result_json(&stdout, 2);
+
+    assert_eq!(result["sandboxed"].as_bool(), Some(true), "{result}");
+    assert_eq!(
+        result["resource_limits"]["max_processes"].as_u64(),
+        Some(0),
+        "{result}"
+    );
+    assert_eq!(
+        result["resource_limits"]["file_size_limit_mb"].as_u64(),
+        Some(10),
+        "{result}"
     );
 }
 
