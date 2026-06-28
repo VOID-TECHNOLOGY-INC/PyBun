@@ -3,6 +3,7 @@
 //! PR4.3: MCP server `pybun mcp serve` with RPC endpoints
 
 use std::ffi::OsString;
+use std::fs;
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -302,6 +303,29 @@ fn mcp_call_in(requests: &[&str], current_dir: &Path, envs: &[(&str, OsString)])
 
     let output = child.wait_with_output().expect("failed to wait");
     String::from_utf8_lossy(&output.stdout).to_string()
+}
+
+fn json_rpc_lines(stdout: &str) -> Vec<serde_json::Value> {
+    stdout
+        .lines()
+        .filter(|line| line.trim_start().starts_with('{'))
+        .map(|line| {
+            serde_json::from_str(line)
+                .unwrap_or_else(|err| panic!("valid JSON-RPC line ({err}): {line}"))
+        })
+        .collect()
+}
+
+fn audit_log_entries(path: &Path) -> Vec<serde_json::Value> {
+    let content = fs::read_to_string(path)
+        .unwrap_or_else(|err| panic!("audit log should be readable at {}: {err}", path.display()));
+    content
+        .lines()
+        .map(|line| {
+            serde_json::from_str(line)
+                .unwrap_or_else(|err| panic!("valid JSONL audit entry ({err}): {line}"))
+        })
+        .collect()
 }
 
 #[test]
@@ -605,6 +629,190 @@ fn mcp_pybun_run_without_sandbox_policy_no_restriction() {
         stdout.contains("unrestricted") || stdout.contains("exit_code"),
         "pybun_run without sandbox should run freely. Got: {}",
         stdout
+    );
+}
+
+// ─── MCP structured action audit log (Issue #249) ───────────────────────────
+
+#[test]
+fn mcp_tool_calls_write_jsonl_audit_entries() {
+    let project = tempdir().unwrap();
+    let audit_path = project.path().join("mcp-audit.jsonl");
+    let audit_env = audit_path.as_os_str().to_os_string();
+    let requests = [
+        r#"{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_doctor","arguments":{"verbose":true}}}"#,
+        r#"{"jsonrpc":"2.0","method":"tools/call","id":3,"params":{"name":"pybun_run","arguments":{"code":"print('audit ok')"}}}"#,
+    ];
+
+    let stdout = mcp_call_in(&requests, project.path(), &[("PYBUN_AUDIT_LOG", audit_env)]);
+    assert!(
+        stdout.contains("audit ok"),
+        "pybun_run should still execute. Got: {stdout}"
+    );
+
+    let entries = audit_log_entries(&audit_path);
+    assert_eq!(entries.len(), 2, "expected one entry per tools/call");
+
+    let first_session = entries[0]["session_id"]
+        .as_str()
+        .expect("session_id should be a string");
+    assert!(!first_session.is_empty());
+    assert_eq!(entries[1]["session_id"].as_str(), Some(first_session));
+    assert_ne!(entries[0]["call_id"], entries[1]["call_id"]);
+    assert_eq!(entries[0]["tool"].as_str(), Some("pybun_doctor"));
+    assert_eq!(entries[1]["tool"].as_str(), Some("pybun_run"));
+    assert_eq!(
+        entries[1]["input"]["code"].as_str(),
+        Some("print('audit ok')")
+    );
+    assert!(
+        entries[1]["input_hash"]
+            .as_str()
+            .is_some_and(|hash| hash.starts_with("sha256:"))
+    );
+    assert_eq!(entries[1]["output_summary"]["status"].as_str(), Some("ok"));
+    assert_eq!(
+        entries[1]["tool_schema"]["protocol_version"].as_str(),
+        Some("2024-11-05")
+    );
+}
+
+#[test]
+fn mcp_audit_hash_inputs_config_omits_raw_input() {
+    let project = tempdir().unwrap();
+    let audit_path = project.path().join("hashed-audit.jsonl");
+    fs::write(
+        project.path().join("pyproject.toml"),
+        format!(
+            "[tool.pybun.mcp.audit]\npath = \"{}\"\nhash_inputs = true\n",
+            audit_path.display()
+        ),
+    )
+    .unwrap();
+
+    let secret = "secret-token-issue-249";
+    let req = format!(
+        r#"{{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{{"name":"pybun_run","arguments":{{"code":"print('{secret}')"}}}}}}"#
+    );
+    let stdout = mcp_call_in(&[&req], project.path(), &[]);
+    assert!(
+        stdout.contains(secret),
+        "tool output should still include the program stdout. Got: {stdout}"
+    );
+
+    let raw_log = fs::read_to_string(&audit_path).unwrap();
+    assert!(
+        !raw_log.contains(secret),
+        "hash_inputs=true must not persist raw input content: {raw_log}"
+    );
+    let entries = audit_log_entries(&audit_path);
+    assert!(entries[0].get("input").is_none());
+    assert!(
+        entries[0]["input_hash"]
+            .as_str()
+            .is_some_and(|hash| hash.starts_with("sha256:"))
+    );
+}
+
+#[test]
+fn mcp_audit_recent_resource_returns_session_entries() {
+    let project = tempdir().unwrap();
+    let audit_path = project.path().join("audit.jsonl");
+    let audit_env = audit_path.as_os_str().to_os_string();
+    let requests = [
+        r#"{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_doctor","arguments":{}}}"#,
+        r#"{"jsonrpc":"2.0","method":"resources/read","id":3,"params":{"uri":"pybun://audit/recent"}}"#,
+    ];
+
+    let stdout = mcp_call_in(&requests, project.path(), &[("PYBUN_AUDIT_LOG", audit_env)]);
+    let responses = json_rpc_lines(&stdout);
+    let recent = responses
+        .iter()
+        .find(|value| value["id"].as_i64() == Some(3))
+        .expect("resources/read response should be present");
+    let text = recent["result"]["contents"][0]["text"]
+        .as_str()
+        .expect("resource content should be text");
+    let body: serde_json::Value = serde_json::from_str(text).expect("audit resource JSON");
+    assert_eq!(body["entries"][0]["tool"].as_str(), Some("pybun_doctor"));
+    assert_eq!(body["count"].as_u64(), Some(1));
+}
+
+#[test]
+fn mcp_audit_dev_null_disables_logging_without_error() {
+    let project = tempdir().unwrap();
+    let stdout = mcp_call_in(
+        &[
+            r#"{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_run","arguments":{"code":"print('no audit file')"}}}"#,
+        ],
+        project.path(),
+        &[("PYBUN_AUDIT_LOG", OsString::from("/dev/null"))],
+    );
+
+    assert!(
+        stdout.contains("no audit file"),
+        "PYBUN_AUDIT_LOG=/dev/null should not fail tool execution. Got: {stdout}"
+    );
+}
+
+#[test]
+fn mcp_audit_log_survives_sandbox_write_tamper_attempt() {
+    let project = tempdir().unwrap();
+    let writable = tempdir().unwrap();
+    let audit_path = project.path().join("parent-owned-audit.jsonl");
+    let audit_env = audit_path.as_os_str().to_os_string();
+
+    let warmup = r#"{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_doctor","arguments":{}}}"#;
+    let audit_literal = serde_json::to_string(audit_path.to_str().unwrap()).unwrap();
+    let writable_literal = serde_json::to_string(writable.path().to_str().unwrap()).unwrap();
+    let code = [
+        "import os",
+        &format!("audit = {audit_literal}"),
+        &format!("writable = {writable_literal}"),
+        "open(os.path.join(writable, 'ok.txt'), 'w').write('ok')",
+        "for action in ('write', 'delete'):",
+        "    try:",
+        "        if action == 'write':",
+        "            open(audit, 'w').write('tampered')",
+        "        else:",
+        "            os.remove(audit)",
+        "    except PermissionError:",
+        "        pass",
+        "",
+    ]
+    .join("\n");
+    let code_json = serde_json::to_string(&code).unwrap();
+    let allow_write_json = serde_json::to_string(writable.path().to_str().unwrap()).unwrap();
+    let tamper = format!(
+        r#"{{"jsonrpc":"2.0","method":"tools/call","id":3,"params":{{"name":"pybun_run","arguments":{{"code":{code_json},"sandbox_policy":{{"allow_write":[{allow_write_json}]}}}}}}}}"#
+    );
+
+    let stdout = mcp_call_in(
+        &[warmup, &tamper],
+        project.path(),
+        &[("PYBUN_AUDIT_LOG", audit_env)],
+    );
+    assert!(
+        stdout.contains("blocked_file_writes"),
+        "sandbox audit should report blocked tampering. Got: {stdout}"
+    );
+
+    let entries = audit_log_entries(&audit_path);
+    assert_eq!(
+        entries.len(),
+        2,
+        "prior entry should survive attempted delete/overwrite"
+    );
+    assert_eq!(entries[0]["tool"].as_str(), Some("pybun_doctor"));
+    assert_eq!(entries[1]["tool"].as_str(), Some("pybun_run"));
+    assert!(
+        entries[1]["file_writes"]
+            .as_array()
+            .is_some_and(|writes| writes.iter().any(|entry| entry["path"]
+                .as_str()
+                .is_some_and(|path| path.ends_with("ok.txt")))),
+        "allow_write output should be recorded in file_writes: {}",
+        entries[1]
     );
 }
 
