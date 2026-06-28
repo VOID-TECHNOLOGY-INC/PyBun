@@ -22,9 +22,14 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::collections::{BTreeMap, VecDeque};
+use std::fs::{self, OpenOptions};
+use std::io::Write as IoWrite;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use uuid::Uuid;
 
 /// MCP Protocol version we support
 pub const PROTOCOL_VERSION: &str = "2024-11-05";
@@ -81,6 +86,78 @@ pub struct Resource {
     pub description: Option<String>,
     #[serde(rename = "mimeType", skip_serializing_if = "Option::is_none")]
     pub mime_type: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct AuditConfig {
+    enabled: bool,
+    path: Option<PathBuf>,
+    hash_inputs: bool,
+    retention_days: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct AuditToolSchema {
+    name: String,
+    schema_version: u64,
+    protocol_version: &'static str,
+    server_version: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct AuditOutputSummary {
+    status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    exit_code: Option<i64>,
+    stdout_bytes: u64,
+    stderr_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct AuditSandboxEvent {
+    #[serde(rename = "type")]
+    event_type: String,
+    count: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct AuditFileWrite {
+    path: String,
+    size_bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sha256_before: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sha256_after: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct AuditEntry {
+    session_id: String,
+    call_id: String,
+    timestamp: String,
+    tool: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    input: Option<Value>,
+    input_hash: String,
+    tool_schema: AuditToolSchema,
+    output_summary: AuditOutputSummary,
+    sandbox_events: Vec<AuditSandboxEvent>,
+    file_writes: Vec<AuditFileWrite>,
+    duration_ms: u64,
+}
+
+#[derive(Debug, Clone)]
+struct FileState {
+    size_bytes: u64,
+    sha256: String,
+}
+
+type FileSnapshot = BTreeMap<PathBuf, FileState>;
+
+#[derive(Debug)]
+struct McpAuditLog {
+    config: AuditConfig,
+    recent: VecDeque<AuditEntry>,
 }
 
 #[derive(Debug, Clone)]
@@ -194,6 +271,438 @@ fn resolve_ruff_runner(working_dir: &Path) -> Result<Option<ToolRunner>, String>
     Ok(None)
 }
 
+impl AuditConfig {
+    fn load() -> Self {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let (project_root, mut config) = load_pyproject_audit_config(&cwd).unwrap_or_else(|| {
+            (
+                cwd.clone(),
+                Self {
+                    enabled: true,
+                    path: default_audit_log_path(),
+                    hash_inputs: false,
+                    retention_days: 30,
+                },
+            )
+        });
+
+        if config.path.is_none() && config.enabled {
+            config.path = default_audit_log_path();
+        }
+
+        if let Some(path) = config.path.take() {
+            config.path = Some(resolve_audit_path(path, &project_root));
+        }
+
+        if let Ok(path) = std::env::var("PYBUN_AUDIT_LOG") {
+            if path == "/dev/null" {
+                config.enabled = false;
+                config.path = None;
+            } else if !path.trim().is_empty() {
+                config.enabled = true;
+                config.path = Some(resolve_audit_path(PathBuf::from(path), &cwd));
+            }
+        }
+
+        config
+    }
+}
+
+impl McpAuditLog {
+    fn new() -> Self {
+        Self {
+            config: AuditConfig::load(),
+            recent: VecDeque::new(),
+        }
+    }
+
+    fn prepare_for_call(&self, tool_args: &Value) -> Result<(), String> {
+        if !self.config.enabled {
+            return Ok(());
+        }
+
+        let Some(path) = &self.config.path else {
+            return Ok(());
+        };
+
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|e| {
+                format!(
+                    "failed to create audit log directory {}: {e}",
+                    parent.display()
+                )
+            })?;
+        }
+
+        OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .map_err(|e| format!("failed to create audit log {}: {e}", path.display()))?;
+
+        if audit_path_conflicts_with_allow_write(path, tool_args) {
+            return Err(format!(
+                "audit log path {} must be outside sandbox allow_write paths",
+                path.display()
+            ));
+        }
+
+        Ok(())
+    }
+
+    fn record(&mut self, entry: AuditEntry) {
+        if !self.config.enabled {
+            return;
+        }
+
+        self.recent.push_back(entry.clone());
+        while self.recent.len() > 20 {
+            self.recent.pop_front();
+        }
+
+        let Some(path) = &self.config.path else {
+            return;
+        };
+        let write_result = (|| -> Result<(), String> {
+            let mut file = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .map_err(|e| e.to_string())?;
+            let line = serde_json::to_string(&entry).map_err(|e| e.to_string())?;
+            writeln!(file, "{line}").map_err(|e| e.to_string())
+        })();
+
+        if let Err(err) = write_result {
+            eprintln!("warning: failed to append MCP audit log: {err}");
+        }
+    }
+
+    fn recent_json(&self, session_id: &str) -> String {
+        json!({
+            "session_id": session_id,
+            "count": self.recent.len(),
+            "entries": self.recent,
+            "retention_days": self.config.retention_days,
+        })
+        .to_string()
+    }
+}
+
+fn default_audit_log_path() -> Option<PathBuf> {
+    crate::cache::Cache::new().ok().map(|cache| {
+        cache
+            .logs_dir()
+            .join(format!("mcp-audit-{}.jsonl", utc_date_now()))
+    })
+}
+
+fn load_pyproject_audit_config(start: &Path) -> Option<(PathBuf, AuditConfig)> {
+    let mut current = start.to_path_buf();
+    loop {
+        let candidate = current.join("pyproject.toml");
+        if candidate.exists() {
+            let content = fs::read_to_string(&candidate).ok()?;
+            let value: toml::Value = content.parse().ok()?;
+            let audit = value.get("tool")?.get("pybun")?.get("mcp")?.get("audit")?;
+
+            let enabled = audit
+                .get("enabled")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
+            let path = audit
+                .get("path")
+                .and_then(|v| v.as_str())
+                .map(PathBuf::from);
+            let hash_inputs = audit
+                .get("hash_inputs")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let retention_days = audit
+                .get("retention_days")
+                .and_then(|v| v.as_integer())
+                .and_then(|v| u64::try_from(v).ok())
+                .unwrap_or(30);
+
+            return Some((
+                current,
+                AuditConfig {
+                    enabled,
+                    path,
+                    hash_inputs,
+                    retention_days,
+                },
+            ));
+        }
+
+        if !current.pop() {
+            return None;
+        }
+    }
+}
+
+fn resolve_audit_path(path: PathBuf, base: &Path) -> PathBuf {
+    let path_string = path.to_string_lossy();
+    if path_string == "~" {
+        return dirs::home_dir().unwrap_or_else(|| base.to_path_buf());
+    }
+    if let Some(stripped) = path_string.strip_prefix("~/") {
+        return dirs::home_dir()
+            .unwrap_or_else(|| base.to_path_buf())
+            .join(stripped);
+    }
+    if path.is_absolute() {
+        path
+    } else {
+        base.join(path)
+    }
+}
+
+fn audit_path_conflicts_with_allow_write(audit_path: &Path, tool_args: &Value) -> bool {
+    let Some(allow_write) = tool_args
+        .get("sandbox_policy")
+        .and_then(|p| p.get("allow_write"))
+        .and_then(|v| v.as_array())
+    else {
+        return false;
+    };
+
+    let audit_path = normalized_absolute_path(audit_path);
+    allow_write.iter().filter_map(|v| v.as_str()).any(|path| {
+        let allowed = normalized_absolute_path(Path::new(path));
+        path_within(&audit_path, &allowed)
+    })
+}
+
+fn normalized_absolute_path(path: &Path) -> PathBuf {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(path)
+    };
+    absolute.canonicalize().unwrap_or(absolute)
+}
+
+fn path_within(path: &Path, root: &Path) -> bool {
+    path == root || path.starts_with(root)
+}
+
+fn utc_date_now() -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    let days = (now.as_secs() / 86_400) as i64;
+    let (year, month, day) = civil_from_unix_days(days);
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
+fn utc_timestamp_now() -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    let total_secs = now.as_secs();
+    let days = (total_secs / 86_400) as i64;
+    let secs_of_day = total_secs % 86_400;
+    let (year, month, day) = civil_from_unix_days(days);
+    let hour = secs_of_day / 3_600;
+    let minute = (secs_of_day % 3_600) / 60;
+    let second = secs_of_day % 60;
+    let micros = now.subsec_micros();
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{micros:06}Z")
+}
+
+fn civil_from_unix_days(days_since_epoch: i64) -> (i32, u32, u32) {
+    let z = days_since_epoch + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = mp + if mp < 10 { 3 } else { -9 };
+    let year = y + if month <= 2 { 1 } else { 0 };
+    (year as i32, month as u32, day as u32)
+}
+
+fn input_hash(input: &Value) -> String {
+    let bytes = serde_json::to_vec(input).unwrap_or_default();
+    format!("sha256:{}", crate::security::sha256_bytes(&bytes))
+}
+
+fn build_audit_entry(
+    session_id: &str,
+    tool_name: &str,
+    tool_args: &Value,
+    result: &Result<String, String>,
+    hash_inputs: bool,
+    file_writes: Vec<AuditFileWrite>,
+    duration_ms: u64,
+) -> AuditEntry {
+    AuditEntry {
+        session_id: session_id.to_string(),
+        call_id: Uuid::new_v4().to_string(),
+        timestamp: utc_timestamp_now(),
+        tool: tool_name.to_string(),
+        input: (!hash_inputs).then(|| tool_args.clone()),
+        input_hash: input_hash(tool_args),
+        tool_schema: AuditToolSchema {
+            name: tool_name.to_string(),
+            schema_version: 1,
+            protocol_version: PROTOCOL_VERSION,
+            server_version: SERVER_VERSION,
+        },
+        output_summary: summarize_tool_result(result),
+        sandbox_events: sandbox_events_from_result(result),
+        file_writes,
+        duration_ms,
+    }
+}
+
+fn summarize_tool_result(result: &Result<String, String>) -> AuditOutputSummary {
+    match result {
+        Ok(content) => {
+            let parsed = serde_json::from_str::<Value>(content).ok();
+            let status = parsed
+                .as_ref()
+                .and_then(|value| value.get("status"))
+                .and_then(|value| value.as_str())
+                .map(|status| {
+                    if status == "error" {
+                        "error".to_string()
+                    } else {
+                        "ok".to_string()
+                    }
+                })
+                .unwrap_or_else(|| "ok".to_string());
+            let exit_code = parsed
+                .as_ref()
+                .and_then(|value| value.get("exit_code"))
+                .and_then(|value| value.as_i64());
+            let stdout_bytes = parsed
+                .as_ref()
+                .and_then(|value| value.get("stdout"))
+                .and_then(|value| value.as_str())
+                .map(|stdout| stdout.len() as u64)
+                .unwrap_or(0);
+            let stderr_bytes = parsed
+                .as_ref()
+                .and_then(|value| value.get("stderr"))
+                .and_then(|value| value.as_str())
+                .map(|stderr| stderr.len() as u64)
+                .unwrap_or(0);
+            AuditOutputSummary {
+                status,
+                exit_code,
+                stdout_bytes,
+                stderr_bytes,
+            }
+        }
+        Err(message) => AuditOutputSummary {
+            status: "error".to_string(),
+            exit_code: None,
+            stdout_bytes: 0,
+            stderr_bytes: message.len() as u64,
+        },
+    }
+}
+
+fn sandbox_events_from_result(result: &Result<String, String>) -> Vec<AuditSandboxEvent> {
+    let Ok(content) = result else {
+        return vec![];
+    };
+    let Ok(value) = serde_json::from_str::<Value>(content) else {
+        return vec![];
+    };
+    let Some(audit) = value.get("audit").and_then(|v| v.as_object()) else {
+        return vec![];
+    };
+
+    [
+        ("blocked_subprocesses", "blocked_subprocess"),
+        ("blocked_network", "blocked_network"),
+        ("blocked_file_reads", "blocked_file_read"),
+        ("blocked_file_writes", "blocked_file_write"),
+    ]
+    .iter()
+    .filter_map(|(key, event_type)| {
+        let count = audit.get(*key).and_then(|v| v.as_u64()).unwrap_or(0);
+        (count > 0).then(|| AuditSandboxEvent {
+            event_type: (*event_type).to_string(),
+            count,
+        })
+    })
+    .collect()
+}
+
+fn snapshot_for_tool(tool_name: &str, tool_args: &Value) -> FileSnapshot {
+    if tool_name != "pybun_run" {
+        return FileSnapshot::new();
+    }
+
+    let Some(paths) = tool_args
+        .get("sandbox_policy")
+        .and_then(|p| p.get("allow_write"))
+        .and_then(|v| v.as_array())
+    else {
+        return FileSnapshot::new();
+    };
+
+    let mut snapshot = FileSnapshot::new();
+    for path in paths.iter().filter_map(|v| v.as_str()) {
+        collect_file_snapshot(&normalized_absolute_path(Path::new(path)), &mut snapshot);
+    }
+    snapshot
+}
+
+fn collect_file_snapshot(path: &Path, snapshot: &mut FileSnapshot) {
+    let Ok(metadata) = fs::metadata(path) else {
+        return;
+    };
+    if metadata.is_file() {
+        if let Ok(sha256) = crate::security::sha256_file(path) {
+            snapshot.insert(
+                normalized_absolute_path(path),
+                FileState {
+                    size_bytes: metadata.len(),
+                    sha256,
+                },
+            );
+        }
+        return;
+    }
+
+    if metadata.is_dir()
+        && let Ok(entries) = fs::read_dir(path)
+    {
+        for entry in entries.flatten() {
+            collect_file_snapshot(&entry.path(), snapshot);
+        }
+    }
+}
+
+fn diff_file_writes(before: &FileSnapshot, after: &FileSnapshot) -> Vec<AuditFileWrite> {
+    after
+        .iter()
+        .filter_map(|(path, after_state)| {
+            let before_state = before.get(path);
+            let changed = before_state
+                .map(|state| {
+                    state.size_bytes != after_state.size_bytes || state.sha256 != after_state.sha256
+                })
+                .unwrap_or(true);
+            changed.then(|| AuditFileWrite {
+                path: path.display().to_string(),
+                size_bytes: after_state.size_bytes,
+                sha256_before: before_state.map(|state| state.sha256.clone()),
+                sha256_after: Some(after_state.sha256.clone()),
+            })
+        })
+        .collect()
+}
+
 impl JsonRpcResponse {
     pub fn success(id: Value, result: Value) -> Self {
         Self {
@@ -221,11 +730,17 @@ impl JsonRpcResponse {
 /// MCP Server state
 pub struct McpServer {
     initialized: bool,
+    session_id: String,
+    audit_log: McpAuditLog,
 }
 
 impl McpServer {
     pub fn new() -> Self {
-        Self { initialized: false }
+        Self {
+            initialized: false,
+            session_id: Uuid::new_v4().to_string(),
+            audit_log: McpAuditLog::new(),
+        }
     }
 
     /// Handle a JSON-RPC request
@@ -481,22 +996,42 @@ impl McpServer {
         JsonRpcResponse::success(id, json!({ "tools": tools }))
     }
 
-    async fn handle_tools_call(&self, id: Value, params: Value) -> JsonRpcResponse {
+    async fn handle_tools_call(&mut self, id: Value, params: Value) -> JsonRpcResponse {
         let tool_name = params.get("name").and_then(|n| n.as_str()).unwrap_or("");
         let tool_args = params.get("arguments").cloned().unwrap_or(json!({}));
 
-        let result = match tool_name {
-            "pybun_resolve" => self.call_resolve(tool_args).await,
-            "pybun_install" => self.call_install(tool_args).await,
-            "pybun_run" => self.call_run(tool_args),
-            "pybun_gc" => self.call_gc(tool_args),
-            "pybun_doctor" => self.call_doctor(tool_args),
-            "pybun_lint" => self.call_lint(tool_args),
-            "pybun_type_check" => self.call_type_check(tool_args),
-            "pybun_profile" => self.call_profile(tool_args),
-            "pybun_fix" => self.call_fix(tool_args),
-            _ => Err(format!("Unknown tool: {}", tool_name)),
+        let start = Instant::now();
+        let before_snapshot = snapshot_for_tool(tool_name, &tool_args);
+        let result = if let Err(err) = self.audit_log.prepare_for_call(&tool_args) {
+            Err(err)
+        } else {
+            match tool_name {
+                "pybun_resolve" => self.call_resolve(tool_args.clone()).await,
+                "pybun_install" => self.call_install(tool_args.clone()).await,
+                "pybun_run" => self.call_run(tool_args.clone()),
+                "pybun_gc" => self.call_gc(tool_args.clone()),
+                "pybun_doctor" => self.call_doctor(tool_args.clone()),
+                "pybun_lint" => self.call_lint(tool_args.clone()),
+                "pybun_type_check" => self.call_type_check(tool_args.clone()),
+                "pybun_profile" => self.call_profile(tool_args.clone()),
+                "pybun_fix" => self.call_fix(tool_args.clone()),
+                _ => Err(format!("Unknown tool: {}", tool_name)),
+            }
         };
+        let after_snapshot = snapshot_for_tool(tool_name, &tool_args);
+        let file_writes = diff_file_writes(&before_snapshot, &after_snapshot);
+        let duration_ms = start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+
+        let audit_entry = build_audit_entry(
+            &self.session_id,
+            tool_name,
+            &tool_args,
+            &result,
+            self.audit_log.config.hash_inputs,
+            file_writes,
+            duration_ms,
+        );
+        self.audit_log.record(audit_entry);
 
         match result {
             Ok(content) => JsonRpcResponse::success(
@@ -535,6 +1070,12 @@ impl McpServer {
                 description: Some("Current Python environment info".to_string()),
                 mime_type: Some("application/json".to_string()),
             },
+            Resource {
+                uri: "pybun://audit/recent".to_string(),
+                name: "Recent MCP Audit Entries".to_string(),
+                description: Some("Last 20 audited tool calls for this MCP session".to_string()),
+                mime_type: Some("application/json".to_string()),
+            },
         ];
 
         JsonRpcResponse::success(id, json!({ "resources": resources }))
@@ -546,6 +1087,7 @@ impl McpServer {
         let content = match uri {
             "pybun://cache/info" => self.read_cache_info(),
             "pybun://env/info" => self.read_env_info(),
+            "pybun://audit/recent" => Ok(self.read_audit_recent()),
             _ => Err(format!("Unknown resource: {}", uri)),
         };
 
@@ -562,6 +1104,10 @@ impl McpServer {
             ),
             Err(e) => JsonRpcResponse::error(id, -32602, e),
         }
+    }
+
+    fn read_audit_recent(&self) -> String {
+        self.audit_log.recent_json(&self.session_id)
     }
 
     // Tool implementations

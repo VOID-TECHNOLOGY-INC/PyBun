@@ -589,6 +589,19 @@ def _block_network():
 
 
 def _patch_filesystem():
+    def _check_write_path(path, action):
+        if not isinstance(path, (str, bytes, os.PathLike)):
+            return
+        decoded = os.fsdecode(os.fspath(path))
+        if not decoded:
+            return
+        if _HAS_WRITE_POLICY:
+            if not _is_allowed(decoded, _ALLOW_WRITE):
+                _deny(action + " " + decoded, "blocked_file_writes")
+        elif _HAS_DEFAULT_DENY_WRITE:
+            if _is_in_denied(decoded, _DEFAULT_DENY_WRITE):
+                _deny(action + " " + decoded, "blocked_file_writes")
+
     def _checked_open(file, mode="r", *args, **kwargs):
         # File objects (e.g. from io) pass through unchanged.
         if not isinstance(file, (str, bytes, os.PathLike)):
@@ -599,15 +612,55 @@ def _patch_filesystem():
         if _HAS_READ_POLICY and _mode_needs_read(mode):
             if not _is_allowed(path, _ALLOW_READ):
                 _deny("read from " + path, "blocked_file_reads")
-        if _HAS_WRITE_POLICY and _mode_needs_write(mode):
-            if not _is_allowed(path, _ALLOW_WRITE):
-                _deny("write to " + path, "blocked_file_writes")
-        elif _HAS_DEFAULT_DENY_WRITE and _mode_needs_write(mode):
-            if _is_in_denied(path, _DEFAULT_DENY_WRITE):
-                _deny("write to " + path, "blocked_file_writes")
+        if _mode_needs_write(mode):
+            _check_write_path(path, "write to")
         return _orig_open(file, mode, *args, **kwargs)
 
     builtins.open = _checked_open
+
+    def _wrap_single_path_mutation(fn, action):
+        def _wrapped(path, *args, **kwargs):
+            _check_write_path(path, action)
+            return fn(path, *args, **kwargs)
+        return _wrapped
+
+    def _wrap_two_path_mutation(fn, action):
+        def _wrapped(src, dst, *args, **kwargs):
+            _check_write_path(src, action + " from")
+            _check_write_path(dst, action + " to")
+            return fn(src, dst, *args, **kwargs)
+        return _wrapped
+
+    for _name, _action in (
+        ("remove", "delete"),
+        ("unlink", "delete"),
+        ("rmdir", "delete"),
+        ("mkdir", "create directory"),
+        ("makedirs", "create directory"),
+        ("removedirs", "delete directory"),
+    ):
+        if hasattr(os, _name):
+            setattr(os, _name, _wrap_single_path_mutation(getattr(os, _name), _action))
+
+    for _name, _action in (
+        ("rename", "rename"),
+        ("replace", "replace"),
+    ):
+        if hasattr(os, _name):
+            setattr(os, _name, _wrap_two_path_mutation(getattr(os, _name), _action))
+
+    def _wrap_link_mutation(fn, action):
+        def _wrapped(src, dst, *args, **kwargs):
+            _check_write_path(dst, action + " to")
+            return fn(src, dst, *args, **kwargs)
+        return _wrapped
+
+    for _name, _action in (
+        ("link", "link"),
+        ("symlink", "symlink"),
+    ):
+        if hasattr(os, _name):
+            setattr(os, _name, _wrap_link_mutation(getattr(os, _name), _action))
 
 
 def _write_audit():
