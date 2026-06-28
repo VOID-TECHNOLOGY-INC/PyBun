@@ -61,6 +61,9 @@ fn native_backend_compat_diagnostic(warning: &crate::test_discovery::CompatWarni
                 .to_string(),
         ),
         context: None,
+        exception_type: None,
+        location: None,
+        next_action: None,
         fix_candidates: None,
     }
 }
@@ -348,6 +351,9 @@ pub(crate) fn run_tests(
                 line: Some(warning.line as u32),
                 suggestion: get_pytest_compat_hint(&warning.code).map(|s| s.to_string()),
                 context: None,
+                exception_type: None,
+                location: None,
+                next_action: None,
                 fix_candidates: None,
             };
             collector.diagnostic(diag);
@@ -910,6 +916,9 @@ fn run_tests_native(
                     line: u32::try_from(r.line).ok(),
                     suggestion: Some("Investigate test flakiness before relying on this snapshot as a stable baseline".to_string()),
                     context: None,
+                    exception_type: None,
+                    location: None,
+                    next_action: None,
                     fix_candidates: None,
                 });
             }
@@ -926,6 +935,9 @@ fn run_tests_native(
                 line: None,
                 suggestion: None,
                 context: None,
+                exception_type: None,
+                location: None,
+                next_action: None,
                 fix_candidates: None,
             });
         }
@@ -1031,6 +1043,9 @@ fn run_tests_native(
             } else {
                 Some(Value::String(failed.stderr.clone()))
             },
+            exception_type: None,
+            location: None,
+            next_action: None,
             fix_candidates: None,
         };
         collector.diagnostic(diag);

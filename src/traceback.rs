@@ -74,20 +74,23 @@ fn looks_like_exception_line(line: &str) -> bool {
         return false; // indented — part of a frame, not the exception line
     }
     if let Some((candidate, _)) = line.split_once(':') {
-        let candidate = candidate.trim();
-        // Exception class names: only word characters, possibly dotted (e.g. pkg.MyError)
-        !candidate.is_empty()
-            && candidate
-                .chars()
-                .next()
-                .map(|c| c.is_ascii_uppercase())
-                .unwrap_or(false)
-            && candidate
-                .chars()
-                .all(|c| c.is_alphanumeric() || c == '_' || c == '.')
+        is_exception_type_candidate(candidate.trim())
     } else {
-        false
+        is_exception_type_candidate(line.trim())
     }
+}
+
+fn is_exception_type_candidate(candidate: &str) -> bool {
+    // Exception class names: only word characters, possibly dotted (e.g. pkg.MyError)
+    !candidate.is_empty()
+        && candidate
+            .chars()
+            .next()
+            .map(|c| c.is_ascii_uppercase())
+            .unwrap_or(false)
+        && candidate
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '_' || c == '.')
 }
 
 /// Extract the innermost (last) `File "...", line N[, in <func>]` frame.
@@ -141,6 +144,20 @@ fn make_relative(path: String) -> String {
     if let Some(stripped) = path.strip_prefix("./") {
         return stripped.to_string();
     }
+    let path_ref = std::path::Path::new(&path);
+    if path_ref.is_absolute()
+        && let Ok(cwd) = std::env::current_dir()
+    {
+        if let Ok(relative) = path_ref.strip_prefix(&cwd) {
+            return relative.to_string_lossy().to_string();
+        }
+        if let (Ok(canonical_path), Ok(canonical_cwd)) =
+            (path_ref.canonicalize(), cwd.canonicalize())
+            && let Ok(relative) = canonical_path.strip_prefix(canonical_cwd)
+        {
+            return relative.to_string_lossy().to_string();
+        }
+    }
     path
 }
 
@@ -157,16 +174,13 @@ fn extract_exception(stderr: &str) -> Option<(String, String)> {
         }
         if let Some((exc_type, msg)) = line.split_once(':') {
             let exc_type = exc_type.trim();
-            if exc_type
-                .chars()
-                .next()
-                .map(|c| c.is_ascii_uppercase())
-                .unwrap_or(false)
-                && exc_type
-                    .chars()
-                    .all(|c| c.is_alphanumeric() || c == '_' || c == '.')
-            {
+            if is_exception_type_candidate(exc_type) {
                 return Some((exc_type.to_string(), msg.trim().to_string()));
+            }
+        } else {
+            let exc_type = line.trim();
+            if is_exception_type_candidate(exc_type) {
+                return Some((exc_type.to_string(), String::new()));
             }
         }
     }
@@ -415,6 +429,38 @@ RuntimeError: boom"#;
         let tb = parse(stderr).unwrap();
         let loc = tb.location.unwrap();
         assert_eq!(loc.file, "src/main.py");
+    }
+
+    #[test]
+    fn parse_absolute_path_under_current_dir_is_project_relative() {
+        let absolute = std::env::current_dir().unwrap().join("src/main.py");
+        let stderr = format!(
+            r#"Traceback (most recent call last):
+  File "{}", line 1, in <module>
+    pass
+RuntimeError: boom"#,
+            absolute.display()
+        );
+
+        let tb = parse(&stderr).unwrap();
+        let loc = tb.location.unwrap();
+        assert_eq!(
+            loc.file,
+            std::path::Path::new("src/main.py").display().to_string()
+        );
+    }
+
+    #[test]
+    fn parse_bare_keyboard_interrupt_without_colon() {
+        let stderr = r#"Traceback (most recent call last):
+  File "main.py", line 1, in <module>
+    raise KeyboardInterrupt
+KeyboardInterrupt"#;
+
+        let tb = parse(stderr).unwrap();
+        assert_eq!(tb.code, "runtime.interrupted");
+        assert_eq!(tb.exception_type, "KeyboardInterrupt");
+        assert_eq!(tb.message, "");
     }
 
     #[test]

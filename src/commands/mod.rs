@@ -316,6 +316,14 @@ pub async fn execute(cli: Cli) -> Result<()> {
                         diag.code = Some(tb.code);
                         diag.file = tb.location.as_ref().map(|l| l.file.clone());
                         diag.line = tb.location.as_ref().map(|l| l.line);
+                        diag.exception_type = Some(tb.exception_type);
+                        diag.location = tb.location.as_ref().map(|loc| {
+                            json!({
+                                "file": loc.file,
+                                "line": loc.line,
+                                "function": loc.function,
+                            })
+                        });
                         if let Some(action) = &tb.next_action {
                             diag.suggestion = Some(format!(
                                 "Run: pybun add {}",
@@ -326,13 +334,12 @@ pub async fn execute(cli: Cli) -> Result<()> {
                                     .unwrap_or("")
                             ));
                         }
-                        diag.context = Some(json!({
-                            "exception_type": tb.exception_type,
-                            "next_action": tb.next_action.map(|a| json!({
+                        diag.next_action = tb.next_action.map(|a| {
+                            json!({
                                 "tool": a.tool,
                                 "args": a.args,
-                            })),
-                        }));
+                            })
+                        });
                         collector.diagnostic(diag);
                     }
 
@@ -1665,7 +1672,6 @@ fn missing_hash_diagnostic(
             "use an index that provides sha256 digests, then rerun install/lock/upgrade"
                 .to_string(),
         ),
-        fix_candidates: None,
         context: Some(json!({
             "package": pkg.name,
             "version": pkg.version,
@@ -1675,6 +1681,10 @@ fn missing_hash_diagnostic(
             "platform_tag": selection.matched_platform,
             "from_source": selection.from_source,
         })),
+        exception_type: None,
+        location: None,
+        next_action: None,
+        fix_candidates: None,
     }
 }
 
@@ -1742,6 +1752,9 @@ fn emit_lockfile_verification_drift(lockfile: &Lockfile, collector: &mut EventCo
                 .to_string(),
         ),
         context: Some(json!({ "packages": drifted_packages })),
+        exception_type: None,
+        location: None,
+        next_action: None,
         fix_candidates: Some(crate::self_heal::fix_candidates_for_lock_drift()),
     });
 }
@@ -1784,6 +1797,9 @@ async fn lock_dependencies(args: &LockArgs, collector: &mut EventCollector) -> R
                             .to_string(),
                     ),
                     context: None,
+                    exception_type: None,
+                    location: None,
+                    next_action: None,
                     fix_candidates: None,
                 });
                 return Err(eyre!(message));
@@ -4287,6 +4303,9 @@ fn init_project(args: &InitArgs, collector: &mut EventCollector) -> Result<Rende
                         .to_string(),
                 ),
                 context: None,
+                exception_type: None,
+                location: None,
+                next_action: None,
                 fix_candidates: None,
             });
             return Err(eyre!(
