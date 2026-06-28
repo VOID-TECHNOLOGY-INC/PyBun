@@ -307,6 +307,35 @@ pub async fn execute(cli: Cli) -> Result<()> {
                     profile,
                 }) => {
                     collector.event(EventType::ScriptEnd);
+
+                    // Enrich diagnostics with structured traceback when the script failed
+                    if exit_code != 0
+                        && let Some(tb) = stderr.as_deref().and_then(crate::traceback::parse)
+                    {
+                        let mut diag = Diagnostic::error(tb.message.clone());
+                        diag.code = Some(tb.code);
+                        diag.file = tb.location.as_ref().map(|l| l.file.clone());
+                        diag.line = tb.location.as_ref().map(|l| l.line);
+                        if let Some(action) = &tb.next_action {
+                            diag.suggestion = Some(format!(
+                                "Run: pybun add {}",
+                                action
+                                    .args
+                                    .get("package")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                            ));
+                        }
+                        diag.context = Some(json!({
+                            "exception_type": tb.exception_type,
+                            "next_action": tb.next_action.map(|a| json!({
+                                "tool": a.tool,
+                                "args": a.args,
+                            })),
+                        }));
+                        collector.diagnostic(diag);
+                    }
+
                     let sandbox_detail = sandbox.as_ref().map(|s| {
                         json!({
                             "enabled": s.enabled,

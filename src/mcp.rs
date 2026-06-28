@@ -890,6 +890,29 @@ impl McpServer {
             let stdout = String::from_utf8_lossy(&stdout).to_string();
             let stderr = String::from_utf8_lossy(&stderr).to_string();
 
+            // Parse Python traceback into structured diagnostics when the process failed
+            let diagnostics: Option<Value> = if !status.success() && !stderr.is_empty() {
+                crate::traceback::parse(&stderr).map(|tb| {
+                    json!([{
+                        "level": "error",
+                        "code": tb.code,
+                        "exception_type": tb.exception_type,
+                        "message": tb.message,
+                        "location": tb.location.map(|loc| json!({
+                            "file": loc.file,
+                            "line": loc.line,
+                            "function": loc.function,
+                        })),
+                        "next_action": tb.next_action.map(|a| json!({
+                            "tool": a.tool,
+                            "args": a.args,
+                        })),
+                    }])
+                })
+            } else {
+                None
+            };
+
             Ok(json!({
                 "status": if status.success() { "success" } else { "error" },
                 "target": target,
@@ -901,6 +924,7 @@ impl McpServer {
                 "audit": audit,
                 "resource_limits": resource_limits,
                 "timed_out": timed_out,
+                "diagnostics": diagnostics,
             })
             .to_string())
         };

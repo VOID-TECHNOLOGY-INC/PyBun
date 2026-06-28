@@ -607,3 +607,80 @@ fn mcp_pybun_run_without_sandbox_policy_no_restriction() {
         stdout
     );
 }
+
+// ─── Structured traceback diagnostics (Issue #243) ───────────────────────────
+
+fn run_mcp_pybun_run(code: &str) -> String {
+    use std::io::Write;
+    use std::process::Stdio;
+    let temp = tempfile::tempdir().unwrap();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_pybun"))
+        .env("PYBUN_HOME", temp.path())
+        .args(["mcp", "serve", "--stdio"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to start MCP server");
+
+    if let Some(mut stdin) = child.stdin.take() {
+        let init = r#"{"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0.1.0"}}}"#;
+        writeln!(stdin, "{init}").ok();
+        let code_escaped = code.replace('"', "\\\"").replace('\n', "\\n");
+        let req = format!(
+            r#"{{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{{"name":"pybun_run","arguments":{{"code":"{code_escaped}"}}}}}}"#
+        );
+        writeln!(stdin, "{req}").ok();
+        stdin.flush().ok();
+    }
+
+    let out = child.wait_with_output().unwrap();
+    String::from_utf8_lossy(&out.stdout).to_string()
+}
+
+#[test]
+fn mcp_pybun_run_module_not_found_has_diagnostics() {
+    let stdout = run_mcp_pybun_run("import numpy_does_not_exist");
+    assert!(
+        stdout.contains("runtime.module_not_found") || stdout.contains("module_not_found"),
+        "Expected structured diagnostic code in response. Got: {stdout}"
+    );
+}
+
+#[test]
+fn mcp_pybun_run_module_not_found_has_next_action() {
+    let stdout = run_mcp_pybun_run("import numpy_does_not_exist");
+    assert!(
+        stdout.contains("pybun_add"),
+        "Expected next_action.tool=pybun_add in response. Got: {stdout}"
+    );
+}
+
+#[test]
+fn mcp_pybun_run_module_not_found_package_name() {
+    let stdout = run_mcp_pybun_run("import numpy_does_not_exist");
+    assert!(
+        stdout.contains("numpy_does_not_exist"),
+        "Expected package name in response. Got: {stdout}"
+    );
+}
+
+#[test]
+fn mcp_pybun_run_success_has_no_diagnostics() {
+    let stdout = run_mcp_pybun_run("print('ok')");
+    // Diagnostics should be null or absent on success
+    assert!(
+        !stdout.contains("runtime."),
+        "Successful run should not have error diagnostics. Got: {stdout}"
+    );
+}
+
+#[test]
+fn mcp_pybun_run_syntax_error_has_diagnostics() {
+    let stdout = run_mcp_pybun_run("def bad(\n  pass");
+    assert!(
+        stdout.contains("runtime.syntax_error") || stdout.contains("syntax_error"),
+        "Expected syntax_error diagnostic. Got: {stdout}"
+    );
+}
