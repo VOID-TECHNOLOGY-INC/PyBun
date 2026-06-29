@@ -192,6 +192,73 @@ fn current_working_dir() -> Result<PathBuf, String> {
     std::env::current_dir().map_err(|e| e.to_string())
 }
 
+/// Detect Python test files changed since last git commit (modified + new untracked).
+/// Source files are mapped to test files via naming convention (src/foo.py → tests/test_foo.py).
+fn get_changed_test_files(working_dir: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut changed_py_files: Vec<PathBuf> = Vec::new();
+
+    // Modified and staged files vs HEAD
+    if let Ok(output) = std::process::Command::new("git")
+        .args(["diff", "--name-only", "HEAD"])
+        .current_dir(working_dir)
+        .output()
+        && output.status.success()
+    {
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            if line.ends_with(".py") {
+                changed_py_files.push(working_dir.join(line));
+            }
+        }
+    }
+
+    // Untracked new files not yet committed
+    if let Ok(output) = std::process::Command::new("git")
+        .args(["ls-files", "--others", "--exclude-standard"])
+        .current_dir(working_dir)
+        .output()
+        && output.status.success()
+    {
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            if line.ends_with(".py") {
+                let path = working_dir.join(line);
+                if !changed_py_files.contains(&path) {
+                    changed_py_files.push(path);
+                }
+            }
+        }
+    }
+
+    let mut test_paths: Vec<PathBuf> = Vec::new();
+    for file in changed_py_files {
+        let file_name = file.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if file_name.starts_with("test_") || file_name.ends_with("_test.py") {
+            if file.exists() && !test_paths.contains(&file) {
+                test_paths.push(file);
+            }
+        } else if file_name.ends_with(".py") {
+            // Convention-based mapping: src/foo.py → tests/test_foo.py
+            let stem = file.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+            let test_name = format!("test_{}.py", stem);
+            let candidates = [
+                working_dir.join("tests").join(&test_name),
+                working_dir.join(&test_name),
+                file.parent()
+                    .and_then(|p| p.parent())
+                    .map(|pp| pp.join("tests").join(&test_name))
+                    .unwrap_or_default(),
+            ];
+            for candidate in candidates {
+                if candidate.exists() && !test_paths.contains(&candidate) {
+                    test_paths.push(candidate);
+                    break;
+                }
+            }
+        }
+    }
+
+    Ok(test_paths)
+}
+
 fn valid_ruff_status(status: &std::process::ExitStatus) -> bool {
     matches!(status.code(), Some(0 | 1))
 }
@@ -1137,6 +1204,31 @@ impl McpServer {
                     }
                 }),
             },
+            Tool {
+                name: "pybun_test".to_string(),
+                description: "Run Python tests and return structured per-test results. Returns summary, failures (with rerun_command), and passed entries for agent-friendly test workflows.".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Test file or directory to run (default: auto-discover from current directory)"
+                        },
+                        "changed": {
+                            "type": "boolean",
+                            "description": "Run only tests in files changed since last git commit (new untracked test files are also included)"
+                        },
+                        "fail_fast": {
+                            "type": "boolean",
+                            "description": "Stop on first failure"
+                        },
+                        "filter": {
+                            "type": "string",
+                            "description": "Test name pattern filter (runs only tests whose name contains this string)"
+                        }
+                    }
+                }),
+            },
         ];
 
         JsonRpcResponse::success(id, json!({ "tools": tools }))
@@ -1162,6 +1254,7 @@ impl McpServer {
                 "pybun_profile" => self.call_profile(tool_args.clone()),
                 "pybun_fix" => self.call_fix(tool_args.clone()),
                 "pybun_context" => self.call_context(tool_args.clone()),
+                "pybun_test" => self.call_test(tool_args.clone()),
                 _ => Err(format!("Unknown tool: {}", tool_name)),
             }
         };
@@ -2489,6 +2582,156 @@ impl McpServer {
             })
             .to_string())
         }
+    }
+
+    fn call_test(&self, args: Value) -> Result<String, String> {
+        use crate::test_discovery::{TestDiscovery, TestItemType};
+        use crate::test_executor::{ExecutorConfig, TestExecutor, TestOutcome};
+
+        let working_dir = current_working_dir()?;
+
+        let path = args.get("path").and_then(|p| p.as_str()).map(String::from);
+        let changed = args
+            .get("changed")
+            .and_then(|c| c.as_bool())
+            .unwrap_or(false);
+        let fail_fast = args
+            .get("fail_fast")
+            .and_then(|f| f.as_bool())
+            .unwrap_or(false);
+        let filter = args
+            .get("filter")
+            .and_then(|f| f.as_str())
+            .map(String::from);
+
+        let search_paths: Vec<std::path::PathBuf> = if changed {
+            get_changed_test_files(&working_dir)?
+        } else if let Some(p) = path {
+            vec![working_dir.join(&p)]
+        } else {
+            vec![working_dir.clone()]
+        };
+
+        if search_paths.is_empty() {
+            return Ok(json!({
+                "summary": {
+                    "total": 0, "passed": 0, "failed": 0,
+                    "skipped": 0, "errors": 0, "duration_ms": 0
+                },
+                "failures": [],
+                "passed": [],
+                "analysis_notes": ["No changed test files detected"]
+            })
+            .to_string());
+        }
+
+        let discovery = TestDiscovery::new();
+        let discovery_result = discovery.discover(&search_paths);
+
+        let mut tests: Vec<crate::test_discovery::TestItem> = discovery_result
+            .tests
+            .iter()
+            .filter(|t| t.item_type != TestItemType::Class)
+            .cloned()
+            .collect();
+
+        if let Some(ref pattern) = filter {
+            tests.retain(|t| {
+                t.name.contains(pattern.as_str()) || t.short_name.contains(pattern.as_str())
+            });
+        }
+
+        if tests.is_empty() {
+            return Ok(json!({
+                "summary": {
+                    "total": 0, "passed": 0, "failed": 0,
+                    "skipped": 0, "errors": 0, "duration_ms": 0
+                },
+                "failures": [],
+                "passed": [],
+            })
+            .to_string());
+        }
+
+        let python = crate::env::find_python_env(&working_dir)
+            .map(|env| env.python_path.to_string_lossy().to_string())
+            .unwrap_or_else(|_| "python3".to_string());
+
+        let workers = std::thread::available_parallelism()
+            .map(|p| p.get())
+            .unwrap_or(4);
+
+        let config = ExecutorConfig {
+            workers,
+            fail_fast,
+            shard: None,
+            verbose: false,
+            timeout: None,
+            retries: 0,
+            python,
+        };
+
+        let executor = TestExecutor::new(config);
+        let result = executor.execute(tests);
+        let summary = &result.summary;
+
+        let failures: Vec<Value> = result
+            .results
+            .iter()
+            .filter(|r| {
+                !matches!(
+                    r.outcome,
+                    TestOutcome::Passed | TestOutcome::Skipped | TestOutcome::XFail
+                )
+            })
+            .map(|r| {
+                let file = r.path.display().to_string();
+                let rerun_command = format!("pybun test {}::{}", file, r.name);
+                let message = if !r.stderr.is_empty() {
+                    r.stderr.clone()
+                } else {
+                    r.stdout.clone()
+                };
+                json!({
+                    "name": r.name,
+                    "file": file,
+                    "line": r.line,
+                    "duration_ms": r.duration_ms,
+                    "status": serde_json::to_value(&r.outcome).unwrap_or(json!("failed")),
+                    "message": message,
+                    "rerun_command": rerun_command,
+                })
+            })
+            .collect();
+
+        let passed: Vec<Value> = result
+            .results
+            .iter()
+            .filter(|r| matches!(r.outcome, TestOutcome::Passed))
+            .map(|r| {
+                json!({
+                    "name": r.name,
+                    "file": r.path.display().to_string(),
+                    "line": r.line,
+                    "duration_ms": r.duration_ms,
+                    "status": "passed",
+                })
+            })
+            .collect();
+
+        Ok(json!({
+            "summary": {
+                "total": summary.total,
+                "passed": summary.passed,
+                "failed": summary.failed,
+                "skipped": summary.skipped,
+                "errors": summary.errors,
+                "duration_ms": summary.duration_ms,
+            },
+            "failures": failures,
+            "passed": passed,
+        })
+        .to_string())
     }
 }
 

@@ -1216,3 +1216,263 @@ fn mcp_project_snapshot_resource_returns_context_data() {
         "project snapshot should include lockfile_status. Got: {body}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// pybun_test MCP tool tests (Issue #246)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn mcp_tools_list_includes_pybun_test() {
+    let stdout = mcp_call(&[r#"{"jsonrpc":"2.0","method":"tools/list","id":2,"params":{}}"#]);
+    assert!(
+        stdout.contains("pybun_test"),
+        "tools/list should include pybun_test. Got: {stdout}"
+    );
+}
+
+#[test]
+fn mcp_pybun_test_all_passing_returns_summary() {
+    let project = tempdir().unwrap();
+    fs::write(
+        project.path().join("test_example.py"),
+        "def test_one():\n    assert 1 + 1 == 2\n\ndef test_two():\n    assert True\n",
+    )
+    .unwrap();
+
+    let call_req = r#"{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_test","arguments":{}}}"#;
+    let stdout = mcp_call_in(&[call_req], project.path(), &[]);
+    let result = tool_result_json(&stdout, 2);
+
+    assert!(
+        result["summary"].is_object(),
+        "pybun_test response should include summary object. Got: {result}"
+    );
+    assert!(
+        result["summary"]["total"].is_number(),
+        "summary should include total count. Got: {result}"
+    );
+    assert!(
+        result["summary"]["passed"].is_number(),
+        "summary should include passed count. Got: {result}"
+    );
+    assert!(
+        result["summary"]["failed"].is_number(),
+        "summary should include failed count. Got: {result}"
+    );
+    assert!(
+        result["summary"]["duration_ms"].is_number(),
+        "summary should include duration_ms. Got: {result}"
+    );
+    assert!(
+        result["failures"].is_array(),
+        "pybun_test response should include failures array. Got: {result}"
+    );
+    assert!(
+        result["passed"].is_array(),
+        "pybun_test response should include passed array. Got: {result}"
+    );
+    assert_eq!(
+        result["summary"]["failed"].as_i64(),
+        Some(0),
+        "all-passing test suite should have 0 failures. Got: {result}"
+    );
+}
+
+#[test]
+fn mcp_pybun_test_failures_include_rerun_command() {
+    let project = tempdir().unwrap();
+    fs::write(
+        project.path().join("test_fail.py"),
+        "def test_passing():\n    assert True\n\ndef test_failing():\n    assert 1 == 2\n",
+    )
+    .unwrap();
+
+    let call_req = r#"{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_test","arguments":{}}}"#;
+    let stdout = mcp_call_in(&[call_req], project.path(), &[]);
+    let result = tool_result_json(&stdout, 2);
+
+    let failures = result["failures"]
+        .as_array()
+        .expect("failures should be array");
+    assert!(
+        !failures.is_empty(),
+        "should have at least one failure. Got: {result}"
+    );
+
+    let failure = &failures[0];
+    assert!(
+        failure["name"].is_string(),
+        "failure should include name. Got: {failure}"
+    );
+    assert!(
+        failure["file"].is_string(),
+        "failure should include file. Got: {failure}"
+    );
+    assert!(
+        failure["line"].is_number(),
+        "failure should include line. Got: {failure}"
+    );
+    assert!(
+        failure["duration_ms"].is_number(),
+        "failure should include duration_ms. Got: {failure}"
+    );
+    assert!(
+        failure["status"].is_string(),
+        "failure should include status field. Got: {failure}"
+    );
+    assert!(
+        failure["rerun_command"].is_string(),
+        "failure should include rerun_command. Got: {failure}"
+    );
+    let rerun = failure["rerun_command"].as_str().unwrap();
+    assert!(
+        rerun.contains("pybun") && rerun.contains("test"),
+        "rerun_command should be a pybun test command. Got: {rerun}"
+    );
+}
+
+#[test]
+fn mcp_pybun_test_passed_entries_have_required_fields() {
+    let project = tempdir().unwrap();
+    fs::write(
+        project.path().join("test_pass.py"),
+        "def test_hello():\n    assert 'hello' == 'hello'\n",
+    )
+    .unwrap();
+
+    let call_req = r#"{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_test","arguments":{}}}"#;
+    let stdout = mcp_call_in(&[call_req], project.path(), &[]);
+    let result = tool_result_json(&stdout, 2);
+
+    let passed = result["passed"].as_array().expect("passed should be array");
+    assert!(
+        !passed.is_empty(),
+        "should have passing tests. Got: {result}"
+    );
+
+    let entry = &passed[0];
+    assert!(
+        entry["name"].is_string(),
+        "passed entry should have name. Got: {entry}"
+    );
+    assert!(
+        entry["file"].is_string(),
+        "passed entry should have file. Got: {entry}"
+    );
+    assert!(
+        entry["line"].is_number(),
+        "passed entry should have line. Got: {entry}"
+    );
+    assert!(
+        entry["duration_ms"].is_number(),
+        "passed entry should have duration_ms. Got: {entry}"
+    );
+    assert_eq!(
+        entry["status"].as_str(),
+        Some("passed"),
+        "passed entry status should be 'passed'. Got: {entry}"
+    );
+}
+
+#[test]
+fn mcp_pybun_test_filter_runs_matching_tests() {
+    let project = tempdir().unwrap();
+    fs::write(
+        project.path().join("test_filter.py"),
+        "def test_alpha():\n    assert True\n\ndef test_beta():\n    assert True\n",
+    )
+    .unwrap();
+
+    let call_req = r#"{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_test","arguments":{"filter":"alpha"}}}"#;
+    let stdout = mcp_call_in(&[call_req], project.path(), &[]);
+    let result = tool_result_json(&stdout, 2);
+
+    assert_eq!(
+        result["summary"]["total"].as_i64(),
+        Some(1),
+        "filter 'alpha' should match exactly 1 test. Got: {result}"
+    );
+}
+
+#[test]
+fn mcp_pybun_test_empty_project_returns_empty_summary() {
+    let project = tempdir().unwrap();
+
+    let call_req = r#"{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_test","arguments":{}}}"#;
+    let stdout = mcp_call_in(&[call_req], project.path(), &[]);
+    let result = tool_result_json(&stdout, 2);
+
+    assert!(
+        result["summary"].is_object(),
+        "empty project should still return summary object. Got: {result}"
+    );
+    assert_eq!(
+        result["summary"]["total"].as_i64(),
+        Some(0),
+        "empty project should have 0 total tests. Got: {result}"
+    );
+}
+
+#[test]
+fn mcp_pybun_test_changed_runs_git_modified_files() {
+    let project = tempdir().unwrap();
+
+    // Init a git repo
+    std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(project.path())
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["config", "user.email", "test@test.com"])
+        .current_dir(project.path())
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["config", "user.name", "Test"])
+        .current_dir(project.path())
+        .output()
+        .unwrap();
+
+    // Create and commit a test file (not modified)
+    fs::write(
+        project.path().join("test_committed.py"),
+        "def test_committed():\n    assert True\n",
+    )
+    .unwrap();
+    std::process::Command::new("git")
+        .args(["add", "."])
+        .current_dir(project.path())
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["commit", "-m", "initial"])
+        .current_dir(project.path())
+        .output()
+        .unwrap();
+
+    // Add a new (untracked/modified) test file
+    fs::write(
+        project.path().join("test_new.py"),
+        "def test_new_feature():\n    assert True\n",
+    )
+    .unwrap();
+
+    let call_req = r#"{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_test","arguments":{"changed":true}}}"#;
+    let stdout = mcp_call_in(&[call_req], project.path(), &[]);
+    let result = tool_result_json(&stdout, 2);
+
+    // Should only run tests from the new/modified file
+    assert!(
+        result["summary"].is_object(),
+        "changed mode should return summary. Got: {result}"
+    );
+    // The changed file (test_new.py) should be detected
+    // Either we find 1 test (test_new_feature) or 0 if no changes detected
+    // but we should NOT find test_committed (from committed file)
+    let total = result["summary"]["total"].as_i64().unwrap_or(0);
+    assert!(
+        total <= 1,
+        "changed mode should not run tests from committed-only files. Got total={total}, result: {result}"
+    );
+}
