@@ -1462,17 +1462,31 @@ fn mcp_pybun_test_changed_runs_git_modified_files() {
     let stdout = mcp_call_in(&[call_req], project.path(), &[]);
     let result = tool_result_json(&stdout, 2);
 
-    // Should only run tests from the new/modified file
+    // Should run exactly the 1 test from the new untracked file, not the committed one
     assert!(
         result["summary"].is_object(),
         "changed mode should return summary. Got: {result}"
     );
-    // The changed file (test_new.py) should be detected
-    // Either we find 1 test (test_new_feature) or 0 if no changes detected
-    // but we should NOT find test_committed (from committed file)
-    let total = result["summary"]["total"].as_i64().unwrap_or(0);
+    assert_eq!(
+        result["summary"]["total"].as_i64(),
+        Some(1),
+        "changed mode should run exactly 1 test (from test_new.py). Got: {result}"
+    );
+
+    // Verify it is the new test, not the committed one
+    let passed = result["passed"].as_array().expect("passed should be array");
+    let found_new = passed
+        .iter()
+        .any(|t| t["name"].as_str() == Some("test_new_feature"));
     assert!(
-        total <= 1,
-        "changed mode should not run tests from committed-only files. Got total={total}, result: {result}"
+        found_new,
+        "changed mode should run test_new_feature from the untracked file. Got passed: {passed:?}"
+    );
+    let found_committed = passed
+        .iter()
+        .any(|t| t["name"].as_str() == Some("test_committed"));
+    assert!(
+        !found_committed,
+        "changed mode must not run test_committed from the already-committed file. Got passed: {passed:?}"
     );
 }

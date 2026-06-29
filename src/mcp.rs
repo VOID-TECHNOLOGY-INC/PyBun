@@ -192,63 +192,117 @@ fn current_working_dir() -> Result<PathBuf, String> {
     std::env::current_dir().map_err(|e| e.to_string())
 }
 
-/// Detect Python test files changed since last git commit (modified + new untracked).
-/// Source files are mapped to test files via naming convention (src/foo.py → tests/test_foo.py).
-fn get_changed_test_files(working_dir: &Path) -> Result<Vec<PathBuf>, String> {
-    let mut changed_py_files: Vec<PathBuf> = Vec::new();
+/// Whether git was available when changed-file detection ran.
+#[derive(Debug)]
+enum GitAvailability {
+    /// git ran successfully (working dir is a repository)
+    Available,
+    /// git is not installed or this is not a git repository
+    NotARepo,
+}
 
-    // Modified and staged files vs HEAD
-    if let Ok(output) = std::process::Command::new("git")
-        .args(["diff", "--name-only", "HEAD"])
+/// Run a git command with a 5-second timeout and return its stdout lines.
+/// Returns `Err` only on spawn failure; a non-zero exit code or timeout yields `Ok(None)`.
+fn run_git_with_timeout(args: &[&str], working_dir: &Path) -> Option<String> {
+    use std::time::Duration;
+
+    let mut child = std::process::Command::new("git")
+        .args(args)
         .current_dir(working_dir)
-        .output()
-        && output.status.success()
-    {
-        for line in String::from_utf8_lossy(&output.stdout).lines() {
-            if line.ends_with(".py") {
-                changed_py_files.push(working_dir.join(line));
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        match child.try_wait().ok()? {
+            Some(status) if status.success() => {
+                return child
+                    .wait_with_output()
+                    .ok()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+            }
+            Some(_) => return None,
+            None => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    return None;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
             }
         }
     }
+}
 
-    // Untracked new files not yet committed
-    if let Ok(output) = std::process::Command::new("git")
-        .args(["ls-files", "--others", "--exclude-standard"])
-        .current_dir(working_dir)
-        .output()
-        && output.status.success()
-    {
-        for line in String::from_utf8_lossy(&output.stdout).lines() {
+/// Detect Python test files changed since last git commit (modified + new untracked).
+/// Source files are mapped to test files via naming convention (src/foo.py → tests/test_foo.py).
+/// Returns `(paths, NotARepo)` when git is unavailable or the directory is not a repository.
+fn get_changed_test_files(working_dir: &Path) -> Result<(Vec<PathBuf>, GitAvailability), String> {
+    use std::collections::HashSet;
+
+    let mut seen: HashSet<PathBuf> = HashSet::new();
+    let mut changed_py_files: Vec<PathBuf> = Vec::new();
+    let mut git_ran = false;
+
+    // Modified and staged files vs HEAD
+    if let Some(stdout) = run_git_with_timeout(&["diff", "--name-only", "HEAD"], working_dir) {
+        git_ran = true;
+        for line in stdout.lines() {
             if line.ends_with(".py") {
                 let path = working_dir.join(line);
-                if !changed_py_files.contains(&path) {
+                if seen.insert(path.clone()) {
                     changed_py_files.push(path);
                 }
             }
         }
     }
 
+    // Untracked new files not yet committed
+    if let Some(stdout) =
+        run_git_with_timeout(&["ls-files", "--others", "--exclude-standard"], working_dir)
+    {
+        git_ran = true;
+        for line in stdout.lines() {
+            if line.ends_with(".py") {
+                let path = working_dir.join(line);
+                if seen.insert(path.clone()) {
+                    changed_py_files.push(path);
+                }
+            }
+        }
+    }
+
+    if !git_ran {
+        return Ok((Vec::new(), GitAvailability::NotARepo));
+    }
+
+    let mut test_seen: HashSet<PathBuf> = HashSet::new();
     let mut test_paths: Vec<PathBuf> = Vec::new();
+
     for file in changed_py_files {
         let file_name = file.file_name().and_then(|n| n.to_str()).unwrap_or("");
         if file_name.starts_with("test_") || file_name.ends_with("_test.py") {
-            if file.exists() && !test_paths.contains(&file) {
+            if file.exists() && test_seen.insert(file.clone()) {
                 test_paths.push(file);
             }
         } else if file_name.ends_with(".py") {
             // Convention-based mapping: src/foo.py → tests/test_foo.py
             let stem = file.file_stem().and_then(|s| s.to_str()).unwrap_or("");
             let test_name = format!("test_{}.py", stem);
-            let candidates = [
-                working_dir.join("tests").join(&test_name),
-                working_dir.join(&test_name),
+            let candidates: Vec<PathBuf> = [
+                Some(working_dir.join("tests").join(&test_name)),
+                Some(working_dir.join(&test_name)),
                 file.parent()
                     .and_then(|p| p.parent())
-                    .map(|pp| pp.join("tests").join(&test_name))
-                    .unwrap_or_default(),
-            ];
+                    .map(|pp| pp.join("tests").join(&test_name)),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
+
             for candidate in candidates {
-                if candidate.exists() && !test_paths.contains(&candidate) {
+                if candidate.exists() && test_seen.insert(candidate.clone()) {
                     test_paths.push(candidate);
                     break;
                 }
@@ -256,7 +310,7 @@ fn get_changed_test_files(working_dir: &Path) -> Result<Vec<PathBuf>, String> {
         }
     }
 
-    Ok(test_paths)
+    Ok((test_paths, GitAvailability::Available))
 }
 
 fn valid_ruff_status(status: &std::process::ExitStatus) -> bool {
@@ -2604,12 +2658,63 @@ impl McpServer {
             .and_then(|f| f.as_str())
             .map(String::from);
 
-        let search_paths: Vec<std::path::PathBuf> = if changed {
-            get_changed_test_files(&working_dir)?
+        // `path` and `changed` are mutually exclusive
+        if changed && path.is_some() {
+            return Err(
+                "'path' and 'changed' are mutually exclusive: use 'changed' to run tests in \
+                 git-modified files, or 'path' to target a specific file or directory"
+                    .to_string(),
+            );
+        }
+
+        let (search_paths, analysis_notes): (Vec<std::path::PathBuf>, Vec<&str>) = if changed {
+            let (paths, git_status) = get_changed_test_files(&working_dir)?;
+            let note = match git_status {
+                GitAvailability::NotARepo => {
+                    return Ok(json!({
+                        "summary": {
+                            "total": 0, "passed": 0, "failed": 0,
+                            "skipped": 0, "errors": 0, "duration_ms": 0
+                        },
+                        "failures": [],
+                        "passed": [],
+                        "analysis_notes": [
+                            "git is not available or this directory is not a git repository; \
+                             cannot determine changed files"
+                        ]
+                    })
+                    .to_string());
+                }
+                GitAvailability::Available if paths.is_empty() => {
+                    return Ok(json!({
+                        "summary": {
+                            "total": 0, "passed": 0, "failed": 0,
+                            "skipped": 0, "errors": 0, "duration_ms": 0
+                        },
+                        "failures": [],
+                        "passed": [],
+                        "analysis_notes": ["No changed test files detected since last commit"]
+                    })
+                    .to_string());
+                }
+                GitAvailability::Available => "running tests from git-changed files only",
+            };
+            (paths, vec![note])
         } else if let Some(p) = path {
-            vec![working_dir.join(&p)]
+            // Guard against path traversal: reject paths that escape working_dir
+            let joined = working_dir.join(&p);
+            let canonical = joined
+                .canonicalize()
+                .map_err(|e| format!("path '{}' does not exist or cannot be resolved: {}", p, e))?;
+            if !canonical.starts_with(&working_dir) {
+                return Err(format!(
+                    "path '{}' is outside the working directory and is not allowed",
+                    p
+                ));
+            }
+            (vec![canonical], vec![])
         } else {
-            vec![working_dir.clone()]
+            (vec![working_dir.clone()], vec![])
         };
 
         if search_paths.is_empty() {
@@ -2620,7 +2725,7 @@ impl McpServer {
                 },
                 "failures": [],
                 "passed": [],
-                "analysis_notes": ["No changed test files detected"]
+                "analysis_notes": analysis_notes
             })
             .to_string());
         }
@@ -2730,6 +2835,7 @@ impl McpServer {
             },
             "failures": failures,
             "passed": passed,
+            "analysis_notes": analysis_notes,
         })
         .to_string())
     }
