@@ -1221,6 +1221,66 @@ fn mcp_project_snapshot_resource_returns_context_data() {
 // pybun_test MCP tool tests (Issue #246)
 // ---------------------------------------------------------------------------
 
+/// Create a minimal fake venv whose `bin/python` can run test functions without
+/// requiring pytest to be installed in the host environment.
+///
+/// The fake python:
+/// - Intercepts `python -m pytest -xvs FILE::TEST` calls
+/// - Executes the target function via importlib and exits 0/1 based on outcome
+/// - Delegates every other invocation to the real `python3`
+///
+/// Returns the venv root path that should be passed as `PYBUN_ENV`.
+#[cfg(unix)]
+fn make_pytest_venv(dir: &Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let venv = dir.join("venv");
+    let bin = venv.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+
+    // Minimal test runner: loads file with importlib, calls the function, exits 0/1.
+    let runner = bin.join("_pytest_runner.py");
+    std::fs::write(
+        &runner,
+        r#"import sys, importlib.util
+file_path, test_name = sys.argv[1], sys.argv[2]
+spec = importlib.util.spec_from_file_location("_test_mod", file_path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+fn = getattr(mod, test_name)
+try:
+    fn()
+    sys.exit(0)
+except Exception as e:
+    print(f"FAILED {test_name}: {e}", file=sys.stderr)
+    sys.exit(1)
+"#,
+    )
+    .unwrap();
+
+    // Shell wrapper that intercepts `python -m pytest -xvs FILE::TEST`.
+    let runner_path = runner.display().to_string();
+    let python_script = format!(
+        r#"#!/bin/sh
+if [ "$1" = "-m" ] && [ "$2" = "pytest" ]; then
+    SPEC="$4"
+    FILE="${{SPEC%%::*}}"
+    TEST="${{SPEC##*::}}"
+    exec python3 "{runner_path}" "$FILE" "$TEST"
+else
+    exec python3 "$@"
+fi
+"#
+    );
+    let python_bin = bin.join("python");
+    std::fs::write(&python_bin, python_script).unwrap();
+    let mut perms = std::fs::metadata(&python_bin).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&python_bin, perms).unwrap();
+
+    venv
+}
+
 #[test]
 fn mcp_tools_list_includes_pybun_test() {
     let stdout = mcp_call(&[r#"{"jsonrpc":"2.0","method":"tools/list","id":2,"params":{}}"#]);
@@ -1239,8 +1299,10 @@ fn mcp_pybun_test_all_passing_returns_summary() {
     )
     .unwrap();
 
+    let venv = make_pytest_venv(project.path());
+    let envs = vec![("PYBUN_ENV", venv.into_os_string())];
     let call_req = r#"{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_test","arguments":{}}}"#;
-    let stdout = mcp_call_in(&[call_req], project.path(), &[]);
+    let stdout = mcp_call_in(&[call_req], project.path(), &envs);
     let result = tool_result_json(&stdout, 2);
 
     assert!(
@@ -1340,8 +1402,10 @@ fn mcp_pybun_test_passed_entries_have_required_fields() {
     )
     .unwrap();
 
+    let venv = make_pytest_venv(project.path());
+    let envs = vec![("PYBUN_ENV", venv.into_os_string())];
     let call_req = r#"{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_test","arguments":{}}}"#;
-    let stdout = mcp_call_in(&[call_req], project.path(), &[]);
+    let stdout = mcp_call_in(&[call_req], project.path(), &envs);
     let result = tool_result_json(&stdout, 2);
 
     let passed = result["passed"].as_array().expect("passed should be array");
@@ -1458,8 +1522,10 @@ fn mcp_pybun_test_changed_runs_git_modified_files() {
     )
     .unwrap();
 
+    let venv = make_pytest_venv(project.path());
+    let envs = vec![("PYBUN_ENV", venv.into_os_string())];
     let call_req = r#"{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_test","arguments":{"changed":true}}}"#;
-    let stdout = mcp_call_in(&[call_req], project.path(), &[]);
+    let stdout = mcp_call_in(&[call_req], project.path(), &envs);
     let result = tool_result_json(&stdout, 2);
 
     // Should run exactly the 1 test from the new untracked file, not the committed one
