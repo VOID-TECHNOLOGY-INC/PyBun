@@ -790,22 +790,82 @@ fn audit_severity_level(s: &str) -> u8 {
 }
 
 fn audit_extract_severity(vuln: &Value) -> String {
-    // database_specific.severity is common in GHSA-sourced advisories
+    // Primary: database_specific.severity — present in GHSA-sourced advisories
     if let Some(db_sev) = vuln
         .get("database_specific")
         .and_then(|d| d.get("severity"))
         .and_then(|s| s.as_str())
     {
-        return match db_sev.to_uppercase().as_str() {
-            "CRITICAL" => "critical",
-            "HIGH" => "high",
-            "MEDIUM" | "MODERATE" => "medium",
-            "LOW" => "low",
-            _ => "low",
-        }
-        .to_string();
+        return audit_normalize_severity(db_sev);
     }
+
+    // Fallback: OSV severity[] array with CVSS vectors — common in PYSEC advisories
+    if let Some(severities) = vuln.get("severity").and_then(|s| s.as_array()) {
+        for sev in severities {
+            let score_str = sev.get("score").and_then(|s| s.as_str()).unwrap_or("");
+            if let Some(level) = audit_severity_from_cvss_vector(score_str) {
+                return level;
+            }
+        }
+    }
+
     "low".to_string()
+}
+
+fn audit_normalize_severity(s: &str) -> String {
+    match s.to_uppercase().as_str() {
+        "CRITICAL" => "critical",
+        "HIGH" => "high",
+        "MEDIUM" | "MODERATE" => "medium",
+        "LOW" => "low",
+        _ => "low",
+    }
+    .to_string()
+}
+
+/// Extract severity from a CVSS v3 vector string.
+///
+/// CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N
+/// Heuristic: if any of C/I/A is H → HIGH; all N → MEDIUM; else LOW.
+/// Scope:Changed or PR:N+UI:N escalates to CRITICAL when C:H.
+fn audit_severity_from_cvss_vector(vector: &str) -> Option<String> {
+    if !vector.starts_with("CVSS:") {
+        return None;
+    }
+
+    let get = |key: &str| -> Option<&str> {
+        vector
+            .split('/')
+            .find(|part| part.starts_with(key))
+            .and_then(|part| part.split_once(':').map(|(_, v)| v))
+    };
+
+    let confidentiality = get("C")?;
+    let integrity = get("I")?;
+    let availability = get("A")?;
+    let scope = get("S");
+    let pr = get("PR");
+    let ui = get("UI");
+
+    let any_high = [confidentiality, integrity, availability].contains(&"H");
+    let all_none = confidentiality == "N" && integrity == "N" && availability == "N";
+
+    let level = if any_high
+        && confidentiality == "H"
+        && scope == Some("C")
+        && pr == Some("N")
+        && ui == Some("N")
+    {
+        "critical"
+    } else if any_high {
+        "high"
+    } else if all_none {
+        "low"
+    } else {
+        "medium"
+    };
+
+    Some(level.to_string())
 }
 
 fn audit_extract_fix_version(vuln: &Value) -> Option<String> {
@@ -1358,6 +1418,24 @@ impl McpServer {
                     }
                 }),
             },
+            Tool {
+                name: "pybun_upgrade".to_string(),
+                description: "Upgrade a single package to a specific version in the current environment. Intended to be called by agents acting on next_action entries from pybun_audit.".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "package": {
+                            "type": "string",
+                            "description": "Package name to upgrade"
+                        },
+                        "version": {
+                            "type": "string",
+                            "description": "Target version (e.g. '2.31.0')"
+                        }
+                    },
+                    "required": ["package", "version"]
+                }),
+            },
         ];
 
         JsonRpcResponse::success(id, json!({ "tools": tools }))
@@ -1385,6 +1463,7 @@ impl McpServer {
                 "pybun_context" => self.call_context(tool_args.clone()),
                 "pybun_test" => self.call_test(tool_args.clone()),
                 "pybun_audit" => self.call_audit(tool_args.clone()).await,
+                "pybun_upgrade" => self.call_upgrade(tool_args.clone()),
                 _ => Err(format!("Unknown tool: {}", tool_name)),
             }
         };
@@ -2999,17 +3078,29 @@ impl McpServer {
             .await
             .map_err(|e| format!("OSV API request failed: {}", e))?;
 
+        let status = response.status();
+        if !status.is_success() {
+            return Err(format!(
+                "OSV API returned HTTP {}: scan results unavailable",
+                status
+            ));
+        }
+
         let osv_data: Value = response
             .json()
             .await
             .map_err(|e| format!("Failed to parse OSV response: {}", e))?;
 
-        // Process OSV results — one result entry per queried package (same order)
+        // Process OSV results — one result entry per queried package (same order).
+        // Per OSV spec, results.len() == queries.len(); we use zip so mismatches
+        // (e.g., partial error responses or mock servers) are handled gracefully.
         let empty_vec = vec![];
         let results = osv_data
             .get("results")
             .and_then(|r| r.as_array())
             .unwrap_or(&empty_vec);
+
+        let unscanned = packages.len().saturating_sub(results.len());
 
         let mut vulnerabilities: Vec<Value> = Vec::new();
         let mut count_critical: u64 = 0;
@@ -3017,8 +3108,7 @@ impl McpServer {
         let mut count_medium: u64 = 0;
         let mut count_low: u64 = 0;
 
-        for (i, result) in results.iter().enumerate() {
-            let pkg = packages.get(i).cloned().unwrap_or(json!({}));
+        for (pkg, result) in packages.iter().zip(results.iter()) {
             let pkg_name = pkg
                 .get("name")
                 .and_then(|n| n.as_str())
@@ -3098,13 +3188,50 @@ impl McpServer {
                 "critical": count_critical,
                 "high": count_high,
                 "medium": count_medium,
-                "low": count_low
+                "low": count_low,
+                "unscanned": unscanned
             },
             "vulnerabilities": vulnerabilities,
             "scanner": "osv",
             "scanner_version": "1.0"
         })
         .to_string())
+    }
+
+    fn call_upgrade(&self, args: Value) -> Result<String, String> {
+        use crate::env::find_python_env;
+
+        let package = args
+            .get("package")
+            .and_then(|p| p.as_str())
+            .ok_or_else(|| "Missing required argument: package".to_string())?;
+        let version = args
+            .get("version")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "Missing required argument: version".to_string())?;
+
+        let working_dir = std::env::current_dir().map_err(|e| e.to_string())?;
+        let env = find_python_env(&working_dir).map_err(|e| e.to_string())?;
+        let python_path = env.python_path.to_string_lossy().to_string();
+
+        let spec = format!("{}=={}", package, version);
+        let output = ProcessCommand::new(&python_path)
+            .args(["-m", "pip", "install", "--disable-pip-version-check", &spec])
+            .output()
+            .map_err(|e| format!("Failed to run pip install: {}", e))?;
+
+        if output.status.success() {
+            Ok(json!({
+                "status": "upgraded",
+                "package": package,
+                "version": version,
+                "spec": spec
+            })
+            .to_string())
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            Err(format!("pip install {} failed: {}", spec, stderr.trim()))
+        }
     }
 }
 
