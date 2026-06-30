@@ -2,6 +2,7 @@
 //!
 //! PR4.3: MCP server `pybun mcp serve` with RPC endpoints
 
+use httpmock::prelude::*;
 use std::ffi::OsString;
 use std::fs;
 use std::io::Write;
@@ -1555,4 +1556,379 @@ fn mcp_pybun_test_changed_runs_git_modified_files() {
         !found_committed,
         "changed mode must not run test_committed from the already-committed file. Got passed: {passed:?}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// pybun_audit MCP tool tests (Issue #247)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn mcp_tools_list_includes_pybun_audit() {
+    let stdout = mcp_call(&[r#"{"jsonrpc":"2.0","method":"tools/list","id":2,"params":{}}"#]);
+    assert!(
+        stdout.contains("pybun_audit"),
+        "tools/list should include pybun_audit. Got: {stdout}"
+    );
+}
+
+#[test]
+fn mcp_pybun_audit_returns_valid_structure_with_mocked_osv() {
+    // Verify that pybun_audit returns a valid response structure regardless of
+    // which Python env is found (system Python or none). The OSV endpoint is
+    // mocked to return no vulnerabilities so the test is deterministic.
+    let project = tempdir().unwrap();
+
+    let server = MockServer::start();
+    // Return empty results for every query (no vulnerabilities)
+    let _osv_mock = server.mock(|when, then| {
+        when.method(POST).path("/v1/querybatch");
+        then.status(200)
+            .header("Content-Type", "application/json")
+            .body(r#"{"results":[]}"#);
+    });
+
+    let osv_url = format!("{}/v1/querybatch", server.base_url());
+    let call_req = r#"{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_audit","arguments":{}}}"#;
+    let stdout = mcp_call_in(
+        &[call_req],
+        project.path(),
+        &[("PYBUN_OSV_URL", OsString::from(osv_url))],
+    );
+    let result = tool_result_json(&stdout, 2);
+
+    assert!(
+        result["summary"].is_object(),
+        "audit should return summary object. Got: {result}"
+    );
+    assert!(
+        result["summary"]["scanned"].is_number(),
+        "audit summary should have numeric scanned count. Got: {result}"
+    );
+    assert_eq!(
+        result["summary"]["vulnerable"].as_i64(),
+        Some(0),
+        "mocked OSV (no vulns) should report 0 vulnerabilities. Got: {result}"
+    );
+    assert!(
+        result["vulnerabilities"].is_array(),
+        "audit should return vulnerabilities array. Got: {result}"
+    );
+}
+
+#[test]
+fn mcp_pybun_audit_osv_vulnerability_returned() {
+    // Mock OSV returning one vulnerability for "requests" 2.27.0
+    let server = MockServer::start();
+    let osv_body = serde_json::json!({
+        "results": [
+            {
+                "vulns": [
+                    {
+                        "id": "GHSA-j8r2-6x86-q33q",
+                        "summary": "Requests SSRF vulnerability",
+                        "severity": [
+                            {
+                                "type": "CVSS_V3",
+                                "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N"
+                            }
+                        ],
+                        "affected": [
+                            {
+                                "package": {"name": "requests", "ecosystem": "PyPI"},
+                                "ranges": [
+                                    {
+                                        "type": "ECOSYSTEM",
+                                        "events": [
+                                            {"introduced": "0"},
+                                            {"fixed": "2.31.0"}
+                                        ]
+                                    }
+                                ]
+                            }
+                        ],
+                        "database_specific": {
+                            "severity": "HIGH"
+                        }
+                    }
+                ]
+            }
+        ]
+    });
+    let _mock = server.mock(|when, then| {
+        when.method(POST).path("/v1/querybatch");
+        then.status(200)
+            .header("Content-Type", "application/json")
+            .json_body(osv_body);
+    });
+
+    // Create a fake venv that reports "requests 2.27.0" via pip list
+    let project = tempdir().unwrap();
+    let fake_venv = make_fake_pip_venv(
+        project.path(),
+        r#"[{"name": "requests", "version": "2.27.0"}]"#,
+    );
+
+    let osv_url = format!("{}/v1/querybatch", server.base_url());
+    let call_req = r#"{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_audit","arguments":{"fix":true}}}"#;
+    let stdout = mcp_call_in(
+        &[call_req],
+        project.path(),
+        &[
+            ("PYBUN_OSV_URL", OsString::from(osv_url)),
+            ("PYBUN_ENV", fake_venv.into_os_string()),
+        ],
+    );
+    let result = tool_result_json(&stdout, 2);
+
+    assert_eq!(
+        result["summary"]["scanned"].as_i64(),
+        Some(1),
+        "should report 1 package scanned. Got: {result}"
+    );
+    assert_eq!(
+        result["summary"]["vulnerable"].as_i64(),
+        Some(1),
+        "should report 1 vulnerable package. Got: {result}"
+    );
+    assert_eq!(
+        result["summary"]["high"].as_i64(),
+        Some(1),
+        "should report 1 high severity vulnerability. Got: {result}"
+    );
+
+    let vulns = result["vulnerabilities"]
+        .as_array()
+        .expect("vulnerabilities should be array");
+    assert_eq!(
+        vulns.len(),
+        1,
+        "should have 1 vulnerability entry. Got: {result}"
+    );
+
+    let vuln = &vulns[0];
+    assert_eq!(
+        vuln["package"].as_str(),
+        Some("requests"),
+        "package name mismatch. Got: {vuln}"
+    );
+    assert_eq!(
+        vuln["vulnerability_id"].as_str(),
+        Some("GHSA-j8r2-6x86-q33q"),
+        "vulnerability_id mismatch. Got: {vuln}"
+    );
+    assert_eq!(
+        vuln["severity"].as_str(),
+        Some("high"),
+        "severity should be 'high'. Got: {vuln}"
+    );
+    assert_eq!(
+        vuln["fix_version"].as_str(),
+        Some("2.31.0"),
+        "fix_version should be 2.31.0. Got: {vuln}"
+    );
+    assert_eq!(
+        vuln["next_action"]["tool"].as_str(),
+        Some("pybun_upgrade"),
+        "next_action.tool should be pybun_upgrade. Got: {vuln}"
+    );
+    assert_eq!(
+        vuln["next_action"]["args"]["package"].as_str(),
+        Some("requests"),
+        "next_action.args.package should be requests. Got: {vuln}"
+    );
+    assert_eq!(
+        vuln["next_action"]["args"]["version"].as_str(),
+        Some("2.31.0"),
+        "next_action.args.version should be 2.31.0. Got: {vuln}"
+    );
+}
+
+#[test]
+fn mcp_pybun_audit_severity_threshold_filters_low() {
+    // Mock OSV returning one low severity vulnerability
+    let server = MockServer::start();
+    let osv_body = serde_json::json!({
+        "results": [
+            {
+                "vulns": [
+                    {
+                        "id": "PYSEC-2023-001",
+                        "summary": "Low severity issue",
+                        "affected": [
+                            {
+                                "package": {"name": "example-pkg", "ecosystem": "PyPI"},
+                                "ranges": []
+                            }
+                        ],
+                        "database_specific": {
+                            "severity": "LOW"
+                        }
+                    }
+                ]
+            }
+        ]
+    });
+    let _mock = server.mock(|when, then| {
+        when.method(POST).path("/v1/querybatch");
+        then.status(200)
+            .header("Content-Type", "application/json")
+            .json_body(osv_body);
+    });
+
+    let project = tempdir().unwrap();
+    let fake_venv = make_fake_pip_venv(
+        project.path(),
+        r#"[{"name": "example-pkg", "version": "1.0.0"}]"#,
+    );
+
+    let osv_url = format!("{}/v1/querybatch", server.base_url());
+    // Request with severity_threshold=high — LOW should be filtered out
+    let call_req = r#"{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_audit","arguments":{"severity_threshold":"high"}}}"#;
+    let stdout = mcp_call_in(
+        &[call_req],
+        project.path(),
+        &[
+            ("PYBUN_OSV_URL", OsString::from(osv_url)),
+            ("PYBUN_ENV", fake_venv.into_os_string()),
+        ],
+    );
+    let result = tool_result_json(&stdout, 2);
+
+    let vulns = result["vulnerabilities"]
+        .as_array()
+        .expect("vulnerabilities array");
+    assert_eq!(
+        vulns.len(),
+        0,
+        "severity_threshold=high should filter out LOW severity vulns. Got: {result}"
+    );
+}
+
+#[test]
+fn mcp_pybun_audit_fix_false_omits_next_action() {
+    let server = MockServer::start();
+    let osv_body = serde_json::json!({
+        "results": [
+            {
+                "vulns": [
+                    {
+                        "id": "GHSA-test-0001",
+                        "summary": "Test vuln",
+                        "affected": [
+                            {
+                                "package": {"name": "testpkg", "ecosystem": "PyPI"},
+                                "ranges": [
+                                    {
+                                        "type": "ECOSYSTEM",
+                                        "events": [{"introduced": "0"}, {"fixed": "2.0.0"}]
+                                    }
+                                ]
+                            }
+                        ],
+                        "database_specific": {"severity": "MEDIUM"}
+                    }
+                ]
+            }
+        ]
+    });
+    let _mock = server.mock(|when, then| {
+        when.method(POST).path("/v1/querybatch");
+        then.status(200)
+            .header("Content-Type", "application/json")
+            .json_body(osv_body);
+    });
+
+    let project = tempdir().unwrap();
+    let fake_venv = make_fake_pip_venv(
+        project.path(),
+        r#"[{"name": "testpkg", "version": "1.0.0"}]"#,
+    );
+
+    let osv_url = format!("{}/v1/querybatch", server.base_url());
+    let call_req = r#"{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_audit","arguments":{"fix":false}}}"#;
+    let stdout = mcp_call_in(
+        &[call_req],
+        project.path(),
+        &[
+            ("PYBUN_OSV_URL", OsString::from(osv_url)),
+            ("PYBUN_ENV", fake_venv.into_os_string()),
+        ],
+    );
+    let result = tool_result_json(&stdout, 2);
+
+    let vulns = result["vulnerabilities"]
+        .as_array()
+        .expect("vulnerabilities array");
+    assert_eq!(vulns.len(), 1, "should have 1 vulnerability. Got: {result}");
+    assert!(
+        vulns[0]["next_action"].is_null(),
+        "fix=false should set next_action to null. Got: {}",
+        vulns[0]
+    );
+}
+
+#[test]
+fn mcp_pybun_audit_scanner_field_present() {
+    let project = tempdir().unwrap();
+    let server = MockServer::start();
+    let _mock = server.mock(|when, then| {
+        when.method(POST).path("/v1/querybatch");
+        then.status(200)
+            .header("Content-Type", "application/json")
+            .body(r#"{"results":[]}"#);
+    });
+    let osv_url = format!("{}/v1/querybatch", server.base_url());
+    let call_req = r#"{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_audit","arguments":{}}}"#;
+    let stdout = mcp_call_in(
+        &[call_req],
+        project.path(),
+        &[("PYBUN_OSV_URL", OsString::from(osv_url))],
+    );
+    let result = tool_result_json(&stdout, 2);
+
+    assert!(
+        result["scanner"].is_string(),
+        "audit response should include scanner field. Got: {result}"
+    );
+}
+
+/// Create a fake venv where `bin/python` delegates `pip list --format=json` to return
+/// the given JSON string, and delegates everything else to the real python3.
+#[cfg(unix)]
+fn make_fake_pip_venv(dir: &Path, pip_list_json: &str) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let venv = dir.join("fake_venv");
+    let bin = venv.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+
+    let pip_json = pip_list_json.replace('"', "\\\"");
+    let script = format!(
+        r#"#!/bin/sh
+# Fake python: intercept "pip list --format=json"
+args="$*"
+case "$args" in
+  *"pip list"*"--format=json"*)
+    echo "{pip_json}"
+    exit 0
+    ;;
+  *)
+    exec python3 "$@"
+    ;;
+esac
+"#,
+        pip_json = pip_json
+    );
+
+    let python = bin.join("python");
+    std::fs::write(&python, script).unwrap();
+    std::fs::set_permissions(&python, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    venv
+}
+
+#[cfg(not(unix))]
+fn make_fake_pip_venv(dir: &Path, _pip_list_json: &str) -> std::path::PathBuf {
+    // Windows stub — tests guarded by #[cfg(unix)] where needed
+    dir.join("fake_venv")
 }
