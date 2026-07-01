@@ -535,7 +535,7 @@ pub struct InitArgs {
     #[arg(long)]
     pub author: Option<String>,
     /// Project template (minimal or package).
-    #[arg(long, value_enum, default_value_t = InitTemplate::Minimal)]
+    #[arg(long, value_enum, default_value_t = InitTemplate::Package)]
     pub template: InitTemplate,
     /// Accept defaults without prompting.
     #[arg(short = 'y', long)]
