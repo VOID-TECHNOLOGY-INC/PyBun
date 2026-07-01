@@ -97,6 +97,8 @@ pub enum Commands {
     Outdated(OutdatedArgs),
     /// Upgrade dependencies within constraints.
     Upgrade(UpgradeArgs),
+    /// Detect dependency drift: undeclared imports and unused declarations.
+    Drift(DriftArgs),
 }
 
 #[derive(Subcommand, Debug)]
@@ -563,6 +565,13 @@ pub struct OutdatedArgs {
     /// Scope "wanted" version constraints to a named dependency group.
     #[arg(long, value_name = "NAME")]
     pub group: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct DriftArgs {
+    /// Directory to analyze (defaults to current directory).
+    #[arg(long, value_name = "PATH")]
+    pub path: Option<std::path::PathBuf>,
 }
 
 #[derive(Args, Debug)]

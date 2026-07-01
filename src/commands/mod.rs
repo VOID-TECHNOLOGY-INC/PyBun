@@ -1,8 +1,8 @@
 use crate::build::{BuildBackend, BuildCache};
 use crate::cli::{
-    Cli, Commands, InitArgs, InitTemplate, LockArgs, McpCommands, OutdatedArgs, OutputFormat,
-    ProgressMode, PythonCommands, SchemaArgs, SchemaCommands, SelfCommands, TelemetryCommands,
-    UpgradeArgs,
+    Cli, Commands, DriftArgs, InitArgs, InitTemplate, LockArgs, McpCommands, OutdatedArgs,
+    OutputFormat, ProgressMode, PythonCommands, SchemaArgs, SchemaCommands, SelfCommands,
+    TelemetryCommands, UpgradeArgs,
 };
 use crate::env::{EnvSource, find_python_env};
 use crate::index::load_index_from_path;
@@ -849,6 +849,25 @@ pub async fn execute(cli: Cli) -> Result<()> {
                                 "error": e.to_string(),
                             }),
                         ),
+                    )
+                }
+            }
+        }
+        Commands::Drift(args) => {
+            let result = run_drift(args, &mut collector);
+            match result {
+                Ok(detail) => ("drift".to_string(), detail),
+                Err(e) => {
+                    if collector.error_diagnostic_count() == 0 {
+                        collector.error_with_code(
+                            "E_DRIFT_FAILED",
+                            e.to_string(),
+                            "Ensure a pyproject.toml exists and re-run `pybun drift`.",
+                        );
+                    }
+                    (
+                        "drift".to_string(),
+                        RenderDetail::error(e.to_string(), json!({ "error": e.to_string() })),
                     )
                 }
             }
@@ -4916,6 +4935,106 @@ async fn run_upgrade(args: &UpgradeArgs, collector: &mut EventCollector) -> Resu
             "verified": true,
             "artifacts": verification_artifacts,
             "workspace": scope_detail,
+        }),
+    ))
+}
+
+fn run_drift(args: &DriftArgs, collector: &mut EventCollector) -> Result<RenderDetail> {
+    use crate::drift;
+
+    let cwd =
+        std::env::current_dir().map_err(|e| eyre!("failed to get current directory: {}", e))?;
+    let root = if let Some(path) = &args.path {
+        if path.is_absolute() {
+            path.clone()
+        } else {
+            cwd.join(path)
+        }
+    } else {
+        cwd
+    };
+
+    // Require pyproject.toml
+    if !root.join("pyproject.toml").exists() {
+        collector.error_with_code(
+            "E_DRIFT_NO_PYPROJECT",
+            format!("pyproject.toml not found in {}", root.display()),
+            "Run `pybun init` to create a pyproject.toml, or specify a directory with `pybun drift --path <PATH>`.",
+        );
+        return Ok(RenderDetail::error(
+            "pyproject.toml not found".to_string(),
+            json!({
+                "undeclared_imports": [],
+                "unused_declarations": [],
+                "analysis_notes": ["pyproject.toml not found"],
+                "files_scanned": 0
+            }),
+        ));
+    }
+
+    collector.event(EventType::Custom);
+
+    let result = drift::analyze(&root);
+
+    let undeclared_count = result.undeclared_imports.len();
+    let unused_count = result.unused_declarations.len();
+
+    // Surface undeclared imports as warnings
+    for u in &result.undeclared_imports {
+        collector.diagnostic(Diagnostic {
+            level: DiagnosticLevel::Warning,
+            code: Some("W_DRIFT_UNDECLARED_IMPORT".to_string()),
+            message: format!(
+                "Package '{}' is imported but not declared in pyproject.toml",
+                u.package
+            ),
+            file: None,
+            line: None,
+            suggestion: Some(format!("Run `pybun add {}`", u.package)),
+            context: None,
+            exception_type: None,
+            location: None,
+            next_action: None,
+            fix_candidates: None,
+        });
+    }
+
+    // Surface unused declarations as warnings
+    for u in &result.unused_declarations {
+        collector.diagnostic(Diagnostic {
+            level: DiagnosticLevel::Warning,
+            code: Some("W_DRIFT_UNUSED_DECLARATION".to_string()),
+            message: format!(
+                "Package '{}' is declared in pyproject.toml but never imported",
+                u.package
+            ),
+            file: None,
+            line: None,
+            suggestion: Some(format!("Run `pybun remove {}`", u.package)),
+            context: None,
+            exception_type: None,
+            location: None,
+            next_action: None,
+            fix_candidates: None,
+        });
+    }
+
+    let summary = if undeclared_count == 0 && unused_count == 0 {
+        format!("No drift detected ({} files scanned)", result.files_scanned)
+    } else {
+        format!(
+            "Drift detected: {} undeclared import(s), {} unused declaration(s) ({} files scanned)",
+            undeclared_count, unused_count, result.files_scanned
+        )
+    };
+
+    Ok(RenderDetail::with_json(
+        summary,
+        json!({
+            "undeclared_imports": result.undeclared_imports,
+            "unused_declarations": result.unused_declarations,
+            "analysis_notes": result.analysis_notes,
+            "files_scanned": result.files_scanned,
         }),
     ))
 }
