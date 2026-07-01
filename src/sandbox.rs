@@ -190,6 +190,9 @@ pub struct SandboxGuard {
     pub default_deny_write: Vec<String>,
     /// Extra env var names allowed through the filter beyond the default safe set.
     pub allow_env: Vec<String>,
+    /// Names from `SandboxConfig::allow_env` that were rejected because they look like
+    /// credentials (see `is_credential_env_name`) and silently dropped instead of passed through.
+    pub rejected_env: Vec<String>,
     /// Resource limits requested for this sandbox, including any unsupported on this platform.
     pub resource_limits: ResourceLimits,
 }
@@ -239,6 +242,12 @@ pub fn apply_python_sandbox(cmd: &mut Command, config: SandboxConfig) -> Result<
         .allow_env
         .iter()
         .filter(|name| !is_credential_env_name(name))
+        .cloned()
+        .collect();
+    let rejected_env: Vec<String> = config
+        .allow_env
+        .iter()
+        .filter(|name| is_credential_env_name(name))
         .cloned()
         .collect();
     let safe_names: std::collections::HashSet<String> = default_safe_env_vars()
@@ -399,6 +408,7 @@ pub fn apply_python_sandbox(cmd: &mut Command, config: SandboxConfig) -> Result<
         audit_file,
         default_deny_write: default_deny,
         allow_env: filtered_allow_env,
+        rejected_env,
         resource_limits,
     })
 }
@@ -811,6 +821,42 @@ mod tests {
     fn sandbox_config_allow_env_defaults_to_empty() {
         let config = SandboxConfig::default();
         assert!(config.allow_env.is_empty());
+    }
+
+    #[test]
+    fn apply_python_sandbox_passes_through_non_credential_allow_env() {
+        let mut cmd = Command::new("true");
+        let config = SandboxConfig {
+            allow_env: vec!["MY_FLAG".to_string()],
+            ..Default::default()
+        };
+        let guard = apply_python_sandbox(&mut cmd, config).expect("sandbox setup should succeed");
+        assert_eq!(guard.allow_env, vec!["MY_FLAG".to_string()]);
+        assert!(guard.rejected_env.is_empty());
+    }
+
+    #[test]
+    fn apply_python_sandbox_rejects_credential_shaped_allow_env() {
+        let mut cmd = Command::new("true");
+        let config = SandboxConfig {
+            allow_env: vec!["SECRET_API_KEY".to_string()],
+            ..Default::default()
+        };
+        let guard = apply_python_sandbox(&mut cmd, config).expect("sandbox setup should succeed");
+        assert!(guard.allow_env.is_empty());
+        assert_eq!(guard.rejected_env, vec!["SECRET_API_KEY".to_string()]);
+    }
+
+    #[test]
+    fn apply_python_sandbox_splits_mixed_allow_env_into_allowed_and_rejected() {
+        let mut cmd = Command::new("true");
+        let config = SandboxConfig {
+            allow_env: vec!["MY_FLAG".to_string(), "SECRET_API_KEY".to_string()],
+            ..Default::default()
+        };
+        let guard = apply_python_sandbox(&mut cmd, config).expect("sandbox setup should succeed");
+        assert_eq!(guard.allow_env, vec!["MY_FLAG".to_string()]);
+        assert_eq!(guard.rejected_env, vec!["SECRET_API_KEY".to_string()]);
     }
 
     #[cfg(unix)]

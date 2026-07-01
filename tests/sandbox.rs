@@ -553,6 +553,27 @@ print("KEY:", val)
 }
 
 #[test]
+fn sandbox_allow_env_rejection_surfaces_warning_diagnostic() {
+    let temp = tempdir().unwrap();
+    let script = temp.path().join("noop.py");
+    fs::write(&script, "print('ok')\n").unwrap();
+
+    bin()
+        .env("MY_ALLOWED_KEY", "must_not_leak")
+        .args([
+            "--format=json",
+            "run",
+            "--sandbox",
+            "--allow-env=MY_ALLOWED_KEY",
+            script.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("W_SANDBOX_ALLOW_ENV_REJECTED"))
+        .stdout(predicate::str::contains("MY_ALLOWED_KEY"));
+}
+
+#[test]
 fn sandbox_allow_env_does_not_pass_unlisted_var() {
     let temp = tempdir().unwrap();
     let script = temp.path().join("check_unlisted.py");
