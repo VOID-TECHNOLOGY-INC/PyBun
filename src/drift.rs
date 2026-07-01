@@ -66,13 +66,16 @@ pub fn analyze(root: &Path) -> DriftResult {
         if let Ok(content) = std::fs::read_to_string(py_file) {
             for (line_no, line) in content.lines().enumerate() {
                 let line = line.trim();
-                if let Some(pkg) = parse_import_line(line) {
+                let pkgs = parse_import_packages(line);
+                if !pkgs.is_empty() {
                     let loc = ImportLocation {
                         file: file_label.clone(),
                         line: line_no + 1,
                         statement: line.to_string(),
                     };
-                    import_map.entry(pkg).or_default().push(loc);
+                    for pkg in pkgs {
+                        import_map.entry(pkg).or_default().push(loc.clone());
+                    }
                 }
             }
         }
@@ -211,7 +214,15 @@ fn collect_py_files_inner(dir: &Path, out: &mut Vec<PathBuf>) {
         }
         if matches!(
             name_str.as_ref(),
-            "__pycache__" | ".venv" | "venv" | "env" | "node_modules" | "dist" | "build"
+            "__pycache__"
+                | ".venv"
+                | "venv"
+                | "env"
+                | "node_modules"
+                | "dist"
+                | "build"
+                | "site-packages"
+                | ".pybun"
         ) {
             continue;
         }
@@ -224,38 +235,51 @@ fn collect_py_files_inner(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// Parse a single Python source line and extract the top-level package name.
-/// Returns `None` for non-import lines, comments, relative imports, and __future__.
-pub fn parse_import_line(line: &str) -> Option<String> {
+/// Parse a single Python source line and extract top-level package names.
+/// Returns an empty vec for non-import lines, comments, relative imports, and __future__.
+/// Handles `import a, b, c` by returning all packages.
+pub fn parse_import_packages(line: &str) -> Vec<String> {
     let line = line.trim();
 
-    // Skip comments and empty lines
     if line.starts_with('#') || line.is_empty() {
-        return None;
+        return vec![];
     }
 
-    // Skip relative imports (`from . import foo`, `from ..bar import baz`)
-    // Skip `from __future__`
+    // `from X import Y` — skip relative and __future__
     if let Some(rest) = line.strip_prefix("from ") {
-        let module = rest.split_whitespace().next()?;
+        let module = match rest.split_whitespace().next() {
+            Some(m) => m,
+            None => return vec![],
+        };
         if module.starts_with('.') || module == "__future__" {
-            return None;
+            return vec![];
         }
-        // top-level package is the first component
-        let top_level = module.split('.').next()?;
-        return Some(top_level.to_string());
+        let top_level = match module.split('.').next() {
+            Some(t) => t,
+            None => return vec![],
+        };
+        return vec![top_level.to_string()];
     }
 
+    // `import a, b.c, d as e` — collect all top-level packages
     if let Some(rest) = line.strip_prefix("import ") {
-        // Handle `import a, b, c` — take only the first package
-        let first = rest.split(',').next()?.trim();
-        // Handle `import a as alias`
-        let module = first.split_whitespace().next()?;
-        let top_level = module.split('.').next()?;
-        return Some(top_level.to_string());
+        return rest
+            .split(',')
+            .filter_map(|segment| {
+                // strip trailing `as alias`
+                let module = segment.split_whitespace().next()?;
+                module.split('.').next().map(|s| s.to_string())
+            })
+            .collect();
     }
 
-    None
+    vec![]
+}
+
+/// Compatibility shim — returns the first package from `parse_import_packages`.
+#[cfg(test)]
+pub fn parse_import_line(line: &str) -> Option<String> {
+    parse_import_packages(line).into_iter().next()
 }
 
 /// Normalize a package name for comparison (lowercase, hyphens→underscores).
@@ -312,7 +336,6 @@ pub fn import_aliases() -> HashMap<&'static str, &'static str> {
     m.insert("gi", "PyGObject");
     m.insert("usb", "pyusb");
     m.insert("serial", "pyserial");
-    m.insert("magic", "python-magic");
     m.insert("magic", "python-magic");
     m
 }
@@ -580,6 +603,24 @@ mod tests {
             parse_import_line("import numpy as np"),
             Some("numpy".to_string())
         );
+    }
+
+    #[test]
+    fn parse_import_packages_multi_import() {
+        let pkgs = parse_import_packages("import os, sys, json");
+        assert_eq!(pkgs, vec!["os", "sys", "json"]);
+    }
+
+    #[test]
+    fn parse_import_packages_multi_import_with_alias() {
+        let pkgs = parse_import_packages("import numpy as np, pandas as pd");
+        assert_eq!(pkgs, vec!["numpy", "pandas"]);
+    }
+
+    #[test]
+    fn parse_import_packages_single_import() {
+        let pkgs = parse_import_packages("import requests");
+        assert_eq!(pkgs, vec!["requests"]);
     }
 
     #[test]
