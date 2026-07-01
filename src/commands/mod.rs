@@ -2380,6 +2380,17 @@ fn emit_unsupported_resource_limit_diagnostics(
     }
 }
 
+fn emit_rejected_allow_env_diagnostics(collector: &mut EventCollector, rejected_env: &[String]) {
+    for name in rejected_env {
+        collector.diagnostic(
+            Diagnostic::warning(format!(
+                "--allow-env={name} was ignored because its name looks like a credential (e.g. ends in _KEY/_TOKEN, contains _SECRET, or starts with AWS_); sandbox env filtering never passes credential-shaped names through, even when explicitly allow-listed"
+            ))
+            .with_code("W_SANDBOX_ALLOW_ENV_REJECTED"),
+        );
+    }
+}
+
 #[derive(Debug, Clone)]
 struct SandboxInfo {
     enabled: bool,
@@ -3186,6 +3197,7 @@ async fn run_script(
             },
         )?;
         emit_unsupported_resource_limit_diagnostics(collector, &guard.resource_limits);
+        emit_rejected_allow_env_diagnostics(collector, &guard.rejected_env);
         sandbox_info = Some(SandboxInfo {
             enabled: true,
             allow_network,
@@ -3494,6 +3506,7 @@ fn run_python_code(
             },
         )?;
         emit_unsupported_resource_limit_diagnostics(collector, &guard.resource_limits);
+        emit_rejected_allow_env_diagnostics(collector, &guard.rejected_env);
         sandbox_info = Some(SandboxInfo {
             enabled: true,
             allow_network,
