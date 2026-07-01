@@ -150,6 +150,25 @@ fn init_package_template_creates_src_layout() {
 }
 
 #[test]
+fn init_yes_default_creates_buildable_src_layout() {
+    let temp = tempdir().unwrap();
+    let project_dir = temp.path().join("demo");
+    fs::create_dir(&project_dir).unwrap();
+
+    bin()
+        .current_dir(&project_dir)
+        .args(["init", "-y"])
+        .assert()
+        .success();
+
+    let package_init = project_dir.join("src").join("demo").join("__init__.py");
+    assert!(
+        package_init.exists(),
+        "default init -y should create a src package layout that hatchling can build"
+    );
+}
+
+#[test]
 fn init_minimal_template_flat_layout() {
     let temp = tempdir().unwrap();
 
