@@ -128,12 +128,16 @@ pub async fn execute(cli: Cli) -> Result<()> {
             match result {
                 Ok(AddOutcome {
                     summary,
-                    package,
-                    version,
+                    packages,
                     added_deps,
                 }) => {
                     // Chain install to ensure the environment is up-to-date
-                    collector.info(format!("Installing dependencies including {}...", package));
+                    let names = packages
+                        .iter()
+                        .map(|p| p.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    collector.info(format!("Installing dependencies including {}...", names));
 
                     let install_args = crate::cli::InstallArgs {
                         offline: args.offline,
@@ -145,6 +149,11 @@ pub async fn execute(cli: Cli) -> Result<()> {
                         group: None,
                     };
 
+                    let packages_json: Vec<serde_json::Value> = packages
+                        .iter()
+                        .map(|p| json!({ "name": p.name, "version": p.version }))
+                        .collect();
+
                     let pre_error_count = collector.error_diagnostic_count();
                     match install(&install_args, &mut collector).await {
                         Ok(_) => (
@@ -152,8 +161,9 @@ pub async fn execute(cli: Cli) -> Result<()> {
                             RenderDetail::with_json(
                                 format!("{} and installed dependencies.", summary),
                                 json!({
-                                    "package": package,
-                                    "version": version,
+                                    "package": packages.first().map(|p| p.name.clone()),
+                                    "version": packages.first().and_then(|p| p.version.clone()),
+                                    "packages": packages_json,
                                     "added_dependencies": added_deps,
                                     "installed": true,
                                 }),
@@ -162,7 +172,7 @@ pub async fn execute(cli: Cli) -> Result<()> {
                         Err(e) => {
                             let err_msg = format!(
                                 "Added {} to pyproject.toml but failed to install: {}",
-                                package, e
+                                names, e
                             );
                             // Only push a generic fallback error if install() did not
                             // already record an error-level diagnostic (e.g. resolve errors).
@@ -178,7 +188,7 @@ pub async fn execute(cli: Cli) -> Result<()> {
                                 RenderDetail::error(
                                     err_msg,
                                     json!({
-                                        "package": package,
+                                        "packages": packages_json,
                                         "error": e.to_string(),
                                         "installed": false,
                                     }),
@@ -208,20 +218,23 @@ pub async fn execute(cli: Cli) -> Result<()> {
         Commands::Remove(args) => {
             let result = remove_package(args);
             match result {
-                Ok(RemoveOutcome {
-                    summary,
-                    package,
-                    removed,
-                }) => (
-                    "remove".to_string(),
-                    RenderDetail::with_json(
-                        summary,
-                        json!({
-                            "package": package,
-                            "removed": removed,
-                        }),
-                    ),
-                ),
+                Ok(RemoveOutcome { summary, packages }) => {
+                    let packages_json: Vec<serde_json::Value> = packages
+                        .iter()
+                        .map(|p| json!({ "name": p.name, "removed": p.removed }))
+                        .collect();
+                    (
+                        "remove".to_string(),
+                        RenderDetail::with_json(
+                            summary,
+                            json!({
+                                "package": packages.first().map(|p| p.name.clone()),
+                                "removed": packages.first().map(|p| p.removed),
+                                "packages": packages_json,
+                            }),
+                        ),
+                    )
+                }
                 Err(e) => {
                     collector.error_with_code(
                         "E_REMOVE_FAILED",
@@ -2219,23 +2232,22 @@ fn collect_artifacts(dist_dir: &Path) -> Result<Vec<PathBuf>> {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug)]
+struct AddedPackage {
+    name: String,
+    version: Option<String>,
+}
+
+#[derive(Debug)]
 struct AddOutcome {
     summary: String,
-    package: String,
-    version: Option<String>,
+    packages: Vec<AddedPackage>,
     added_deps: Vec<String>,
 }
 
 fn add_package(args: &crate::cli::PackageArgs) -> Result<AddOutcome> {
-    let package_spec = args
-        .package
-        .as_ref()
-        .ok_or_else(|| eyre!("package name is required"))?;
-
-    // Parse the requirement
-    let req: Requirement = package_spec
-        .parse()
-        .map_err(|e: String| eyre!("invalid package spec: {}", e))?;
+    if args.packages.is_empty() {
+        return Err(eyre!("package name is required"));
+    }
 
     // Find or create pyproject.toml
     let current_dir = std::env::current_dir()?;
@@ -2248,19 +2260,17 @@ fn add_package(args: &crate::cli::PackageArgs) -> Result<AddOutcome> {
         }
     };
 
-    // Format the dependency string
-    let dep_string = package_spec.clone();
+    let mut packages = Vec::with_capacity(args.packages.len());
+    for package_spec in &args.packages {
+        // Parse the requirement
+        let req: Requirement = package_spec
+            .parse()
+            .map_err(|e: String| eyre!("invalid package spec: {}", e))?;
 
-    // Add to pyproject.toml
-    project.add_dependency(&dep_string);
-    project.save()?;
+        // Add to pyproject.toml
+        project.add_dependency(package_spec);
 
-    let added_deps = project.dependencies();
-
-    Ok(AddOutcome {
-        summary: format!("added {} to {}", package_spec, project.path().display()),
-        package: req.name.clone(),
-        version: match req.specs.as_slice() {
+        let version = match req.specs.as_slice() {
             [crate::resolver::VersionSpec::Any] => None,
             [crate::resolver::VersionSpec::Exact(v)] => Some(v.clone()),
             specs => Some(
@@ -2270,7 +2280,23 @@ fn add_package(args: &crate::cli::PackageArgs) -> Result<AddOutcome> {
                     .collect::<Vec<_>>()
                     .join(","),
             ),
-        },
+        };
+
+        packages.push(AddedPackage {
+            name: req.name.clone(),
+            version,
+        });
+    }
+
+    project.save()?;
+    let added_deps = project.dependencies();
+
+    let package_list = args.packages.join(", ");
+    let summary = format!("added {} to {}", package_list, project.path().display());
+
+    Ok(AddOutcome {
+        summary,
+        packages,
         added_deps,
     })
 }
@@ -2280,17 +2306,21 @@ fn add_package(args: &crate::cli::PackageArgs) -> Result<AddOutcome> {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug)]
-struct RemoveOutcome {
-    summary: String,
-    package: String,
+struct RemovedPackage {
+    name: String,
     removed: bool,
 }
 
+#[derive(Debug)]
+struct RemoveOutcome {
+    summary: String,
+    packages: Vec<RemovedPackage>,
+}
+
 fn remove_package(args: &crate::cli::PackageArgs) -> Result<RemoveOutcome> {
-    let package_name = args
-        .package
-        .as_ref()
-        .ok_or_else(|| eyre!("package name is required"))?;
+    if args.packages.is_empty() {
+        return Err(eyre!("package name is required"));
+    }
 
     // Find pyproject.toml
     let current_dir = std::env::current_dir()?;
@@ -2301,24 +2331,46 @@ fn remove_package(args: &crate::cli::PackageArgs) -> Result<RemoveOutcome> {
         )
     })?;
 
-    // Remove from pyproject.toml
-    let removed = project.remove_dependency(package_name);
+    let mut packages = Vec::with_capacity(args.packages.len());
+    let mut removed_names = Vec::new();
+    let mut not_found_names = Vec::new();
+    for package_name in &args.packages {
+        let removed = project.remove_dependency(package_name);
+        if removed {
+            removed_names.push(package_name.clone());
+        } else {
+            not_found_names.push(package_name.clone());
+        }
+        packages.push(RemovedPackage {
+            name: package_name.clone(),
+            removed,
+        });
+    }
 
-    if removed {
+    if !removed_names.is_empty() {
         project.save()?;
     }
 
-    let summary = if removed {
-        format!("removed {} from {}", package_name, project.path().display())
-    } else {
-        format!("{} was not found in dependencies", package_name)
+    let summary = match (removed_names.is_empty(), not_found_names.is_empty()) {
+        (false, true) => format!(
+            "removed {} from {}",
+            removed_names.join(", "),
+            project.path().display()
+        ),
+        (true, false) => format!(
+            "{} was not found in dependencies",
+            not_found_names.join(", ")
+        ),
+        (false, false) => format!(
+            "removed {} from {}; {} was not found in dependencies",
+            removed_names.join(", "),
+            project.path().display(),
+            not_found_names.join(", ")
+        ),
+        (true, true) => unreachable!("at least one package is always processed"),
     };
 
-    Ok(RemoveOutcome {
-        summary,
-        package: package_name.clone(),
-        removed,
-    })
+    Ok(RemoveOutcome { summary, packages })
 }
 
 // ---------------------------------------------------------------------------

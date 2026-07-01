@@ -216,3 +216,68 @@ dependencies = ["requests>=2.28.0"]
         .success()
         .stdout(predicate::str::contains("\"removed\":true"));
 }
+
+#[test]
+fn add_accepts_multiple_packages() {
+    if !network_enabled() {
+        eprintln!("Skipping add_accepts_multiple_packages (PYBUN_E2E_NETWORK not set)");
+        return;
+    }
+    let temp = tempdir().unwrap();
+    create_venv(temp.path());
+
+    bin()
+        .current_dir(temp.path())
+        .args(["add", "requests", "click"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("added requests, click"));
+
+    let content = fs::read_to_string(temp.path().join("pyproject.toml")).unwrap();
+    assert!(content.contains("requests"), "should contain requests");
+    assert!(content.contains("click"), "should contain click");
+}
+
+#[test]
+fn remove_accepts_multiple_packages() {
+    let temp = tempdir().unwrap();
+
+    let pyproject = r#"[project]
+name = "test-project"
+dependencies = ["requests>=2.28.0", "click>=2.0.0"]
+"#;
+    fs::write(temp.path().join("pyproject.toml"), pyproject).unwrap();
+
+    bin()
+        .current_dir(temp.path())
+        .args(["remove", "requests", "click"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("removed requests, click"));
+
+    let content = fs::read_to_string(temp.path().join("pyproject.toml")).unwrap();
+    assert!(!content.contains("requests"), "requests should be removed");
+    assert!(!content.contains("click"), "click should be removed");
+}
+
+#[test]
+fn remove_multiple_reports_partial_not_found() {
+    let temp = tempdir().unwrap();
+
+    let pyproject = r#"[project]
+name = "test-project"
+dependencies = ["requests>=2.28.0"]
+"#;
+    fs::write(temp.path().join("pyproject.toml"), pyproject).unwrap();
+
+    bin()
+        .current_dir(temp.path())
+        .args(["remove", "requests", "nonexistent"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("removed requests"))
+        .stdout(predicate::str::contains("nonexistent was not found"));
+
+    let content = fs::read_to_string(temp.path().join("pyproject.toml")).unwrap();
+    assert!(!content.contains("requests"), "requests should be removed");
+}

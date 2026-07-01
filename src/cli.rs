@@ -183,9 +183,10 @@ pub struct LockArgs {
 
 #[derive(Args, Debug)]
 pub struct PackageArgs {
-    /// Package name (optionally with version).
-    #[arg(value_name = "PACKAGE")]
-    pub package: Option<String>,
+    /// Package name(s) (optionally with version). Multiple packages may be
+    /// given in a single invocation.
+    #[arg(value_name = "PACKAGE", required = true)]
+    pub packages: Vec<String>,
     /// Use offline mode when cache is sufficient.
     #[arg(long)]
     pub offline: bool,
