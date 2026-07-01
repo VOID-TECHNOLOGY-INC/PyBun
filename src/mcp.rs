@@ -1401,6 +1401,19 @@ impl McpServer {
                 }),
             },
             Tool {
+                name: "pybun_drift".to_string(),
+                description: "Detect dependency drift: undeclared imports (packages imported but not in pyproject.toml) and unused declarations (packages in pyproject.toml but never imported). Returns structured results with agent-callable next_action for pybun_add/pybun_remove.".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "cwd": {
+                            "type": "string",
+                            "description": "Directory to analyze (defaults to current working directory)"
+                        }
+                    }
+                }),
+            },
+            Tool {
                 name: "pybun_audit".to_string(),
                 description: "Scan installed packages for known vulnerabilities using the OSV database. Returns structured results with severity levels and agent-callable fix suggestions via next_action.".to_string(),
                 input_schema: json!({
@@ -1461,6 +1474,7 @@ impl McpServer {
                 "pybun_profile" => self.call_profile(tool_args.clone()),
                 "pybun_fix" => self.call_fix(tool_args.clone()),
                 "pybun_context" => self.call_context(tool_args.clone()),
+                "pybun_drift" => self.call_drift(tool_args.clone()),
                 "pybun_test" => self.call_test(tool_args.clone()),
                 "pybun_audit" => self.call_audit(tool_args.clone()).await,
                 "pybun_upgrade" => self.call_upgrade(tool_args.clone()),
@@ -2603,7 +2617,16 @@ impl McpServer {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
-        let working_dir = std::env::current_dir().map_err(|e| e.to_string())?;
+        let include_drift = args
+            .get("include_drift")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        let working_dir = if let Some(cwd) = args.get("cwd").and_then(|v| v.as_str()) {
+            std::path::PathBuf::from(cwd)
+        } else {
+            std::env::current_dir().map_err(|e| e.to_string())?
+        };
 
         let snapshot_at_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -2748,6 +2771,22 @@ impl McpServer {
             }));
         }
 
+        // ── Import drift analysis (only when include_drift=true) ──────────────
+        let import_drift_summary = if include_drift {
+            let drift_result = crate::drift::analyze(&working_dir);
+            json!({
+                "undeclared_imports": drift_result.undeclared_imports,
+                "unused_declarations": drift_result.unused_declarations,
+                "files_scanned": drift_result.files_scanned,
+                "analysis_notes": drift_result.analysis_notes,
+            })
+        } else {
+            json!({
+                "undeclared_imports": null,
+                "outdated_packages": []
+            })
+        };
+
         // ── Assemble response ─────────────────────────────────────────────────
         if summary_only {
             let declared_count = declared_names.len();
@@ -2768,10 +2807,7 @@ impl McpServer {
                 "declared_count": declared_count,
                 "drift_count": drift_count,
                 "doctor_warnings": doctor_warnings,
-                "drift_summary": {
-                    "undeclared_imports": null,
-                    "outdated_packages": []
-                },
+                "drift_summary": import_drift_summary,
                 "snapshot_at_ms": snapshot_at_ms
             })
             .to_string())
@@ -2783,14 +2819,41 @@ impl McpServer {
                 "lockfile_status": lockfile_status,
                 "installed_packages": locked_packages,
                 "doctor_warnings": doctor_warnings,
-                "drift_summary": {
-                    "undeclared_imports": null,
-                    "outdated_packages": []
-                },
+                "drift_summary": import_drift_summary,
                 "snapshot_at_ms": snapshot_at_ms
             })
             .to_string())
         }
+    }
+
+    fn call_drift(&self, args: Value) -> Result<String, String> {
+        use crate::drift;
+
+        let cwd_path = if let Some(cwd) = args.get("cwd").and_then(|v| v.as_str()) {
+            std::path::PathBuf::from(cwd)
+        } else {
+            std::env::current_dir().map_err(|e| format!("failed to get cwd: {e}"))?
+        };
+
+        if !cwd_path.join("pyproject.toml").exists() {
+            return Ok(serde_json::to_string(&json!({
+                "error": "pyproject.toml not found",
+                "undeclared_imports": [],
+                "unused_declarations": [],
+                "analysis_notes": ["pyproject.toml not found"],
+                "files_scanned": 0
+            }))
+            .unwrap());
+        }
+
+        let result = drift::analyze(&cwd_path);
+        Ok(serde_json::to_string(&json!({
+            "undeclared_imports": result.undeclared_imports,
+            "unused_declarations": result.unused_declarations,
+            "analysis_notes": result.analysis_notes,
+            "files_scanned": result.files_scanned,
+        }))
+        .unwrap())
     }
 
     fn call_test(&self, args: Value) -> Result<String, String> {
