@@ -2282,6 +2282,10 @@ fn add_package(args: &crate::cli::PackageArgs) -> Result<AddOutcome> {
             ),
         };
 
+        // A later spec for the same package name replaces the earlier one in
+        // pyproject.toml (see `Project::add_dependency`), so keep only the
+        // last occurrence here too.
+        packages.retain(|p: &AddedPackage| p.name != req.name);
         packages.push(AddedPackage {
             name: req.name.clone(),
             version,
