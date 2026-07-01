@@ -216,3 +216,111 @@ dependencies = ["requests>=2.28.0"]
         .success()
         .stdout(predicate::str::contains("\"removed\":true"));
 }
+
+#[test]
+fn add_accepts_multiple_packages() {
+    if !network_enabled() {
+        eprintln!("Skipping add_accepts_multiple_packages (PYBUN_E2E_NETWORK not set)");
+        return;
+    }
+    let temp = tempdir().unwrap();
+    create_venv(temp.path());
+
+    bin()
+        .current_dir(temp.path())
+        .args(["add", "requests", "click"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("added requests, click"));
+
+    let content = fs::read_to_string(temp.path().join("pyproject.toml")).unwrap();
+    assert!(content.contains("requests"), "should contain requests");
+    assert!(content.contains("click"), "should contain click");
+}
+
+/// Passing the same package name twice with different version specs should
+/// keep only the last occurrence (matching what's actually persisted to
+/// pyproject.toml), both on disk and in the JSON `packages` detail.
+#[test]
+fn add_deduplicates_repeated_package_name() {
+    let temp = tempdir().unwrap();
+
+    let pyproject = r#"[project]
+name = "test-project"
+dependencies = []
+"#;
+    fs::write(temp.path().join("pyproject.toml"), pyproject).unwrap();
+
+    // No venv is created, so the chained install will fail, but pyproject.toml
+    // is saved (and the JSON `packages` detail is emitted) before that happens.
+    let output = bin()
+        .current_dir(temp.path())
+        .args(["--format=json", "add", "numpy>=1.24.0", "numpy==2.0.0"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON output");
+    let packages = json["detail"]["packages"]
+        .as_array()
+        .expect("packages array present");
+    assert_eq!(
+        packages.len(),
+        1,
+        "duplicate package name should collapse to one entry"
+    );
+    assert_eq!(packages[0]["name"], "numpy");
+    assert_eq!(packages[0]["version"], "2.0.0");
+
+    let content = fs::read_to_string(temp.path().join("pyproject.toml")).unwrap();
+    assert_eq!(
+        content.matches("numpy").count(),
+        1,
+        "pyproject.toml should list numpy only once"
+    );
+    assert!(content.contains("numpy==2.0.0"));
+}
+
+#[test]
+fn remove_accepts_multiple_packages() {
+    let temp = tempdir().unwrap();
+
+    let pyproject = r#"[project]
+name = "test-project"
+dependencies = ["requests>=2.28.0", "click>=2.0.0"]
+"#;
+    fs::write(temp.path().join("pyproject.toml"), pyproject).unwrap();
+
+    bin()
+        .current_dir(temp.path())
+        .args(["remove", "requests", "click"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("removed requests, click"));
+
+    let content = fs::read_to_string(temp.path().join("pyproject.toml")).unwrap();
+    assert!(!content.contains("requests"), "requests should be removed");
+    assert!(!content.contains("click"), "click should be removed");
+}
+
+#[test]
+fn remove_multiple_reports_partial_not_found() {
+    let temp = tempdir().unwrap();
+
+    let pyproject = r#"[project]
+name = "test-project"
+dependencies = ["requests>=2.28.0"]
+"#;
+    fs::write(temp.path().join("pyproject.toml"), pyproject).unwrap();
+
+    bin()
+        .current_dir(temp.path())
+        .args(["remove", "requests", "nonexistent"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("removed requests"))
+        .stdout(predicate::str::contains("nonexistent was not found"));
+
+    let content = fs::read_to_string(temp.path().join("pyproject.toml")).unwrap();
+    assert!(!content.contains("requests"), "requests should be removed");
+}

@@ -1,9 +1,9 @@
 Add a package and update lockfile
 
-Usage: pybun add [OPTIONS] [PACKAGE]
+Usage: pybun add [OPTIONS] <PACKAGE>...
 
 Arguments:
-  [PACKAGE]  Package name (optionally with version)
+  <PACKAGE>...  Package name(s) (optionally with version). Multiple packages may be given in a single invocation
 
 Options:
       --format <FORMAT>      Output format for machine readability [default: text] [possible values: text, json]
