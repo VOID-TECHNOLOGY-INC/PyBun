@@ -5,6 +5,7 @@ import platform
 import shutil
 import stat
 import subprocess
+import sys
 import tarfile
 import tempfile
 import time
@@ -132,7 +133,11 @@ def load_manifest(source: str) -> Dict[str, Any]:
     if source.startswith("file://"):
         path = source[len("file://") :]
         return _read_json(path)
-    if source.startswith("http://") or source.startswith("https://"):
+    if source.startswith("http://"):
+        raise BootstrapError(
+            f"refusing to fetch manifest over plaintext HTTP: {source} (HTTPS required)"
+        )
+    if source.startswith("https://"):
         try:
             with urllib.request.urlopen(source, timeout=30) as resp:
                 body = resp.read()
@@ -241,7 +246,7 @@ def _download_url(url: str, destination: str) -> None:
 
 
 def _verify_checksum(path: str, expected: Optional[str]) -> None:
-    if not expected or not expected.strip():
+    if not isinstance(expected, str) or not expected.strip():
         raise BootstrapError("manifest missing sha256 for asset")
     expected_clean = expected.strip()
     if expected_clean.startswith("sha256:"):
@@ -299,11 +304,23 @@ def _safe_extract_tar(archive_path: str, dest: str) -> None:
             member_path = os.path.abspath(os.path.join(dest_abs, member.name))
             if not member_path.startswith(dest_abs + os.sep):
                 raise BootstrapError("refusing to extract outside destination")
-            if member.issym() or member.islnk():
+            if member.issym():
+                # Symlink targets are resolved relative to the directory
+                # containing the link itself, not the archive root.
+                link_path = os.path.abspath(
+                    os.path.join(os.path.dirname(member_path), member.linkname)
+                )
+                if not link_path.startswith(dest_abs + os.sep):
+                    raise BootstrapError(
+                        "refusing to extract symlink pointing outside destination"
+                    )
+            elif member.islnk():
+                # Hardlink targets reference another archive member by path,
+                # relative to the archive/destination root.
                 link_path = os.path.abspath(os.path.join(dest_abs, member.linkname))
                 if not link_path.startswith(dest_abs + os.sep):
                     raise BootstrapError(
-                        "refusing to extract link pointing outside destination"
+                        "refusing to extract hardlink pointing outside destination"
                     )
         if hasattr(tarfile, "data_filter"):
             tar.extractall(dest, filter="data")
@@ -372,8 +389,6 @@ def ensure_binary() -> Tuple[str, Optional[Dict[str, Any]]]:
     target = detect_target()
     verify = not _bool_env("PYBUN_PYPI_NO_VERIFY")
     if not verify:
-        import sys
-
         print(
             "WARNING: PYBUN_PYPI_NO_VERIFY=1 set — skipping checksum/signature "
             "verification of the downloaded pybun binary. This should only be "
