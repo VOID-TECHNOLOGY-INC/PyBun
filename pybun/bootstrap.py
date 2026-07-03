@@ -222,7 +222,12 @@ def _download_url(url: str, destination: str) -> None:
         shutil.copyfile(path, destination)
         return
 
-    if parsed.scheme in {"http", "https"}:
+    if parsed.scheme == "http":
+        raise BootstrapError(
+            f"refusing to download asset over plaintext HTTP: {url} (HTTPS required)"
+        )
+
+    if parsed.scheme == "https":
         try:
             with urllib.request.urlopen(url, timeout=300) as resp, open(
                 destination, "wb"
@@ -236,13 +241,13 @@ def _download_url(url: str, destination: str) -> None:
 
 
 def _verify_checksum(path: str, expected: Optional[str]) -> None:
-    if not expected:
+    if not expected or not expected.strip():
         raise BootstrapError("manifest missing sha256 for asset")
-    expected_clean = expected
+    expected_clean = expected.strip()
     if expected_clean.startswith("sha256:"):
         expected_clean = expected_clean[len("sha256:") :]
-    if expected_clean in {"sha256:placeholder", "placeholder"}:
-        return
+    if expected_clean == "placeholder":
+        raise BootstrapError("placeholder checksum is not allowed for bootstrap")
     hasher = hashlib.sha256()
     with open(path, "rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
@@ -288,12 +293,22 @@ def _verify_signature(path: str, signature: Dict[str, Any]) -> None:
 
 
 def _safe_extract_tar(archive_path: str, dest: str) -> None:
+    dest_abs = os.path.abspath(dest)
     with tarfile.open(archive_path, "r:*") as tar:
         for member in tar.getmembers():
-            member_path = os.path.abspath(os.path.join(dest, member.name))
-            if not member_path.startswith(os.path.abspath(dest) + os.sep):
+            member_path = os.path.abspath(os.path.join(dest_abs, member.name))
+            if not member_path.startswith(dest_abs + os.sep):
                 raise BootstrapError("refusing to extract outside destination")
-        tar.extractall(dest)
+            if member.issym() or member.islnk():
+                link_path = os.path.abspath(os.path.join(dest_abs, member.linkname))
+                if not link_path.startswith(dest_abs + os.sep):
+                    raise BootstrapError(
+                        "refusing to extract link pointing outside destination"
+                    )
+        if hasattr(tarfile, "data_filter"):
+            tar.extractall(dest, filter="data")
+        else:
+            tar.extractall(dest)
 
 
 def _safe_extract_zip(archive_path: str, dest: str) -> None:
@@ -356,6 +371,15 @@ def ensure_binary() -> Tuple[str, Optional[Dict[str, Any]]]:
     os.makedirs(root, exist_ok=True)
     target = detect_target()
     verify = not _bool_env("PYBUN_PYPI_NO_VERIFY")
+    if not verify:
+        import sys
+
+        print(
+            "WARNING: PYBUN_PYPI_NO_VERIFY=1 set — skipping checksum/signature "
+            "verification of the downloaded pybun binary. This should only be "
+            "used temporarily for debugging.",
+            file=sys.stderr,
+        )
     offline = _bool_env("PYBUN_PYPI_OFFLINE")
     manifest_source = resolve_manifest_source()
 
