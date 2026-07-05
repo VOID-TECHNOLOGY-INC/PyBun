@@ -110,7 +110,7 @@ impl Project {
             path: path.clone(),
             source,
         })?;
-        let raw: Value = content.parse()?;
+        let raw: Value = toml::from_str(&content)?;
         Ok(Self { path, raw })
     }
 
