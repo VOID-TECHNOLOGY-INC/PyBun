@@ -1,0 +1,17 @@
+[
+  {
+    "name": "verpkg",
+    "version": "1.0.0",
+    "dependencies": [],
+    "wheels": [
+      {
+        "file": "verpkg-1.0.0-cp311-cp311-any.whl",
+        "hash": "sha256:verpkgcp311"
+      },
+      {
+        "file": "verpkg-1.0.0-cp312-cp312-any.whl",
+        "hash": "sha256:verpkgcp312"
+      }
+    ]
+  }
+]
