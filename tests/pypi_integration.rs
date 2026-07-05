@@ -30,7 +30,7 @@ fn ensure_venv(project_root: &Path) -> PathBuf {
 
 fn wheel_bytes() -> Vec<u8> {
     let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
-    let options = zip::write::FileOptions::default();
+    let options = zip::write::SimpleFileOptions::default();
     zip.start_file("dummy.txt", options)
         .expect("start wheel entry");
     zip.write_all(b"ok").expect("write wheel entry");

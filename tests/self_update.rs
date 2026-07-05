@@ -54,7 +54,7 @@ fn create_release_archive(root: &Path, target: &str, binary_bytes: &[u8]) -> Pat
         let archive_path = root.join(format!("pybun-{target}.zip"));
         let file = fs::File::create(&archive_path).unwrap();
         let mut zip = zip::ZipWriter::new(file);
-        let options = zip::write::FileOptions::default();
+        let options = zip::write::SimpleFileOptions::default();
         let member = format!("pybun-{target}/{}", release_binary_name());
         zip.start_file(member, options).unwrap();
         use std::io::Write;
