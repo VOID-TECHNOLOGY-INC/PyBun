@@ -524,7 +524,7 @@ fn load_pyproject_audit_config(start: &Path) -> Option<(PathBuf, AuditConfig)> {
         let candidate = current.join("pyproject.toml");
         if candidate.exists() {
             let content = fs::read_to_string(&candidate).ok()?;
-            let value: toml::Value = content.parse().ok()?;
+            let value: toml::Value = toml::from_str(&content).ok()?;
             let audit = value.get("tool")?.get("pybun")?.get("mcp")?.get("audit")?;
 
             let enabled = audit

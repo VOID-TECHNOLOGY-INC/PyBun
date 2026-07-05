@@ -298,7 +298,7 @@ fn extract_package_name_from_dep(dep: &str) -> String {
 
 /// Parse `[project.dependencies]` from pyproject.toml content.
 fn parse_declared_deps(content: &str) -> Vec<String> {
-    let Ok(value) = content.parse::<toml::Value>() else {
+    let Ok(value) = toml::from_str::<toml::Value>(content) else {
         return vec![];
     };
     value
