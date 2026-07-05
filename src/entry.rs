@@ -200,6 +200,7 @@ mod tests {
             no_progress: false,
             command: Commands::Install(InstallArgs {
                 offline: false,
+                system: false,
                 requirements: Vec::new(),
                 index: None,
                 lock: "pybun.lockb".into(),

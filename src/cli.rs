@@ -146,6 +146,11 @@ pub struct InstallArgs {
     /// Use offline mode when cache is sufficient.
     #[arg(long)]
     pub offline: bool,
+    /// Allow installing into the resolved system Python instead of creating a
+    /// project-local `.pybun/venv`. Without this flag, PyBun refuses to fall
+    /// back to system Python and creates an isolated environment instead.
+    #[arg(long)]
+    pub system: bool,
     /// Requirements to install (temporary M1 flag).
     #[arg(long = "require", value_name = "NAME==VERSION")]
     pub requirements: Vec<crate::resolver::Requirement>,

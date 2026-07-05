@@ -513,3 +513,231 @@ dependencies = ["app==1.0.0"]
     assert_eq!(project_mock.calls(), 1);
     assert_eq!(meta_mock.calls(), 1);
 }
+
+// =============================================================================
+// Issue #286: default install target must not silently fall back to system
+// Python site-packages; installing to system Python requires `--system`.
+// =============================================================================
+
+fn venv_bin_dir(venv: &Path) -> PathBuf {
+    if cfg!(windows) {
+        venv.join("Scripts")
+    } else {
+        venv.join("bin")
+    }
+}
+
+fn venv_python(venv: &Path) -> PathBuf {
+    if cfg!(windows) {
+        venv_bin_dir(venv).join("python.exe")
+    } else {
+        venv_bin_dir(venv).join("python")
+    }
+}
+
+fn site_packages_of(python: &Path) -> PathBuf {
+    let output = std::process::Command::new(python)
+        .args([
+            "-c",
+            "import sysconfig; print(sysconfig.get_paths()['purelib'], end='')",
+        ])
+        .output()
+        .expect("query site-packages");
+    assert!(output.status.success(), "sysconfig lookup failed");
+    PathBuf::from(String::from_utf8(output.stdout).unwrap())
+}
+
+fn single_app_mock(server: &MockServer) -> String {
+    let base = server.base_url();
+    let wheel_sha256 = wheel_sha256();
+
+    let project_body = json!({
+        "info": { "name": "app", "version": "1.0.0" },
+        "releases": {
+            "1.0.0": [
+                {
+                    "filename": "app-1.0.0-py3-none-any.whl",
+                    "packagetype": "bdist_wheel",
+                    "url": format!("{}/files/app-1.0.0-py3-none-any.whl", base),
+                    "yanked": false,
+                    "digests": { "sha256": wheel_sha256 }
+                }
+            ]
+        }
+    })
+    .to_string();
+
+    server.mock(|when, then| {
+        when.method(GET).path("/pypi/app/json");
+        then.status(200)
+            .header("Content-Type", "application/json")
+            .body(project_body.clone());
+    });
+
+    let meta_body = json!({
+        "info": {
+            "name": "app",
+            "version": "1.0.0",
+            "requires_dist": []
+        }
+    })
+    .to_string();
+
+    server.mock(|when, then| {
+        when.method(GET).path("/pypi/app/1.0.0/json");
+        then.status(200)
+            .header("Content-Type", "application/json")
+            .body(meta_body.clone());
+    });
+
+    mock_download(server, "app-1.0.0-py3-none-any.whl");
+
+    base
+}
+
+#[test]
+fn install_creates_project_local_venv_instead_of_system_python_by_default() {
+    let temp = tempdir().unwrap();
+    let cache_dir = temp.path().join("cache");
+    let server = MockServer::start();
+    let base = single_app_mock(&server);
+
+    // A real interpreter that the code would resolve as "system Python" via
+    // PATH lookup, isolated from the developer's actual system Python by
+    // scoping PATH to just this directory.
+    let fake_system_root = temp.path().join("fake-system-root");
+    fs::create_dir_all(&fake_system_root).unwrap();
+    let fake_system_env = ensure_venv(&fake_system_root);
+    let fake_system_bin = venv_bin_dir(&fake_system_env);
+    let path_var = format!(
+        "{}:{}",
+        fake_system_bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    let project_root = temp.path().join("project");
+    fs::create_dir_all(&project_root).unwrap();
+    fs::write(
+        project_root.join("pyproject.toml"),
+        r#"[project]
+name = "demo"
+version = "0.1.0"
+dependencies = ["app==1.0.0"]
+"#,
+    )
+    .unwrap();
+
+    let output = bin()
+        .current_dir(&project_root)
+        .env("PATH", &path_var)
+        .env("PYBUN_PYPI_BASE_URL", &base)
+        .env("PYBUN_PYPI_CACHE_DIR", cache_dir.to_str().unwrap())
+        .args(["--format=json", "install"])
+        .output()
+        .expect("command runs");
+
+    assert!(
+        output.status.success(),
+        "install should succeed by auto-creating a project-local venv: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let project_venv = project_root.join(".pybun").join("venv");
+    assert!(
+        project_venv.is_dir(),
+        "install without an existing venv/PYBUN_ENV should auto-create .pybun/venv"
+    );
+
+    let project_site_packages = site_packages_of(&venv_python(&project_venv));
+    assert!(
+        project_site_packages.join("dummy.txt").exists(),
+        "wheel contents should be installed into the auto-created project venv"
+    );
+
+    let fake_system_site_packages = site_packages_of(&venv_python(&fake_system_env));
+    assert!(
+        !fake_system_site_packages.join("dummy.txt").exists(),
+        "wheel contents must not leak into the fallback 'system' interpreter by default"
+    );
+}
+
+#[test]
+fn install_system_flag_installs_into_resolved_system_python() {
+    let temp = tempdir().unwrap();
+    let cache_dir = temp.path().join("cache");
+    let server = MockServer::start();
+    let base = single_app_mock(&server);
+
+    let fake_system_root = temp.path().join("fake-system-root");
+    fs::create_dir_all(&fake_system_root).unwrap();
+    let fake_system_env = ensure_venv(&fake_system_root);
+    let fake_system_bin = venv_bin_dir(&fake_system_env);
+    let path_var = format!(
+        "{}:{}",
+        fake_system_bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    let project_root = temp.path().join("project");
+    fs::create_dir_all(&project_root).unwrap();
+    fs::write(
+        project_root.join("pyproject.toml"),
+        r#"[project]
+name = "demo"
+version = "0.1.0"
+dependencies = ["app==1.0.0"]
+"#,
+    )
+    .unwrap();
+
+    let output = bin()
+        .current_dir(&project_root)
+        .env("PATH", &path_var)
+        .env("PYBUN_PYPI_BASE_URL", &base)
+        .env("PYBUN_PYPI_CACHE_DIR", cache_dir.to_str().unwrap())
+        .args(["--format=json", "install", "--system"])
+        .output()
+        .expect("command runs");
+
+    assert!(
+        !project_root.join(".pybun").join("venv").exists(),
+        "--system should not create a project-local venv"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // A venv's stdlib is the base interpreter's stdlib, so on distros that ship
+    // a PEP 668 EXTERNALLY-MANAGED marker (e.g. Ubuntu/Debian system Python),
+    // our fake "system" interpreter is itself externally-managed and the
+    // install must be refused rather than silently proceeding.
+    if pybun::env::externally_managed_marker(&venv_python(&fake_system_env)).is_some() {
+        assert!(
+            !output.status.success(),
+            "install --system should refuse an externally-managed interpreter: {stdout}"
+        );
+        assert!(
+            stdout.contains("E_INSTALL_EXTERNALLY_MANAGED"),
+            "should report the externally-managed diagnostic code: {stdout}"
+        );
+        return;
+    }
+
+    assert!(
+        output.status.success(),
+        "install --system should succeed: {}\n{}",
+        stdout,
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let fake_system_site_packages = site_packages_of(&venv_python(&fake_system_env));
+    assert!(
+        fake_system_site_packages.join("dummy.txt").exists(),
+        "wheel contents should be installed into system Python when --system is passed"
+    );
+
+    assert!(
+        stdout.contains("--system was specified"),
+        "should warn explicitly when installing to system Python via --system: {stdout}"
+    );
+}

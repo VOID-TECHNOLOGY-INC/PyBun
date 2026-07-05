@@ -319,6 +319,85 @@ fn find_pyenv_python(version: &str) -> Option<PathBuf> {
     None
 }
 
+/// Create (or reuse) a project-local virtual environment at `<project_root>/.pybun/venv`.
+///
+/// Used as the safe default install target when no venv/`PYBUN_ENV` is
+/// configured, instead of silently installing into system Python (Issue #286).
+pub fn create_project_venv(project_root: &Path) -> Result<PythonEnv> {
+    let venv_path = project_root.join(".pybun").join("venv");
+
+    if let Some(python) = find_venv_python(&venv_path) {
+        return Ok(PythonEnv {
+            python_path: python,
+            version: get_python_version_from_venv(&venv_path),
+            source: EnvSource::ProjectLocal,
+        });
+    }
+
+    let base_python = find_system_python().ok_or_else(|| {
+        eyre!(
+            "no Python interpreter found to create {}; set PYBUN_PYTHON or install python3",
+            venv_path.display()
+        )
+    })?;
+
+    if let Some(parent) = venv_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let status = std::process::Command::new(&base_python)
+        .args(["-m", "venv"])
+        .arg(&venv_path)
+        .status()
+        .map_err(|e| {
+            eyre!(
+                "failed to create virtual environment at {}: {}",
+                venv_path.display(),
+                e
+            )
+        })?;
+
+    if !status.success() {
+        return Err(eyre!(
+            "failed to create virtual environment at {}",
+            venv_path.display()
+        ));
+    }
+
+    let python = find_venv_python(&venv_path).ok_or_else(|| {
+        eyre!(
+            "virtual environment created at {} but python binary not found",
+            venv_path.display()
+        )
+    })?;
+
+    Ok(PythonEnv {
+        python_path: python,
+        version: get_python_version_from_venv(&venv_path),
+        source: EnvSource::ProjectLocal,
+    })
+}
+
+/// Check whether `python_path` is an externally-managed interpreter per PEP 668,
+/// returning the path to the `EXTERNALLY-MANAGED` marker file if present.
+pub fn externally_managed_marker(python_path: &Path) -> Option<PathBuf> {
+    let output = std::process::Command::new(python_path)
+        .args([
+            "-c",
+            "import sysconfig; print(sysconfig.get_path('stdlib'), end='')",
+        ])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdlib = String::from_utf8(output.stdout).ok()?;
+    let marker = PathBuf::from(stdlib).join("EXTERNALLY-MANAGED");
+    marker.is_file().then_some(marker)
+}
+
 /// Find system Python (python3 or python).
 fn find_system_python() -> Option<PathBuf> {
     // Prefer python3
@@ -463,6 +542,81 @@ mod tests {
         let home = pybun_home();
         assert_eq!(home, PathBuf::from("/custom/path"));
         unsafe { std::env::remove_var("PYBUN_HOME") };
+    }
+
+    #[test]
+    fn create_project_venv_creates_pybun_venv_directory() {
+        if find_system_python().is_none() {
+            eprintln!("skipping: no system python available in test environment");
+            return;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let env = create_project_venv(temp.path()).expect("venv creation succeeds");
+        assert_eq!(env.source, EnvSource::ProjectLocal);
+        assert!(env.python_path.exists());
+        assert!(temp.path().join(".pybun").join("venv").is_dir());
+    }
+
+    #[test]
+    fn create_project_venv_reuses_existing_venv() {
+        if find_system_python().is_none() {
+            eprintln!("skipping: no system python available in test environment");
+            return;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let first = create_project_venv(temp.path()).expect("first creation succeeds");
+        let second = create_project_venv(temp.path()).expect("second call reuses venv");
+        assert_eq!(first.python_path, second.python_path);
+    }
+
+    #[test]
+    fn externally_managed_marker_detects_pep668_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let stdlib_dir = temp.path().join("stdlib");
+        std::fs::create_dir_all(&stdlib_dir).unwrap();
+        std::fs::write(stdlib_dir.join("EXTERNALLY-MANAGED"), "").unwrap();
+
+        let fake_python = temp.path().join("fake_python.sh");
+        std::fs::write(
+            &fake_python,
+            format!("#!/bin/sh\nprintf '%s' '{}'\n", stdlib_dir.display()),
+        )
+        .unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&fake_python).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&fake_python, perms).unwrap();
+        }
+
+        let marker = externally_managed_marker(&fake_python);
+        assert_eq!(marker, Some(stdlib_dir.join("EXTERNALLY-MANAGED")));
+    }
+
+    #[test]
+    fn externally_managed_marker_absent_when_no_marker_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let stdlib_dir = temp.path().join("stdlib");
+        std::fs::create_dir_all(&stdlib_dir).unwrap();
+
+        let fake_python = temp.path().join("fake_python.sh");
+        std::fs::write(
+            &fake_python,
+            format!("#!/bin/sh\nprintf '%s' '{}'\n", stdlib_dir.display()),
+        )
+        .unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&fake_python).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&fake_python, perms).unwrap();
+        }
+
+        assert_eq!(externally_managed_marker(&fake_python), None);
     }
 
     #[test]
