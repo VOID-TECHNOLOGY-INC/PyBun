@@ -789,3 +789,78 @@ fn install_resolves_manylinux_2_28_wheel_on_linux_x86_64() {
         );
     }
 }
+
+// =============================================================================
+// Issue #291: off-by-one wheel python_tag selection — install must select
+// wheels matching the *target* venv's Python, not whatever python3/python
+// happens to resolve on PATH.
+// =============================================================================
+
+fn index_cp_tag_mismatch_path() -> std::path::PathBuf {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("manifest dir");
+    std::path::Path::new(&manifest_dir)
+        .join("tests")
+        .join("fixtures")
+        .join("index_cp_tag_mismatch.json")
+}
+
+/// Create a fake venv whose `bin/python` (or `Scripts/python.exe` on Windows)
+/// reports a controlled `--version` output, independent of any real Python
+/// installation on the host or on PATH.
+#[cfg(unix)]
+fn fake_venv_reporting_version(root: &std::path::Path, version_line: &str) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let venv_dir = root.join(".fake-venv");
+    let bin_dir = venv_dir.join("bin");
+    fs::create_dir_all(&bin_dir).unwrap();
+
+    let python = bin_dir.join("python");
+    let mut file = fs::File::create(&python).unwrap();
+    use std::io::Write;
+    writeln!(file, "#!/bin/sh\necho '{version_line}'").unwrap();
+    let mut perms = file.metadata().unwrap().permissions();
+    perms.set_mode(0o755);
+    file.set_permissions(perms).unwrap();
+
+    fs::write(venv_dir.join("pyvenv.cfg"), "version = 3.12.5\n").unwrap();
+
+    venv_dir
+}
+
+#[cfg(unix)]
+#[test]
+fn install_selects_wheel_for_target_venv_python_not_path_python() {
+    // Regression test for Issue #291: pybun install resolved `cp311` wheels into a
+    // Python 3.12 venv. The fake venv here reports "Python 3.12.5" regardless of
+    // whatever python3/python is on PATH (which may be 3.11, 3.13, or anything
+    // else on the machine running this test) — so a passing test proves install
+    // consults the *venv's* interpreter, not PATH, when selecting wheels.
+    let temp = tempdir().unwrap();
+    let lock_path = temp.path().join("pybun.lockb");
+    let index = index_cp_tag_mismatch_path();
+    let venv = fake_venv_reporting_version(temp.path(), "Python 3.12.5");
+
+    bin()
+        .env("PYBUN_ENV", &venv)
+        .env_remove("PYBUN_FORCE_CP_TAG")
+        .args([
+            "install",
+            "--index",
+            index.to_str().unwrap(),
+            "--require",
+            "verpkg==1.0.0",
+            "--lock",
+            lock_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let lock = Lockfile::load_from_path(&lock_path).expect("lock loads");
+    let pkg = lock.packages.get("verpkg").expect("entry exists");
+    assert_eq!(
+        pkg.wheel, "verpkg-1.0.0-cp312-cp312-any.whl",
+        "should select the cp312 wheel matching the target venv's Python 3.12, \
+         not whatever python3/python resolves to on PATH"
+    );
+}

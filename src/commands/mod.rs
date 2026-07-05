@@ -18,7 +18,7 @@ use crate::resolver::parse_version_relaxed;
 use crate::resolver::{
     PackageIndex, Requirement, compare_versions, cp_tag_to_dotted_version, current_platform_tags,
     is_wheel_python_compatible, parse_wheel_tags, python_version_to_cp_tag, resolve,
-    select_artifact_for_platform,
+    select_artifact_for_platform, select_artifact_for_platform_with_cp,
 };
 use crate::sandbox;
 use crate::sbom;
@@ -1426,6 +1426,30 @@ async fn install(
         event.progress = Some(40);
     });
 
+    // Detect the CPython tag of the actual install target (PYBUN_ENV / PYBUN_PYTHON /
+    // project venv / system Python) *before* selecting wheels, so artifact selection
+    // matches the Python interpreter packages will actually be installed into.
+    // Selecting wheels against whatever `python3`/`python` happens to resolve on PATH
+    // (the previous behavior) can silently pick wheels for the wrong CPython ABI
+    // (Issue #291). This is read-only detection only — creating a project-local venv
+    // (and the associated system-Python safe-install-target guard) is deferred to the
+    // later "Install wheels" step below, so a resolve-only or failed install doesn't
+    // have the side effect of mutating the filesystem.
+    let working_dir = std::env::current_dir()?;
+    let target_env_probe = crate::env::find_python_env(&working_dir)?;
+
+    // PYBUN_FORCE_CP_TAG lets tests (and users) pin the CPython tag deterministically,
+    // bypassing interpreter detection entirely.
+    let active_cp_tag = std::env::var("PYBUN_FORCE_CP_TAG")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .or_else(|| {
+            get_python_version(&target_env_probe.python_path)
+                .ok()
+                .and_then(|v| python_version_to_cp_tag(&v))
+        })
+        .unwrap_or_else(|| "cp311".to_string());
+
     let platform_tags = current_platform_tags();
     let mut lock = Lockfile::new(
         vec!["3.11".into()],
@@ -1438,7 +1462,7 @@ async fn install(
     );
     let mut verified_artifacts = Vec::new();
     for pkg in resolution.packages.values() {
-        let selection = select_artifact_for_platform(pkg, &platform_tags);
+        let selection = select_artifact_for_platform_with_cp(pkg, &platform_tags, &active_cp_tag);
         if selection.from_source {
             let message = format!(
                 "no compatible pre-built wheel for {} {} on {}; source distributions are not supported for install",
@@ -1480,7 +1504,7 @@ async fn install(
     let mut download_items = Vec::new();
     let mut sdist_only_packages = Vec::new();
     for pkg in resolution.packages.values() {
-        let selection = select_artifact_for_platform(pkg, &platform_tags);
+        let selection = select_artifact_for_platform_with_cp(pkg, &platform_tags, &active_cp_tag);
         if let Some(url) = selection.url {
             // Construct filename from selection
             let filename = PathBuf::from(selection.filename);
@@ -1573,8 +1597,10 @@ async fn install(
             event.progress = Some(70);
         });
 
-        // Install wheels
-        let working_dir = std::env::current_dir()?;
+        // Install wheels. Re-resolve the target environment now that we know there is
+        // something to install; this is where venv creation / the system-Python guard
+        // actually mutates the filesystem (deferred from the cp-tag detection above so
+        // a resolve-only or failed install has no such side effect).
         let mut env = crate::env::find_python_env(&working_dir)?;
 
         if matches!(env.source, crate::env::EnvSource::System) {
