@@ -3065,11 +3065,20 @@ async fn run_script(
                         );
 
                         let platform_tags = crate::resolver::current_platform_tags();
+                        // Issue #294: select wheels for the *target venv's* Python
+                        // (already resolved above as `python_version`), not whatever
+                        // python3/python happens to resolve on PATH. Same root cause
+                        // as Issue #291, fixed for `pybun install` in #292.
+                        let active_cp_tag = python_version_to_cp_tag(&python_version)
+                            .unwrap_or_else(|| "cp311".to_string());
                         let mut download_futures = Vec::new();
 
                         for pkg in resolution.packages.values() {
-                            let selection =
-                                crate::resolver::select_artifact_for_platform(pkg, &platform_tags);
+                            let selection = crate::resolver::select_artifact_for_platform_with_cp(
+                                pkg,
+                                &platform_tags,
+                                &active_cp_tag,
+                            );
                             if selection.from_source {
                                 return Err(eyre!(
                                     "native installer does not support sdist for {}",
