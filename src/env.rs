@@ -119,11 +119,20 @@ pub fn find_python_env(working_dir: &Path) -> Result<PythonEnv> {
 
     // 4. Check .python-version file
     let discovered = if let Some((version_file, version)) = find_python_version_file(working_dir) {
-        if let Some(python) = find_python_for_version(&version) {
+        if let Some((python, is_pyenv_isolated)) = find_python_for_version(&version) {
             Some(PythonEnv {
                 python_path: python,
                 version: Some(version),
-                source: EnvSource::PythonVersionFile(version_file),
+                // A bare PATH-resolved interpreter (not a pyenv-managed,
+                // per-version install) is exactly as unmanaged as the plain
+                // system-Python fallback below, so it must be tagged
+                // `System` to receive the same safe-install-target handling
+                // (Issue #289 — .python-version previously bypassed it).
+                source: if is_pyenv_isolated {
+                    EnvSource::PythonVersionFile(version_file)
+                } else {
+                    EnvSource::System
+                },
             })
         } else {
             // Version file exists but no matching Python found
@@ -243,7 +252,14 @@ fn find_python_version_file(start_dir: &Path) -> Option<(PathBuf, String)> {
 
 /// Find Python interpreter for a specific version.
 /// Supports pyenv-style installations and common system paths.
-fn find_python_for_version(version: &str) -> Option<PathBuf> {
+///
+/// Returns `(path, is_pyenv_isolated)`. `is_pyenv_isolated` is `true` only when
+/// the interpreter came from a pyenv-managed, per-version install directory;
+/// it is `false` when resolution fell back to a bare `PATH` lookup (e.g.
+/// `python3.11` or `python3` found via `which`) — in that case the resolved
+/// interpreter is exactly as unmanaged as the plain system-Python fallback,
+/// and callers must treat it the same way (Issue #289).
+fn find_python_for_version(version: &str) -> Option<(PathBuf, bool)> {
     // Parse version parts
     let parts: Vec<&str> = version.split('.').collect();
     let (major, minor) = match parts.as_slice() {
@@ -254,21 +270,21 @@ fn find_python_for_version(version: &str) -> Option<PathBuf> {
 
     // Try pyenv first (if PYENV_ROOT is set or ~/.pyenv exists)
     if let Some(python) = find_pyenv_python(version) {
-        return Some(python);
+        return Some((python, true));
     }
 
     // Try versioned system Python (e.g., python3.11)
     if let Some(minor) = &minor {
         let versioned = format!("python{}.{}", major, minor);
         if let Some(path) = which_executable(&versioned) {
-            return Some(path);
+            return Some((path, false));
         }
     }
 
     // Try major version only (e.g., python3)
     let major_only = format!("python{}", major);
     if let Some(path) = which_executable(&major_only) {
-        return Some(path);
+        return Some((path, false));
     }
 
     None
@@ -617,6 +633,46 @@ mod tests {
         }
 
         assert_eq!(externally_managed_marker(&fake_python), None);
+    }
+
+    #[test]
+    fn python_version_file_bare_path_lookup_is_tagged_as_system() {
+        // Regression test for Issue #289: a `.python-version` file that
+        // resolves via a bare PATH lookup (no pyenv-managed install) must be
+        // tagged `EnvSource::System`, not `PythonVersionFile`, so it receives
+        // the same safe-install-target handling as the plain system-Python
+        // fallback (Issue #286). If pyenv is present on this machine, skip —
+        // this test specifically targets the non-pyenv fallback branch.
+        let pyenv_present = std::env::var("PYENV_ROOT").is_ok()
+            || dirs::home_dir().is_some_and(|h| h.join(".pyenv").exists());
+        if pyenv_present {
+            eprintln!("skipping: pyenv detected, test targets the non-pyenv PATH fallback");
+            return;
+        }
+
+        let Some(system_python) = find_system_python() else {
+            eprintln!("skipping: no system python available in test environment");
+            return;
+        };
+
+        let output = std::process::Command::new(&system_python)
+            .args([
+                "-c",
+                "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}', end='')",
+            ])
+            .output()
+            .expect("query system python version");
+        let version = String::from_utf8(output.stdout).expect("valid utf8 version string");
+
+        let temp = TempDir::new().unwrap();
+        fs::write(temp.path().join(".python-version"), &version).unwrap();
+
+        let env = find_python_env(temp.path()).expect("resolves an environment");
+        assert_eq!(
+            env.source,
+            EnvSource::System,
+            "a .python-version file resolved via bare PATH lookup must be tagged System"
+        );
     }
 
     #[test]
