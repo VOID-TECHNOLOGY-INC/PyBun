@@ -677,7 +677,20 @@ def _block_network():
     def _blocked(*_a, **_kw):
         _deny("network access", "blocked_network")
 
-    socket.socket = _blocked
+    def _blocked_connect(_self, *_a, **_kw):
+        _deny("network access", "blocked_network")
+
+    # Deny at the point of the actual network operation (connect) instead of
+    # replacing socket.socket itself. Reassigning socket.socket to a plain
+    # function corrupts unrelated stdlib import machinery: modules such as
+    # ssl.py do `from socket import socket` at import time and then subclass
+    # it (`class SSLSocket(socket):`), so once socket.socket is a function
+    # instead of a class, that class statement fails with a confusing
+    # low-level TypeError instead of a clean sandbox denial. Patching
+    # connect/connect_ex on the real class keeps subclassing working while
+    # still blocking every path that establishes an outbound connection.
+    socket.socket.connect = _blocked_connect
+    socket.socket.connect_ex = _blocked_connect
     socket.create_connection = _blocked
     if hasattr(socket, "socketpair"):
         socket.socketpair = _blocked
