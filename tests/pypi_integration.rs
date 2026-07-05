@@ -701,15 +701,33 @@ dependencies = ["app==1.0.0"]
         .expect("command runs");
 
     assert!(
-        output.status.success(),
-        "install --system should succeed: {}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    assert!(
         !project_root.join(".pybun").join("venv").exists(),
         "--system should not create a project-local venv"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // A venv's stdlib is the base interpreter's stdlib, so on distros that ship
+    // a PEP 668 EXTERNALLY-MANAGED marker (e.g. Ubuntu/Debian system Python),
+    // our fake "system" interpreter is itself externally-managed and the
+    // install must be refused rather than silently proceeding.
+    if pybun::env::externally_managed_marker(&venv_python(&fake_system_env)).is_some() {
+        assert!(
+            !output.status.success(),
+            "install --system should refuse an externally-managed interpreter: {stdout}"
+        );
+        assert!(
+            stdout.contains("E_INSTALL_EXTERNALLY_MANAGED"),
+            "should report the externally-managed diagnostic code: {stdout}"
+        );
+        return;
+    }
+
+    assert!(
+        output.status.success(),
+        "install --system should succeed: {}\n{}",
+        stdout,
+        String::from_utf8_lossy(&output.stderr)
     );
 
     let fake_system_site_packages = site_packages_of(&venv_python(&fake_system_env));
@@ -718,7 +736,6 @@ dependencies = ["app==1.0.0"]
         "wheel contents should be installed into system Python when --system is passed"
     );
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         stdout.contains("--system was specified"),
         "should warn explicitly when installing to system Python via --system: {stdout}"
