@@ -190,6 +190,120 @@ version = "0.1.0"
     assert!(lock.packages.is_empty());
 }
 
+// =============================================================================
+// Issue #293: `pybun lock` selected wheels via PATH python, ignoring the
+// target venv — same root cause as #291 (fixed for `pybun install` in #292).
+// =============================================================================
+
+fn index_cp_tag_mismatch_path() -> PathBuf {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("manifest dir");
+    Path::new(&manifest_dir)
+        .join("tests")
+        .join("fixtures")
+        .join("index_cp_tag_mismatch.json")
+}
+
+/// Create a fake venv whose `bin/python` (or `Scripts/python.exe` on Windows)
+/// reports a controlled `--version` output, independent of any real Python
+/// installation on the host or on PATH.
+#[cfg(unix)]
+fn fake_venv_reporting_version(root: &Path, version_line: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let venv_dir = root.join(".fake-venv");
+    let bin_dir = venv_dir.join("bin");
+    fs::create_dir_all(&bin_dir).unwrap();
+
+    let python = bin_dir.join("python");
+    let mut file = fs::File::create(&python).unwrap();
+    use std::io::Write;
+    writeln!(file, "#!/bin/sh\necho '{version_line}'").unwrap();
+    let mut perms = file.metadata().unwrap().permissions();
+    perms.set_mode(0o755);
+    file.set_permissions(perms).unwrap();
+
+    fs::write(venv_dir.join("pyvenv.cfg"), "version = 3.12.5\n").unwrap();
+
+    venv_dir
+}
+
+#[cfg(unix)]
+#[test]
+fn lock_project_selects_wheel_for_target_venv_python_not_path_python() {
+    // Regression test for Issue #293: `pybun lock` (project mode) resolved `cp311`
+    // wheels for a project whose venv reports Python 3.12.5, regardless of
+    // whatever python3/python is on PATH. A passing test proves `lock` consults
+    // the *venv's* interpreter, not PATH, when selecting wheels to record.
+    let temp = tempdir().unwrap();
+    let pyproject_path = temp.path().join("pyproject.toml");
+    let lock_path = temp.path().join("pybun.lockb");
+    let index = index_cp_tag_mismatch_path();
+    let venv = fake_venv_reporting_version(temp.path(), "Python 3.12.5");
+
+    let pyproject_content = r#"[project]
+name = "cp-tag-test"
+version = "0.1.0"
+dependencies = ["verpkg==1.0.0"]
+"#;
+    fs::write(&pyproject_path, pyproject_content).unwrap();
+
+    bin()
+        .current_dir(temp.path())
+        .env("PYBUN_ENV", &venv)
+        .env_remove("PYBUN_FORCE_CP_TAG")
+        .args(["--format=json", "lock", "--index", index.to_str().unwrap()])
+        .assert()
+        .success();
+
+    let lock = Lockfile::load_from_path(&lock_path).expect("lock loads");
+    let pkg = lock.packages.get("verpkg").expect("entry exists");
+    assert_eq!(
+        pkg.wheel, "verpkg-1.0.0-cp312-cp312-any.whl",
+        "should record the cp312 wheel matching the target venv's Python 3.12, \
+         not whatever python3/python resolves to on PATH"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn lock_script_selects_wheel_for_target_venv_python_not_path_python() {
+    // Same regression as above, but for `pybun lock --script` (PEP 723 mode).
+    let temp = tempdir().unwrap();
+    let script = temp.path().join("example.py");
+    let content = r#"# /// script
+# dependencies = ["verpkg==1.0.0"]
+# ///
+print("hello")
+"#;
+    fs::write(&script, content).unwrap();
+
+    let index = index_cp_tag_mismatch_path();
+    let lock_path = script_lock_path(&script);
+    let venv = fake_venv_reporting_version(temp.path(), "Python 3.12.5");
+
+    bin()
+        .env("PYBUN_ENV", &venv)
+        .env_remove("PYBUN_FORCE_CP_TAG")
+        .args([
+            "--format=json",
+            "lock",
+            "--script",
+            script.to_str().unwrap(),
+            "--index",
+            index.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let lock = Lockfile::load_from_path(&lock_path).expect("lock loads");
+    let pkg = lock.packages.get("verpkg").expect("entry exists");
+    assert_eq!(
+        pkg.wheel, "verpkg-1.0.0-cp312-cp312-any.whl",
+        "should record the cp312 wheel matching the target venv's Python 3.12, \
+         not whatever python3/python resolves to on PATH"
+    );
+}
+
 #[test]
 fn lock_without_script_or_pyproject_fails_with_actionable_error() {
     let temp = tempdir().unwrap();

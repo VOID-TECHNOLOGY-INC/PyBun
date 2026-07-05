@@ -1947,6 +1947,31 @@ async fn lock_dependencies(args: &LockArgs, collector: &mut EventCollector) -> R
         event.progress = Some(40);
     });
 
+    // Detect the CPython tag of the actual lock target's Python (PYBUN_ENV / PYBUN_PYTHON /
+    // project venv / system Python) *before* selecting wheels, so the wheel filenames recorded
+    // in the lockfile match the interpreter that will actually install them. Selecting wheels
+    // against whatever `python3`/`python` happens to resolve on PATH (the previous behavior)
+    // could silently record wheels for the wrong CPython ABI, producing the kind of
+    // `ImportError` #172's runtime compatibility check was built to detect after the fact
+    // (Issue #293; same root cause as #291, fixed for `pybun install` in #292). This is
+    // read-only detection only and covers both project-mode and `--script` PEP 723 locking,
+    // since both resolve the target interpreter relative to the current working directory
+    // (honoring PYBUN_ENV/PYBUN_PYTHON regardless of cwd).
+    let working_dir = std::env::current_dir()?;
+    let target_env_probe = crate::env::find_python_env(&working_dir)?;
+
+    // PYBUN_FORCE_CP_TAG lets tests (and users) pin the CPython tag deterministically,
+    // bypassing interpreter detection entirely.
+    let active_cp_tag = std::env::var("PYBUN_FORCE_CP_TAG")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .or_else(|| {
+            get_python_version(&target_env_probe.python_path)
+                .ok()
+                .and_then(|v| python_version_to_cp_tag(&v))
+        })
+        .unwrap_or_else(|| "cp311".to_string());
+
     let platform_tags = current_platform_tags();
     let mut lock = Lockfile::new(
         vec!["3.11".into()],
@@ -1960,7 +1985,7 @@ async fn lock_dependencies(args: &LockArgs, collector: &mut EventCollector) -> R
     let mut verified_artifacts = Vec::new();
 
     for pkg in resolution.packages.values() {
-        let selection = select_artifact_for_platform(pkg, &platform_tags);
+        let selection = select_artifact_for_platform_with_cp(pkg, &platform_tags, &active_cp_tag);
         if selection.from_source {
             let message = format!(
                 "no compatible pre-built wheel for {} {} on {}; falling back to source build",
