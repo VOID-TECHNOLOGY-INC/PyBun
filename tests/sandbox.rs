@@ -44,17 +44,20 @@ subprocess.run(["echo", "hello from child"])
 fn sandbox_can_opt_in_network_access() {
     let temp = tempdir().unwrap();
     let script = temp.path().join("network.py");
+
+    // Without opt-in, the actual connect attempt should be blocked and
+    // exit_code should be non-zero. The denial happens before any real
+    // syscall, so the destination does not need to exist.
     fs::write(
         &script,
         r#"
 import socket
-socket.socket()
+socket.socket().connect(("127.0.0.1", 1))
 print("network allowed")
 "#,
     )
     .unwrap();
 
-    // Without opt-in, socket creation should be blocked and exit_code should be non-zero.
     bin()
         .args([
             "--format=json",
@@ -66,7 +69,27 @@ print("network allowed")
         .code(1)
         .stdout(predicate::str::contains("\"exit_code\":1"));
 
-    // With opt-in, the script should run successfully and report the sandbox policy in JSON.
+    // With opt-in, connect should actually be attempted, so use a real
+    // listener bound to localhost so the script can succeed without
+    // depending on external network access.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let accept_thread = std::thread::spawn(move || {
+        let _ = listener.accept();
+    });
+
+    fs::write(
+        &script,
+        format!(
+            r#"
+import socket
+socket.socket().connect(("127.0.0.1", {port}))
+print("network allowed")
+"#
+        ),
+    )
+    .unwrap();
+
     bin()
         .args([
             "--format=json",
@@ -80,6 +103,57 @@ print("network allowed")
         .stdout(predicate::str::contains("\"exit_code\":0"))
         .stdout(predicate::str::contains("\"sandbox\""))
         .stdout(predicate::str::contains("\"allow_network\":true"));
+
+    accept_thread.join().unwrap();
+}
+
+/// Regression test for Issue #263: blocking network access via a stdlib
+/// import chain (urllib -> http.client -> ssl) must surface a clean
+/// sandbox denial, not a low-level TypeError from ssl.py's class-body
+/// compilation (`class SSLSocket(socket):`).
+#[test]
+fn sandbox_network_block_via_ssl_import_is_clean() {
+    let temp = tempdir().unwrap();
+    let script = temp.path().join("urlopen.py");
+    fs::write(
+        &script,
+        r#"
+import urllib.request
+urllib.request.urlopen("http://example.com", timeout=2)
+"#,
+    )
+    .unwrap();
+
+    let assert = bin()
+        .args([
+            "--format=json",
+            "run",
+            "--sandbox",
+            script.to_str().unwrap(),
+        ])
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains("\"exit_code\":1"));
+
+    let output = assert.get_output();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Must NOT contain the misleading low-level TypeError from ssl.py's
+    // class-body compilation.
+    assert!(
+        !stdout.contains("TypeError: function() argument"),
+        "sandbox network block leaked a raw TypeError instead of a clean denial: {stdout}"
+    );
+    assert!(
+        !stdout.contains("class SSLSocket(socket):"),
+        "sandbox network block corrupted ssl.py class-body compilation: {stdout}"
+    );
+
+    // Must contain a clean, purpose-built sandbox denial.
+    assert!(
+        stdout.contains("pybun sandbox: network access") && stdout.contains("blocked"),
+        "expected a clean sandbox network denial message, got: {stdout}"
+    );
 }
 
 #[test]
