@@ -1426,41 +1426,17 @@ async fn install(
         event.progress = Some(40);
     });
 
-    // Resolve the actual install target (PYBUN_ENV / PYBUN_PYTHON / project venv /
-    // system Python) *before* selecting wheels, so artifact selection matches the
-    // Python interpreter packages will actually be installed into. Selecting wheels
-    // against whatever `python3`/`python` happens to resolve on PATH (the previous
-    // behavior) can silently pick wheels for the wrong CPython ABI (Issue #291).
+    // Detect the CPython tag of the actual install target (PYBUN_ENV / PYBUN_PYTHON /
+    // project venv / system Python) *before* selecting wheels, so artifact selection
+    // matches the Python interpreter packages will actually be installed into.
+    // Selecting wheels against whatever `python3`/`python` happens to resolve on PATH
+    // (the previous behavior) can silently pick wheels for the wrong CPython ABI
+    // (Issue #291). This is read-only detection only — creating a project-local venv
+    // (and the associated system-Python safe-install-target guard) is deferred to the
+    // later "Install wheels" step below, so a resolve-only or failed install doesn't
+    // have the side effect of mutating the filesystem.
     let working_dir = std::env::current_dir()?;
-    let mut env = crate::env::find_python_env(&working_dir)?;
-
-    if matches!(env.source, crate::env::EnvSource::System) {
-        if args.system {
-            if let Some(marker) = crate::env::externally_managed_marker(&env.python_path) {
-                let message = format!(
-                    "refusing to install into externally-managed system Python (marker: {})",
-                    marker.display()
-                );
-                collector.error_with_code(
-                    "E_INSTALL_EXTERNALLY_MANAGED",
-                    message.clone(),
-                    "This interpreter is marked externally-managed (PEP 668). Create a virtual environment (e.g. `python3 -m venv .venv`) and re-run, or install with a non-managed interpreter.",
-                );
-                return Err(eyre!(message));
-            }
-
-            let warning =
-                "warning: PyBun is installing into system Python (--system was specified).";
-            eprintln!("{}", warning);
-            collector.warning(warning.to_string());
-        } else {
-            collector.info(
-                "No virtual environment found; creating project-local environment at .pybun/venv"
-                    .to_string(),
-            );
-            env = crate::env::create_project_venv(&working_dir)?;
-        }
-    }
+    let target_env_probe = crate::env::find_python_env(&working_dir)?;
 
     // PYBUN_FORCE_CP_TAG lets tests (and users) pin the CPython tag deterministically,
     // bypassing interpreter detection entirely.
@@ -1468,7 +1444,7 @@ async fn install(
         .ok()
         .filter(|v| !v.trim().is_empty())
         .or_else(|| {
-            get_python_version(&env.python_path)
+            get_python_version(&target_env_probe.python_path)
                 .ok()
                 .and_then(|v| python_version_to_cp_tag(&v))
         })
@@ -1621,8 +1597,40 @@ async fn install(
             event.progress = Some(70);
         });
 
-        // Install wheels into the target environment resolved earlier (before wheel
-        // selection), so the interpreter we install into matches the wheels we picked.
+        // Install wheels. Re-resolve the target environment now that we know there is
+        // something to install; this is where venv creation / the system-Python guard
+        // actually mutates the filesystem (deferred from the cp-tag detection above so
+        // a resolve-only or failed install has no such side effect).
+        let mut env = crate::env::find_python_env(&working_dir)?;
+
+        if matches!(env.source, crate::env::EnvSource::System) {
+            if args.system {
+                if let Some(marker) = crate::env::externally_managed_marker(&env.python_path) {
+                    let message = format!(
+                        "refusing to install into externally-managed system Python (marker: {})",
+                        marker.display()
+                    );
+                    collector.error_with_code(
+                        "E_INSTALL_EXTERNALLY_MANAGED",
+                        message.clone(),
+                        "This interpreter is marked externally-managed (PEP 668). Create a virtual environment (e.g. `python3 -m venv .venv`) and re-run, or install with a non-managed interpreter.",
+                    );
+                    return Err(eyre!(message));
+                }
+
+                let warning =
+                    "warning: PyBun is installing into system Python (--system was specified).";
+                eprintln!("{}", warning);
+                collector.warning(warning.to_string());
+            } else {
+                collector.info(
+                    "No virtual environment found; creating project-local environment at .pybun/venv"
+                        .to_string(),
+                );
+                env = crate::env::create_project_venv(&working_dir)?;
+            }
+        }
+
         collector.info(format!(
             "Installing packages into {}",
             env.python_path.display()
