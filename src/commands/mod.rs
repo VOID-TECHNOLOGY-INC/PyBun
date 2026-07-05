@@ -4949,7 +4949,6 @@ async fn run_upgrade(args: &UpgradeArgs, collector: &mut EventCollector) -> Resu
         let wheel_name = selection.filename.clone();
         let (hash, artifact) =
             ensure_selection_is_verifiable(pkg, &selection, collector, &source_index_url)?;
-        verification_artifacts.push(artifact);
 
         let new_pkg = Package {
             name: pkg.name.clone(),
@@ -4970,7 +4969,12 @@ async fn run_upgrade(args: &UpgradeArgs, collector: &mut EventCollector) -> Resu
             None => true, // New package
         };
 
+        // Only surface artifacts for packages that actually changed. Otherwise
+        // `detail.artifacts` includes every resolved package (changed or not),
+        // which contradicts `pybun outdated`'s "has an update" definition and
+        // misleads agents gating upgrade decisions on `outdated` (Issue #261).
         if is_change {
+            verification_artifacts.push(artifact);
             upgraded_packages.push(json!({
                 "package": pkg_name,
                 "from": from_version,
