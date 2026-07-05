@@ -741,3 +741,61 @@ dependencies = ["app==1.0.0"]
         "should warn explicitly when installing to system Python via --system: {stdout}"
     );
 }
+
+/// Regression test for issue #262 (recurrence of #202's failure mode): a
+/// corrupt/unreadable legacy `.json` PyPI cache entry must self-heal (be
+/// treated as a cache miss and re-fetched from the index) rather than
+/// propagating a fatal `E_RESOLVE_IO` error that blocks `install`.
+///
+/// This mirrors the live repro from the issue:
+/// ```text
+/// echo "not valid json{{{" > $PYBUN_PYPI_CACHE_DIR/app.json
+/// pybun --format=json add app
+/// ```
+#[test]
+fn install_self_heals_from_corrupt_legacy_json_cache() {
+    let temp = tempdir().unwrap();
+    let cache_dir = temp.path().join("cache");
+    fs::create_dir_all(&cache_dir).unwrap();
+    let server = MockServer::start();
+    let base = single_app_mock(&server);
+    let venv = ensure_venv(temp.path());
+
+    // Simulate a legacy `.json` cache entry left over from a pre-bincode-era
+    // `pybun`, or truncated by a crash during write - either way it fails to
+    // parse as valid JSON.
+    fs::write(cache_dir.join("app.json"), "not valid json{{{").unwrap();
+
+    fs::write(
+        temp.path().join("pyproject.toml"),
+        r#"[project]
+name = "demo"
+version = "0.1.0"
+dependencies = ["app==1.0.0"]
+"#,
+    )
+    .unwrap();
+
+    let output = bin()
+        .current_dir(temp.path())
+        .env("PYBUN_PYPI_BASE_URL", &base)
+        .env("PYBUN_PYPI_CACHE_DIR", cache_dir.to_str().unwrap())
+        .env("PYBUN_ENV", venv.to_str().unwrap())
+        .args(["--format=json", "install"])
+        .output()
+        .expect("command runs");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "install should self-heal past a corrupt legacy cache entry, not fail: {stdout}\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !stdout.contains("E_RESOLVE_IO"),
+        "a corrupt legacy cache entry must not surface a fatal E_RESOLVE_IO diagnostic: {stdout}"
+    );
+
+    let lock = Lockfile::load_from_path(temp.path().join("pybun.lockb")).unwrap();
+    assert!(lock.packages.contains_key("app"));
+}

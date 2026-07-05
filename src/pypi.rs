@@ -750,6 +750,13 @@ fn now_epoch_seconds() -> u64 {
 /// from the index is the correct recovery. `stale_notice` is set in that
 /// case so callers can surface an informational diagnostic without failing
 /// the command.
+///
+/// The same self-heal behavior applies to the legacy `.json` cache fallback
+/// (see issue #262, a recurrence of #202's failure mode): a `serde_json`
+/// decode failure there - e.g. a stale entry from a pre-bincode-era `pybun`,
+/// or a truncated write from a crash - is also treated as a cache miss
+/// rather than propagating a fatal `PyPiError` that would block
+/// `add`/`install`/`lock`.
 fn load_cache_from_paths(
     path: &Path,
     legacy_path: &Path,
@@ -771,23 +778,31 @@ fn load_cache_from_paths(
     }
     if legacy_path.exists() {
         let data = fs::read_to_string(legacy_path)?;
-        let entry: LegacyCacheEntry = serde_json::from_str(&data)
-            .map_err(|e| PyPiError::Parse(format!("cache decode error: {}", e)))?;
-        return Ok((
-            Some(CacheEntry {
-                policy: HttpCachePolicy {
-                    etag: entry.etag,
-                    last_modified: entry.last_modified,
-                    max_age: None,
-                    no_cache: false,
-                    no_store: false,
-                    fetched_at: now,
-                },
-                body: Vec::new(),
-                packages: entry.packages,
-            }),
-            None,
-        ));
+        return match serde_json::from_str::<LegacyCacheEntry>(&data) {
+            Ok(entry) => Ok((
+                Some(CacheEntry {
+                    policy: HttpCachePolicy {
+                        etag: entry.etag,
+                        last_modified: entry.last_modified,
+                        max_age: None,
+                        no_cache: false,
+                        no_store: false,
+                        fetched_at: now,
+                    },
+                    body: Vec::new(),
+                    packages: entry.packages,
+                }),
+                None,
+            )),
+            Err(e) => {
+                let notice = format!(
+                    "discarded unreadable legacy PyPI cache entry at {} ({}); re-fetching from index",
+                    legacy_path.display(),
+                    e
+                );
+                Ok((None, Some(notice)))
+            }
+        };
     }
     Ok((None, None))
 }
@@ -1040,6 +1055,43 @@ mod tests {
         let notices = client.take_stale_cache_notices();
         assert_eq!(notices.len(), 1);
         assert!(notices[0].contains("demo.bin"));
+
+        // Notices are drained after being taken.
+        assert!(client.take_stale_cache_notices().is_empty());
+    }
+
+    #[tokio::test]
+    async fn corrupt_legacy_json_cache_is_treated_as_cache_miss() {
+        // Regression test for issue #262 (recurrence of #202's failure
+        // mode): a corrupt/truncated legacy `.json` cache entry must
+        // self-heal the same way a corrupt `.bin` entry does - treated as
+        // a cache miss with an informational notice, not a fatal
+        // `PyPiError` that blocks `add`/`install`/`lock`.
+        let temp = tempdir().unwrap();
+        let cache_dir = temp.path().join("cache");
+        fs::create_dir_all(&cache_dir).unwrap();
+        fs::write(cache_dir.join("demo.json"), b"not valid json{{{").unwrap();
+
+        let client = PyPiClient {
+            base: Url::parse("https://pypi.org").unwrap(),
+            cache_dir,
+            http: reqwest::Client::new(),
+            offline: false,
+            package_once: Arc::new(OnceMap::new()),
+            deps_once: Arc::new(OnceMap::new()),
+            stale_cache_notices: Arc::new(Mutex::new(Vec::new())),
+        };
+
+        // Must not error - the unreadable legacy entry is discarded and
+        // treated as a cache miss so callers can re-fetch from the index.
+        let loaded = client.load_cache("demo").await.unwrap();
+        assert!(loaded.is_none());
+
+        // A notice about the discarded entry should be available for
+        // callers to surface as an info/warn diagnostic.
+        let notices = client.take_stale_cache_notices();
+        assert_eq!(notices.len(), 1);
+        assert!(notices[0].contains("demo.json"));
 
         // Notices are drained after being taken.
         assert!(client.take_stale_cache_notices().is_empty());
