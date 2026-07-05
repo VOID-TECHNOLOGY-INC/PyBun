@@ -141,6 +141,7 @@ pub async fn execute(cli: Cli) -> Result<()> {
 
                     let install_args = crate::cli::InstallArgs {
                         offline: args.offline,
+                        system: false,
                         requirements: Vec::new(), // install from pyproject.toml
                         index: None,
                         lock: std::path::PathBuf::from("pybun.lockb"),
@@ -1574,17 +1575,34 @@ async fn install(
 
         // Install wheels
         let working_dir = std::env::current_dir()?;
-        let env = crate::env::find_python_env(&working_dir)?;
+        let mut env = crate::env::find_python_env(&working_dir)?;
 
-        // Warn if installing to system Python while in a project
-        if matches!(env.source, crate::env::EnvSource::System)
-            && Project::discover(&working_dir).is_ok()
-        {
-            let warning =
-                "warning: PyBun is installing into system Python but a pyproject.toml exists.";
-            eprintln!("{}", warning);
-            eprintln!("hint: Create a .venv or set PYBUN_ENV to target a virtual environment.");
-            collector.warning(warning.to_string());
+        if matches!(env.source, crate::env::EnvSource::System) {
+            if args.system {
+                if let Some(marker) = crate::env::externally_managed_marker(&env.python_path) {
+                    let message = format!(
+                        "refusing to install into externally-managed system Python (marker: {})",
+                        marker.display()
+                    );
+                    collector.error_with_code(
+                        "E_INSTALL_EXTERNALLY_MANAGED",
+                        message.clone(),
+                        "This interpreter is marked externally-managed (PEP 668). Create a virtual environment (e.g. `python3 -m venv .venv`) and re-run, or install with a non-managed interpreter.",
+                    );
+                    return Err(eyre!(message));
+                }
+
+                let warning =
+                    "warning: PyBun is installing into system Python (--system was specified).";
+                eprintln!("{}", warning);
+                collector.warning(warning.to_string());
+            } else {
+                collector.info(
+                    "No virtual environment found; creating project-local environment at .pybun/venv"
+                        .to_string(),
+                );
+                env = crate::env::create_project_venv(&working_dir)?;
+            }
         }
 
         collector.info(format!(

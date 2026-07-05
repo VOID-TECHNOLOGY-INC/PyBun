@@ -208,7 +208,7 @@ When implementing install features, ensure project isolation:
 - Detect project root (`pyproject.toml`)
 - Create/use `.pybun/venv` or detect existing venv
 - Never install directly to system Python without explicit user intent
-- PR-A7 tracks making this the default behavior
+- `pybun install` auto-creates `.pybun/venv` when no venv/`PYBUN_ENV` is found; installing into system Python requires `--system` (PR-A7, Issue #286)
 
 ### Lockfile Integrity
 - Lock generation must record real sha256 hashes, not placeholders
@@ -353,4 +353,4 @@ See `docs/PLAN.md` Audit Follow-up Tracks for detailed tracking. Key items:
 - **PR-A4**: Integrate native test executor (`--backend=pybun`)
 - **PR-A5**: Support optional-dependencies and dependency groups
 - **PR-A6**: Add polling fallback for watch when `native-watch` disabled
-- **PR-A7**: Default to project-isolated environments (avoid system Python pollution)
+- **PR-A7**: Default to project-isolated environments (avoid system Python pollution) - ✅ DONE
