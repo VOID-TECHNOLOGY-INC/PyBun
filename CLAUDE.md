@@ -172,7 +172,7 @@ struct Package {
 }
 ```
 
-Hash verification is enforced (PR-A2): lock generation rejects missing/placeholder hashes (`E_VERIFY_MISSING_HASH`), and stale pre-PR-A2 lockfiles containing `sha256:placeholder` trigger a `W_LOCK_PLACEHOLDER_HASH` warning on `upgrade`.
+Hash verification is enforced (PR-A2). Lock generation rejects missing or placeholder hashes with `E_VERIFY_MISSING_HASH`. Stale pre-PR-A2 lockfiles containing `sha256:placeholder` trigger a `W_LOCK_PLACEHOLDER_HASH` warning on `upgrade`.
 
 ### MCP Integration
 
@@ -197,9 +197,9 @@ Features are implemented in stages (see `docs/PLAN.md` and `docs/SPECS.md`):
 - **stable**: Production-ready, full compatibility, CI coverage
 
 **Current Status** (as of v0.1.21):
-- ✅ Stable: `pybun install`, `pybun add/remove`, `pybun x` (with uv), `pybun run` (PEP 723 with auto-install), `pybun test` (native `--backend=pybun` executor integrated, pytest/unittest wrapper retained as default)
-- 🟡 Preview: `pybun watch` (native watching on macOS/Linux with `native-watch` feature; polling fallback available on standard builds), Windows support
-- 🔴 Stub: `pybun build` (partial), `pybun mcp serve` HTTP mode (default, not yet implemented — use `--stdio` for the implemented path)
+- ✅ Stable: `pybun install`, `pybun add/remove`, `pybun x` (with uv), `pybun run` (PEP 723 with auto-install), `pybun test` (pytest/unittest wrapper, the default backend)
+- 🟡 Preview: `pybun test --backend=pybun` (native executor; integrated per PR-A4, but the executor itself still emits `W_TEST_BACKEND_COMPAT_*` diagnostics for known pytest-plugin/fixture gaps), `pybun watch` (native watching on macOS/Linux with `native-watch` feature; polling fallback available on standard builds), Windows support
+- 🔴 Stub: `pybun build` (partial), `pybun mcp serve` (HTTP mode, the default when `--stdio` is omitted, is not yet implemented; use `--stdio` for the implemented path)
 
 ## Important Constraints
 
@@ -327,7 +327,11 @@ Self-update:
 Diagnostics / dry-run testing:
 - `PYBUN_CRASH_REPORT`: Control crash report generation
 - `PYBUN_SUPPORT_UPLOAD_URL`: Override the support-bundle upload endpoint
-- `PYBUN_TEST_DRY_RUN`, `PYBUN_WATCH_DRY_RUN`, `PYBUN_WATCH_MAX_ITERATIONS`, `PYBUN_X_DRY_RUN`, `PYBUN_X_DRY_RUN_EXIT_CODE`: Dry-run/iteration-limit overrides used in tests
+- `PYBUN_TEST_DRY_RUN`: Dry-run override used in tests
+- `PYBUN_WATCH_DRY_RUN`: Dry-run override used in tests
+- `PYBUN_WATCH_MAX_ITERATIONS`: Iteration-limit override used in tests
+- `PYBUN_X_DRY_RUN`: Dry-run override used in tests
+- `PYBUN_X_DRY_RUN_EXIT_CODE`: Simulated exit code override used in tests
 
 Note: `PYBUN_LOG` is currently only *set* by `pybun profile` (to record the profile's configured log level); no code path reads it back to control logging output, so it does not yet do anything if set manually.
 

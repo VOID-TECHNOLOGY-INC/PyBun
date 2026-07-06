@@ -70,5 +70,5 @@ Integration tests are located in `tests/` and unit tests in `src/`.
 
 ## Current Status (as of v0.1.21, 2026-07)
 - **Implemented:** Installer (M1), Runtime/Hot Reload (M2), Test Runner (M3), JSON/MCP Basics (M4).
-- **In Progress:** M5 (Builder & security hardening), M6 "Release Hardening" (mostly done — remote cache client + GC and workspace support shipped; telemetry opt-in controls remain open).
+- **In Progress:** M5 (Builder & security hardening), M6 "Release Hardening" (mostly done — remote cache client + GC, workspace support, and telemetry opt-in/privacy controls have all shipped; remaining M6 work is minor telemetry extras like custom endpoints/tags).
 - **See:** `docs/PLAN.md` for the active roadmap.

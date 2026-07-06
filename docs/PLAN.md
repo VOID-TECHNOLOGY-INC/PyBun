@@ -7,7 +7,7 @@
 - Target macOS/Linux first; keep Windows stubs/tests runnable in CI via matrix for API stability; unblock arm64 cross-build early.
 
 ## Status Note (重要)
-このPLANは「実装計画」中心で、各PRの項目が **"MVPの土台（stub/preview）まで含めて[DONE]"** になっている箇所があります。以下は Audit Follow-up Tracks（下記）確定後の最新状況。
+このPLANは「実装計画」中心で、各PRの項目が **"MVPの土台（stub/preview）まで含めて[DONE]"** になっている箇所があります。以下は、下記 Audit Follow-up Tracks の内容を反映した最新状況です。
 
 - **Installer/Lock**: ✅ `pybun install` は `pyproject.toml` から依存関係を読み込む通常フローに対応。`--require` と `--index` も引き続き使用可能（`--require` 指定時はpyprojectより優先）。`install` / `lock` / `upgrade` は lock 生成時に placeholder hash を拒否し、成功JSONに検証済み artifact 情報を含める（PR-A2, DONE）。旧 lockfile の placeholder hash は `upgrade` 時に drift warning を出す。
 - **Runner (PEP 723)**: ✅ dependencies 解析・自動インストール・cache 再利用を実装。`uv run` 委譲とネイティブ経路を切替可能。`run` 側の `--offline` 経路は今後の拡張余地あり。

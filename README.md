@@ -98,8 +98,8 @@ The AI receives structured JSON — no parsing required, no ambiguity.
 ## Status
 
 - **Current:** M1 (Fast Installer), M2 (Runtime Optimization), M3 (Tester), and M4 (MCP/JSON) are stable or near-stable.
-  - `pybun install` / `pybun x` (with uv backend) / `pybun run` / `pybun test` (native `--backend=pybun` executor integrated, pytest/unittest wrapper is default) are **Stable**.
-  - `pybun watch` (native monitoring on macOS/Linux, polling fallback on standard builds) is **Preview**.
+  - `pybun install` / `pybun x` (with uv backend) / `pybun run` / `pybun test` (default pytest/unittest wrapper backend) are **Stable**.
+  - `pybun test --backend=pybun` (native executor, integrated per PR-A4) and `pybun watch` (native monitoring on macOS/Linux, polling fallback on standard builds) are **Preview** — the native test backend still surfaces `W_TEST_BACKEND_COMPAT_*` diagnostics for known pytest-plugin/fixture gaps.
   - Windows support is **Preview**.
 - **Platforms:** macOS/Linux (arm64/amd64), Windows (preview)
 
