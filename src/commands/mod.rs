@@ -87,6 +87,7 @@ pub async fn execute(cli: Cli) -> Result<()> {
                     verified,
                     artifacts,
                     workspace,
+                    installed_count,
                 }) => {
                     collector.event(EventType::InstallComplete);
                     let detail = json!({
@@ -95,6 +96,7 @@ pub async fn execute(cli: Cli) -> Result<()> {
                         "verified": verified,
                         "artifacts": artifacts,
                         "workspace": workspace,
+                        "installed_count": installed_count,
                     });
                     (
                         "install".to_string(),
@@ -1337,7 +1339,7 @@ fn select_scoped_dependencies(
     Ok((project.dependencies(), None))
 }
 
-async fn install(
+pub(crate) async fn install(
     args: &crate::cli::InstallArgs,
     collector: &mut EventCollector,
 ) -> Result<InstallOutcome> {
@@ -1381,6 +1383,7 @@ async fn install(
             verified: true,
             artifacts: Vec::new(),
             workspace: workspace_detail.clone(),
+            installed_count: 0,
         });
     }
 
@@ -1536,7 +1539,7 @@ async fn install(
         event.progress = Some(50);
     });
 
-    let outcome = InstallOutcome {
+    let mut outcome = InstallOutcome {
         summary: format!(
             "resolved {} packages -> {}",
             lock.packages.len(),
@@ -1547,6 +1550,7 @@ async fn install(
         verified: true,
         artifacts: verified_artifacts,
         workspace: workspace_detail,
+        installed_count: 0,
     };
 
     if download_items.is_empty() {
@@ -1665,6 +1669,7 @@ async fn install(
             if wheel.exists() {
                 crate::installer::install_wheel(&wheel, &site_packages)
                     .map_err(|e| eyre!("failed to install wheel {}: {}", wheel.display(), e))?;
+                outcome.installed_count += 1;
             }
         }
 
@@ -1678,15 +1683,23 @@ async fn install(
 }
 
 #[derive(Debug)]
-struct InstallOutcome {
-    summary: String,
-    packages: Vec<String>,
-    lockfile: PathBuf,
-    verified: bool,
-    artifacts: Vec<Value>,
+pub(crate) struct InstallOutcome {
+    pub(crate) summary: String,
+    pub(crate) packages: Vec<String>,
+    pub(crate) lockfile: PathBuf,
+    pub(crate) verified: bool,
+    pub(crate) artifacts: Vec<Value>,
     /// Workspace selection details (scope, selected members, group), present
     /// only when dependencies were gathered from a workspace-aware source.
-    workspace: Option<Value>,
+    pub(crate) workspace: Option<Value>,
+    /// Number of wheels actually downloaded and installed into a site-packages
+    /// directory during this call. This is distinct from `packages.len()`,
+    /// which counts *resolved* packages regardless of whether any wheel was
+    /// actually fetched and installed (e.g. when no download URL is available
+    /// from the index, or when there was nothing new to install). Callers
+    /// (including the MCP `pybun_install` tool) must not claim packages were
+    /// "installed" unless this count is greater than zero.
+    pub(crate) installed_count: usize,
 }
 
 #[derive(Debug)]

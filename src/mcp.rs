@@ -1165,21 +1165,32 @@ impl McpServer {
             },
             Tool {
                 name: "pybun_install".to_string(),
-                description: "Install Python packages".to_string(),
+                description: "Install Python packages. Delegates to the same real install path as CLI `pybun install`: resolves dependencies (falling back to PyPI when no `index` is given), verifies real sha256 hashes, downloads wheels, and installs them into the target environment. Reports \"installed\" only when wheels were actually downloaded and installed; otherwise reports an honest \"resolved\" status.".to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
                         "requirements": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "List of requirements to install"
+                            "description": "List of requirements to install. If omitted, dependencies are read from pyproject.toml."
                         },
                         "offline": {
                             "type": "boolean",
-                            "description": "Use offline mode (cache only)"
+                            "description": "Use offline mode (cache only); honored by the underlying install path"
+                        },
+                        "system": {
+                            "type": "boolean",
+                            "description": "Allow installing into system Python instead of creating a project-local .pybun/venv (default: false)"
+                        },
+                        "index": {
+                            "type": "string",
+                            "description": "Path to a local index JSON file. If omitted, falls back to PyPI (same as the CLI)."
+                        },
+                        "lock": {
+                            "type": "string",
+                            "description": "Path to write the lockfile (default: pybun.lockb)"
                         }
-                    },
-                    "required": ["requirements"]
+                    }
                 }),
             },
             Tool {
@@ -1670,11 +1681,24 @@ impl McpServer {
         }
     }
 
+    /// Install packages by delegating to the same `install()` implementation
+    /// used by the CLI `pybun install` command (`crate::commands::install`).
+    ///
+    /// This intentionally reuses the CLI's real index selection (with PyPI
+    /// fallback when no fixture/local `index` is given), real hash
+    /// verification (no `sha256:placeholder`), real wheel download, and real
+    /// wheel installation into the target environment's site-packages.
+    ///
+    /// Issue #284: previously this method never downloaded or installed any
+    /// wheel, yet unconditionally reported `"status": "installed"` /
+    /// `"Resolved and installed N packages"`. It now reports `"installed"`
+    /// only when `InstallOutcome::installed_count > 0` (i.e. wheels were
+    /// actually fetched and installed); otherwise it reports an honest
+    /// `"resolved"` status describing exactly what happened (dependency
+    /// resolution and lockfile generation, without any wheel installation).
     async fn call_install(&self, args: Value) -> Result<String, String> {
-        use crate::index::load_index_from_path;
-        use crate::lockfile::{Lockfile, Package, PackageSource};
-        use crate::project::Project;
-        use crate::resolver::{Requirement, resolve};
+        use crate::resolver::Requirement;
+        use crate::schema::EventCollector;
 
         let requirements: Vec<String> = args
             .get("requirements")
@@ -1686,108 +1710,93 @@ impl McpServer {
             })
             .unwrap_or_default();
 
-        let _offline = args
+        let parsed_requirements: Vec<Requirement> = requirements
+            .iter()
+            .map(|s| s.parse().unwrap_or_else(|_| Requirement::any(s.trim())))
+            .collect();
+
+        // Honor `offline` (previously accepted but silently ignored).
+        let offline = args
             .get("offline")
             .and_then(|o| o.as_bool())
             .unwrap_or(false);
 
-        // Gather requirements: from args or from pyproject.toml
-        let parsed_reqs: Vec<Requirement> = if !requirements.is_empty() {
-            requirements
-                .iter()
-                .map(|s| s.parse().unwrap_or_else(|_| Requirement::any(s.trim())))
-                .collect()
-        } else {
-            // Try to load from pyproject.toml
-            let working_dir = std::env::current_dir().map_err(|e| e.to_string())?;
-            match Project::discover(&working_dir) {
-                Ok(project) => {
-                    let deps = project.dependencies();
-                    deps.iter()
-                        .map(|d| d.parse().unwrap_or_else(|_| Requirement::any(d.trim())))
-                        .collect()
-                }
-                Err(_) => {
-                    return Err("No requirements provided and no pyproject.toml found".to_string());
-                }
-            }
-        };
+        // Honor an explicit opt-in to installing into system Python, matching
+        // the CLI's `--system` safety guard (defaults to creating an isolated
+        // `.pybun/venv` rather than touching system Python).
+        let system = args
+            .get("system")
+            .and_then(|s| s.as_bool())
+            .unwrap_or(false);
 
-        if parsed_reqs.is_empty() {
-            return Ok(json!({
-                "status": "installed",
-                "packages": [],
-                "message": "No dependencies to install",
-            })
-            .to_string());
-        }
-
-        // Get index path
-        let index_path = args
+        let index = args
             .get("index")
             .and_then(|i| i.as_str())
             .map(PathBuf::from);
 
-        let index_result: Result<_, String> = if let Some(path) = index_path {
-            load_index_from_path(&path).map_err(|e| e.to_string())
-        } else {
-            let default_paths = vec![
-                PathBuf::from("fixtures/index.json"),
-                PathBuf::from("tests/fixtures/index.json"),
-            ];
-            let mut result: Result<_, String> = Err("No index file found".to_string());
-            for path in default_paths {
-                if path.exists() {
-                    result = load_index_from_path(&path).map_err(|e| e.to_string());
-                    if result.is_ok() {
-                        break;
-                    }
-                }
-            }
-            result
-        };
-
-        let index = index_result.map_err(|e| format!("Could not load index: {}", e))?;
-
-        // Resolve dependencies
-        let resolution = resolve(parsed_reqs.clone(), &index)
-            .await
-            .map_err(|e| e.to_string())?;
-
-        // Create lockfile
-        let lock_path = args
+        // Default lockfile name matches the CLI project path (`pybun.lockb`),
+        // not the previous MCP-only `pybun.lock` (see PR-A3 for the broader
+        // MCP/CLI naming-unification track; this fix inherits the CLI
+        // default as a side effect of delegating to the real install path).
+        let lock = args
             .get("lock")
             .and_then(|l| l.as_str())
             .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("pybun.lock"));
+            .unwrap_or_else(|| PathBuf::from("pybun.lockb"));
 
-        let mut lock = Lockfile::new(vec!["3.11".into()], vec!["unknown".into()]);
-        for pkg in resolution.packages.values() {
-            lock.add_package(Package {
-                name: pkg.name.clone(),
-                version: pkg.version.clone(),
-                source: PackageSource::Registry {
-                    index: "pypi".into(),
-                    url: "https://pypi.org/simple".into(),
-                },
-                wheel: format!("{}-{}-py3-none-any.whl", pkg.name, pkg.version),
-                hash: "sha256:placeholder".into(),
-                dependencies: pkg.dependencies.iter().map(ToString::to_string).collect(),
-            });
+        let install_args = crate::cli::InstallArgs {
+            offline,
+            system,
+            requirements: parsed_requirements,
+            index,
+            lock,
+            workspace: false,
+            member: None,
+            group: None,
+        };
+
+        let mut collector = EventCollector::new();
+        let result = crate::commands::install(&install_args, &mut collector).await;
+        let diagnostics = serde_json::to_value(collector.into_diagnostics()).unwrap_or(Value::Null);
+
+        match result {
+            Ok(outcome) => {
+                let really_installed = outcome.installed_count > 0;
+                let status = if really_installed {
+                    "installed"
+                } else {
+                    "resolved"
+                };
+                let message = if really_installed {
+                    format!(
+                        "Installed {} wheel(s) for {} resolved package(s) -> {}",
+                        outcome.installed_count,
+                        outcome.packages.len(),
+                        outcome.lockfile.display()
+                    )
+                } else {
+                    format!(
+                        "Resolved {} package(s) and wrote {} (no wheels were downloaded or installed)",
+                        outcome.packages.len(),
+                        outcome.lockfile.display()
+                    )
+                };
+
+                Ok(json!({
+                    "status": status,
+                    "packages": outcome.packages,
+                    "lockfile": outcome.lockfile.display().to_string(),
+                    "count": outcome.packages.len(),
+                    "installed_count": outcome.installed_count,
+                    "verified": outcome.verified,
+                    "artifacts": outcome.artifacts,
+                    "message": message,
+                    "diagnostics": diagnostics,
+                })
+                .to_string())
+            }
+            Err(e) => Err(e.to_string()),
         }
-
-        lock.save_to_path(&lock_path).map_err(|e| e.to_string())?;
-
-        let packages: Vec<String> = lock.packages.keys().cloned().collect();
-
-        Ok(json!({
-            "status": "installed",
-            "packages": packages,
-            "lockfile": lock_path.display().to_string(),
-            "count": packages.len(),
-            "message": format!("Resolved and installed {} packages", packages.len()),
-        })
-        .to_string())
     }
 
     fn call_run(&self, args: Value) -> Result<String, String> {
