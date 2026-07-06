@@ -156,6 +156,70 @@ urllib.request.urlopen("http://example.com", timeout=2)
     );
 }
 
+/// Regression test for Issue #300: blocking subprocess creation by
+/// reassigning subprocess.Popen to a plain function destroys the class
+/// identity, breaking `class Foo(subprocess.Popen): ...` subclassing and
+/// isinstance() checks. This mirrors the fix for Issue #263 (socket.socket).
+#[test]
+fn sandbox_subprocess_block_preserves_popen_class_identity() {
+    let temp = tempdir().unwrap();
+    let script = temp.path().join("popen_subclass.py");
+    fs::write(
+        &script,
+        r#"
+import subprocess
+
+class MyPopen(subprocess.Popen):
+    pass
+
+print("subclass ok")
+print(issubclass(MyPopen, subprocess.Popen))
+
+MyPopen(["echo", "hello from child"])
+print("should not reach here")
+"#,
+    )
+    .unwrap();
+
+    let assert = bin()
+        .args([
+            "--format=json",
+            "run",
+            "--sandbox",
+            script.to_str().unwrap(),
+        ])
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains("\"exit_code\":1"));
+
+    let output = assert.get_output();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Subclassing subprocess.Popen must succeed: class identity must be
+    // preserved, so this must NOT surface a low-level TypeError from the
+    // class-body compilation.
+    assert!(
+        stdout.contains("subclass ok"),
+        "sandbox subprocess block corrupted Popen class identity \
+         (subclassing failed before printing): {stdout}"
+    );
+    assert!(
+        !stdout.contains("TypeError"),
+        "sandbox subprocess block leaked a raw TypeError instead of a clean denial: {stdout}"
+    );
+
+    // Must contain a clean, purpose-built sandbox denial when the subclass
+    // is actually instantiated (i.e. a real spawn is attempted).
+    assert!(
+        stdout.contains("pybun sandbox: process creation") && stdout.contains("blocked"),
+        "expected a clean sandbox process-creation denial message, got: {stdout}"
+    );
+    assert!(
+        !stdout.contains("should not reach here"),
+        "subprocess spawn via Popen subclass was not blocked: {stdout}"
+    );
+}
+
 #[test]
 fn sandbox_allow_read_blocks_unauthorized_path() {
     let temp = tempdir().unwrap();

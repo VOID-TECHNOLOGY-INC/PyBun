@@ -639,7 +639,21 @@ def _block_subprocesses():
     def _blocked(*_a, **_kw):
         _deny("process creation", "blocked_subprocesses")
 
-    subprocess.Popen = _blocked
+    def _blocked_popen_init(_self, *_a, **_kw):
+        _deny("process creation", "blocked_subprocesses")
+
+    # Deny at the point of the actual spawn (Popen.__init__, which is what
+    # invokes _execute_child) instead of replacing subprocess.Popen itself.
+    # Reassigning subprocess.Popen to a plain function corrupts any code
+    # that subclasses it (`class MyPopen(subprocess.Popen): ...`, used by
+    # asyncio's subprocess transports and third-party process wrappers) or
+    # does isinstance()/issubclass() checks against it: once
+    # subprocess.Popen is a function instead of a class, the class
+    # statement fails with a confusing low-level TypeError instead of a
+    # clean sandbox denial. Patching __init__ on the real class keeps
+    # subclassing and isinstance checks working while still blocking every
+    # path that actually spawns a child process.
+    subprocess.Popen.__init__ = _blocked_popen_init
     subprocess.call = _blocked
     subprocess.run = _blocked
     subprocess.check_call = _blocked
