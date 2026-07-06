@@ -73,7 +73,7 @@ pybun --help
 
 **CLI Layer (`src/cli.rs`)**: Defines all commands and arguments using Clap. All commands support `--format=json` for machine-readable output.
 
-**Commands (`src/commands.rs`)**: Main execution dispatcher (200+ KB file). Routes all CLI commands to their implementations and collects events/diagnostics for JSON output.
+**Commands (`src/commands/`)**: Main execution dispatcher, split into `mod.rs` (core dispatch) plus focused modules (`maintenance.rs`, `test.rs`, `tooling.rs`). Routes all CLI commands to their implementations and collects events/diagnostics for JSON output.
 
 **Resolver (`src/resolver.rs`)**: Dependency resolution engine. Implements PEP 440 version specifiers (==, >=, >, <=, <, !=, ~=). Uses in-memory index with highest-version selection.
 
@@ -172,7 +172,7 @@ struct Package {
 }
 ```
 
-**Current Limitation**: Some lock paths use `sha256:placeholder` instead of real hashes. Full hash verification is tracked in PR-A2.
+Hash verification is enforced (PR-A2): lock generation rejects missing/placeholder hashes (`E_VERIFY_MISSING_HASH`), and stale pre-PR-A2 lockfiles containing `sha256:placeholder` trigger a `W_LOCK_PLACEHOLDER_HASH` warning on `upgrade`.
 
 ### MCP Integration
 
@@ -196,10 +196,10 @@ Features are implemented in stages (see `docs/PLAN.md` and `docs/SPECS.md`):
 - **preview**: Works but limited OS support, feature flags, or known issues
 - **stable**: Production-ready, full compatibility, CI coverage
 
-**Current Status** (as of v0.1.17):
-- ✅ Stable: `pybun install`, `pybun add/remove`, `pybun x` (with uv), `pybun run` (PEP 723 with auto-install)
-- 🟡 Preview: `pybun watch` (requires `native-watch` feature), `pybun test` (wrapper mode), Windows support
-- 🔴 Stub: `pybun build` (partial), `pybun mcp serve --http` (only stdio works)
+**Current Status** (as of v0.1.21):
+- ✅ Stable: `pybun install`, `pybun add/remove`, `pybun x` (with uv), `pybun run` (PEP 723 with auto-install), `pybun test` (native `--backend=pybun` executor integrated, pytest/unittest wrapper retained as default)
+- 🟡 Preview: `pybun watch` (native watching on macOS/Linux with `native-watch` feature; polling fallback available on standard builds), Windows support
+- 🔴 Stub: `pybun build` (partial), `pybun mcp serve` HTTP mode (default, not yet implemented — use `--stdio` for the implemented path)
 
 ## Important Constraints
 
@@ -296,20 +296,47 @@ cargo fmt -- --check
 
 ## Environment Variables
 
+Core:
 - `PYBUN_ENV`: Path to venv to use
 - `PYBUN_PYTHON`: Path to Python binary
 - `PYBUN_PROFILE`: Default profile (dev/prod/benchmark)
 - `PYBUN_TRACE`: Enable trace IDs in JSON output (set to "1")
-- `PYBUN_LOG`: Log level (debug/info/warn/error)
 - `PYBUN_HOME`: Override cache root directory
 - `PYBUN_TELEMETRY`: Override telemetry setting (0/1)
+- `PYBUN_PROGRESS`: Override `--progress` (auto/always/never)
+- `PYBUN_STACK_SIZE`: Override the Tokio runtime's custom stack size
+
+PyPI / caching:
+- `PYBUN_PYPI_BASE_URL`: Override the PyPI index base URL
+- `PYBUN_PYPI_CACHE_DIR`: Override the PyPI metadata cache directory
+- `PYBUN_PYPI_PYTHON_VERSION`: Override detected Python version for PyPI resolution
+- `PYBUN_FORCE_CP_TAG`: Force a specific CPython ABI tag for wheel selection
+- `PYBUN_BUILD_NO_CACHE`: Disable the build cache
+
+Sandbox / security:
+- `PYBUN_SANDBOX_ALLOW_NETWORK`: Allow network access under `--sandbox`
+- `PYBUN_AUDIT_LOG`: Override the MCP audit log path (`/dev/null` disables it)
+- `PYBUN_OSV_URL`: Override the OSV vulnerability database URL
+
+Self-update:
+- `PYBUN_SELF_UPDATE_BIN`: Override the binary path self-update writes to (testing)
+- `PYBUN_SELF_UPDATE_FETCH`: Override the update fetch behavior (testing)
+- `PYBUN_SELF_UPDATE_MANIFEST`: Override the update manifest URL/path
+- `PYBUN_SELF_UPDATE_TEST_FAIL_SWAP`: Force a swap failure to test rollback (testing)
+
+Diagnostics / dry-run testing:
+- `PYBUN_CRASH_REPORT`: Control crash report generation
+- `PYBUN_SUPPORT_UPLOAD_URL`: Override the support-bundle upload endpoint
+- `PYBUN_TEST_DRY_RUN`, `PYBUN_WATCH_DRY_RUN`, `PYBUN_WATCH_MAX_ITERATIONS`, `PYBUN_X_DRY_RUN`, `PYBUN_X_DRY_RUN_EXIT_CODE`: Dry-run/iteration-limit overrides used in tests
+
+Note: `PYBUN_LOG` is currently only *set* by `pybun profile` (to record the profile's configured log level); no code path reads it back to control logging output, so it does not yet do anything if set manually.
 
 ## Common Tasks
 
 ### Adding a New Command
 
 1. Add command enum variant in `src/cli.rs` with Args struct
-2. Add match arm in `src/commands.rs::execute()`
+2. Add match arm in `src/commands/mod.rs::execute()`
 3. Implement command logic (may be in separate module)
 4. Return `RenderDetail` with text summary and JSON detail
 5. Add events to collector for progress tracking
@@ -348,9 +375,9 @@ cargo fmt -- --check
 See `docs/PLAN.md` Audit Follow-up Tracks for detailed tracking. Key items:
 
 - **PR-A1**: Self-update real binary swap (download/verify/atomic replace/rollback) - ✅ DONE
-- **PR-A2**: Lockfile hash integrity (eliminate `sha256:placeholder`, enforce verification)
-- **PR-A3**: Unify MCP and CLI implementations (same lockfile naming, index behavior)
-- **PR-A4**: Integrate native test executor (`--backend=pybun`)
-- **PR-A5**: Support optional-dependencies and dependency groups
-- **PR-A6**: Add polling fallback for watch when `native-watch` disabled
+- **PR-A2**: Lockfile hash integrity (eliminate `sha256:placeholder`, enforce verification) - ✅ DONE
+- **PR-A3**: Unify MCP and CLI implementations (same lockfile naming, index behavior) - open
+- **PR-A4**: Integrate native test executor (`--backend=pybun`) - ✅ DONE
+- **PR-A5**: Support optional-dependencies and dependency groups - 🟡 IN PROGRESS
+- **PR-A6**: Add polling fallback for watch when `native-watch` disabled - ✅ DONE
 - **PR-A7**: Default to project-isolated environments (avoid system Python pollution) - ✅ DONE

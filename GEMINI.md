@@ -13,7 +13,7 @@ PyBun is an **Agent-First Python Runtime** written in Rust. It aims to replace e
 The project consists of a **Rust Core** (performance critical) and a **Python Bootstrap** (distribution/shim).
 
 ### Core Components (`src/`)
-- **CLI (`cli.rs`, `commands.rs`):** Entry point using `clap`.
+- **CLI (`cli.rs`, `commands/`):** Entry point using `clap`.
 - **Resolver (`resolver.rs`):** High-speed dependency resolver (SAT solver).
 - **Installer (`installer.rs`, `downloader.rs`):** Package installation and global caching.
 - **Runtime (`runtime.rs`, `module_finder.rs`):** Optimization layer for Python execution (lazy imports, hot reload).
@@ -68,7 +68,7 @@ Integration tests are located in `tests/` and unit tests in `src/`.
 3.  **Sandbox:** The `--sandbox` flag isolates execution. Relevant logic is in `src/sandbox.rs`.
 4.  **Diagnostics:** Error handling is structured. Look for `diagnostics` arrays in JSON responses.
 
-## Current Status (as of Jan 2026)
-- **Implemented:** Installer (M1), Runtime/Hot Reload (M2), JSON/MCP Basics (M4).
-- **In Progress:** Test Runner (M3), Remote Cache (M6).
+## Current Status (as of v0.1.21, 2026-07)
+- **Implemented:** Installer (M1), Runtime/Hot Reload (M2), Test Runner (M3), JSON/MCP Basics (M4).
+- **In Progress:** M5 (Builder & security hardening), M6 "Release Hardening" (mostly done — remote cache client + GC and workspace support shipped; telemetry opt-in controls remain open).
 - **See:** `docs/PLAN.md` for the active roadmap.
