@@ -9,6 +9,10 @@ fn bin() -> Command {
     cargo_bin_cmd!("pybun")
 }
 
+fn network_enabled() -> bool {
+    std::env::var_os("PYBUN_E2E_NETWORK").is_some()
+}
+
 #[test]
 fn run_simple_script() {
     let temp = tempdir().unwrap();
@@ -436,6 +440,90 @@ print("test cleanup field")
         .success()
         // cleanup should be false with caching (venv not cleaned up)
         .stdout(predicate::str::contains("\"cleanup\":false"));
+}
+
+#[test]
+fn run_pep723_self_heals_from_corrupt_deps_json_cache_entry() {
+    // Regression test for issue #299 (same bug class as #262): a corrupt
+    // `deps.json` cache entry (e.g. truncated by a crash mid-write) must be
+    // treated as a cache miss and trigger a rebuild-from-scratch, not crash
+    // `pybun run script.py` with a fatal error.
+    //
+    // This reproduces the live repro from the issue:
+    // ```text
+    // echo "not valid json{{{" > <pep723-envs>/<hash>/deps.json
+    // pybun run script.py
+    // ```
+    if !network_enabled() {
+        eprintln!(
+            "Skipping run_pep723_self_heals_from_corrupt_deps_json_cache_entry \
+             (PYBUN_E2E_NETWORK not set)"
+        );
+        return;
+    }
+
+    let temp = tempdir().unwrap();
+    let home = temp.path().join("pybun-home");
+    fs::create_dir_all(&home).unwrap();
+    let script = temp.path().join("pep723_corrupt_cache.py");
+
+    let content = r#"# /// script
+# dependencies = ["cowsay"]
+# ///
+print("test corrupt cache self-heal")
+"#;
+    fs::write(&script, content).unwrap();
+
+    // First run: builds a fresh cached environment and records deps.json.
+    bin()
+        .env("PYBUN_HOME", &home)
+        .args(["--format=json", "run", script.to_str().unwrap()])
+        .assert()
+        .success();
+
+    let envs_dir = home.join("pep723-envs");
+    let mut entries: Vec<_> = fs::read_dir(&envs_dir)
+        .expect("pep723-envs dir should exist after first run")
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_dir())
+        .collect();
+    assert_eq!(
+        entries.len(),
+        1,
+        "expected exactly one cached env after first run"
+    );
+    let env_root = entries.remove(0).path();
+    let deps_json = env_root.join("deps.json");
+    assert!(deps_json.exists(), "deps.json should exist after caching");
+
+    // Corrupt the cache entry to simulate a crash mid-write.
+    fs::write(&deps_json, "not valid json{{{").unwrap();
+
+    // Second run: must self-heal (rebuild) rather than crash.
+    let output = bin()
+        .env("PYBUN_HOME", &home)
+        .args(["--format=json", "run", script.to_str().unwrap()])
+        .output()
+        .expect("command runs");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "pybun run should self-heal past a corrupt PEP 723 cache entry, not fail: \
+         stdout={stdout}\nstderr={stderr}"
+    );
+    assert!(
+        stderr.contains("discarded unreadable PEP 723 cache entry"),
+        "expected a self-heal notice on stderr: {stderr}"
+    );
+
+    // The cache entry should have been rebuilt with valid JSON.
+    let rebuilt = fs::read_to_string(&deps_json).expect("deps.json should exist again");
+    assert!(
+        serde_json::from_str::<Value>(&rebuilt).is_ok(),
+        "rebuilt deps.json should be valid JSON: {rebuilt}"
+    );
 }
 
 // =============================================================================
