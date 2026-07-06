@@ -18,7 +18,7 @@ use crate::resolver::parse_version_relaxed;
 use crate::resolver::{
     PackageIndex, Requirement, compare_versions, cp_tag_to_dotted_version, current_platform_tags,
     is_wheel_python_compatible, parse_wheel_tags, python_version_to_cp_tag, resolve,
-    select_artifact_for_platform, select_artifact_for_platform_with_cp,
+    select_artifact_for_platform_with_cp,
 };
 use crate::sandbox;
 use crate::sbom;
@@ -4968,6 +4968,30 @@ async fn run_upgrade(args: &UpgradeArgs, collector: &mut EventCollector) -> Resu
     let mut verification_artifacts: Vec<Value> = Vec::new();
     let platform_tags = current_platform_tags();
 
+    // Detect the CPython tag of the actual project's Python (PYBUN_ENV / PYBUN_PYTHON /
+    // project venv / system Python) *before* re-selecting wheels, so the wheel filenames
+    // rewritten into the lockfile match the interpreter that will actually consume it.
+    // Selecting wheels against whatever `python3`/`python` happens to resolve on PATH (the
+    // previous behavior) could silently record wheels for the wrong CPython ABI, producing
+    // the kind of hash/ABI mismatch (or the #172 runtime compatibility warning) that only
+    // surfaces later when the rewritten lockfile is consumed (Issue #295; same root cause as
+    // #291, fixed for `pybun install` in #292, `pybun lock` in #293, and `pybun run` in #294).
+    // This is read-only detection only — `pybun upgrade` doesn't create venvs, so there's no
+    // side-effect-ordering concern here (unlike #292's install fix).
+    let target_env_probe = crate::env::find_python_env(&cwd)?;
+
+    // PYBUN_FORCE_CP_TAG lets tests (and users) pin the CPython tag deterministically,
+    // bypassing interpreter detection entirely.
+    let active_cp_tag = std::env::var("PYBUN_FORCE_CP_TAG")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .or_else(|| {
+            get_python_version(&target_env_probe.python_path)
+                .ok()
+                .and_then(|v| python_version_to_cp_tag(&v))
+        })
+        .unwrap_or_else(|| "cp311".to_string());
+
     // Use an empty lockfile if none exists for comparison base
     let base_lock =
         current_lock.unwrap_or_else(|| Lockfile::new(vec!["3.12".into()], vec!["any".into()]));
@@ -4979,7 +5003,7 @@ async fn run_upgrade(args: &UpgradeArgs, collector: &mut EventCollector) -> Resu
     );
 
     for (pkg_name, pkg) in &resolution.packages {
-        let selection = select_artifact_for_platform(pkg, &platform_tags);
+        let selection = select_artifact_for_platform_with_cp(pkg, &platform_tags, &active_cp_tag);
         let wheel_name = selection.filename.clone();
         let (hash, artifact) =
             ensure_selection_is_verifiable(pkg, &selection, collector, &source_index_url)?;
