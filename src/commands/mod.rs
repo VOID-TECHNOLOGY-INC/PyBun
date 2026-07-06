@@ -1337,6 +1337,39 @@ fn select_scoped_dependencies(
     Ok((project.dependencies(), None))
 }
 
+/// Emit a `W_EXTRAS_IGNORED` warning for every requirement that carries PEP 508
+/// extras (e.g. `typer[all]`). PyBun does not yet resolve extras' dependencies
+/// (full support is tracked as PR-A5 / Issue #285) — installing such a
+/// requirement silently drops the extra's dependencies, so this makes the
+/// degradation visible in both `--format=json` diagnostics and human-readable
+/// CLI output instead of failing loudly (the old, since-fixed 404 behavior
+/// from Issue #93) or succeeding silently with the wrong result (Issue #285).
+fn warn_on_ignored_extras(requirements: &[Requirement], collector: &mut EventCollector) {
+    for req in requirements {
+        if req.extras.is_empty() {
+            continue;
+        }
+        let extras_list = req.extras.join(", ");
+        let message = format!(
+            "extras ignored for '{}': pybun does not yet resolve PEP 508 extras, so only the base package will be installed (dropped: [{}])",
+            req.name, extras_list
+        );
+        eprintln!("warning: {}", message);
+        collector.diagnostic(
+            Diagnostic::warning(message)
+                .with_code("W_EXTRAS_IGNORED")
+                .with_suggestion(format!(
+                    "Full extras support is tracked in Issue #285 / PR-A5. Install '{}' extra dependencies manually if you need them.",
+                    req.name
+                ))
+                .with_context(json!({
+                    "package": req.name,
+                    "extras": req.extras,
+                })),
+        );
+    }
+}
+
 async fn install(
     args: &crate::cli::InstallArgs,
     collector: &mut EventCollector,
@@ -1369,6 +1402,8 @@ async fn install(
 
             (requirements, workspace_detail)
         };
+
+    warn_on_ignored_extras(&requirements, collector);
 
     // If no requirements (empty pyproject dependencies), create empty lockfile
     if requirements.is_empty() {
@@ -2335,6 +2370,12 @@ fn add_package(args: &crate::cli::PackageArgs) -> Result<AddOutcome> {
         let req: Requirement = package_spec
             .parse()
             .map_err(|e: String| eyre!("invalid package spec: {}", e))?;
+
+        // Note: PEP 508 extras (e.g. `typer[all]`) are not yet resolved
+        // (Issue #285). `pybun add` always chains into `install()` below,
+        // which re-parses the freshly written pyproject.toml dependency and
+        // emits the `W_EXTRAS_IGNORED` warning — so we don't duplicate it
+        // here.
 
         // Add to pyproject.toml
         project.add_dependency(package_spec);

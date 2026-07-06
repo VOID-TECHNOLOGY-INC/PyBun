@@ -79,6 +79,74 @@ fn install_outputs_structured_json() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// Issue #285: PEP 508 extras (e.g. `typer[all]`) must not be silently
+// dropped without a trace. `pybun install --require 'app[extra1,extra2]==1.0.0'`
+// should still resolve and install the base package (honest degradation —
+// full extras resolution is tracked separately as PR-A5) but must surface a
+// `W_EXTRAS_IGNORED` diagnostic explaining that the extras were ignored.
+// ---------------------------------------------------------------------------
+#[test]
+fn install_with_extras_outputs_w_extras_ignored_diagnostic() {
+    let temp = tempdir().unwrap();
+    let lock_path = temp.path().join("pybun.lockb");
+    let index = index_path();
+
+    let output = bin()
+        .args([
+            "install",
+            "--index",
+            index.to_str().unwrap(),
+            "--require",
+            "app[extra1,extra2]==1.0.0",
+            "--lock",
+            lock_path.to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let stdout = String::from_utf8(output).expect("utf8");
+    let parsed: Value = serde_json::from_str(&stdout).expect("json output");
+
+    assert_eq!(parsed["status"], "ok");
+
+    // The base package should still be installed (honest degradation).
+    let names: Vec<&str> = parsed["detail"]["packages"]
+        .as_array()
+        .expect("packages array")
+        .iter()
+        .filter_map(|p| p.as_str())
+        .collect();
+    assert!(
+        names.contains(&"app"),
+        "expected base package 'app' to be resolved: {names:?}"
+    );
+
+    let diags = parsed["diagnostics"].as_array().expect("diagnostics array");
+    let extras_diag = diags
+        .iter()
+        .find(|d| d.get("code") == Some(&Value::from("W_EXTRAS_IGNORED")))
+        .expect("expected W_EXTRAS_IGNORED diagnostic");
+
+    assert_eq!(extras_diag["level"], "warning");
+    let message = extras_diag["message"].as_str().expect("message string");
+    assert!(
+        message.contains("app") && message.contains("extra1") && message.contains("extra2"),
+        "diagnostic message should name the package and dropped extras: {message}"
+    );
+    assert_eq!(extras_diag["context"]["package"], "app");
+    let extras_ctx = extras_diag["context"]["extras"]
+        .as_array()
+        .expect("extras context array");
+    let extras_ctx: Vec<&str> = extras_ctx.iter().filter_map(|v| v.as_str()).collect();
+    assert_eq!(extras_ctx, vec!["extra1", "extra2"]);
+}
+
 #[test]
 fn install_error_outputs_diagnostics_in_json() {
     let temp = tempdir().unwrap();
