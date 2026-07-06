@@ -363,6 +363,15 @@ impl Pep723Cache {
     }
 
     /// Read metadata about a cached venv from a specific root directory.
+    ///
+    /// Returns `Ok(None)` when the entry is missing **or** unreadable/corrupt.
+    /// A `deps.json` that fails to decode (e.g. truncated by a crash mid-write)
+    /// is treated the same as a missing entry rather than propagated as a
+    /// fatal error - this mirrors the self-heal behavior already applied to
+    /// the PyPI cache for issue #262 (a recurrence of #202's failure mode).
+    /// Callers observe a plain cache miss and fall through to the existing
+    /// rebuild-from-scratch path, which already removes any stale venv and
+    /// metadata before recreating the environment.
     pub fn read_cache_entry(&self, root: &Path) -> Result<Option<CachedEnvInfo>> {
         let info_path = root.join("deps.json");
         if !info_path.exists() {
@@ -370,8 +379,17 @@ impl Pep723Cache {
         }
 
         let content = fs::read_to_string(&info_path)?;
-        let info: CachedEnvInfo = serde_json::from_str(&content)?;
-        Ok(Some(info))
+        match serde_json::from_str::<CachedEnvInfo>(&content) {
+            Ok(info) => Ok(Some(info)),
+            Err(e) => {
+                eprintln!(
+                    "info: discarded unreadable PEP 723 cache entry at {} ({}); rebuilding",
+                    info_path.display(),
+                    e
+                );
+                Ok(None)
+            }
+        }
     }
 
     /// Determine if the cached entry matches the expected cache key.
@@ -836,6 +854,31 @@ mod tests {
         };
 
         assert!(Pep723Cache::cache_entry_matches_key(&info, &key));
+    }
+
+    #[test]
+    fn read_cache_entry_self_heals_on_corrupt_json() {
+        // Regression test for issue #299 (same bug class as #262): a
+        // truncated/corrupt `deps.json` (e.g. from a crash mid-write) must
+        // be treated as a cache miss - `Ok(None)` - not propagated as a
+        // fatal `Pep723CacheError`, so `pybun run script.py` can self-heal
+        // by rebuilding the cached environment from scratch instead of
+        // crashing.
+        let temp = tempdir().unwrap();
+        let cache = Pep723Cache::with_root(temp.path());
+        let root = temp.path().join("env-root");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("deps.json"), b"not valid json{{{").unwrap();
+
+        let result = cache.read_cache_entry(&root);
+        assert!(
+            result.is_ok(),
+            "corrupt cache entry must not be a fatal error: {result:?}"
+        );
+        assert!(
+            result.unwrap().is_none(),
+            "corrupt cache entry must be treated as a cache miss"
+        );
     }
 
     #[test]
