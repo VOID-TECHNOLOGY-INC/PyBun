@@ -12,19 +12,15 @@ pybun telemetry enable
 pybun telemetry disable
 ```
 
-Per-invocation overrides:
-
-```bash
-pybun --telemetry run script.py
-pybun --no-telemetry run script.py
-```
-
 Environment controls:
 
 - `PYBUN_TELEMETRY=1|0` (override on/off)
-- `PYBUN_TELEMETRY_ENDPOINT` (custom endpoint URL)
-- `PYBUN_TELEMETRY_TAGS` (optional metadata, `key=value,key2=value2`)
 - `PYBUN_HOME` (controls where `telemetry.json` is stored)
+
+Planned, not yet implemented (tracked in `docs/PLAN.md` PR6.3): per-invocation
+`--telemetry`/`--no-telemetry` flags, `PYBUN_TELEMETRY_ENDPOINT` (custom endpoint
+URL), and `PYBUN_TELEMETRY_TAGS` (optional metadata). Do not rely on these yet —
+they do not exist in `src/cli.rs` today.
 
 ### Collected fields
 
@@ -34,7 +30,6 @@ Environment controls:
 - PyBun version
 - OS and architecture
 - CI flag (`CI` env present)
-- Optional `PYBUN_TELEMETRY_TAGS` metadata (redacted)
 
 ### Redaction list
 

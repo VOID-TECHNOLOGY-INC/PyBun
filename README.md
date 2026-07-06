@@ -97,9 +97,9 @@ The AI receives structured JSON — no parsing required, no ambiguity.
 
 ## Status
 
-- **Current:** M1 (Fast Installer), M2 (Runtime Optimization), and M4 (MCP/JSON) are partially stable.
-  - `pybun install` / `pybun x` (with uv backend) / `pybun runs` are **Stable**.
-  - `pybun watch` (Native) / `pybun test` (Wrapper) are **Preview**.
+- **Current:** M1 (Fast Installer), M2 (Runtime Optimization), M3 (Tester), and M4 (MCP/JSON) are stable or near-stable.
+  - `pybun install` / `pybun x` (with uv backend) / `pybun run` / `pybun test` (default pytest/unittest wrapper backend) are **Stable**.
+  - `pybun test --backend=pybun` (native executor, integrated per PR-A4) and `pybun watch` (native monitoring on macOS/Linux, polling fallback on standard builds) are **Preview** — the native test backend still surfaces `W_TEST_BACKEND_COMPAT_*` diagnostics for known pytest-plugin/fixture gaps.
   - Windows support is **Preview**.
 - **Platforms:** macOS/Linux (arm64/amd64), Windows (preview)
 
@@ -191,7 +191,7 @@ PEP 723 inline metadata is also supported:
 # ///
 import requests
 ```
-※ Currently, **metadata parsing and display are the main features (preview)**, with auto-install and isolated environment execution planned for phased rollout (see `docs/PLAN.md` for details).
+※ Metadata parsing, automatic dependency installation, and isolated-environment execution are all implemented and stable (cached per script/dependency/Python-version key; see `docs/PLAN.md` for details).
 
 ### Ad-hoc Execution (`pybun x`)
 
@@ -267,7 +267,9 @@ pybun lazy-import --allow mymodule --deny debug_tools --generate
 
 ```bash
 # Watch for file changes and re-run (currently preview)
-# Native watching is planned for phased rollout. For now, use --shell-command (external watcher).
+# Native watching (macOS/Linux, `native-watch` feature) or a polling fallback
+# (standard builds) is used automatically. --shell-command remains available
+# for an external watcher.
 pybun watch main.py
 
 # Watch a specific directory
@@ -278,6 +280,15 @@ pybun watch --show-config
 
 # Generate shell command for external watcher
 pybun watch --shell-command main.py
+```
+
+#### Dependency Drift
+
+Detect undeclared imports and unused declared dependencies:
+
+```bash
+pybun drift
+pybun drift --path ./src
 ```
 
 ### Profile Management
@@ -477,6 +488,12 @@ Enable trace IDs for debugging:
 PYBUN_TRACE=1 pybun --format=json run script.py
 ```
 
+Print or validate the JSON schema itself:
+```bash
+pybun schema print
+pybun schema check
+```
+
 ## Environment Variables
 
 | Variable | Description |
@@ -485,7 +502,15 @@ PYBUN_TRACE=1 pybun --format=json run script.py
 | `PYBUN_PYTHON` | Path to Python binary |
 | `PYBUN_PROFILE` | Default profile (dev/prod/benchmark) |
 | `PYBUN_TRACE` | Set to `1` to enable trace ID |
-| `PYBUN_LOG` | Log level (debug/info/warn/error) |
+| `PYBUN_HOME` | Override cache root directory |
+| `PYBUN_TELEMETRY` | Override telemetry setting (0/1) |
+| `PYBUN_PROGRESS` | Override `--progress` (auto/always/never) |
+| `PYBUN_PYPI_BASE_URL` | Override the PyPI index base URL |
+| `PYBUN_PYPI_CACHE_DIR` | Override the PyPI metadata cache directory |
+| `PYBUN_AUDIT_LOG` | Override the MCP audit log path (`/dev/null` disables it) |
+| `PYBUN_SANDBOX_ALLOW_NETWORK` | Allow network access under `--sandbox` |
+
+See `CLAUDE.md`'s Environment Variables section for the full list, including testing/dry-run-only variables.
 
 ## Release note automation
 
@@ -550,10 +575,10 @@ Full numbers: [docs/BENCHMARK_UV_COMPARISON.md](docs/BENCHMARK_UV_COMPARISON.md)
 - [x] M0: Repository & CI scaffold
 - [x] M1: Fast installer (lockfile, resolver, PEP 723)
 - [x] M2: Runtime optimization (module finder, lazy import, hot reload)
-- [ ] M3: Test runner (discovery, parallel execution, snapshots)
+- [x] M3: Test runner (discovery, parallel execution, snapshots)
 - [x] M4: JSON/MCP & diagnostics
 - [ ] M5: Builder & security
-- [ ] M6: Remote cache, workspaces
+- [ ] M6: Release hardening (remote cache, workspaces, telemetry)
 
 See `docs/PLAN.md` for details.
 

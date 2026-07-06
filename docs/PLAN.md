@@ -7,16 +7,15 @@
 - Target macOS/Linux first; keep Windows stubs/tests runnable in CI via matrix for API stability; unblock arm64 cross-build early.
 
 ## Status Note (重要)
-このPLANは「実装計画」中心で、各PRの項目が **"MVPの土台（stub/preview）まで含めて[DONE]"** になっている箇所があります。  
-直近の実装状況（`src/commands.rs`, `src/hot_reload.rs`, `src/mcp.rs`）に照らすと、次のフォローアップが必要です（= **大きな設計変更は不要だが、実装を"本物"にする段階**）。
+このPLANは「実装計画」中心で、各PRの項目が **"MVPの土台（stub/preview）まで含めて[DONE]"** になっている箇所があります。以下は、下記 Audit Follow-up Tracks の内容を反映した最新状況です。
 
-- **Installer/Lock**: ✅ `pybun install` は `pyproject.toml` から依存関係を読み込む通常フローに対応。`--require` と `--index` も引き続き使用可能（`--require` 指定時はpyprojectより優先）。`install` / `lock` / `upgrade` は lock 生成時に placeholder hash を拒否し、成功JSONに検証済み artifact 情報を含める。旧 lockfile の placeholder hash は `upgrade` 時に drift warning を出す。
+- **Installer/Lock**: ✅ `pybun install` は `pyproject.toml` から依存関係を読み込む通常フローに対応。`--require` と `--index` も引き続き使用可能（`--require` 指定時はpyprojectより優先）。`install` / `lock` / `upgrade` は lock 生成時に placeholder hash を拒否し、成功JSONに検証済み artifact 情報を含める（PR-A2, DONE）。旧 lockfile の placeholder hash は `upgrade` 時に drift warning を出す。
 - **Runner (PEP 723)**: ✅ dependencies 解析・自動インストール・cache 再利用を実装。`uv run` 委譲とネイティブ経路を切替可能。`run` 側の `--offline` 経路は今後の拡張余地あり。
-- **Hot Reload**: ✅ `native-watch` feature 有効時は macOS/Linux でネイティブ監視が実動。標準ビルド（feature無効）では preview 表示が中心で、fallback 監視実装が未完。
+- **Hot Reload**: ✅ `native-watch` feature 有効時は macOS/Linux でネイティブ監視が実動。標準ビルド（feature無効）ではポーリング fallback による監視が可能（PR-A6, DONE）。
 - **Tester**: ✅ AST discovery/診断は実装済み。`--backend=pybun` でネイティブ Rust 並列 executor が利用可能（PR-A4 にて統合完了）。pytest/unittest ラッパー経路は既存通り維持。
 - **Builder**: ✅ `pybun build` は `python -m build` ラッパー + キャッシュで実動。完全隔離（環境汚染を防ぐ実行基盤）としては段階導入の途中。
-- **MCP**: ✅ `mcp serve --stdio` と主要 tools は動作。ただし CLI と独立した実装経路が残り、挙動差（lock 拡張子・index 選択など）がある。HTTP mode は未実装。
-- **Self Update**: ⚠️ マニフェスト読込・更新判定・dry-run は実装済みだが、非 dry-run での実バイナリ置換（download/verify/swap）は未実装。
+- **MCP**: ✅ `mcp serve --stdio` と主要 tools は動作。ただし CLI と独立した実装経路が残り、挙動差（lock 拡張子・index 選択など）がある（PR-A3, 未完了）。HTTP mode は未実装。
+- **Self Update**: ✅ マニフェスト読込・更新判定・dry-run に加え、非 dry-run での実バイナリ置換（download/verify/swap/rollback）も実装済み（PR-A1, DONE）。
 
 ## Audit Follow-up Tracks (2026-02-08)
 
