@@ -1174,3 +1174,67 @@ fn run_pep723_uv_backend_does_not_pass_python_flag() {
         "uv must NOT be called with '--python' (causes cache miss on every warm run); args: {args:?}"
     );
 }
+
+// =============================================================================
+// Issue #301: CLI `run` path must self-heal a corrupt script lockfile
+//
+// `Lockfile::from_bytes` is used both by the MCP `pybun_doctor` path (which
+// already treats a decode failure as a non-fatal "corrupt" status) and by the
+// CLI `run` path via `load_script_lock`. Before this fix, `load_script_lock`
+// propagated a decode failure via `?`, so a corrupt `<script>.py.lock` file
+// (e.g. truncated by a crash mid-write) made `pybun run` fail hard instead of
+// falling back to the script's declared PEP 723 dependencies — the same bug
+// class as issue #299 (Pep723Cache::read_cache_entry) and issue #262 (PyPI
+// legacy cache).
+// =============================================================================
+
+#[test]
+fn run_self_heals_from_corrupt_script_lockfile() {
+    let temp = tempdir().unwrap();
+    let script = temp.path().join("plain.py");
+    fs::write(&script, "print('cli self-heal ok')\n").unwrap();
+
+    // Simulate a `<script>.py.lock` corrupted by a crash mid-write.
+    let lock_path = {
+        let mut p = script.as_os_str().to_os_string();
+        p.push(".lock");
+        std::path::PathBuf::from(p)
+    };
+    fs::write(&lock_path, b"not a valid lockfile{{{").unwrap();
+    assert!(lock_path.exists(), "corrupt lockfile must exist before run");
+
+    let output = bin()
+        .args(["--format=json", "run", script.to_str().unwrap()])
+        .output()
+        .expect("run pybun");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        output.status.success(),
+        "pybun run should self-heal past a corrupt script lockfile, not fail: \
+         stdout={stdout}\nstderr={stderr}"
+    );
+    assert!(
+        stderr.contains("discarded unreadable script lockfile"),
+        "expected a self-heal notice on stderr: {stderr}"
+    );
+
+    let value: Value =
+        serde_json::from_str(&stdout).unwrap_or_else(|_| panic!("valid JSON, got: {stdout}"));
+    assert_eq!(
+        value["status"], "ok",
+        "run should succeed despite the corrupt lockfile; stdout: {stdout}"
+    );
+
+    // The corrupt lockfile is left in place by `run` (it only reads script
+    // locks, it does not rewrite `<script>.py.lock`) — running `pybun lock
+    // --script` afterward is how a user regenerates it. What matters here is
+    // that `run` treats the decode failure as "no lock" rather than a fatal
+    // error, mirroring the MCP doctor path's self-heal behavior.
+    assert!(
+        lock_path.exists(),
+        "corrupt lockfile should still be present on disk after a self-healed run"
+    );
+}
