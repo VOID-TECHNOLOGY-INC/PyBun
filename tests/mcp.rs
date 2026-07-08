@@ -3,6 +3,8 @@
 //! PR4.3: MCP server `pybun mcp serve` with RPC endpoints
 
 use httpmock::prelude::*;
+use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::ffi::OsString;
 use std::fs;
 use std::io::Write;
@@ -605,6 +607,251 @@ fn mcp_tools_call_resolve_no_index() {
             || stdout.contains("requirements"),
         "pybun_resolve should handle missing index gracefully. Got: {}",
         stdout
+    );
+}
+
+// =============================================================================
+// Issue #284: pybun_install must not report false "installed" success
+// =============================================================================
+
+/// Minimal wheel payload (a valid zip) shared by the pybun_install honesty tests.
+fn issue284_wheel_bytes() -> Vec<u8> {
+    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let options = zip::write::SimpleFileOptions::default();
+    zip.start_file("dummy.txt", options)
+        .expect("start wheel entry");
+    zip.write_all(b"ok").expect("write wheel entry");
+    let cursor = zip.finish().expect("finish wheel zip");
+    cursor.into_inner()
+}
+
+fn issue284_wheel_sha256() -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(issue284_wheel_bytes());
+    hex::encode(hasher.finalize())
+}
+
+/// Set up a minimal fake PyPI (legacy JSON API) serving a single "app" package
+/// with one real, downloadable wheel. Returns the mock server's base URL.
+fn issue284_setup_pypi_mock(server: &MockServer) -> String {
+    let base = server.base_url();
+    let sha256 = issue284_wheel_sha256();
+
+    let project_body = json!({
+        "info": { "name": "app", "version": "1.0.0" },
+        "releases": {
+            "1.0.0": [
+                {
+                    "filename": "app-1.0.0-py3-none-any.whl",
+                    "packagetype": "bdist_wheel",
+                    "url": format!("{}/files/app-1.0.0-py3-none-any.whl", base),
+                    "yanked": false,
+                    "digests": { "sha256": sha256 }
+                }
+            ]
+        }
+    })
+    .to_string();
+    server.mock(|when, then| {
+        when.method(GET).path("/pypi/app/json");
+        then.status(200)
+            .header("Content-Type", "application/json")
+            .body(project_body.clone());
+    });
+
+    let meta_body = json!({
+        "info": { "name": "app", "version": "1.0.0", "requires_dist": [] }
+    })
+    .to_string();
+    server.mock(|when, then| {
+        when.method(GET).path("/pypi/app/1.0.0/json");
+        then.status(200)
+            .header("Content-Type", "application/json")
+            .body(meta_body.clone());
+    });
+
+    let wheel_body = issue284_wheel_bytes();
+    server.mock(move |when, then| {
+        when.method(GET).path("/files/app-1.0.0-py3-none-any.whl");
+        then.status(200)
+            .header("Content-Type", "application/octet-stream")
+            .body(wheel_body.clone());
+    });
+
+    base
+}
+
+/// Create (or reuse) a real venv at `<project_root>/.venv` using the host's python3.
+fn issue284_ensure_venv(project_root: &Path) -> std::path::PathBuf {
+    let venv = project_root.join(".venv");
+    if !venv.exists() {
+        let status = std::process::Command::new("python3")
+            .args(["-m", "venv", ".venv"])
+            .current_dir(project_root)
+            .status()
+            .expect("failed to create venv for pybun_install honesty test");
+        assert!(status.success(), "python3 -m venv failed: {:?}", status);
+    }
+    venv
+}
+
+/// Regression test for Issue #284: when no wheel is actually downloaded/installed
+/// (e.g. the given index only contains hash metadata, no download URLs), `pybun_install`
+/// must not claim `"status": "installed"` or fabricate an "installed N packages" message.
+/// It must also stop using the placeholder-only fixture-index lookup and fabricated
+/// `sha256:placeholder` hashes / invented wheel filenames from before this fix.
+#[test]
+fn mcp_tools_call_install_reports_resolved_not_installed_when_no_wheel_downloaded() {
+    let temp = tempdir().unwrap();
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("manifest dir");
+    let index_path = Path::new(&manifest_dir)
+        .join("tests")
+        .join("fixtures")
+        .join("index.json");
+    // Escape backslashes for JSON string safety (relevant on Windows paths).
+    let index_str = index_path.display().to_string().replace('\\', "\\\\");
+
+    let call_req = format!(
+        r#"{{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{{"name":"pybun_install","arguments":{{"requirements":["app==1.0.0"],"index":"{}"}}}}}}"#,
+        index_str
+    );
+
+    let stdout = mcp_call_in(&[call_req.as_str()], temp.path(), &[]);
+    let result = tool_result_json(&stdout, 2);
+
+    assert_eq!(
+        result["status"], "resolved",
+        "must not claim 'installed' when no wheel was actually downloaded/installed. Got: {result}"
+    );
+    assert_eq!(
+        result["installed_count"].as_u64(),
+        Some(0),
+        "no wheels were installed, so installed_count must be 0. Got: {result}"
+    );
+
+    let message = result["message"]
+        .as_str()
+        .unwrap_or_default()
+        .to_lowercase();
+    assert!(
+        !message.contains("installed") || message.contains("no wheels"),
+        "message must not fabricate an installation claim: {message}"
+    );
+
+    // Real hashes from the fixture must be used, never the fabricated
+    // "sha256:placeholder" the old implementation always wrote.
+    let artifacts = result["artifacts"].as_array().cloned().unwrap_or_default();
+    assert!(
+        !artifacts.is_empty(),
+        "resolved packages should carry verified artifact info: {result}"
+    );
+    for artifact in &artifacts {
+        let sha = artifact["sha256"].as_str().unwrap_or_default();
+        assert_ne!(
+            sha, "sha256:placeholder",
+            "must not fabricate placeholder hashes: {result}"
+        );
+        assert!(!sha.is_empty(), "hash should be non-empty: {result}");
+    }
+
+    // Lockfile naming should match the CLI's project lockfile convention (pybun.lockb),
+    // not the previous MCP-only "pybun.lock".
+    let lock_path = temp.path().join("pybun.lockb");
+    assert!(
+        lock_path.exists(),
+        "expected lockfile at {}",
+        lock_path.display()
+    );
+}
+
+/// Regression test for Issue #284: when a real wheel *is* downloaded and installed
+/// (via the same code path as CLI `pybun install`, here exercised through the
+/// PyPI fallback since no `index` argument is given), `pybun_install` must report
+/// `"status": "installed"` with a real, non-placeholder verified hash.
+#[test]
+fn mcp_tools_call_install_actually_installs_wheel_and_reports_honest_status() {
+    let temp = tempdir().unwrap();
+    let cache_dir = temp.path().join("cache");
+    let server = MockServer::start();
+    let base_url = issue284_setup_pypi_mock(&server);
+    let venv = issue284_ensure_venv(temp.path());
+
+    let call_req = r#"{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_install","arguments":{"requirements":["app==1.0.0"]}}}"#;
+
+    let stdout = mcp_call_in(
+        &[call_req],
+        temp.path(),
+        &[
+            ("PYBUN_PYPI_BASE_URL", OsString::from(base_url)),
+            (
+                "PYBUN_PYPI_CACHE_DIR",
+                OsString::from(cache_dir.to_str().unwrap()),
+            ),
+            ("PYBUN_ENV", OsString::from(venv.to_str().unwrap())),
+        ],
+    );
+
+    let result = tool_result_json(&stdout, 2);
+
+    assert_eq!(
+        result["status"], "installed",
+        "expected honest 'installed' status once a wheel was really downloaded and \
+         installed via the real install path (not fabricated). Got: {result}"
+    );
+    assert!(
+        result["installed_count"].as_u64().unwrap_or(0) > 0,
+        "installed_count should reflect the real wheel install: {result}"
+    );
+
+    let artifacts = result["artifacts"].as_array().cloned().unwrap_or_default();
+    assert!(
+        !artifacts.is_empty(),
+        "expected verified artifacts: {result}"
+    );
+    for artifact in &artifacts {
+        assert_ne!(
+            artifact["sha256"].as_str().unwrap_or_default(),
+            "sha256:placeholder",
+            "hash must be real, not fabricated: {result}"
+        );
+    }
+}
+
+/// Regression test for Issue #284: `offline` was previously accepted but silently
+/// ignored (`let _offline = ...`). With an empty cache and no local index, an
+/// offline install must fail honestly rather than silently reaching the network
+/// (via an ignored offline flag) or fabricating a success.
+#[test]
+fn mcp_tools_call_install_honors_offline_flag() {
+    let temp = tempdir().unwrap();
+    let cache_dir = temp.path().join("empty_cache");
+
+    let call_req = r#"{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_install","arguments":{"requirements":["app==1.0.0"],"offline":true}}}"#;
+
+    let stdout = mcp_call_in(
+        &[call_req],
+        temp.path(),
+        &[
+            (
+                "PYBUN_PYPI_CACHE_DIR",
+                OsString::from(cache_dir.to_str().unwrap()),
+            ),
+            // Deliberately unreachable: proves offline mode never dials out.
+            ("PYBUN_PYPI_BASE_URL", OsString::from("http://127.0.0.1:9")),
+        ],
+    );
+
+    let responses = json_rpc_lines(&stdout);
+    let response = responses
+        .iter()
+        .find(|v| v["id"].as_i64() == Some(2))
+        .unwrap_or_else(|| panic!("tools/call response with id 2 should be present: {stdout}"));
+
+    let is_error = response["result"]["isError"].as_bool().unwrap_or(false);
+    assert!(
+        is_error,
+        "offline install with an empty cache should fail honestly instead of \
+         claiming success or silently reaching the network. Got: {stdout}"
     );
 }
 

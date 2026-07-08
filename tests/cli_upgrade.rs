@@ -1,9 +1,10 @@
 use assert_cmd::Command;
 use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
-use pybun::lockfile::{Lockfile, PackageSource};
+use pybun::lockfile::{Lockfile, Package, PackageSource};
 use serde_json::Value;
 use std::fs;
+use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
 fn bin() -> Command {
@@ -474,5 +475,110 @@ dependencies = [
         vec!["pkg-a"],
         "upgrade --dry-run artifacts should only include packages that actually \
          changed (pkg-c is unchanged and must not appear), so it matches `outdated`"
+    );
+}
+
+// =============================================================================
+// Issue #295: `pybun upgrade` selected wheels via PATH python, ignoring the
+// target venv — same root cause as #291 (fixed for `pybun install` in #292,
+// `pybun lock` in #293, and `pybun run` in #294).
+// =============================================================================
+
+fn index_cp_tag_mismatch_path() -> PathBuf {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("manifest dir");
+    Path::new(&manifest_dir)
+        .join("tests")
+        .join("fixtures")
+        .join("index_cp_tag_mismatch.json")
+}
+
+/// Create a fake venv whose `bin/python` (or `Scripts/python.exe` on Windows)
+/// reports a controlled `--version` output, independent of any real Python
+/// installation on the host or on PATH.
+#[cfg(unix)]
+fn fake_venv_reporting_version(root: &Path, version_line: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let venv_dir = root.join(".fake-venv");
+    let bin_dir = venv_dir.join("bin");
+    fs::create_dir_all(&bin_dir).unwrap();
+
+    let python = bin_dir.join("python");
+    let mut file = fs::File::create(&python).unwrap();
+    use std::io::Write;
+    writeln!(file, "#!/bin/sh\necho '{version_line}'").unwrap();
+    let mut perms = file.metadata().unwrap().permissions();
+    perms.set_mode(0o755);
+    file.set_permissions(perms).unwrap();
+
+    fs::write(venv_dir.join("pyvenv.cfg"), "version = 3.12.5\n").unwrap();
+
+    venv_dir
+}
+
+#[cfg(unix)]
+#[test]
+fn upgrade_selects_wheel_for_target_venv_python_not_path_python() {
+    // Regression test for Issue #295: `pybun upgrade` re-resolves dependencies and
+    // rewrites pybun.lockb using select_artifact_for_platform(), which shells out to
+    // whatever python3/python resolves on PATH, ignoring the project's actual venv.
+    // Seed a lockfile that already recorded a (mismatched) cp311 wheel, then run
+    // `upgrade` against a fake venv that reports Python 3.12.5 — a passing test
+    // proves upgrade now consults the *venv's* interpreter, not PATH, when
+    // re-selecting wheels to record.
+    let temp = TempDir::new().unwrap();
+    let project_root = temp.path();
+    let index = index_cp_tag_mismatch_path();
+    let lock_path = project_root.join("pybun.lockb");
+    let venv = fake_venv_reporting_version(project_root, "Python 3.12.5");
+
+    fs::write(
+        project_root.join("pyproject.toml"),
+        r#"
+[project]
+name = "cp-tag-test"
+version = "0.1.0"
+dependencies = [
+    "verpkg==1.0.0"
+]
+"#,
+    )
+    .unwrap();
+
+    // Seed an existing lockfile recording the (mismatched) cp311 wheel, as if a
+    // prior `install`/`lock` had run against a PATH python reporting 3.11.
+    let mut seed_lock = Lockfile::new(vec!["3.11".into()], vec!["any".into()]);
+    seed_lock.add_package(Package {
+        name: "verpkg".to_string(),
+        version: "1.0.0".to_string(),
+        source: PackageSource::Registry {
+            index: "pypi".to_string(),
+            url: index.display().to_string(),
+        },
+        wheel: "verpkg-1.0.0-cp311-cp311-any.whl".to_string(),
+        hash: "sha256:verpkgcp311".to_string(),
+        dependencies: vec![],
+    });
+    seed_lock.save_to_path(&lock_path).unwrap();
+
+    bin()
+        .current_dir(project_root)
+        .env("PYBUN_ENV", &venv)
+        .env_remove("PYBUN_FORCE_CP_TAG")
+        .args([
+            "--format=json",
+            "upgrade",
+            "--index",
+            index.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let lock = Lockfile::load_from_path(&lock_path).expect("lock loads");
+    let pkg = lock.packages.get("verpkg").expect("entry exists");
+    assert_eq!(
+        pkg.wheel, "verpkg-1.0.0-cp312-cp312-any.whl",
+        "should record the cp312 wheel matching the target venv's Python 3.12, \
+         not whatever python3/python resolves to on PATH"
     );
 }

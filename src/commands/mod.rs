@@ -18,7 +18,7 @@ use crate::resolver::parse_version_relaxed;
 use crate::resolver::{
     PackageIndex, Requirement, compare_versions, cp_tag_to_dotted_version, current_platform_tags,
     is_wheel_python_compatible, parse_wheel_tags, python_version_to_cp_tag, resolve,
-    select_artifact_for_platform, select_artifact_for_platform_with_cp,
+    select_artifact_for_platform_with_cp,
 };
 use crate::sandbox;
 use crate::sbom;
@@ -87,6 +87,7 @@ pub async fn execute(cli: Cli) -> Result<()> {
                     verified,
                     artifacts,
                     workspace,
+                    installed_count,
                 }) => {
                     collector.event(EventType::InstallComplete);
                     let detail = json!({
@@ -95,6 +96,7 @@ pub async fn execute(cli: Cli) -> Result<()> {
                         "verified": verified,
                         "artifacts": artifacts,
                         "workspace": workspace,
+                        "installed_count": installed_count,
                     });
                     (
                         "install".to_string(),
@@ -1370,7 +1372,7 @@ fn warn_on_ignored_extras(requirements: &[Requirement], collector: &mut EventCol
     }
 }
 
-async fn install(
+pub(crate) async fn install(
     args: &crate::cli::InstallArgs,
     collector: &mut EventCollector,
 ) -> Result<InstallOutcome> {
@@ -1416,6 +1418,7 @@ async fn install(
             verified: true,
             artifacts: Vec::new(),
             workspace: workspace_detail.clone(),
+            installed_count: 0,
         });
     }
 
@@ -1571,7 +1574,7 @@ async fn install(
         event.progress = Some(50);
     });
 
-    let outcome = InstallOutcome {
+    let mut outcome = InstallOutcome {
         summary: format!(
             "resolved {} packages -> {}",
             lock.packages.len(),
@@ -1582,6 +1585,7 @@ async fn install(
         verified: true,
         artifacts: verified_artifacts,
         workspace: workspace_detail,
+        installed_count: 0,
     };
 
     if download_items.is_empty() {
@@ -1700,6 +1704,7 @@ async fn install(
             if wheel.exists() {
                 crate::installer::install_wheel(&wheel, &site_packages)
                     .map_err(|e| eyre!("failed to install wheel {}: {}", wheel.display(), e))?;
+                outcome.installed_count += 1;
             }
         }
 
@@ -1713,15 +1718,23 @@ async fn install(
 }
 
 #[derive(Debug)]
-struct InstallOutcome {
-    summary: String,
-    packages: Vec<String>,
-    lockfile: PathBuf,
-    verified: bool,
-    artifacts: Vec<Value>,
+pub(crate) struct InstallOutcome {
+    pub(crate) summary: String,
+    pub(crate) packages: Vec<String>,
+    pub(crate) lockfile: PathBuf,
+    pub(crate) verified: bool,
+    pub(crate) artifacts: Vec<Value>,
     /// Workspace selection details (scope, selected members, group), present
     /// only when dependencies were gathered from a workspace-aware source.
-    workspace: Option<Value>,
+    pub(crate) workspace: Option<Value>,
+    /// Number of wheels actually downloaded and installed into a site-packages
+    /// directory during this call. This is distinct from `packages.len()`,
+    /// which counts *resolved* packages regardless of whether any wheel was
+    /// actually fetched and installed (e.g. when no download URL is available
+    /// from the index, or when there was nothing new to install). Callers
+    /// (including the MCP `pybun_install` tool) must not claim packages were
+    /// "installed" unless this count is greater than zero.
+    pub(crate) installed_count: usize,
 }
 
 #[derive(Debug)]
@@ -5009,6 +5022,30 @@ async fn run_upgrade(args: &UpgradeArgs, collector: &mut EventCollector) -> Resu
     let mut verification_artifacts: Vec<Value> = Vec::new();
     let platform_tags = current_platform_tags();
 
+    // Detect the CPython tag of the actual project's Python (PYBUN_ENV / PYBUN_PYTHON /
+    // project venv / system Python) *before* re-selecting wheels, so the wheel filenames
+    // rewritten into the lockfile match the interpreter that will actually consume it.
+    // Selecting wheels against whatever `python3`/`python` happens to resolve on PATH (the
+    // previous behavior) could silently record wheels for the wrong CPython ABI, producing
+    // the kind of hash/ABI mismatch (or the #172 runtime compatibility warning) that only
+    // surfaces later when the rewritten lockfile is consumed (Issue #295; same root cause as
+    // #291, fixed for `pybun install` in #292, `pybun lock` in #293, and `pybun run` in #294).
+    // This is read-only detection only — `pybun upgrade` doesn't create venvs, so there's no
+    // side-effect-ordering concern here (unlike #292's install fix).
+    let target_env_probe = crate::env::find_python_env(&cwd)?;
+
+    // PYBUN_FORCE_CP_TAG lets tests (and users) pin the CPython tag deterministically,
+    // bypassing interpreter detection entirely.
+    let active_cp_tag = std::env::var("PYBUN_FORCE_CP_TAG")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .or_else(|| {
+            get_python_version(&target_env_probe.python_path)
+                .ok()
+                .and_then(|v| python_version_to_cp_tag(&v))
+        })
+        .unwrap_or_else(|| "cp311".to_string());
+
     // Use an empty lockfile if none exists for comparison base
     let base_lock =
         current_lock.unwrap_or_else(|| Lockfile::new(vec!["3.12".into()], vec!["any".into()]));
@@ -5020,7 +5057,7 @@ async fn run_upgrade(args: &UpgradeArgs, collector: &mut EventCollector) -> Resu
     );
 
     for (pkg_name, pkg) in &resolution.packages {
-        let selection = select_artifact_for_platform(pkg, &platform_tags);
+        let selection = select_artifact_for_platform_with_cp(pkg, &platform_tags, &active_cp_tag);
         let wheel_name = selection.filename.clone();
         let (hash, artifact) =
             ensure_selection_is_verifiable(pkg, &selection, collector, &source_index_url)?;
