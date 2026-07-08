@@ -68,6 +68,12 @@ pub struct Requirement {
     /// operator is represented as `[VersionSpec::Any]`.
     pub specs: Vec<VersionSpec>,
     pub marker: Option<String>,
+    /// PEP 508 extras requested on this requirement (e.g. `typer[all]` yields
+    /// `["all"]`). PyBun does not yet resolve or install the extra's
+    /// dependencies (tracked as PR-A5 / Issue #285) — callers that surface
+    /// diagnostics should warn when this is non-empty so the omission is not
+    /// silent. See `docs/PLAN.md`.
+    pub extras: Vec<String>,
 }
 
 impl Requirement {
@@ -76,6 +82,7 @@ impl Requirement {
             name: name.into(),
             specs: vec![VersionSpec::Exact(version.into())],
             marker: None,
+            extras: Vec::new(),
         }
     }
 
@@ -84,6 +91,7 @@ impl Requirement {
             name: name.into(),
             specs: vec![VersionSpec::Minimum(version.into())],
             marker: None,
+            extras: Vec::new(),
         }
     }
 
@@ -92,6 +100,7 @@ impl Requirement {
             name: name.into(),
             specs: vec![VersionSpec::MinimumExclusive(version.into())],
             marker: None,
+            extras: Vec::new(),
         }
     }
 
@@ -100,6 +109,7 @@ impl Requirement {
             name: name.into(),
             specs: vec![VersionSpec::MaximumInclusive(version.into())],
             marker: None,
+            extras: Vec::new(),
         }
     }
 
@@ -108,6 +118,7 @@ impl Requirement {
             name: name.into(),
             specs: vec![VersionSpec::Maximum(version.into())],
             marker: None,
+            extras: Vec::new(),
         }
     }
 
@@ -116,6 +127,7 @@ impl Requirement {
             name: name.into(),
             specs: vec![VersionSpec::NotEqual(version.into())],
             marker: None,
+            extras: Vec::new(),
         }
     }
 
@@ -124,6 +136,7 @@ impl Requirement {
             name: name.into(),
             specs: vec![VersionSpec::Compatible(version.into())],
             marker: None,
+            extras: Vec::new(),
         }
     }
 
@@ -132,6 +145,7 @@ impl Requirement {
             name: name.into(),
             specs: vec![VersionSpec::Any],
             marker: None,
+            extras: Vec::new(),
         }
     }
 
@@ -190,6 +204,35 @@ fn find_constraint_start(s: &str) -> Option<usize> {
     OPERATORS.iter().filter_map(|op| s.find(op)).min()
 }
 
+/// Strip a PEP 508 extras suffix (e.g. `typer[all]` or `typer[all,test]`) from
+/// `s`, returning the requirement text with the bracketed segment removed and
+/// the list of requested extras (trimmed, empty entries dropped).
+///
+/// Extras are not resolved by PyBun today (see `Requirement::extras` docs) —
+/// this only prevents the extras syntax from corrupting the package name
+/// (e.g. leaking into the PyPI metadata URL), it does not resolve them.
+fn extract_extras(s: &str) -> (String, Vec<String>) {
+    let Some(start) = s.find('[') else {
+        return (s.to_string(), Vec::new());
+    };
+    let Some(end_rel) = s[start..].find(']') else {
+        // Unterminated bracket — leave the string untouched and let downstream
+        // parsing surface a clear error rather than guessing.
+        return (s.to_string(), Vec::new());
+    };
+    let end = start + end_rel;
+    let extras: Vec<String> = s[start + 1..end]
+        .split(',')
+        .map(|e| e.trim().to_string())
+        .filter(|e| !e.is_empty())
+        .collect();
+
+    let mut rebuilt = String::with_capacity(s.len());
+    rebuilt.push_str(&s[..start]);
+    rebuilt.push_str(&s[end + 1..]);
+    (rebuilt, extras)
+}
+
 /// Parse a single comma-separated version specifier such as `>=1.0` or `!=1.4.*`.
 fn parse_version_spec(s: &str) -> Result<VersionSpec, String> {
     let s = s.trim();
@@ -228,6 +271,13 @@ impl FromStr for Requirement {
         } else {
             (normalized, None)
         };
+
+        // Extract PEP 508 extras (e.g. `typer[all]`) before parsing the name
+        // and version constraints, so the brackets don't leak into `name`
+        // (which would otherwise corrupt PyPI metadata lookups). Extras are
+        // recorded but not resolved — see `Requirement::extras`.
+        let (requirement_part, extras) = extract_extras(requirement_part);
+        let requirement_part = requirement_part.as_str();
 
         // Split into package name and the (possibly compound, comma-separated)
         // constraint string, handling both "package (>=1.0,<2.0)" and
@@ -270,6 +320,7 @@ impl FromStr for Requirement {
             name: name.to_string(),
             specs,
             marker: marker_part,
+            extras,
         })
     }
 }
@@ -1507,6 +1558,57 @@ mod tests {
         assert_eq!(req.name, "requests");
         assert_eq!(req.specs, vec![VersionSpec::Minimum("2.28.0".to_string())]);
         assert_eq!(req.marker, None);
+    }
+
+    // ====================================================================
+    // Issue #285: PEP 508 extras must not be silently dropped without a
+    // trace — the name must come out clean (no bracket leakage into PyPI
+    // metadata lookups) and the requested extras must be recorded so
+    // callers can emit a `W_EXTRAS_IGNORED` diagnostic.
+    // ====================================================================
+
+    #[test]
+    fn test_parse_requirement_with_single_extra() {
+        let req = Requirement::from_str("typer[all]").unwrap();
+
+        assert_eq!(req.name, "typer");
+        assert_eq!(req.specs, vec![VersionSpec::Any]);
+        assert_eq!(req.extras, vec!["all".to_string()]);
+    }
+
+    #[test]
+    fn test_parse_requirement_with_multiple_extras() {
+        let req = Requirement::from_str("requests[socks,security]").unwrap();
+
+        assert_eq!(req.name, "requests");
+        assert_eq!(
+            req.extras,
+            vec!["socks".to_string(), "security".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_parse_requirement_with_extras_and_version_constraint() {
+        let req = Requirement::from_str("typer[all]>=0.9.0").unwrap();
+
+        assert_eq!(req.name, "typer");
+        assert_eq!(req.specs, vec![VersionSpec::Minimum("0.9.0".to_string())]);
+        assert_eq!(req.extras, vec!["all".to_string()]);
+    }
+
+    #[test]
+    fn test_parse_requirement_with_extras_and_marker() {
+        let req = Requirement::from_str("typer[all]; python_version >= '3.8'").unwrap();
+
+        assert_eq!(req.name, "typer");
+        assert_eq!(req.extras, vec!["all".to_string()]);
+        assert_eq!(req.marker, Some("python_version >= '3.8'".to_string()));
+    }
+
+    #[test]
+    fn test_parse_requirement_without_extras_has_empty_vec() {
+        let req = Requirement::from_str("requests>=2.28.0").unwrap();
+        assert!(req.extras.is_empty());
     }
 
     // ====================================================================
