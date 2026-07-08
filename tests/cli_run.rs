@@ -439,6 +439,107 @@ print("test cleanup field")
 }
 
 // =============================================================================
+// Issue #267: cache_hit must report true on warm PEP 723 runs via the uv backend
+// =============================================================================
+
+/// Build a fake `uv` executable that mimics `uv run --script <path> [-- args...]`
+/// by simply forwarding execution to the system Python interpreter. This lets us
+/// exercise the `uv_run` PEP 723 backend path deterministically in CI without a
+/// network-dependent install, and without requiring a real `uv` binary.
+#[cfg(unix)]
+fn write_fake_uv(dir: &std::path::Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let uv_path = dir.join("uv");
+    let script = r#"#!/bin/sh
+set -e
+# Expected invocation: uv run --script <script> [-- args...]
+shift 2
+script="$1"
+shift
+if [ "$1" = "--" ]; then
+  shift
+fi
+exec python3 "$script" "$@"
+"#;
+    fs::write(&uv_path, script).unwrap();
+    let mut perms = fs::metadata(&uv_path).unwrap().permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&uv_path, perms).unwrap();
+    uv_path
+}
+
+#[cfg(unix)]
+#[test]
+fn run_pep723_uv_backend_reports_cache_hit_on_warm_run() {
+    let temp = tempdir().unwrap();
+    let fake_bin_dir = temp.path().join("fakebin");
+    fs::create_dir_all(&fake_bin_dir).unwrap();
+    write_fake_uv(&fake_bin_dir);
+
+    // Prepend our fake `uv` directory to PATH so `find_uv_executable()` picks it
+    // up ahead of any real `uv` that might also be installed.
+    let existing_path = std::env::var("PATH").unwrap_or_default();
+    let new_path = format!("{}:{}", fake_bin_dir.display(), existing_path);
+
+    let script = temp.path().join("warm_cache.py");
+    let content = r#"# /// script
+# dependencies = ["requests"]
+# ///
+print("hello from uv backend")
+"#;
+    fs::write(&script, content).unwrap();
+
+    let pybun_home = temp.path().join("home");
+
+    // First ("cold") run: no prior marker exists, so cache_hit must be false.
+    let cold_output = bin()
+        .env("PATH", &new_path)
+        .env("PYBUN_HOME", &pybun_home)
+        .args(["--format=json", "run", script.to_str().unwrap()])
+        .output()
+        .expect("run pybun (cold)");
+    assert!(
+        cold_output.status.success(),
+        "cold run failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&cold_output.stdout),
+        String::from_utf8_lossy(&cold_output.stderr)
+    );
+    let cold_stdout = String::from_utf8_lossy(&cold_output.stdout);
+    let cold_json: Value = serde_json::from_str(&cold_stdout)
+        .unwrap_or_else(|_| panic!("expected valid JSON, got: {cold_stdout}"));
+    assert_eq!(
+        cold_json["detail"]["cache_hit"],
+        Value::Bool(false),
+        "cold run should report cache_hit=false, got: {cold_json}"
+    );
+
+    // Second ("warm") run of the identical script + dependency signature must
+    // report cache_hit=true (Issue #267): previously this always reported false
+    // for the uv backend regardless of whether the environment was reused.
+    let warm_output = bin()
+        .env("PATH", &new_path)
+        .env("PYBUN_HOME", &pybun_home)
+        .args(["--format=json", "run", script.to_str().unwrap()])
+        .output()
+        .expect("run pybun (warm)");
+    assert!(
+        warm_output.status.success(),
+        "warm run failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&warm_output.stdout),
+        String::from_utf8_lossy(&warm_output.stderr)
+    );
+    let warm_stdout = String::from_utf8_lossy(&warm_output.stdout);
+    let warm_json: Value = serde_json::from_str(&warm_stdout)
+        .unwrap_or_else(|_| panic!("expected valid JSON, got: {warm_stdout}"));
+    assert_eq!(
+        warm_json["detail"]["cache_hit"],
+        Value::Bool(true),
+        "warm run should report cache_hit=true, got: {warm_json}"
+    );
+}
+
+// =============================================================================
 // Issue #155: --format=json must report status "error" when child exits non-zero
 // =============================================================================
 
