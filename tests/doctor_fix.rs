@@ -114,6 +114,55 @@ fn doctor_fix_surfaces_stale_pypi_cache_remediation() {
     );
 }
 
+/// Write a corrupt legacy `.json` PyPI cache entry (see issue #268 / #263):
+/// a malformed JSON payload that fails to parse as `LegacyCacheEntry`.
+fn write_corrupt_legacy_pypi_cache_entry(dir: &std::path::Path) {
+    fs::create_dir_all(dir).unwrap();
+    fs::write(dir.join("requests.json"), b"not valid json{{{").unwrap();
+}
+
+#[test]
+fn doctor_detects_corrupt_legacy_pypi_cache_json_entry() {
+    let temp = tempdir().unwrap();
+    let pypi_cache = temp.path().join("pypi-cache");
+    write_corrupt_legacy_pypi_cache_entry(&pypi_cache);
+
+    let output = pybun_bin()
+        .env("PYBUN_PYPI_CACHE_DIR", &pypi_cache)
+        .args(["--format=json", "doctor"])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+
+    // Doctor must not silently report all-clear when a cache entry is corrupt.
+    let checks = json["detail"]["checks"].as_array().expect("checks array");
+    let pypi_check = checks
+        .iter()
+        .find(|c| c["name"] == "pypi_cache")
+        .expect("pypi_cache check should be present");
+    assert_eq!(
+        pypi_check["stale_count"], 1,
+        "corrupt legacy .json cache entry should be counted as stale/corrupt"
+    );
+
+    let diagnostics = json["diagnostics"]
+        .as_array()
+        .expect("diagnostics should be an array");
+    assert!(
+        diagnostics.iter().any(
+            |d| d["code"] == "I_DOCTOR_STALE_PYPI_CACHE" || d["code"] == "W_PYPI_CACHE_CORRUPT"
+        ),
+        "doctor should emit a non-fatal diagnostic pointing at the corrupt cache entry, got: {:?}",
+        diagnostics
+    );
+
+    // The overall doctor run must stay healthy - this is a warning, not fatal.
+    assert_eq!(json["status"], "ok");
+}
+
 #[test]
 fn doctor_fix_apply_removes_stale_pypi_cache_entry() {
     let temp = tempdir().unwrap();
