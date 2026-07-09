@@ -76,3 +76,66 @@ dependencies = [
     // Testing logic works with mock index is better.
     // I'll skip complex setup for now and focus on `fails_without_lockfile` and maybe JSON flag check.
 }
+
+/// Regression test for Issue #325 (same pattern as #301/#299/#262): a
+/// `pybun.lockb` that exists but fails to decode (e.g. truncated by a crash
+/// mid-write) must be self-healed - treated as "no current lock" - rather
+/// than causing `pybun outdated` to hard-fail with a misleading "Run `pybun
+/// install`" suggestion (which won't fix an existing corrupt lockfile).
+#[test]
+fn outdated_self_heals_from_corrupt_lockfile() {
+    let temp = TempDir::new().unwrap();
+    let project_root = temp.path();
+
+    let pyproject = r#"
+[project]
+name = "test-outdated"
+version = "0.1.0"
+dependencies = ["requests"]
+"#;
+    fs::write(project_root.join("pyproject.toml"), pyproject).unwrap();
+
+    // Simulate a lockfile corrupted/truncated by a crash mid-write.
+    fs::write(
+        project_root.join("pybun.lockb"),
+        "this is not a valid bincode lockfile, truncated garbage",
+    )
+    .unwrap();
+
+    let output = bin()
+        .current_dir(project_root)
+        .args(["--format=json", "outdated"])
+        .output()
+        .expect("pybun outdated runs");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        output.status.success(),
+        "pybun outdated should self-heal past a corrupt pybun.lockb, not fail: \
+         stdout={stdout}\nstderr={stderr}"
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_str(&stdout).expect("valid JSON output from outdated");
+    assert_eq!(json["status"], "ok");
+
+    let diagnostics = json["diagnostics"]
+        .as_array()
+        .expect("diagnostics array present");
+    assert!(
+        diagnostics.iter().any(|d| {
+            d["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("pybun.lockb") && m.contains("no current lock"))
+        }),
+        "expected a self-heal diagnostic about the discarded corrupt lockfile: {diagnostics:?}"
+    );
+
+    // Must not claim the lockfile is simply missing.
+    assert!(
+        !stdout.contains("pybun.lockb not found"),
+        "corrupt lockfile should not be reported as missing: {stdout}"
+    );
+}
