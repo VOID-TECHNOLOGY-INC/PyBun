@@ -2780,7 +2780,50 @@ async fn run_script(
         {
             if let Some(uv_path) = crate::env::find_uv_executable() {
                 pep723_backend = "uv_run".to_string();
-                (RunProgram::Uv { uv_path }, None, false)
+
+                // `uv run --script` manages its own venv/wheel cache internally, so PyBun
+                // has no direct signal for whether this invocation was served from cache.
+                // Mirror the same cache-key semantics used by the native "pybun" backend
+                // (script path + dependency set + Python version + index settings + lock
+                // hash) to detect a repeat ("warm") invocation of this exact script, so
+                // `--format=json` can report `cache_hit` accurately instead of always
+                // reporting `false` (Issue #267).
+                let pep_cache =
+                    Pep723Cache::new().map_err(|e| eyre!("failed to initialize cache: {}", e))?;
+                let (base_python, _env_source) = find_python_interpreter()?;
+                let python_version = get_python_version(Path::new(&base_python))?;
+                let index_settings = pep723_index_settings(pep723_metadata.as_ref());
+                let cache_key = Pep723CacheKey::new(
+                    &install_deps,
+                    &python_version,
+                    &index_settings,
+                    lock_hash.as_deref(),
+                );
+                let env_root = pep_cache
+                    .script_env_root(&script_path)
+                    .map_err(|e| eyre!("failed to resolve script env root: {}", e))?;
+                let _env_lock = pep_cache
+                    .lock_script_env(&env_root)
+                    .map_err(|e| eyre!("failed to lock script env: {}", e))?;
+
+                let uv_cache_hit = pep_cache
+                    .read_cache_entry(&env_root)
+                    .map_err(|e| eyre!("failed to read cache entry: {}", e))?
+                    .map(|info| Pep723Cache::cache_entry_matches_key(&info, &cache_key))
+                    .unwrap_or(false);
+
+                pep_cache
+                    .record_cache_entry_at(&env_root, &cache_key)
+                    .map_err(|e| eyre!("failed to record cache entry: {}", e))?;
+
+                if uv_cache_hit {
+                    collector.info(format!(
+                        "Cache hit: reusing uv-managed environment (hash: {})",
+                        &cache_key.hash[..8]
+                    ));
+                }
+
+                (RunProgram::Uv { uv_path }, None, uv_cache_hit)
             } else if pep723_backend_setting == "uv" {
                 return Err(eyre!(
                     "PYBUN_PEP723_BACKEND=uv requires `uv` to be available in PATH"
