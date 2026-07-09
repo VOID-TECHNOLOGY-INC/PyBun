@@ -324,39 +324,54 @@ pub async fn execute(cli: Cli) -> Result<()> {
                 }) => {
                     collector.event(EventType::ScriptEnd);
 
-                    // Enrich diagnostics with structured traceback when the script failed
-                    if exit_code != 0
-                        && let Some(tb) = stderr.as_deref().and_then(crate::traceback::parse)
-                    {
-                        let mut diag = Diagnostic::error(tb.message.clone());
-                        diag.code = Some(tb.code);
-                        diag.file = tb.location.as_ref().map(|l| l.file.clone());
-                        diag.line = tb.location.as_ref().map(|l| l.line);
-                        diag.exception_type = Some(tb.exception_type);
-                        diag.location = tb.location.as_ref().map(|loc| {
-                            json!({
-                                "file": loc.file,
-                                "line": loc.line,
-                                "function": loc.function,
-                            })
-                        });
-                        if let Some(action) = &tb.next_action {
-                            diag.suggestion = Some(format!(
-                                "Run: pybun add {}",
-                                action
-                                    .args
-                                    .get("package")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("")
-                            ));
+                    // Enrich diagnostics with structured traceback when the script failed.
+                    // If the script exited nonzero without a parseable Python traceback on
+                    // stderr (e.g. a plain `sys.exit(N)`), still emit a diagnostic so
+                    // `diagnostics[]` is never empty on a failed run (Issue #266) — callers
+                    // should not have to fall back to inspecting `detail.exit_code` alone.
+                    if exit_code != 0 {
+                        match stderr.as_deref().and_then(crate::traceback::parse) {
+                            Some(tb) => {
+                                let mut diag = Diagnostic::error(tb.message.clone());
+                                diag.code = Some(tb.code);
+                                diag.file = tb.location.as_ref().map(|l| l.file.clone());
+                                diag.line = tb.location.as_ref().map(|l| l.line);
+                                diag.exception_type = Some(tb.exception_type);
+                                diag.location = tb.location.as_ref().map(|loc| {
+                                    json!({
+                                        "file": loc.file,
+                                        "line": loc.line,
+                                        "function": loc.function,
+                                    })
+                                });
+                                if let Some(action) = &tb.next_action {
+                                    diag.suggestion = Some(format!(
+                                        "Run: pybun add {}",
+                                        action
+                                            .args
+                                            .get("package")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("")
+                                    ));
+                                }
+                                diag.next_action = tb.next_action.map(|a| {
+                                    json!({
+                                        "tool": a.tool,
+                                        "args": a.args,
+                                    })
+                                });
+                                collector.diagnostic(diag);
+                            }
+                            None => {
+                                collector.error_with_code(
+                                    "E_SCRIPT_EXIT_NONZERO",
+                                    format!(
+                                        "Script exited with a nonzero status (exit_code={exit_code})"
+                                    ),
+                                    "Check detail.exit_code and the script's stdout/stderr for the cause.",
+                                );
+                            }
                         }
-                        diag.next_action = tb.next_action.map(|a| {
-                            json!({
-                                "tool": a.tool,
-                                "args": a.args,
-                            })
-                        });
-                        collector.diagnostic(diag);
                     }
 
                     let sandbox_detail = sandbox.as_ref().map(|s| {

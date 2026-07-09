@@ -1,7 +1,7 @@
 //! Python traceback parser for structured diagnostic output.
 //!
 //! Converts raw Python stderr into machine-readable `ParsedTraceback` values
-//! with stable dot-notation error codes and structured `next_action` hints.
+//! with stable `E_*` error codes and structured `next_action` hints.
 
 use serde::{Deserialize, Serialize};
 
@@ -28,7 +28,7 @@ pub struct TracebackLocation {
 /// Parsed representation of a Python exception.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ParsedTraceback {
-    /// Stable dot-notation error code (e.g. `runtime.module_not_found`).
+    /// Stable `E_*` error code (e.g. `E_RUNTIME_MODULE_NOT_FOUND`).
     pub code: String,
     /// Python exception class name (e.g. `ModuleNotFoundError`).
     pub exception_type: String,
@@ -187,41 +187,41 @@ fn extract_exception(stderr: &str) -> Option<(String, String)> {
     None
 }
 
-/// Map a Python exception type (and optionally message) to a stable dot-notation code.
+/// Map a Python exception type (and optionally message) to a stable `E_*` code.
 fn map_exception_to_code(exception_type: &str, message: &str) -> String {
     // Normalise dotted names: take only the last component
     let base = exception_type.rsplit('.').next().unwrap_or(exception_type);
 
     match base {
-        "ModuleNotFoundError" => "runtime.module_not_found".to_string(),
+        "ModuleNotFoundError" => "E_RUNTIME_MODULE_NOT_FOUND".to_string(),
         "ImportError" => {
             if message.contains("No module named") {
-                "runtime.module_not_found".to_string()
+                "E_RUNTIME_MODULE_NOT_FOUND".to_string()
             } else {
-                "runtime.import_error".to_string()
+                "E_RUNTIME_IMPORT_ERROR".to_string()
             }
         }
-        "SyntaxError" | "IndentationError" | "TabError" => "runtime.syntax_error".to_string(),
-        "TypeError" => "runtime.type_error".to_string(),
-        "AttributeError" => "runtime.attribute_error".to_string(),
-        "PermissionError" => "runtime.permission_denied".to_string(),
-        "FileNotFoundError" => "runtime.file_not_found".to_string(),
-        "ValueError" => "runtime.value_error".to_string(),
-        "KeyError" => "runtime.key_error".to_string(),
-        "IndexError" => "runtime.index_error".to_string(),
-        "NameError" | "UnboundLocalError" => "runtime.name_error".to_string(),
-        "RecursionError" => "runtime.recursion_error".to_string(),
-        "MemoryError" => "runtime.memory_error".to_string(),
-        "TimeoutError" | "asyncio.TimeoutError" => "runtime.timeout".to_string(),
-        "SystemExit" => "runtime.exit_nonzero".to_string(),
-        "KeyboardInterrupt" => "runtime.interrupted".to_string(),
-        "AssertionError" => "runtime.assertion_error".to_string(),
-        "OSError" | "IOError" => "runtime.io_error".to_string(),
+        "SyntaxError" | "IndentationError" | "TabError" => "E_RUNTIME_SYNTAX_ERROR".to_string(),
+        "TypeError" => "E_RUNTIME_TYPE_ERROR".to_string(),
+        "AttributeError" => "E_RUNTIME_ATTRIBUTE_ERROR".to_string(),
+        "PermissionError" => "E_RUNTIME_PERMISSION_DENIED".to_string(),
+        "FileNotFoundError" => "E_RUNTIME_FILE_NOT_FOUND".to_string(),
+        "ValueError" => "E_RUNTIME_VALUE_ERROR".to_string(),
+        "KeyError" => "E_RUNTIME_KEY_ERROR".to_string(),
+        "IndexError" => "E_RUNTIME_INDEX_ERROR".to_string(),
+        "NameError" | "UnboundLocalError" => "E_RUNTIME_NAME_ERROR".to_string(),
+        "RecursionError" => "E_RUNTIME_RECURSION_ERROR".to_string(),
+        "MemoryError" => "E_RUNTIME_MEMORY_ERROR".to_string(),
+        "TimeoutError" | "asyncio.TimeoutError" => "E_RUNTIME_TIMEOUT".to_string(),
+        "SystemExit" => "E_RUNTIME_EXIT_NONZERO".to_string(),
+        "KeyboardInterrupt" => "E_RUNTIME_INTERRUPTED".to_string(),
+        "AssertionError" => "E_RUNTIME_ASSERTION_ERROR".to_string(),
+        "OSError" | "IOError" => "E_RUNTIME_IO_ERROR".to_string(),
         "ConnectionError"
         | "ConnectionRefusedError"
         | "ConnectionResetError"
-        | "BrokenPipeError" => "runtime.connection_error".to_string(),
-        _ => "runtime.unknown".to_string(),
+        | "BrokenPipeError" => "E_RUNTIME_CONNECTION_ERROR".to_string(),
+        _ => "E_RUNTIME_UNKNOWN".to_string(),
     }
 }
 
@@ -324,7 +324,7 @@ ModuleNotFoundError: No module named 'sklearn'"#;
     #[test]
     fn parse_module_not_found_code() {
         let tb = parse(MODULE_NOT_FOUND).unwrap();
-        assert_eq!(tb.code, "runtime.module_not_found");
+        assert_eq!(tb.code, "E_RUNTIME_MODULE_NOT_FOUND");
     }
 
     #[test]
@@ -367,7 +367,7 @@ ModuleNotFoundError: No module named 'sklearn'"#;
     #[test]
     fn parse_syntax_error_code() {
         let tb = parse(SYNTAX_ERROR).unwrap();
-        assert_eq!(tb.code, "runtime.syntax_error");
+        assert_eq!(tb.code, "E_RUNTIME_SYNTAX_ERROR");
         assert_eq!(tb.exception_type, "SyntaxError");
     }
 
@@ -388,7 +388,7 @@ ModuleNotFoundError: No module named 'sklearn'"#;
     #[test]
     fn parse_type_error_code() {
         let tb = parse(TYPE_ERROR).unwrap();
-        assert_eq!(tb.code, "runtime.type_error");
+        assert_eq!(tb.code, "E_RUNTIME_TYPE_ERROR");
         assert_eq!(tb.exception_type, "TypeError");
     }
 
@@ -404,19 +404,19 @@ ModuleNotFoundError: No module named 'sklearn'"#;
     #[test]
     fn parse_attribute_error_code() {
         let tb = parse(ATTRIBUTE_ERROR).unwrap();
-        assert_eq!(tb.code, "runtime.attribute_error");
+        assert_eq!(tb.code, "E_RUNTIME_ATTRIBUTE_ERROR");
     }
 
     #[test]
     fn parse_name_error_code() {
         let tb = parse(NAME_ERROR).unwrap();
-        assert_eq!(tb.code, "runtime.name_error");
+        assert_eq!(tb.code, "E_RUNTIME_NAME_ERROR");
     }
 
     #[test]
     fn parse_file_not_found_code() {
         let tb = parse(FILE_NOT_FOUND).unwrap();
-        assert_eq!(tb.code, "runtime.file_not_found");
+        assert_eq!(tb.code, "E_RUNTIME_FILE_NOT_FOUND");
         assert_eq!(tb.exception_type, "FileNotFoundError");
     }
 
@@ -458,7 +458,7 @@ RuntimeError: boom"#,
 KeyboardInterrupt"#;
 
         let tb = parse(stderr).unwrap();
-        assert_eq!(tb.code, "runtime.interrupted");
+        assert_eq!(tb.code, "E_RUNTIME_INTERRUPTED");
         assert_eq!(tb.exception_type, "KeyboardInterrupt");
         assert_eq!(tb.message, "");
     }
@@ -470,7 +470,7 @@ KeyboardInterrupt"#;
     raise MyCustomError("oops")
 MyCustomError: oops"#;
         let tb = parse(stderr).unwrap();
-        assert_eq!(tb.code, "runtime.unknown");
+        assert_eq!(tb.code, "E_RUNTIME_UNKNOWN");
         assert_eq!(tb.exception_type, "MyCustomError");
     }
 
@@ -510,12 +510,12 @@ ValueError: deep error"#;
     #[test]
     fn map_import_error_with_no_module_message() {
         let code = map_exception_to_code("ImportError", "No module named 'requests'");
-        assert_eq!(code, "runtime.module_not_found");
+        assert_eq!(code, "E_RUNTIME_MODULE_NOT_FOUND");
     }
 
     #[test]
     fn map_import_error_without_no_module_message() {
         let code = map_exception_to_code("ImportError", "cannot import name 'foo' from 'bar'");
-        assert_eq!(code, "runtime.import_error");
+        assert_eq!(code, "E_RUNTIME_IMPORT_ERROR");
     }
 }

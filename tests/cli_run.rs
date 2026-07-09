@@ -129,7 +129,7 @@ fn run_json_traceback_diagnostic_matches_mcp_shape() {
         .unwrap_or_else(|| panic!("expected traceback diagnostic, got: {value}"));
 
     assert_eq!(diagnostic["level"], "error");
-    assert_eq!(diagnostic["code"], "runtime.module_not_found");
+    assert_eq!(diagnostic["code"], "E_RUNTIME_MODULE_NOT_FOUND");
     assert_eq!(diagnostic["exception_type"], "ModuleNotFoundError");
     assert_eq!(diagnostic["location"]["file"], "main.py");
     assert_eq!(diagnostic["location"]["line"], 1);
@@ -186,6 +186,41 @@ fn run_inline_code_propagates_nonzero_exit_code() {
         output.status.code(),
         Some(7),
         "pybun must exit with the inline code's exit code"
+    );
+}
+
+// Issue #266: a plain nonzero script exit (no Python traceback on stderr) must
+// still produce a non-empty `diagnostics[]` array with a dedicated E_* code,
+// rather than leaving diagnostics empty while only detail.exit_code signals
+// failure.
+#[test]
+fn run_json_nonzero_exit_without_traceback_has_diagnostic() {
+    let output = bin()
+        .args(["--format=json", "run", "-c", "import sys; sys.exit(7)"])
+        .output()
+        .expect("run pybun");
+    assert_eq!(output.status.code(), Some(7));
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let value: Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|_| panic!("expected valid JSON, got: {stdout}"));
+    assert_eq!(value["status"], "error");
+    assert_eq!(value["detail"]["exit_code"], 7);
+
+    let diagnostics = value["diagnostics"].as_array().expect("diagnostics array");
+    assert!(
+        !diagnostics.is_empty(),
+        "expected a non-empty diagnostics array for nonzero script exit, got: {value}"
+    );
+    let diagnostic = &diagnostics[0];
+    assert_eq!(diagnostic["level"], "error");
+    assert_eq!(diagnostic["code"], "E_SCRIPT_EXIT_NONZERO");
+    assert!(
+        diagnostic["message"]
+            .as_str()
+            .expect("message string")
+            .contains('7'),
+        "expected exit_code 7 cross-referenced in message, got: {diagnostic}"
     );
 }
 
