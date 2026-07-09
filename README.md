@@ -506,7 +506,7 @@ pybun schema check
 | `PYBUN_TELEMETRY` | Override telemetry setting (0/1) |
 | `PYBUN_PROGRESS` | Override `--progress` (auto/always/never) |
 | `PYBUN_PYPI_BASE_URL` | Override the PyPI index base URL |
-| `PYBUN_PYPI_CACHE_DIR` | Override the PyPI metadata cache directory |
+| `PYBUN_PYPI_CACHE_DIR` | Override the PyPI metadata cache directory. By default this uses the platform cache directory plus `pybun/pypi` (for example `~/Library/Caches/pybun/pypi` on macOS). Current binary cache entries use `.bin`; legacy `.json` entries are only read from the same directory as a fallback. |
 | `PYBUN_AUDIT_LOG` | Override the MCP audit log path (`/dev/null` disables it) |
 | `PYBUN_SANDBOX_ALLOW_NETWORK` | Allow network access under `--sandbox` |
 

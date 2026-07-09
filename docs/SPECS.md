@@ -113,7 +113,7 @@ graph TD
 
   * **単一バイナリ:** macOS/Linux では静的リンク優先（openssl, libz は同梱）、Windows は MSVC 再頒布依存のみ。
   * **内蔵CPython:** バイナリ内にバンドル。欠損バージョンは初回起動時に署名付きアーカイブをダウンロードしてキャッシュ。
-  * **データディレクトリ:** `~/.cache/pybun`（環境変数 `PYBUN_HOME` で上書き）。環境、wheel、ログを階層管理。
+  * **データディレクトリ:** `~/.cache/pybun`（環境変数 `PYBUN_HOME` で上書き）。環境、wheel、ログを階層管理。PyPI metadata cache は別契約で、`PYBUN_PYPI_CACHE_DIR` が指定された場合はそのディレクトリを使い、未指定時は OS の platform cache directory 配下の `pybun/pypi`（macOS 例: `~/Library/Caches/pybun/pypi`）を使う。現在の binary cache は `.bin`、同じディレクトリ内の legacy `.json` は fallback としてのみ読む。
   * **自己更新:** `pybun self update` でバージョン取得・署名検証・アトミック置換。
 
 ### 4.1 高速パッケージマネージャ (The Installer)

@@ -139,18 +139,26 @@ pub struct PyPiClient {
     stale_cache_notices: Arc<Mutex<Vec<String>>>,
 }
 
+fn resolve_pypi_cache_dir(
+    env_override: Option<&str>,
+    platform_cache_dir: Option<PathBuf>,
+) -> Result<PathBuf, PyPiError> {
+    if let Some(path) = env_override {
+        return Ok(PathBuf::from(path));
+    }
+
+    platform_cache_dir
+        .map(|p| p.join("pybun").join("pypi"))
+        .ok_or(PyPiError::CacheDirUnavailable)
+}
+
 impl PyPiClient {
     pub fn from_env(offline: bool) -> Result<Self, PyPiError> {
         let base =
             std::env::var("PYBUN_PYPI_BASE_URL").unwrap_or_else(|_| "https://pypi.org".to_string());
         let normalized = normalize_base(&base)?;
-        let cache_dir = std::env::var("PYBUN_PYPI_CACHE_DIR")
-            .map(PathBuf::from)
-            .or_else(|_| {
-                dirs::cache_dir()
-                    .map(|p| p.join("pybun").join("pypi"))
-                    .ok_or(PyPiError::CacheDirUnavailable)
-            })?;
+        let cache_dir_override = std::env::var("PYBUN_PYPI_CACHE_DIR").ok();
+        let cache_dir = resolve_pypi_cache_dir(cache_dir_override.as_deref(), dirs::cache_dir())?;
         Ok(Self {
             base: normalized,
             cache_dir,
@@ -999,6 +1007,32 @@ mod tests {
         let policy = HttpCachePolicy::from_headers(&headers, 100);
         assert!(policy.is_fresh(160));
         assert!(!policy.is_fresh(161));
+    }
+
+    #[test]
+    fn pypi_cache_dir_defaults_to_platform_cache_pybun_pypi() {
+        let platform_cache = PathBuf::from("/tmp/platform-cache");
+
+        let cache_dir = resolve_pypi_cache_dir(None, Some(platform_cache.clone())).unwrap();
+
+        assert_eq!(cache_dir, platform_cache.join("pybun").join("pypi"));
+    }
+
+    #[test]
+    fn pypi_cache_dir_env_override_takes_precedence() {
+        let override_dir = "/tmp/custom-pypi-cache";
+        let platform_cache = PathBuf::from("/tmp/platform-cache");
+
+        let cache_dir = resolve_pypi_cache_dir(Some(override_dir), Some(platform_cache)).unwrap();
+
+        assert_eq!(cache_dir, PathBuf::from(override_dir));
+    }
+
+    #[test]
+    fn pypi_cache_dir_errors_when_no_override_or_platform_cache_exists() {
+        let err = resolve_pypi_cache_dir(None, None).unwrap_err();
+
+        assert!(matches!(err, PyPiError::CacheDirUnavailable));
     }
 
     #[tokio::test]
