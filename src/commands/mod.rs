@@ -4782,8 +4782,25 @@ async fn run_outdated(args: &OutdatedArgs, collector: &mut EventCollector) -> Re
         return Err(eyre!(message));
     }
 
-    let lockfile = Lockfile::load_from_path(&lock_path)
-        .map_err(|e| eyre!("failed to load lockfile: {}", e))?;
+    // A pybun.lockb that exists but fails to decode (e.g. truncated by a
+    // crash mid-write, or corrupted on disk) is treated the same as a
+    // missing lockfile rather than propagated as a fatal error. This
+    // mirrors the self-heal behavior already applied to `load_script_lock`
+    // (issue #301, itself tracking the same failure mode as #299/#262) and
+    // to `run_upgrade`'s `Lockfile::load_from_path(&lock_path).ok()`. We
+    // fall back to "no packages currently locked", which naturally reduces
+    // `pybun outdated` to reporting nothing outdated rather than crashing.
+    let lockfile = match Lockfile::load_from_path(&lock_path) {
+        Ok(lockfile) => lockfile,
+        Err(e) => {
+            collector.warning(format!(
+                "discarded unreadable pybun.lockb at {} ({}); treating as no current lock",
+                lock_path.display(),
+                e
+            ));
+            Lockfile::new(Vec::new(), Vec::new())
+        }
+    };
 
     // Load constraints for "wanted" logic, optionally scoped by --member/--group
     let (constraints, scope_detail) = if let Ok(project) = Project::discover(&cwd) {
