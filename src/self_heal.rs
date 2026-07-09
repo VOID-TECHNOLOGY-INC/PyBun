@@ -56,10 +56,12 @@ pub fn diagnostics_for_resolve_error(
             let mut diags = Vec::new();
             diags.push(
                 Diagnostic::error(format!(
-                    "依存関係を解決できませんでした: {name} は {constraint} を満たすバージョンが見つかりません"
+                    "Could not resolve dependencies: no version of {name} satisfies the constraint {constraint}"
                 ))
                 .with_code("E_RESOLVE_MISSING")
-                .with_suggestion("パッケージ名・制約・インデックス内容を確認し、必要なら制約を緩めて再実行してください。")
+                .with_suggestion(
+                    "Check the package name, constraint, and index contents, and re-run with a looser constraint if needed.",
+                )
                 .with_context(json!({
                     "name": name,
                     "constraint": constraint,
@@ -72,7 +74,7 @@ pub fn diagnostics_for_resolve_error(
             if available_versions.is_empty() {
                 diags.push(
                     Diagnostic::hint(format!(
-                        "{name} がインデックスに存在しない可能性があります（タイプミス/インデックス違い）"
+                        "{name} may not exist in the index (check for a typo or a different index)"
                     ))
                     .with_code("H_RESOLVE_MISSING_NOT_IN_INDEX"),
                 );
@@ -80,7 +82,7 @@ pub fn diagnostics_for_resolve_error(
                 // Keep the hint compact.
                 let sample: Vec<String> = available_versions.iter().take(5).cloned().collect();
                 diags.push(
-                    Diagnostic::hint(format!("利用可能なバージョン例: {}", sample.join(", ")))
+                    Diagnostic::hint(format!("Available versions include: {}", sample.join(", ")))
                         .with_code("H_RESOLVE_AVAILABLE_VERSIONS")
                         .with_context(json!({ "sample": sample })),
                 );
@@ -97,10 +99,12 @@ pub fn diagnostics_for_resolve_error(
             let mut diags = Vec::new();
             diags.push(
                 Diagnostic::error(format!(
-                    "依存関係のバージョン衝突: {name} は既に {existing} が選択されていますが、別経路で {requested} が要求されました"
+                    "Dependency version conflict: {name} already has {existing} selected, but {requested} was requested via a different path"
                 ))
                 .with_code("E_RESOLVE_CONFLICT")
-                .with_suggestion(format!("衝突している要求元を確認し、{name} の制約を揃える（同一バージョン/範囲へ）か、上位依存のバージョンを調整してください。"))
+                .with_suggestion(format!(
+                    "Check the conflicting requesters and align the constraints on {name} (same version/range), or adjust the version of an upstream dependency."
+                ))
                 .with_context(json!({
                     "name": name,
                     "existing": existing,
@@ -112,20 +116,22 @@ pub fn diagnostics_for_resolve_error(
             );
 
             diags.push(
-                Diagnostic::hint("衝突ツリーを辿って、同じパッケージに対して異なる制約が入っている箇所を解消してください。")
-                    .with_code("H_RESOLVE_CONFLICT_TREE"),
+                Diagnostic::hint(
+                    "Walk the conflict tree and resolve the places where the same package has different constraints.",
+                )
+                .with_code("H_RESOLVE_CONFLICT_TREE"),
             );
             diags
         }
         ResolveError::Io(msg) => {
             vec![
                 Diagnostic::error(format!(
-                    "パッケージ情報の取得中にIOエラーが発生しました: {}",
+                    "An IO error occurred while fetching package metadata: {}",
                     msg
                 ))
                 .with_code("E_RESOLVE_IO")
                 .with_suggestion(
-                    "インターネット接続やインデックスファイルのパス/権限を確認してください。",
+                    "Check your internet connection and the index file's path/permissions.",
                 )
                 .with_context(json!({ "error": msg })),
             ]
@@ -161,5 +167,90 @@ mod tests {
         assert_eq!(candidates.len(), 1);
         assert!(!candidates[0].auto_applicable);
         assert_eq!(candidates[0].command, "pybun install");
+    }
+
+    /// Regression test for Issue #270: `diagnostics[].message` and
+    /// `diagnostics[].suggestion` must be locale-neutral (English) since
+    /// `code` is the stable machine-readable contract that agents/tooling
+    /// key off of. These strings must never depend on OS/shell locale
+    /// (LANG/LC_*) — they are compiled-in literals, so this also guards
+    /// against regressions to non-English hardcoded text.
+    fn assert_ascii_only(label: &str, text: &str) {
+        assert!(
+            text.is_ascii(),
+            "{label} must be locale-neutral ASCII/English text, got: {text:?}"
+        );
+    }
+
+    #[test]
+    fn resolve_error_missing_diagnostics_are_locale_neutral() {
+        let requirements = vec![Requirement::any("requests")];
+        let err = ResolveError::Missing {
+            name: "requests".to_string(),
+            constraint: ">=2.0".to_string(),
+            requested_by: None,
+            available_versions: vec!["1.0.0".to_string()],
+        };
+        let diags = diagnostics_for_resolve_error(&requirements, &err);
+        assert!(!diags.is_empty());
+        for d in &diags {
+            assert_ascii_only("message", &d.message);
+            if let Some(suggestion) = &d.suggestion {
+                assert_ascii_only("suggestion", suggestion);
+            }
+        }
+    }
+
+    #[test]
+    fn resolve_error_missing_not_in_index_diagnostics_are_locale_neutral() {
+        let requirements = vec![Requirement::any("requests")];
+        let err = ResolveError::Missing {
+            name: "requests".to_string(),
+            constraint: ">=2.0".to_string(),
+            requested_by: None,
+            available_versions: vec![],
+        };
+        let diags = diagnostics_for_resolve_error(&requirements, &err);
+        assert!(!diags.is_empty());
+        for d in &diags {
+            assert_ascii_only("message", &d.message);
+            if let Some(suggestion) = &d.suggestion {
+                assert_ascii_only("suggestion", suggestion);
+            }
+        }
+    }
+
+    #[test]
+    fn resolve_error_conflict_diagnostics_are_locale_neutral() {
+        let requirements = vec![Requirement::any("requests")];
+        let err = ResolveError::Conflict {
+            name: "requests".to_string(),
+            existing: "1.0.0".to_string(),
+            requested: "2.0.0".to_string(),
+            existing_chain: vec!["root".to_string()],
+            requested_chain: vec!["root".to_string(), "urllib3".to_string()],
+        };
+        let diags = diagnostics_for_resolve_error(&requirements, &err);
+        assert!(!diags.is_empty());
+        for d in &diags {
+            assert_ascii_only("message", &d.message);
+            if let Some(suggestion) = &d.suggestion {
+                assert_ascii_only("suggestion", suggestion);
+            }
+        }
+    }
+
+    #[test]
+    fn resolve_error_io_diagnostics_are_locale_neutral() {
+        let requirements = vec![Requirement::any("requests")];
+        let err = ResolveError::Io("permission denied".to_string());
+        let diags = diagnostics_for_resolve_error(&requirements, &err);
+        assert!(!diags.is_empty());
+        for d in &diags {
+            assert_ascii_only("message", &d.message);
+            if let Some(suggestion) = &d.suggestion {
+                assert_ascii_only("suggestion", suggestion);
+            }
+        }
     }
 }

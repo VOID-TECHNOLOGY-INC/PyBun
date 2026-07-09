@@ -190,6 +190,63 @@ fn install_error_outputs_diagnostics_in_json() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// Issue #270: diagnostics[].message / diagnostics[].suggestion must be
+// locale-neutral (English) in --format=json, since diagnostics[].code is the
+// stable machine-readable contract that agents/tooling key off of. Verify
+// this holds even when the process runs under a Japanese locale (LANG/LC_ALL),
+// which previously produced hardcoded Japanese text in these fields.
+// ---------------------------------------------------------------------------
+#[test]
+fn install_error_json_diagnostics_are_locale_neutral_under_japanese_locale() {
+    let temp = tempdir().unwrap();
+    let lock_path = temp.path().join("pybun.lockb");
+    let index = index_path();
+
+    let output = bin()
+        .env("LANG", "ja_JP.UTF-8")
+        .env("LC_ALL", "ja_JP.UTF-8")
+        .env("LC_MESSAGES", "ja_JP.UTF-8")
+        .args([
+            "install",
+            "--index",
+            index.to_str().unwrap(),
+            "--require",
+            "missing==1.0.0",
+            "--lock",
+            lock_path.to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .assert()
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+
+    let stdout = String::from_utf8(output).expect("utf8");
+    let parsed: Value = serde_json::from_str(&stdout).expect("json output");
+
+    assert_eq!(parsed["status"], "error");
+    let diags = parsed["diagnostics"].as_array().expect("diagnostics array");
+    assert!(!diags.is_empty());
+
+    for diag in diags {
+        if let Some(message) = diag.get("message").and_then(|m| m.as_str()) {
+            assert!(
+                message.is_ascii(),
+                "diagnostics[].message must be locale-neutral English even under LANG=ja_JP.UTF-8, got: {message:?}"
+            );
+        }
+        if let Some(suggestion) = diag.get("suggestion").and_then(|s| s.as_str()) {
+            assert!(
+                suggestion.is_ascii(),
+                "diagnostics[].suggestion must be locale-neutral English even under LANG=ja_JP.UTF-8, got: {suggestion:?}"
+            );
+        }
+    }
+}
+
 #[test]
 fn install_conflict_outputs_conflict_tree_diagnostics_in_json() {
     let temp = tempdir().unwrap();
