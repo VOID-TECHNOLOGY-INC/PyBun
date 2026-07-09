@@ -1266,7 +1266,7 @@ fn run_mcp_pybun_run(code: &str) -> String {
 fn mcp_pybun_run_module_not_found_has_diagnostics() {
     let stdout = run_mcp_pybun_run("import numpy_does_not_exist");
     assert!(
-        stdout.contains("runtime.module_not_found") || stdout.contains("module_not_found"),
+        stdout.contains("E_RUNTIME_MODULE_NOT_FOUND"),
         "Expected structured diagnostic code in response. Got: {stdout}"
     );
 }
@@ -1294,7 +1294,7 @@ fn mcp_pybun_run_success_has_no_diagnostics() {
     let stdout = run_mcp_pybun_run("print('ok')");
     // Diagnostics should be null or absent on success
     assert!(
-        !stdout.contains("runtime."),
+        !stdout.contains("E_RUNTIME_"),
         "Successful run should not have error diagnostics. Got: {stdout}"
     );
 }
@@ -1303,7 +1303,7 @@ fn mcp_pybun_run_success_has_no_diagnostics() {
 fn mcp_pybun_run_syntax_error_has_diagnostics() {
     let stdout = run_mcp_pybun_run("def bad(\n  pass");
     assert!(
-        stdout.contains("runtime.syntax_error") || stdout.contains("syntax_error"),
+        stdout.contains("E_RUNTIME_SYNTAX_ERROR"),
         "Expected syntax_error diagnostic. Got: {stdout}"
     );
 }
