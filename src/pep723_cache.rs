@@ -428,7 +428,17 @@ impl Pep723Cache {
             }
 
             let content = fs::read_to_string(&info_path)?;
-            let mut info: CachedEnvInfo = serde_json::from_str(&content)?;
+            let mut info: CachedEnvInfo = match serde_json::from_str(&content) {
+                Ok(info) => info,
+                Err(e) => {
+                    eprintln!(
+                        "info: discarded unreadable PEP 723 cache entry at {} ({}); skipping last_used update",
+                        info_path.display(),
+                        e
+                    );
+                    return Ok(());
+                }
+            };
 
             let now = SystemTime::now()
                 .duration_since(SystemTime::UNIX_EPOCH)
@@ -878,6 +888,28 @@ mod tests {
         assert!(
             result.unwrap().is_none(),
             "corrupt cache entry must be treated as a cache miss"
+        );
+    }
+
+    #[test]
+    fn update_last_used_at_self_heals_on_corrupt_json() {
+        // Regression test for issue #306: the sibling last_used update path
+        // must follow read_cache_entry's self-heal contract and treat a
+        // corrupt deps.json as a no-op, not as a fatal JSON error.
+        let temp = tempdir().unwrap();
+        let cache = Pep723Cache::with_root(temp.path());
+        let root = temp.path().join("env-root");
+        fs::create_dir_all(&root).unwrap();
+        let info_path = root.join("deps.json");
+        fs::write(&info_path, b"not valid json{{{").unwrap();
+
+        let file = OpenOptions::new().write(true).open(&info_path).unwrap();
+        file.set_modified(SystemTime::UNIX_EPOCH).unwrap();
+
+        let result = cache.update_last_used_at(&root);
+        assert!(
+            result.is_ok(),
+            "corrupt cache entry must not make last_used update fatal: {result:?}"
         );
     }
 
