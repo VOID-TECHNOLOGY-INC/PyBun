@@ -2597,6 +2597,16 @@ fn script_lock_path(script_path: &Path) -> PathBuf {
     PathBuf::from(lock_path)
 }
 
+/// Load and parse the binary script lockfile (`<script>.lock`) next to `script_path`.
+///
+/// Returns `Ok(None)` when the lockfile is missing **or** unreadable/corrupt.
+/// A `<script>.lock` that fails to decode (e.g. truncated by a crash mid-write)
+/// is treated the same as a missing lockfile rather than propagated as a fatal
+/// error - this mirrors the self-heal behavior already applied to the MCP
+/// doctor lockfile check (`src/mcp.rs`) and the PEP 723 script cache for issue
+/// #299 (itself a recurrence of #262's failure mode). Callers observe a plain
+/// "no lock" result and fall through to the existing regenerate-from-scratch
+/// path (PEP 723 declared dependencies), which recreates the lockfile.
 fn load_script_lock(script_path: &Path) -> Result<Option<ScriptLockInfo>> {
     let lock_path = script_lock_path(script_path);
     if !lock_path.exists() {
@@ -2605,14 +2615,23 @@ fn load_script_lock(script_path: &Path) -> Result<Option<ScriptLockInfo>> {
 
     let bytes = fs::read(&lock_path)
         .map_err(|e| eyre!("failed to read script lock {}: {}", lock_path.display(), e))?;
-    let lock = Lockfile::from_bytes(&bytes)
-        .map_err(|e| eyre!("failed to parse script lock {}: {}", lock_path.display(), e))?;
-    let mut hasher = Sha256::new();
-    hasher.update(&bytes);
-    let digest = hasher.finalize();
-    let lock_hash = hex::encode(&digest[..16]);
-
-    Ok(Some(ScriptLockInfo { lock, lock_hash }))
+    match Lockfile::from_bytes(&bytes) {
+        Ok(lock) => {
+            let mut hasher = Sha256::new();
+            hasher.update(&bytes);
+            let digest = hasher.finalize();
+            let lock_hash = hex::encode(&digest[..16]);
+            Ok(Some(ScriptLockInfo { lock, lock_hash }))
+        }
+        Err(e) => {
+            eprintln!(
+                "info: discarded unreadable script lockfile at {} ({}); regenerating",
+                lock_path.display(),
+                e
+            );
+            Ok(None)
+        }
+    }
 }
 
 fn pep723_index_settings(metadata: Option<&pep723::ScriptMetadata>) -> Vec<String> {
