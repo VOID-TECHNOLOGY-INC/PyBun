@@ -822,13 +822,20 @@ pub fn pypi_cache_dir() -> Option<PathBuf> {
 
 /// Returns `true` if `path` is a `.bin` PyPI cache entry that fails to
 /// deserialize as the current [`CacheEntry`] layout (e.g. left over from a
-/// pre-v0.1.19 pybun install, see issue #202). Such entries are never used
+/// pre-v0.1.19 pybun install, see issue #202), or a legacy `.json` cache
+/// entry that fails to parse as [`LegacyCacheEntry`] (e.g. corrupted by a
+/// crash or manual edit, see issue #268). Such entries are never used
 /// (see [`load_cache_from_paths`]) and are safe to remove.
 fn is_stale_pypi_cache_entry(path: &Path) -> bool {
-    path.extension().and_then(|e| e.to_str()) == Some("bin")
-        && fs::read(path)
+    match path.extension().and_then(|e| e.to_str()) {
+        Some("bin") => fs::read(path)
             .map(|data| bincode::deserialize::<CacheEntry>(&data).is_err())
-            .unwrap_or(false)
+            .unwrap_or(false),
+        Some("json") => fs::read_to_string(path)
+            .map(|data| serde_json::from_str::<LegacyCacheEntry>(&data).is_err())
+            .unwrap_or(false),
+        _ => false,
+    }
 }
 
 /// Summary statistics for the PyPI metadata cache directory.
@@ -1095,6 +1102,41 @@ mod tests {
 
         // Notices are drained after being taken.
         assert!(client.take_stale_cache_notices().is_empty());
+    }
+
+    #[test]
+    fn is_stale_pypi_cache_entry_flags_corrupt_legacy_json() {
+        // Regression test for issue #268: `pybun doctor` must be able to
+        // detect a corrupt legacy `.json` cache entry, not just corrupt
+        // `.bin` entries. `is_stale_pypi_cache_entry` backs both the
+        // `pypi_cache_stats` doctor check and `gc_stale_pypi_cache`.
+        let temp = tempdir().unwrap();
+        let dir = temp.path().join("cache");
+        fs::create_dir_all(&dir).unwrap();
+
+        let corrupt_json = dir.join("requests.json");
+        fs::write(&corrupt_json, b"not valid json{{{").unwrap();
+        assert!(is_stale_pypi_cache_entry(&corrupt_json));
+
+        let valid_json = dir.join("valid.json");
+        fs::write(
+            &valid_json,
+            br#"{"etag":null,"last_modified":null,"packages":[]}"#,
+        )
+        .unwrap();
+        assert!(!is_stale_pypi_cache_entry(&valid_json));
+    }
+
+    #[test]
+    fn pypi_cache_stats_counts_corrupt_legacy_json_as_stale() {
+        let temp = tempdir().unwrap();
+        let dir = temp.path().join("cache");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("requests.json"), b"not valid json{{{").unwrap();
+
+        let stats = pypi_cache_stats(&dir);
+        assert_eq!(stats.entry_count, 1);
+        assert_eq!(stats.stale_count, 1);
     }
 
     #[test]

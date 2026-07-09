@@ -203,6 +203,82 @@ fn mcp_tools_call_doctor() {
 }
 
 #[test]
+fn mcp_tools_call_doctor_detects_corrupt_pypi_cache() {
+    // Regression test for issue #268: the `pybun_doctor` MCP tool must flag
+    // a corrupt legacy `.json` PyPI cache entry as a non-fatal `info`
+    // status, the same way the CLI `pybun doctor` command does.
+    let temp = tempdir().unwrap();
+    let pypi_cache = temp.path().join("pypi-cache");
+    fs::create_dir_all(&pypi_cache).unwrap();
+    fs::write(pypi_cache.join("requests.json"), b"not valid json{{{").unwrap();
+
+    let mut child = pybun_bin()
+        .env("PYBUN_HOME", temp.path())
+        .env("PYBUN_PYPI_CACHE_DIR", &pypi_cache)
+        .args(["mcp", "serve", "--stdio"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to start MCP server");
+
+    if let Some(mut stdin) = child.stdin.take() {
+        let init_req = r#"{"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0.1.0"}}}"#;
+        writeln!(stdin, "{}", init_req).ok();
+
+        let call_req = r#"{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_doctor","arguments":{"verbose":true}}}"#;
+        writeln!(stdin, "{}", call_req).ok();
+        stdin.flush().ok();
+    }
+
+    let output = child.wait_with_output().expect("failed to wait");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    let mut found_pypi_cache_check = false;
+    for line in stdout.lines() {
+        if !line.starts_with('{') {
+            continue;
+        }
+        let Ok(response) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let Some(text) = response
+            .get("result")
+            .and_then(|r| r.get("content"))
+            .and_then(|c| c.get(0))
+            .and_then(|c| c.get("text"))
+            .and_then(|t| t.as_str())
+        else {
+            continue;
+        };
+        let Ok(doctor_result) = serde_json::from_str::<serde_json::Value>(text) else {
+            continue;
+        };
+        let Some(checks) = doctor_result.get("checks").and_then(|c| c.as_array()) else {
+            continue;
+        };
+        if let Some(pypi_check) = checks.iter().find(|c| c["name"] == "pypi_cache") {
+            found_pypi_cache_check = true;
+            assert_eq!(
+                pypi_check["stale_count"], 1,
+                "corrupt legacy .json cache entry should be counted as stale/corrupt: {}",
+                pypi_check
+            );
+            assert_eq!(
+                pypi_check["status"], "info",
+                "corrupt cache entries should be a non-fatal info status, not error"
+            );
+        }
+    }
+
+    assert!(
+        found_pypi_cache_check,
+        "pybun_doctor response should include a pypi_cache check. Got: {}",
+        stdout
+    );
+}
+
+#[test]
 fn mcp_tools_call_run_inline_code() {
     let temp = tempdir().unwrap();
 

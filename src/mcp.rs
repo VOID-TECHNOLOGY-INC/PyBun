@@ -2047,6 +2047,38 @@ impl McpServer {
             }
         }
 
+        // Check the PyPI metadata cache directory (separate from the main
+        // cache root above - see issue #202). Flag stale/corrupt entries
+        // (e.g. unreadable `.bin`/`.json` files left over from an older or
+        // interrupted `pybun` run, see issue #268) as a non-fatal `info`
+        // status pointing at `pybun gc` as the fix, mirroring the CLI
+        // `pybun doctor` check and the `corrupt` lockfile status below.
+        if let Some(pypi_cache_dir) = crate::pypi::pypi_cache_dir() {
+            let stats = crate::pypi::pypi_cache_stats(&pypi_cache_dir);
+            let status = if stats.stale_count > 0 { "info" } else { "ok" };
+            checks.push(json!({
+                "name": "pypi_cache",
+                "status": status,
+                "message": format!(
+                    "PyPI metadata cache: {} ({} entries, {} stale)",
+                    pypi_cache_dir.display(),
+                    stats.entry_count,
+                    stats.stale_count,
+                ),
+                "path": pypi_cache_dir.display().to_string(),
+                "entry_count": stats.entry_count,
+                "total_bytes": stats.total_bytes,
+                "stale_count": stats.stale_count,
+                "hint": if stats.stale_count > 0 {
+                    json!("Run `pybun gc` to remove corrupt/stale PyPI cache entries")
+                } else {
+                    Value::Null
+                },
+            }));
+            // Stale/corrupt cache entries are non-fatal (self-healed on
+            // next fetch) - they do not flip `all_ok` to false.
+        }
+
         // Check for pyproject.toml
         match Project::discover(&working_dir) {
             Ok(project) => {
