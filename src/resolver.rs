@@ -1,10 +1,18 @@
 use crate::lockfile::PackageSource;
+use futures::StreamExt;
 use semver::Version;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::str::FromStr;
 use std::sync::OnceLock;
+
+/// Maximum number of package-metadata fetches (`PackageIndex::all` /
+/// `PackageIndex::get`) allowed to run concurrently while resolving a batch of
+/// sibling dependencies. Bounds fan-out against the index/registry so a large
+/// dependency frontier doesn't open unbounded concurrent HTTP connections.
+/// See Issue #239 (Phase 1: parallel metadata fetching).
+const MAX_CONCURRENT_METADATA_FETCHES: usize = 16;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VersionSpec {
@@ -732,61 +740,111 @@ pub async fn resolve(
         names_to_fetch.sort();
         names_to_fetch.dedup();
 
-        // 2. Fetch metadata in parallel
+        // 2. Fetch version-list metadata for sibling packages in parallel, bounded to
+        // MAX_CONCURRENT_METADATA_FETCHES concurrent requests (Issue #239 Phase 1).
+        //
+        // Fail-fast note: `buffer_unordered` still runs up to
+        // MAX_CONCURRENT_METADATA_FETCHES fetches concurrently, but we drive the
+        // stream with a manual `while let` loop instead of collecting the whole
+        // batch first. This returns to the caller as soon as the first error is
+        // observed (whichever fetch happens to complete first — not necessarily
+        // submission order) instead of waiting for every in-flight fetch to
+        // finish. Futures already queued but not yet polled are dropped (and
+        // therefore cancelled) when we return early.
         if !names_to_fetch.is_empty() {
-            let futures = names_to_fetch.iter().map(|name| {
-                let name = name.clone();
-                async move {
+            let mut stream =
+                futures::stream::iter(names_to_fetch.into_iter().map(|name| async move {
                     let pkgs = index.all(&name).await?;
                     Ok::<(String, Vec<ResolvedPackage>), ResolveError>((name, pkgs))
-                }
-            });
+                }))
+                .buffer_unordered(MAX_CONCURRENT_METADATA_FETCHES);
 
-            let results = futures::future::try_join_all(futures).await?;
-            for (name, pkgs) in results {
+            while let Some(result) = stream.next().await {
+                let (name, pkgs) = result?;
                 version_cache.insert(name, pkgs);
             }
         }
 
-        // 3. Process resolution logic (Synchronous part)
-        for (req, requested_by) in current_batch {
+        // 3a. Synchronous version-selection pass: decide, for every requirement in
+        // this batch, which package version should be selected. This must stay
+        // sequential because constraint accumulation (`constraints`) and
+        // conflict detection depend on processing order — but it performs no
+        // I/O, so it's fast.
+        //
+        // `fetch_events` records one entry per *selection event* in strict
+        // processing order (not deduped by package name). This matters for
+        // diamond dependencies: if two requirements in the same batch target the
+        // same newly-seen package with different constraints (e.g. `c<3.0.0` and
+        // `c<1.6.0`), the original serial resolver would select+fetch the first
+        // candidate (`c==2.0.0`), queue *its* dependencies, and only then
+        // reconcile to the second, narrower candidate (`c==1.5.0`) and queue
+        // *its* dependencies too — leaving both sets of dependencies in
+        // `next_batch` even though only the reconciled version ends up in
+        // `resolved`. Deduping by name (as an earlier version of this function
+        // did) silently drops the first candidate's dependencies, changing the
+        // resolved package set. Keeping a ordered Vec of events and replaying
+        // them in order after the concurrent fetch reproduces that exact
+        // behavior while still fetching metadata concurrently.
+        enum FetchKind {
+            /// Newly selected package — dependencies are filtered by marker on push.
+            New,
+            /// Re-selected to satisfy an additional constraint within this batch —
+            /// dependencies are pushed unfiltered, matching prior behavior.
+            Reconcile,
+        }
+        struct FetchEvent {
+            name: String,
+            candidate: ResolvedPackage,
+            requested_by: Option<String>,
+            kind: FetchKind,
+        }
+        // Tracks the latest selection per package name within this batch, purely
+        // for constraint-satisfaction lookups by subsequent requirements in the
+        // same batch (mirrors what `resolved` would contain in the serial
+        // implementation at each point in the loop).
+        let mut batch_resolved: BTreeMap<String, ResolvedPackage> = BTreeMap::new();
+        let mut fetch_events: Vec<FetchEvent> = Vec::new();
+
+        for (req, requested_by) in &current_batch {
             constraints
                 .entry(req.name.clone())
                 .or_default()
                 .push(req.clone());
 
-            // Check if already resolved
-            if let Some(existing) = resolved.get(&req.name) {
-                if !req.is_satisfied_by(&existing.version) {
-                    // Try to select a version that satisfies all constraints seen so far
-                    let candidates = version_cache.get(&req.name).cloned().unwrap_or_default();
-                    if let Ok(mut pkg) = select_with_constraints(
-                        &constraints,
-                        &req.name,
-                        &candidates,
-                        requested_by.as_deref(),
-                    ) {
-                        if let Some(fetched) = index.get(&pkg.name, &pkg.version).await? {
-                            pkg = fetched;
-                        }
-                        resolved.insert(req.name.clone(), pkg.clone());
-                        // push dependencies of the newly selected package
-                        for dep in &pkg.dependencies {
-                            next_batch.push((dep.clone(), Some(pkg.name.clone())));
-                        }
-                        parents.insert(req.name.clone(), requested_by.clone());
-                    } else {
-                        let existing_chain = build_chain(&parents, &req.name);
-                        let requested_chain =
-                            build_requested_chain(&parents, &req.name, requested_by);
-                        return Err(ResolveError::Conflict {
-                            name: req.name.clone(),
-                            existing: existing.version.clone(),
-                            requested: req.constraint_display(),
-                            existing_chain,
-                            requested_chain,
-                        });
-                    }
+            let existing = batch_resolved
+                .get(&req.name)
+                .or_else(|| resolved.get(&req.name));
+
+            if let Some(existing) = existing {
+                if req.is_satisfied_by(&existing.version) {
+                    continue;
+                }
+                // Try to select a version that satisfies all constraints seen so far
+                let candidates = version_cache.get(&req.name).cloned().unwrap_or_default();
+                if let Ok(pkg) = select_with_constraints(
+                    &constraints,
+                    &req.name,
+                    &candidates,
+                    requested_by.as_deref(),
+                ) {
+                    batch_resolved.insert(req.name.clone(), pkg.clone());
+                    fetch_events.push(FetchEvent {
+                        name: req.name.clone(),
+                        candidate: pkg,
+                        requested_by: requested_by.clone(),
+                        kind: FetchKind::Reconcile,
+                    });
+                } else {
+                    let existing_chain = build_chain(&parents, &req.name);
+                    let requested_chain =
+                        build_requested_chain(&parents, &req.name, requested_by.clone());
+                    return Err(ResolveError::Conflict {
+                        name: req.name.clone(),
+                        existing: existing.version.clone(),
+                        requested: req.constraint_display(),
+                        existing_chain,
+                        requested_chain,
+                    });
                 }
                 continue;
             }
@@ -801,25 +859,79 @@ pub async fn resolve(
                     available_versions: vec![],
                 })?;
 
-            let mut pkg = select_with_constraints(
+            let pkg = select_with_constraints(
                 &constraints,
                 &req.name,
                 candidates,
                 requested_by.as_deref(),
             )?;
 
-            if let Some(fetched) = index.get(&pkg.name, &pkg.version).await? {
-                pkg = fetched;
+            batch_resolved.insert(req.name.clone(), pkg.clone());
+            fetch_events.push(FetchEvent {
+                name: req.name.clone(),
+                candidate: pkg,
+                requested_by: requested_by.clone(),
+                kind: FetchKind::New,
+            });
+        }
+
+        // 3b. Fetch full metadata (dependencies) for every selection event in this
+        // batch concurrently instead of one at a time — this is the network-bound
+        // step that dominated resolve time (Issue #239 Phase 1). Events are keyed
+        // by their position in `fetch_events`, not by package name, so a package
+        // selected twice in one batch (diamond reconciliation) gets fetched twice
+        // — matching the serial implementation, which called `index.get` once per
+        // selection, not once per package name.
+        //
+        // Fail-fast note: see the comment on the version-list fetch above — this
+        // uses the same manual `while let` drive-to-first-error pattern instead of
+        // collecting the whole batch, so a bad fetch short-circuits the return
+        // instead of being masked by whichever error happens to finish last.
+        let mut fetched: Vec<Option<ResolvedPackage>> = vec![None; fetch_events.len()];
+        if !fetch_events.is_empty() {
+            let mut stream =
+                futures::stream::iter(fetch_events.iter().enumerate().map(|(idx, event)| {
+                    let name = event.candidate.name.clone();
+                    let version = event.candidate.version.clone();
+                    async move {
+                        let result = index.get(&name, &version).await;
+                        (idx, result)
+                    }
+                }))
+                .buffer_unordered(MAX_CONCURRENT_METADATA_FETCHES);
+
+            while let Some((idx, result)) = stream.next().await {
+                fetched[idx] = result?;
+            }
+        }
+
+        // 3c. Commit selections in original processing order: insert into
+        // `resolved`, enqueue dependencies for the next frontier, and record
+        // parent chains for diagnostics. Replaying strictly in `fetch_events`
+        // order (rather than deduped by name) preserves the diamond-dependency
+        // semantics described above — later events for the same name overwrite
+        // `resolved`/`parents`, but earlier events' dependencies still get
+        // queued.
+        for (idx, event) in fetch_events.into_iter().enumerate() {
+            let pkg = fetched[idx].take().unwrap_or(event.candidate);
+
+            match event.kind {
+                FetchKind::New => {
+                    // Filter by environment markers at resolve time so the index
+                    // retains the full dependency list for potential reuse.
+                    for dep in pkg.dependencies.iter().filter(|d| d.marker_applies()) {
+                        next_batch.push((dep.clone(), Some(pkg.name.clone())));
+                    }
+                }
+                FetchKind::Reconcile => {
+                    for dep in &pkg.dependencies {
+                        next_batch.push((dep.clone(), Some(pkg.name.clone())));
+                    }
+                }
             }
 
-            // Add dependencies to next batch, filtering by environment markers at resolve time
-            // so the index retains the full dependency list for potential reuse.
-            for dep in pkg.dependencies.iter().filter(|d| d.marker_applies()) {
-                next_batch.push((dep.clone(), Some(pkg.name.clone())));
-            }
-
-            resolved.insert(req.name.clone(), pkg);
-            parents.insert(req.name.clone(), requested_by);
+            resolved.insert(event.name.clone(), pkg);
+            parents.insert(event.name, event.requested_by);
         }
 
         pending = next_batch;

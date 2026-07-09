@@ -382,3 +382,201 @@ fn parses_pep508_marker_format() {
     assert!(req.marker.is_some());
     assert_eq!(req.marker.as_ref().unwrap(), "platform_machine == 'x86_64'");
 }
+
+/// Regression test for the PR #331 review of Issue #239 Phase 1: parallelizing
+/// metadata fetches must not change *which* packages end up resolved for a
+/// diamond dependency.
+///
+/// `appA` requires `c<3.0.0` and `appB` requires `c<1.6.0`; both requirements
+/// land in the same resolution batch (both are dependencies of the two
+/// top-level apps, discovered together). The index offers `c==2.0.0` (which
+/// satisfies `c<3.0.0` but not `c<1.6.0`, and depends on `leftover-dep`) and
+/// `c==1.5.0` (which satisfies both constraints and has no dependencies).
+///
+/// The resolver first selects `c==2.0.0` for `appA`'s requirement (the only
+/// constraint known at that point), then reconciles down to `c==1.5.0` once
+/// `appB`'s stricter requirement is processed. On `main` (pre-parallel-fetch),
+/// the serial loop pushes `c==2.0.0`'s dependencies (`leftover-dep`) into the
+/// next batch *before* the reconciliation happens, so `leftover-dep` remains
+/// queued and ends up in `resolution.packages` even though the final `c` is
+/// `1.5.0`. This test locks in that exact behavior for the parallel-fetch
+/// implementation too.
+#[tokio::test]
+async fn diamond_dependency_reconciliation_preserves_first_candidate_deps() {
+    let mut index = InMemoryIndex::default();
+    index.add("appA", "1.0.0", ["c<3.0.0"]);
+    index.add("appB", "1.0.0", ["c<1.6.0"]);
+    index.add("c", "2.0.0", ["leftover-dep==1.0.0"]);
+    index.add("c", "1.5.0", Vec::<&str>::new());
+    index.add("leftover-dep", "1.0.0", Vec::<&str>::new());
+
+    let resolution = resolve(
+        vec![
+            Requirement::exact("appA", "1.0.0"),
+            Requirement::exact("appB", "1.0.0"),
+        ],
+        &index,
+    )
+    .await
+    .unwrap();
+
+    // The reconciled, final version of `c` must satisfy both constraints.
+    let c = resolution.packages.get("c").expect("c resolved");
+    assert_eq!(c.version, "1.5.0");
+
+    // `leftover-dep` was a dependency of the first-picked (and ultimately
+    // discarded) `c==2.0.0` candidate. Matching `main`'s serial behavior, it
+    // must still show up in the resolved package set.
+    assert!(
+        resolution.packages.contains_key("leftover-dep"),
+        "expected leftover-dep (a dependency of the first-picked c==2.0.0 \
+         candidate) to remain resolved even though c reconciled to 1.5.0, \
+         matching main's pre-parallel-fetch behavior; got packages: {:?}",
+        resolution.packages.keys().collect::<Vec<_>>()
+    );
+
+    assert_eq!(
+        resolution.packages.len(),
+        4,
+        "expected exactly appA, appB, c, leftover-dep; got: {:?}",
+        resolution.packages.keys().collect::<Vec<_>>()
+    );
+}
+
+/// Regression test for Issue #239 Phase 1: metadata fetches for sibling
+/// dependencies at the same frontier must run concurrently, not one at a
+/// time. Each simulated fetch sleeps for a fixed delay; if fetches ran
+/// serially, N packages would take N * delay. Run concurrently they should
+/// complete in roughly one delay's worth of wall time.
+#[tokio::test]
+async fn fetches_sibling_dependency_metadata_concurrently() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    struct DelayedIndex {
+        all_map: HashMap<String, Vec<ResolvedPackage>>,
+        get_map: HashMap<(String, String), ResolvedPackage>,
+        in_flight: Arc<AtomicUsize>,
+        max_in_flight: Arc<AtomicUsize>,
+        delay: Duration,
+    }
+
+    impl PackageIndex for DelayedIndex {
+        async fn get(
+            &self,
+            name: &str,
+            version: &str,
+        ) -> Result<Option<ResolvedPackage>, ResolveError> {
+            let current = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+            self.max_in_flight.fetch_max(current, Ordering::SeqCst);
+            tokio::time::sleep(self.delay).await;
+            self.in_flight.fetch_sub(1, Ordering::SeqCst);
+            Ok(self
+                .get_map
+                .get(&(name.to_string(), version.to_string()))
+                .cloned())
+        }
+
+        async fn all(&self, name: &str) -> Result<Vec<ResolvedPackage>, ResolveError> {
+            Ok(self.all_map.get(name).cloned().unwrap_or_default())
+        }
+    }
+
+    const SIBLING_COUNT: usize = 8;
+    const DELAY: Duration = Duration::from_millis(50);
+
+    let mut all_map = HashMap::new();
+    let mut get_map = HashMap::new();
+
+    let sibling_names: Vec<String> = (0..SIBLING_COUNT).map(|i| format!("dep-{i}")).collect();
+
+    all_map.insert(
+        "app".to_string(),
+        vec![ResolvedPackage {
+            name: "app".to_string(),
+            version: "1.0.0".to_string(),
+            dependencies: Vec::new(),
+            source: None,
+            artifacts: PackageArtifacts::default(),
+        }],
+    );
+    get_map.insert(
+        ("app".to_string(), "1.0.0".to_string()),
+        ResolvedPackage {
+            name: "app".to_string(),
+            version: "1.0.0".to_string(),
+            dependencies: sibling_names
+                .iter()
+                .map(|n| Requirement::exact(n, "1.0.0"))
+                .collect(),
+            source: None,
+            artifacts: PackageArtifacts::default(),
+        },
+    );
+
+    for name in &sibling_names {
+        all_map.insert(
+            name.clone(),
+            vec![ResolvedPackage {
+                name: name.clone(),
+                version: "1.0.0".to_string(),
+                dependencies: Vec::new(),
+                source: None,
+                artifacts: PackageArtifacts::default(),
+            }],
+        );
+        get_map.insert(
+            (name.clone(), "1.0.0".to_string()),
+            ResolvedPackage {
+                name: name.clone(),
+                version: "1.0.0".to_string(),
+                dependencies: Vec::new(),
+                source: None,
+                artifacts: PackageArtifacts::default(),
+            },
+        );
+    }
+
+    let in_flight = Arc::new(AtomicUsize::new(0));
+    let max_in_flight = Arc::new(AtomicUsize::new(0));
+    let index = DelayedIndex {
+        all_map,
+        get_map,
+        in_flight: in_flight.clone(),
+        max_in_flight: max_in_flight.clone(),
+        delay: DELAY,
+    };
+
+    let start = std::time::Instant::now();
+    let resolution = resolve(vec![Requirement::exact("app", "1.0.0")], &index)
+        .await
+        .unwrap();
+    let elapsed = start.elapsed();
+
+    // Correctness: every sibling must still be resolved, regardless of the
+    // non-deterministic order in which their delayed fetches complete.
+    assert_eq!(resolution.packages.len(), SIBLING_COUNT + 1);
+    for name in &sibling_names {
+        assert!(resolution.packages.contains_key(name));
+        assert_eq!(resolution.packages[name].version, "1.0.0");
+    }
+
+    // Concurrency: fetches for the sibling frontier must have overlapped in
+    // time. Serial fetching would only ever observe max_in_flight == 1.
+    assert!(
+        max_in_flight.load(Ordering::SeqCst) > 1,
+        "expected overlapping concurrent fetches, but max in-flight was {}",
+        max_in_flight.load(Ordering::SeqCst)
+    );
+
+    // Wall-clock sanity check: SIBLING_COUNT sequential fetches would take at
+    // least SIBLING_COUNT * DELAY. Concurrent fetches (bounded at 16) should
+    // finish well under half that, even accounting for scheduler jitter.
+    let serial_lower_bound = DELAY * SIBLING_COUNT as u32;
+    assert!(
+        elapsed < serial_lower_bound / 2,
+        "resolve() took {elapsed:?}, expected well under {serial_lower_bound:?} \
+         if fetches ran concurrently"
+    );
+}
