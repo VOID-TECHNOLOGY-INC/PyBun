@@ -382,3 +382,141 @@ fn parses_pep508_marker_format() {
     assert!(req.marker.is_some());
     assert_eq!(req.marker.as_ref().unwrap(), "platform_machine == 'x86_64'");
 }
+
+/// Regression test for Issue #239 Phase 1: metadata fetches for sibling
+/// dependencies at the same frontier must run concurrently, not one at a
+/// time. Each simulated fetch sleeps for a fixed delay; if fetches ran
+/// serially, N packages would take N * delay. Run concurrently they should
+/// complete in roughly one delay's worth of wall time.
+#[tokio::test]
+async fn fetches_sibling_dependency_metadata_concurrently() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    struct DelayedIndex {
+        all_map: HashMap<String, Vec<ResolvedPackage>>,
+        get_map: HashMap<(String, String), ResolvedPackage>,
+        in_flight: Arc<AtomicUsize>,
+        max_in_flight: Arc<AtomicUsize>,
+        delay: Duration,
+    }
+
+    impl PackageIndex for DelayedIndex {
+        async fn get(
+            &self,
+            name: &str,
+            version: &str,
+        ) -> Result<Option<ResolvedPackage>, ResolveError> {
+            let current = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+            self.max_in_flight.fetch_max(current, Ordering::SeqCst);
+            tokio::time::sleep(self.delay).await;
+            self.in_flight.fetch_sub(1, Ordering::SeqCst);
+            Ok(self
+                .get_map
+                .get(&(name.to_string(), version.to_string()))
+                .cloned())
+        }
+
+        async fn all(&self, name: &str) -> Result<Vec<ResolvedPackage>, ResolveError> {
+            Ok(self.all_map.get(name).cloned().unwrap_or_default())
+        }
+    }
+
+    const SIBLING_COUNT: usize = 8;
+    const DELAY: Duration = Duration::from_millis(50);
+
+    let mut all_map = HashMap::new();
+    let mut get_map = HashMap::new();
+
+    let sibling_names: Vec<String> = (0..SIBLING_COUNT).map(|i| format!("dep-{i}")).collect();
+
+    all_map.insert(
+        "app".to_string(),
+        vec![ResolvedPackage {
+            name: "app".to_string(),
+            version: "1.0.0".to_string(),
+            dependencies: Vec::new(),
+            source: None,
+            artifacts: PackageArtifacts::default(),
+        }],
+    );
+    get_map.insert(
+        ("app".to_string(), "1.0.0".to_string()),
+        ResolvedPackage {
+            name: "app".to_string(),
+            version: "1.0.0".to_string(),
+            dependencies: sibling_names
+                .iter()
+                .map(|n| Requirement::exact(n, "1.0.0"))
+                .collect(),
+            source: None,
+            artifacts: PackageArtifacts::default(),
+        },
+    );
+
+    for name in &sibling_names {
+        all_map.insert(
+            name.clone(),
+            vec![ResolvedPackage {
+                name: name.clone(),
+                version: "1.0.0".to_string(),
+                dependencies: Vec::new(),
+                source: None,
+                artifacts: PackageArtifacts::default(),
+            }],
+        );
+        get_map.insert(
+            (name.clone(), "1.0.0".to_string()),
+            ResolvedPackage {
+                name: name.clone(),
+                version: "1.0.0".to_string(),
+                dependencies: Vec::new(),
+                source: None,
+                artifacts: PackageArtifacts::default(),
+            },
+        );
+    }
+
+    let in_flight = Arc::new(AtomicUsize::new(0));
+    let max_in_flight = Arc::new(AtomicUsize::new(0));
+    let index = DelayedIndex {
+        all_map,
+        get_map,
+        in_flight: in_flight.clone(),
+        max_in_flight: max_in_flight.clone(),
+        delay: DELAY,
+    };
+
+    let start = std::time::Instant::now();
+    let resolution = resolve(vec![Requirement::exact("app", "1.0.0")], &index)
+        .await
+        .unwrap();
+    let elapsed = start.elapsed();
+
+    // Correctness: every sibling must still be resolved, regardless of the
+    // non-deterministic order in which their delayed fetches complete.
+    assert_eq!(resolution.packages.len(), SIBLING_COUNT + 1);
+    for name in &sibling_names {
+        assert!(resolution.packages.contains_key(name));
+        assert_eq!(resolution.packages[name].version, "1.0.0");
+    }
+
+    // Concurrency: fetches for the sibling frontier must have overlapped in
+    // time. Serial fetching would only ever observe max_in_flight == 1.
+    assert!(
+        max_in_flight.load(Ordering::SeqCst) > 1,
+        "expected overlapping concurrent fetches, but max in-flight was {}",
+        max_in_flight.load(Ordering::SeqCst)
+    );
+
+    // Wall-clock sanity check: SIBLING_COUNT sequential fetches would take at
+    // least SIBLING_COUNT * DELAY. Concurrent fetches (bounded at 16) should
+    // finish well under half that, even accounting for scheduler jitter.
+    let serial_lower_bound = DELAY * SIBLING_COUNT as u32;
+    assert!(
+        elapsed < serial_lower_bound / 2,
+        "resolve() took {elapsed:?}, expected well under {serial_lower_bound:?} \
+         if fetches ran concurrently"
+    );
+}
