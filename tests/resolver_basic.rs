@@ -383,6 +383,66 @@ fn parses_pep508_marker_format() {
     assert_eq!(req.marker.as_ref().unwrap(), "platform_machine == 'x86_64'");
 }
 
+/// Regression test for the PR #331 review of Issue #239 Phase 1: parallelizing
+/// metadata fetches must not change *which* packages end up resolved for a
+/// diamond dependency.
+///
+/// `appA` requires `c<3.0.0` and `appB` requires `c<1.6.0`; both requirements
+/// land in the same resolution batch (both are dependencies of the two
+/// top-level apps, discovered together). The index offers `c==2.0.0` (which
+/// satisfies `c<3.0.0` but not `c<1.6.0`, and depends on `leftover-dep`) and
+/// `c==1.5.0` (which satisfies both constraints and has no dependencies).
+///
+/// The resolver first selects `c==2.0.0` for `appA`'s requirement (the only
+/// constraint known at that point), then reconciles down to `c==1.5.0` once
+/// `appB`'s stricter requirement is processed. On `main` (pre-parallel-fetch),
+/// the serial loop pushes `c==2.0.0`'s dependencies (`leftover-dep`) into the
+/// next batch *before* the reconciliation happens, so `leftover-dep` remains
+/// queued and ends up in `resolution.packages` even though the final `c` is
+/// `1.5.0`. This test locks in that exact behavior for the parallel-fetch
+/// implementation too.
+#[tokio::test]
+async fn diamond_dependency_reconciliation_preserves_first_candidate_deps() {
+    let mut index = InMemoryIndex::default();
+    index.add("appA", "1.0.0", ["c<3.0.0"]);
+    index.add("appB", "1.0.0", ["c<1.6.0"]);
+    index.add("c", "2.0.0", ["leftover-dep==1.0.0"]);
+    index.add("c", "1.5.0", Vec::<&str>::new());
+    index.add("leftover-dep", "1.0.0", Vec::<&str>::new());
+
+    let resolution = resolve(
+        vec![
+            Requirement::exact("appA", "1.0.0"),
+            Requirement::exact("appB", "1.0.0"),
+        ],
+        &index,
+    )
+    .await
+    .unwrap();
+
+    // The reconciled, final version of `c` must satisfy both constraints.
+    let c = resolution.packages.get("c").expect("c resolved");
+    assert_eq!(c.version, "1.5.0");
+
+    // `leftover-dep` was a dependency of the first-picked (and ultimately
+    // discarded) `c==2.0.0` candidate. Matching `main`'s serial behavior, it
+    // must still show up in the resolved package set.
+    assert!(
+        resolution.packages.contains_key("leftover-dep"),
+        "expected leftover-dep (a dependency of the first-picked c==2.0.0 \
+         candidate) to remain resolved even though c reconciled to 1.5.0, \
+         matching main's pre-parallel-fetch behavior; got packages: {:?}",
+        resolution.packages.keys().collect::<Vec<_>>()
+    );
+
+    assert_eq!(
+        resolution.packages.len(),
+        4,
+        "expected exactly appA, appB, c, leftover-dep; got: {:?}",
+        resolution.packages.keys().collect::<Vec<_>>()
+    );
+}
+
 /// Regression test for Issue #239 Phase 1: metadata fetches for sibling
 /// dependencies at the same frontier must run concurrently, not one at a
 /// time. Each simulated fetch sleeps for a fixed delay; if fetches ran

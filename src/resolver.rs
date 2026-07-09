@@ -742,17 +742,24 @@ pub async fn resolve(
 
         // 2. Fetch version-list metadata for sibling packages in parallel, bounded to
         // MAX_CONCURRENT_METADATA_FETCHES concurrent requests (Issue #239 Phase 1).
+        //
+        // Fail-fast note: `buffer_unordered` still runs up to
+        // MAX_CONCURRENT_METADATA_FETCHES fetches concurrently, but we drive the
+        // stream with a manual `while let` loop instead of collecting the whole
+        // batch first. This returns to the caller as soon as the first error is
+        // observed (whichever fetch happens to complete first — not necessarily
+        // submission order) instead of waiting for every in-flight fetch to
+        // finish. Futures already queued but not yet polled are dropped (and
+        // therefore cancelled) when we return early.
         if !names_to_fetch.is_empty() {
-            let results: Vec<Result<(String, Vec<ResolvedPackage>), ResolveError>> =
+            let mut stream =
                 futures::stream::iter(names_to_fetch.into_iter().map(|name| async move {
                     let pkgs = index.all(&name).await?;
                     Ok::<(String, Vec<ResolvedPackage>), ResolveError>((name, pkgs))
                 }))
-                .buffer_unordered(MAX_CONCURRENT_METADATA_FETCHES)
-                .collect()
-                .await;
+                .buffer_unordered(MAX_CONCURRENT_METADATA_FETCHES);
 
-            for result in results {
+            while let Some(result) = stream.next().await {
                 let (name, pkgs) = result?;
                 version_cache.insert(name, pkgs);
             }
@@ -762,10 +769,22 @@ pub async fn resolve(
         // this batch, which package version should be selected. This must stay
         // sequential because constraint accumulation (`constraints`) and
         // conflict detection depend on processing order — but it performs no
-        // I/O, so it's fast. `batch_resolved` mirrors what would land in
-        // `resolved` so later requirements in the same batch that target an
-        // already-selected package go through the same reconciliation logic
-        // the original serial implementation used.
+        // I/O, so it's fast.
+        //
+        // `fetch_events` records one entry per *selection event* in strict
+        // processing order (not deduped by package name). This matters for
+        // diamond dependencies: if two requirements in the same batch target the
+        // same newly-seen package with different constraints (e.g. `c<3.0.0` and
+        // `c<1.6.0`), the original serial resolver would select+fetch the first
+        // candidate (`c==2.0.0`), queue *its* dependencies, and only then
+        // reconcile to the second, narrower candidate (`c==1.5.0`) and queue
+        // *its* dependencies too — leaving both sets of dependencies in
+        // `next_batch` even though only the reconciled version ends up in
+        // `resolved`. Deduping by name (as an earlier version of this function
+        // did) silently drops the first candidate's dependencies, changing the
+        // resolved package set. Keeping a ordered Vec of events and replaying
+        // them in order after the concurrent fetch reproduces that exact
+        // behavior while still fetching metadata concurrently.
         enum FetchKind {
             /// Newly selected package — dependencies are filtered by marker on push.
             New,
@@ -773,8 +792,18 @@ pub async fn resolve(
             /// dependencies are pushed unfiltered, matching prior behavior.
             Reconcile,
         }
+        struct FetchEvent {
+            name: String,
+            candidate: ResolvedPackage,
+            requested_by: Option<String>,
+            kind: FetchKind,
+        }
+        // Tracks the latest selection per package name within this batch, purely
+        // for constraint-satisfaction lookups by subsequent requirements in the
+        // same batch (mirrors what `resolved` would contain in the serial
+        // implementation at each point in the loop).
         let mut batch_resolved: BTreeMap<String, ResolvedPackage> = BTreeMap::new();
-        let mut fetch_queue: BTreeMap<String, (Option<String>, FetchKind)> = BTreeMap::new();
+        let mut fetch_events: Vec<FetchEvent> = Vec::new();
 
         for (req, requested_by) in &current_batch {
             constraints
@@ -798,11 +827,13 @@ pub async fn resolve(
                     &candidates,
                     requested_by.as_deref(),
                 ) {
-                    batch_resolved.insert(req.name.clone(), pkg);
-                    fetch_queue.insert(
-                        req.name.clone(),
-                        (requested_by.clone(), FetchKind::Reconcile),
-                    );
+                    batch_resolved.insert(req.name.clone(), pkg.clone());
+                    fetch_events.push(FetchEvent {
+                        name: req.name.clone(),
+                        candidate: pkg,
+                        requested_by: requested_by.clone(),
+                        kind: FetchKind::Reconcile,
+                    });
                 } else {
                     let existing_chain = build_chain(&parents, &req.name);
                     let requested_chain =
@@ -835,45 +866,56 @@ pub async fn resolve(
                 requested_by.as_deref(),
             )?;
 
-            batch_resolved.insert(req.name.clone(), pkg);
-            fetch_queue.insert(req.name.clone(), (requested_by.clone(), FetchKind::New));
+            batch_resolved.insert(req.name.clone(), pkg.clone());
+            fetch_events.push(FetchEvent {
+                name: req.name.clone(),
+                candidate: pkg,
+                requested_by: requested_by.clone(),
+                kind: FetchKind::New,
+            });
         }
 
-        // 3b. Fetch full metadata (dependencies) for every package selected in this
+        // 3b. Fetch full metadata (dependencies) for every selection event in this
         // batch concurrently instead of one at a time — this is the network-bound
-        // step that dominated resolve time (Issue #239 Phase 1).
-        if !fetch_queue.is_empty() {
-            let fetch_results: Vec<Result<(String, Option<ResolvedPackage>), ResolveError>> =
-                futures::stream::iter(fetch_queue.keys().cloned().map(|name| {
-                    let candidate = batch_resolved
-                        .get(&name)
-                        .cloned()
-                        .expect("every fetch_queue entry has a selected candidate");
+        // step that dominated resolve time (Issue #239 Phase 1). Events are keyed
+        // by their position in `fetch_events`, not by package name, so a package
+        // selected twice in one batch (diamond reconciliation) gets fetched twice
+        // — matching the serial implementation, which called `index.get` once per
+        // selection, not once per package name.
+        //
+        // Fail-fast note: see the comment on the version-list fetch above — this
+        // uses the same manual `while let` drive-to-first-error pattern instead of
+        // collecting the whole batch, so a bad fetch short-circuits the return
+        // instead of being masked by whichever error happens to finish last.
+        let mut fetched: Vec<Option<ResolvedPackage>> = vec![None; fetch_events.len()];
+        if !fetch_events.is_empty() {
+            let mut stream =
+                futures::stream::iter(fetch_events.iter().enumerate().map(|(idx, event)| {
+                    let name = event.candidate.name.clone();
+                    let version = event.candidate.version.clone();
                     async move {
-                        let fetched = index.get(&candidate.name, &candidate.version).await?;
-                        Ok::<(String, Option<ResolvedPackage>), ResolveError>((name, fetched))
+                        let result = index.get(&name, &version).await;
+                        (idx, result)
                     }
                 }))
-                .buffer_unordered(MAX_CONCURRENT_METADATA_FETCHES)
-                .collect()
-                .await;
+                .buffer_unordered(MAX_CONCURRENT_METADATA_FETCHES);
 
-            for result in fetch_results {
-                let (name, fetched) = result?;
-                if let Some(fetched) = fetched {
-                    batch_resolved.insert(name, fetched);
-                }
+            while let Some((idx, result)) = stream.next().await {
+                fetched[idx] = result?;
             }
         }
 
-        // 3c. Commit selections: insert into `resolved`, enqueue dependencies for
-        // the next frontier, and record parent chains for diagnostics.
-        for (name, (requested_by, kind)) in fetch_queue {
-            let pkg = batch_resolved
-                .remove(&name)
-                .expect("every fetch_queue entry has a selected candidate");
+        // 3c. Commit selections in original processing order: insert into
+        // `resolved`, enqueue dependencies for the next frontier, and record
+        // parent chains for diagnostics. Replaying strictly in `fetch_events`
+        // order (rather than deduped by name) preserves the diamond-dependency
+        // semantics described above — later events for the same name overwrite
+        // `resolved`/`parents`, but earlier events' dependencies still get
+        // queued.
+        for (idx, event) in fetch_events.into_iter().enumerate() {
+            let pkg = fetched[idx].take().unwrap_or(event.candidate);
 
-            match kind {
+            match event.kind {
                 FetchKind::New => {
                     // Filter by environment markers at resolve time so the index
                     // retains the full dependency list for potential reuse.
@@ -888,8 +930,8 @@ pub async fn resolve(
                 }
             }
 
-            resolved.insert(name.clone(), pkg);
-            parents.insert(name, requested_by);
+            resolved.insert(event.name.clone(), pkg);
+            parents.insert(event.name, event.requested_by);
         }
 
         pending = next_batch;
