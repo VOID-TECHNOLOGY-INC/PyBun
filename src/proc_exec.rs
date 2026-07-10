@@ -27,9 +27,12 @@ pub enum ProcExecOutcome {
 }
 
 /// Spawn `cmd`, optionally capturing stdout/stderr, and kill it if it runs
-/// longer than `timeout_secs` (`None` or `Some(0)` means unlimited). Reader
-/// threads drain the pipes concurrently so a chatty process can't deadlock on
-/// a full pipe buffer while we poll for exit.
+/// longer than `timeout_secs` (`None` means unlimited; `Some(secs)` — including
+/// `Some(0)` — applies a `Duration::from_secs(secs)` wall-clock timeout).
+/// Callers that want a "0 = unlimited" convention (e.g. `sandbox`) must map
+/// that to `None` themselves before calling this function. Reader threads
+/// drain the pipes concurrently so a chatty process can't deadlock on a full
+/// pipe buffer while we poll for exit.
 pub fn spawn_with_timeout(
     cmd: &mut Command,
     timeout_secs: Option<u64>,
@@ -45,9 +48,7 @@ pub fn spawn_with_timeout(
     let stdout_handle = child.stdout.take().map(spawn_pipe_reader);
     let stderr_handle = child.stderr.take().map(spawn_pipe_reader);
 
-    let timeout = timeout_secs
-        .filter(|&secs| secs > 0)
-        .map(Duration::from_secs);
+    let timeout = timeout_secs.map(Duration::from_secs);
     let poll_interval = Duration::from_millis(50);
     let start = Instant::now();
 
@@ -101,9 +102,54 @@ pub fn join_pipe_reader(handle: Option<thread::JoinHandle<Vec<u8>>>) -> Option<V
 mod tests {
     use super::*;
 
+    fn successful_command() -> Command {
+        #[cfg(unix)]
+        {
+            let mut cmd = Command::new("sh");
+            cmd.arg("-c").arg("exit 0");
+            cmd
+        }
+        #[cfg(windows)]
+        {
+            let mut cmd = Command::new("cmd");
+            cmd.arg("/C").arg("exit 0");
+            cmd
+        }
+    }
+
+    fn output_command() -> Command {
+        #[cfg(unix)]
+        {
+            let mut cmd = Command::new("sh");
+            cmd.arg("-c").arg("echo out; echo err 1>&2");
+            cmd
+        }
+        #[cfg(windows)]
+        {
+            let mut cmd = Command::new("cmd");
+            cmd.arg("/C").arg("echo out & echo err 1>&2");
+            cmd
+        }
+    }
+
+    fn long_running_command() -> Command {
+        #[cfg(unix)]
+        {
+            let mut cmd = Command::new("sleep");
+            cmd.arg("30");
+            cmd
+        }
+        #[cfg(windows)]
+        {
+            let mut cmd = Command::new("ping");
+            cmd.args(["-n", "31", "127.0.0.1"]);
+            cmd
+        }
+    }
+
     #[test]
     fn completes_normally_before_timeout() {
-        let mut cmd = Command::new("true");
+        let mut cmd = successful_command();
         let outcome = spawn_with_timeout(&mut cmd, Some(5), false).expect("spawn should succeed");
         match outcome {
             ProcExecOutcome::Completed { status, .. } => {
@@ -115,8 +161,7 @@ mod tests {
 
     #[test]
     fn captures_stdout_and_stderr_when_requested() {
-        let mut cmd = Command::new("sh");
-        cmd.arg("-c").arg("echo out; echo err 1>&2");
+        let mut cmd = output_command();
         let outcome = spawn_with_timeout(&mut cmd, None, true).expect("spawn should succeed");
         match outcome {
             ProcExecOutcome::Completed {
@@ -125,8 +170,8 @@ mod tests {
                 stderr,
             } => {
                 assert!(status.success());
-                assert_eq!(stdout.unwrap(), b"out\n");
-                assert_eq!(stderr.unwrap(), b"err\n");
+                assert_eq!(String::from_utf8_lossy(&stdout.unwrap()).trim(), "out");
+                assert_eq!(String::from_utf8_lossy(&stderr.unwrap()).trim(), "err");
             }
             ProcExecOutcome::TimedOut => panic!("expected process to complete, not time out"),
         }
@@ -134,7 +179,7 @@ mod tests {
 
     #[test]
     fn does_not_capture_when_capture_is_false() {
-        let mut cmd = Command::new("true");
+        let mut cmd = successful_command();
         let outcome = spawn_with_timeout(&mut cmd, None, false).expect("spawn should succeed");
         match outcome {
             ProcExecOutcome::Completed { stdout, stderr, .. } => {
@@ -147,8 +192,7 @@ mod tests {
 
     #[test]
     fn kills_process_that_exceeds_timeout() {
-        let mut cmd = Command::new("sleep");
-        cmd.arg("30");
+        let mut cmd = long_running_command();
         let start = Instant::now();
         let outcome = spawn_with_timeout(&mut cmd, Some(1), false).expect("spawn should succeed");
         assert!(matches!(outcome, ProcExecOutcome::TimedOut));
@@ -157,18 +201,17 @@ mod tests {
     }
 
     #[test]
-    fn zero_timeout_means_unlimited() {
-        let mut cmd = Command::new("true");
+    fn zero_timeout_is_immediate_for_optional_timeout_callers() {
+        let mut cmd = long_running_command();
+        let start = Instant::now();
         let outcome = spawn_with_timeout(&mut cmd, Some(0), false).expect("spawn should succeed");
-        match outcome {
-            ProcExecOutcome::Completed { status, .. } => assert!(status.success()),
-            ProcExecOutcome::TimedOut => panic!("timeout_secs=0 must mean unlimited"),
-        }
+        assert!(matches!(outcome, ProcExecOutcome::TimedOut));
+        assert!(start.elapsed() < Duration::from_secs(5));
     }
 
     #[test]
     fn no_timeout_runs_to_completion() {
-        let mut cmd = Command::new("true");
+        let mut cmd = successful_command();
         let outcome = spawn_with_timeout(&mut cmd, None, false).expect("spawn should succeed");
         match outcome {
             ProcExecOutcome::Completed { status, .. } => assert!(status.success()),

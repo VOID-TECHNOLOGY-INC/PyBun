@@ -432,7 +432,8 @@ pub fn execute_sandboxed(
     timeout_secs: u64,
     capture: bool,
 ) -> std::io::Result<SandboxExecOutcome> {
-    match crate::proc_exec::spawn_with_timeout(cmd, Some(timeout_secs), capture)? {
+    let timeout = (timeout_secs > 0).then_some(timeout_secs);
+    match crate::proc_exec::spawn_with_timeout(cmd, timeout, capture)? {
         crate::proc_exec::ProcExecOutcome::Completed {
             status,
             stdout,
