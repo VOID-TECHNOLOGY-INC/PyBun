@@ -531,12 +531,10 @@ pub fn execute_with_optional_sandbox(
     cmd: &mut Command,
     sandbox_guard: Option<&SandboxGuard>,
     capture_output: bool,
-) -> Result<SandboxedExecution> {
+) -> std::io::Result<SandboxedExecution> {
     let mut timed_out = false;
     let (status, stdout, stderr) = if let Some(guard) = sandbox_guard {
-        match execute_sandboxed(cmd, guard.resource_limits.timeout_secs, capture_output)
-            .map_err(|e| eyre!("failed to execute sandboxed command: {e}"))?
-        {
+        match execute_sandboxed(cmd, guard.resource_limits.timeout_secs, capture_output)? {
             SandboxExecOutcome::Completed {
                 status,
                 stdout,
@@ -548,14 +546,10 @@ pub fn execute_with_optional_sandbox(
             }
         }
     } else if capture_output {
-        let output = cmd
-            .output()
-            .map_err(|e| eyre!("failed to execute command: {e}"))?;
+        let output = cmd.output()?;
         (output.status, Some(output.stdout), Some(output.stderr))
     } else {
-        let status = cmd
-            .status()
-            .map_err(|e| eyre!("failed to execute command: {e}"))?;
+        let status = cmd.status()?;
         (status, None, None)
     };
 
@@ -877,6 +871,51 @@ except Exception as exc:  # pragma: no cover - defensive, should not happen
 mod tests {
     use super::*;
 
+    fn successful_command() -> Command {
+        #[cfg(unix)]
+        {
+            let mut cmd = Command::new("sh");
+            cmd.arg("-c").arg("exit 0");
+            cmd
+        }
+        #[cfg(windows)]
+        {
+            let mut cmd = Command::new("cmd");
+            cmd.arg("/C").arg("exit 0");
+            cmd
+        }
+    }
+
+    fn output_command(message: &str) -> Command {
+        #[cfg(unix)]
+        {
+            let mut cmd = Command::new("sh");
+            cmd.arg("-c").arg(format!("echo {message}"));
+            cmd
+        }
+        #[cfg(windows)]
+        {
+            let mut cmd = Command::new("cmd");
+            cmd.arg("/C").arg(format!("echo {message}"));
+            cmd
+        }
+    }
+
+    fn long_running_command() -> Command {
+        #[cfg(unix)]
+        {
+            let mut cmd = Command::new("sleep");
+            cmd.arg("5");
+            cmd
+        }
+        #[cfg(windows)]
+        {
+            let mut cmd = Command::new("cmd");
+            cmd.arg("/C").arg("ping -n 6 127.0.0.1 >NUL");
+            cmd
+        }
+    }
+
     #[test]
     fn default_safe_env_vars_includes_path_and_home() {
         let safe = default_safe_env_vars();
@@ -945,7 +984,7 @@ mod tests {
 
     #[test]
     fn execute_with_optional_sandbox_plain_no_capture_uses_status() {
-        let mut cmd = Command::new("true");
+        let mut cmd = successful_command();
         let result = execute_with_optional_sandbox(&mut cmd, None, false)
             .expect("plain command should execute");
         assert!(result.status.success());
@@ -956,8 +995,7 @@ mod tests {
 
     #[test]
     fn execute_with_optional_sandbox_plain_capture_returns_output() {
-        let mut cmd = Command::new("sh");
-        cmd.arg("-c").arg("echo hello");
+        let mut cmd = output_command("hello");
         let result = execute_with_optional_sandbox(&mut cmd, None, true)
             .expect("plain command should execute");
         assert!(result.status.success());
@@ -970,8 +1008,7 @@ mod tests {
 
     #[test]
     fn execute_with_optional_sandbox_honors_sandbox_timeout() {
-        let mut cmd = Command::new("sh");
-        cmd.arg("-c").arg("sleep 5");
+        let mut cmd = long_running_command();
         let config = SandboxConfig {
             timeout_secs: 1,
             ..Default::default()
@@ -988,8 +1025,7 @@ mod tests {
 
     #[test]
     fn execute_with_optional_sandbox_sandboxed_completion_captures_output() {
-        let mut cmd = Command::new("sh");
-        cmd.arg("-c").arg("echo from-sandbox");
+        let mut cmd = output_command("from-sandbox");
         let guard = apply_python_sandbox(&mut cmd, SandboxConfig::default())
             .expect("sandbox setup should succeed");
         let result = execute_with_optional_sandbox(&mut cmd, Some(&guard), true)
@@ -1000,6 +1036,17 @@ mod tests {
             String::from_utf8_lossy(result.stdout.as_deref().unwrap_or_default()).trim(),
             "from-sandbox"
         );
+    }
+
+    #[test]
+    fn execute_with_optional_sandbox_preserves_io_error_type() {
+        let mut cmd = Command::new("pybun-command-that-does-not-exist");
+        let result = execute_with_optional_sandbox(&mut cmd, None, false);
+        let _: &std::io::Result<SandboxedExecution> = &result;
+        match result {
+            Ok(_) => panic!("missing executable should fail"),
+            Err(error) => assert_eq!(error.kind(), std::io::ErrorKind::NotFound),
+        }
     }
 
     #[test]

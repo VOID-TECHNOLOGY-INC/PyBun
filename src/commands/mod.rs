@@ -3542,7 +3542,8 @@ async fn run_script(
         &mut cmd,
         sandbox_guard.as_ref(),
         format == OutputFormat::Json,
-    )?;
+    )
+    .map_err(|e| eyre!("failed to execute runner: {}", e))?;
     let stdout = stdout.as_deref().and_then(capture_stdio);
     let stderr = stderr.as_deref().and_then(capture_stdio);
     // Read audit before dropping the guard (guard keeps the audit file alive).
