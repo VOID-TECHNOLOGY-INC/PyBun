@@ -3533,49 +3533,18 @@ async fn run_script(
         return Err(eyre!("failed to exec runner: {}", err));
     }
 
-    let mut timed_out = false;
-    let (status, stdout, stderr) = if let Some(guard) = &sandbox_guard {
-        match sandbox::execute_sandboxed(
-            &mut cmd,
-            guard.resource_limits.timeout_secs,
-            format == OutputFormat::Json,
-        )
-        .map_err(|e| eyre!("failed to execute runner: {}", e))?
-        {
-            sandbox::SandboxExecOutcome::Completed {
-                status,
-                stdout,
-                stderr,
-            } => (
-                status,
-                stdout.as_deref().and_then(capture_stdio),
-                stderr.as_deref().and_then(capture_stdio),
-            ),
-            sandbox::SandboxExecOutcome::TimedOut => {
-                timed_out = true;
-                (sandbox::timeout_exit_status(), None, None)
-            }
-        }
-    } else {
-        match format {
-            OutputFormat::Json => {
-                let output = cmd
-                    .output()
-                    .map_err(|e| eyre!("failed to execute runner: {}", e))?;
-                (
-                    output.status,
-                    capture_stdio(&output.stdout),
-                    capture_stdio(&output.stderr),
-                )
-            }
-            OutputFormat::Text => (
-                cmd.status()
-                    .map_err(|e| eyre!("failed to execute runner: {}", e))?,
-                None,
-                None,
-            ),
-        }
-    };
+    let sandbox::SandboxedExecution {
+        status,
+        stdout,
+        stderr,
+        timed_out,
+    } = sandbox::execute_with_optional_sandbox(
+        &mut cmd,
+        sandbox_guard.as_ref(),
+        format == OutputFormat::Json,
+    )?;
+    let stdout = stdout.as_deref().and_then(capture_stdio);
+    let stderr = stderr.as_deref().and_then(capture_stdio);
     // Read audit before dropping the guard (guard keeps the audit file alive).
     if let (Some(guard), Some(info)) = (&sandbox_guard, &mut sandbox_info) {
         info.audit = Some(guard.read_audit());
@@ -3829,49 +3798,19 @@ fn run_python_code(
         return Err(eyre!("failed to exec Python: {}", err));
     }
 
-    let mut timed_out = false;
-    let (status, stdout, stderr) = if let Some(guard) = &sandbox_guard {
-        match sandbox::execute_sandboxed(
-            &mut cmd,
-            guard.resource_limits.timeout_secs,
-            format == OutputFormat::Json,
-        )
-        .map_err(|e| eyre!("failed to execute Python: {}", e))?
-        {
-            sandbox::SandboxExecOutcome::Completed {
-                status,
-                stdout,
-                stderr,
-            } => (
-                status,
-                stdout.as_deref().and_then(capture_stdio),
-                stderr.as_deref().and_then(capture_stdio),
-            ),
-            sandbox::SandboxExecOutcome::TimedOut => {
-                timed_out = true;
-                (sandbox::timeout_exit_status(), None, None)
-            }
-        }
-    } else {
-        match format {
-            OutputFormat::Json => {
-                let output = cmd
-                    .output()
-                    .map_err(|e| eyre!("failed to execute Python: {}", e))?;
-                (
-                    output.status,
-                    capture_stdio(&output.stdout),
-                    capture_stdio(&output.stderr),
-                )
-            }
-            OutputFormat::Text => (
-                cmd.status()
-                    .map_err(|e| eyre!("failed to execute Python: {}", e))?,
-                None,
-                None,
-            ),
-        }
-    };
+    let sandbox::SandboxedExecution {
+        status,
+        stdout,
+        stderr,
+        timed_out,
+    } = sandbox::execute_with_optional_sandbox(
+        &mut cmd,
+        sandbox_guard.as_ref(),
+        format == OutputFormat::Json,
+    )
+    .map_err(|e| eyre!("failed to execute Python: {}", e))?;
+    let stdout = stdout.as_deref().and_then(capture_stdio);
+    let stderr = stderr.as_deref().and_then(capture_stdio);
     if let (Some(guard), Some(info)) = (&sandbox_guard, &mut sandbox_info) {
         info.audit = Some(guard.read_audit());
         info.timed_out = timed_out;

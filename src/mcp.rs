@@ -1872,30 +1872,19 @@ impl McpServer {
                 .map(|c| apply_python_sandbox(&mut cmd, c).map_err(|e| e.to_string()))
                 .transpose()?;
 
-            let (status, stdout, stderr, timed_out) = if let Some(guard) = &guard {
-                match sandbox::execute_sandboxed(&mut cmd, guard.resource_limits.timeout_secs, true)
-                    .map_err(|e| format!("Failed to execute: {}", e))?
-                {
-                    sandbox::SandboxExecOutcome::Completed {
-                        status,
-                        stdout,
-                        stderr,
-                    } => (
-                        status,
-                        stdout.unwrap_or_default(),
-                        stderr.unwrap_or_default(),
-                        false,
-                    ),
-                    sandbox::SandboxExecOutcome::TimedOut => {
-                        (sandbox::timeout_exit_status(), Vec::new(), Vec::new(), true)
-                    }
-                }
-            } else {
-                let output = cmd
-                    .output()
-                    .map_err(|e| format!("Failed to execute: {}", e))?;
-                (output.status, output.stdout, output.stderr, false)
-            };
+            // Shared with the CLI `pybun run` command (`commands::run_script` /
+            // `commands::run_python_code`) via `sandbox::execute_with_optional_sandbox`,
+            // so sandboxed-vs-plain execution, timeout handling, and output capture
+            // cannot silently diverge between the MCP and CLI entry points (Issue #272).
+            let sandbox::SandboxedExecution {
+                status,
+                stdout,
+                stderr,
+                timed_out,
+            } = sandbox::execute_with_optional_sandbox(&mut cmd, guard.as_ref(), true)
+                .map_err(|e| format!("Failed to execute: {}", e))?;
+            let stdout = stdout.unwrap_or_default();
+            let stderr = stderr.unwrap_or_default();
 
             let audit = guard.as_ref().map(|g| g.read_audit());
             let resource_limits = guard.as_ref().map(|g| g.resource_limits.clone());
