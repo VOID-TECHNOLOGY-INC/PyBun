@@ -1,12 +1,9 @@
 use color_eyre::eyre::{Result, eyre};
 use std::fs;
-use std::io::Read;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
-use std::process::{Command, ExitStatus, Stdio};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::process::{Command, ExitStatus};
 use tempfile::TempDir;
 
 /// Default wall-clock timeout (in seconds) applied to sandboxed runs.
@@ -425,55 +422,28 @@ pub enum SandboxExecOutcome {
     TimedOut,
 }
 
-/// Run `cmd` to completion, optionally capturing stdout/stderr, killing it if it
-/// exceeds `timeout_secs` (0 = unlimited). Mirrors
-/// `test_executor::run_with_timeout`'s spawn/poll/kill pattern so a chatty
+/// Run `cmd` to completion, optionally capturing stdout/stderr, killing it if
+/// it exceeds `timeout_secs` (0 = unlimited). Delegates to
+/// [`crate::proc_exec::spawn_with_timeout`], the shared spawn/poll/kill helper
+/// also used by `test_executor::run_with_timeout` (Issue #273), so a chatty
 /// process can't deadlock on a full pipe buffer while we wait for exit.
 pub fn execute_sandboxed(
     cmd: &mut Command,
     timeout_secs: u64,
     capture: bool,
 ) -> std::io::Result<SandboxExecOutcome> {
-    if capture {
-        cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::piped());
+    match crate::proc_exec::spawn_with_timeout(cmd, Some(timeout_secs), capture)? {
+        crate::proc_exec::ProcExecOutcome::Completed {
+            status,
+            stdout,
+            stderr,
+        } => Ok(SandboxExecOutcome::Completed {
+            status,
+            stdout,
+            stderr,
+        }),
+        crate::proc_exec::ProcExecOutcome::TimedOut => Ok(SandboxExecOutcome::TimedOut),
     }
-
-    let mut child = cmd.spawn()?;
-
-    let stdout_handle = child.stdout.take().map(spawn_pipe_reader);
-    let stderr_handle = child.stderr.take().map(spawn_pipe_reader);
-
-    let timeout = (timeout_secs > 0).then(|| Duration::from_secs(timeout_secs));
-    let poll_interval = Duration::from_millis(50);
-    let start = Instant::now();
-
-    let status = loop {
-        if let Some(status) = child.try_wait()? {
-            break status;
-        }
-
-        if let Some(timeout) = timeout
-            && start.elapsed() >= timeout
-        {
-            let _ = child.kill();
-            let _ = child.wait();
-            join_pipe_reader(stdout_handle);
-            join_pipe_reader(stderr_handle);
-            return Ok(SandboxExecOutcome::TimedOut);
-        }
-
-        thread::sleep(poll_interval);
-    };
-
-    let stdout = join_pipe_reader(stdout_handle);
-    let stderr = join_pipe_reader(stderr_handle);
-
-    Ok(SandboxExecOutcome::Completed {
-        status,
-        stdout,
-        stderr,
-    })
 }
 
 /// Synthesize an `ExitStatus` representing a timed-out process: exit code 124,
@@ -559,24 +529,6 @@ pub fn execute_with_optional_sandbox(
         stderr,
         timed_out,
     })
-}
-
-/// Spawn a thread that reads a child process pipe to completion.
-fn spawn_pipe_reader<R>(mut reader: R) -> thread::JoinHandle<Vec<u8>>
-where
-    R: Read + Send + 'static,
-{
-    thread::spawn(move || {
-        let mut buf = Vec::new();
-        let _ = reader.read_to_end(&mut buf);
-        buf
-    })
-}
-
-/// Join a pipe reader thread, discarding the handle. Returns `None` if there
-/// was no pipe to read or the thread panicked.
-fn join_pipe_reader(handle: Option<thread::JoinHandle<Vec<u8>>>) -> Option<Vec<u8>> {
-    handle.and_then(|h| h.join().ok())
 }
 
 /// The sitecustomize.py injected into every sandboxed Python process.

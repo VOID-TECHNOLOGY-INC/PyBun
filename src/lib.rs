@@ -20,6 +20,7 @@ pub mod once_map;
 pub mod paths;
 pub mod pep723;
 pub mod pep723_cache;
+pub mod proc_exec;
 pub mod profiles;
 pub mod progress;
 pub mod project;

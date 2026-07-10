@@ -8,13 +8,12 @@
 
 use crate::test_discovery::{TestItem, TestItemType};
 use serde::{Deserialize, Serialize};
-use std::io::Read;
 use std::path::PathBuf;
-use std::process::{Command, Output, Stdio};
+use std::process::{Command, Output};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 /// Configuration for the test executor
 #[derive(Debug, Clone)]
@@ -68,68 +67,27 @@ enum RunOutcome {
 }
 
 /// Spawn `command`, capturing stdout/stderr, and kill it if it runs longer
-/// than `timeout_secs`. Reader threads drain the pipes concurrently so a
-/// chatty test can't deadlock on a full pipe buffer while we poll for exit.
+/// than `timeout_secs`. Delegates to [`crate::proc_exec::spawn_with_timeout`],
+/// the shared spawn/poll/kill helper also used by
+/// `sandbox::execute_sandboxed` (Issue #273), whose reader threads drain the
+/// pipes concurrently so a chatty test can't deadlock on a full pipe buffer
+/// while we poll for exit.
 fn run_with_timeout(
     mut command: Command,
     timeout_secs: Option<u64>,
 ) -> std::io::Result<RunOutcome> {
-    command.stdout(Stdio::piped());
-    command.stderr(Stdio::piped());
-
-    let mut child = command.spawn()?;
-
-    let stdout_handle = child.stdout.take().map(spawn_pipe_reader);
-    let stderr_handle = child.stderr.take().map(spawn_pipe_reader);
-
-    let timeout = timeout_secs.map(Duration::from_secs);
-    let poll_interval = Duration::from_millis(50);
-    let start = Instant::now();
-
-    let status = loop {
-        if let Some(status) = child.try_wait()? {
-            break status;
-        }
-
-        if let Some(timeout) = timeout
-            && start.elapsed() >= timeout
-        {
-            let _ = child.kill();
-            let _ = child.wait();
-            join_pipe_reader(stdout_handle);
-            join_pipe_reader(stderr_handle);
-            return Ok(RunOutcome::TimedOut);
-        }
-
-        thread::sleep(poll_interval);
-    };
-
-    let stdout = join_pipe_reader(stdout_handle).unwrap_or_default();
-    let stderr = join_pipe_reader(stderr_handle).unwrap_or_default();
-
-    Ok(RunOutcome::Completed(Output {
-        status,
-        stdout,
-        stderr,
-    }))
-}
-
-/// Spawn a thread that reads a child process pipe to completion.
-fn spawn_pipe_reader<R>(mut reader: R) -> thread::JoinHandle<Vec<u8>>
-where
-    R: Read + Send + 'static,
-{
-    thread::spawn(move || {
-        let mut buf = Vec::new();
-        let _ = reader.read_to_end(&mut buf);
-        buf
-    })
-}
-
-/// Join a pipe reader thread, discarding the handle. Returns `None` if there
-/// was no pipe to read or the thread panicked.
-fn join_pipe_reader(handle: Option<thread::JoinHandle<Vec<u8>>>) -> Option<Vec<u8>> {
-    handle.and_then(|h| h.join().ok())
+    match crate::proc_exec::spawn_with_timeout(&mut command, timeout_secs, true)? {
+        crate::proc_exec::ProcExecOutcome::Completed {
+            status,
+            stdout,
+            stderr,
+        } => Ok(RunOutcome::Completed(Output {
+            status,
+            stdout: stdout.unwrap_or_default(),
+            stderr: stderr.unwrap_or_default(),
+        })),
+        crate::proc_exec::ProcExecOutcome::TimedOut => Ok(RunOutcome::TimedOut),
+    }
 }
 
 /// Result of executing a single test
