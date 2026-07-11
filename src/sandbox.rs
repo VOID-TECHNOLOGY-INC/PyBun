@@ -507,6 +507,60 @@ pub fn cpu_limit_exceeded(_status: &ExitStatus) -> bool {
     false
 }
 
+/// Outcome of [`execute_with_optional_sandbox`]: the finished (or timed-out) process.
+pub struct SandboxedExecution {
+    pub status: ExitStatus,
+    pub stdout: Option<Vec<u8>>,
+    pub stderr: Option<Vec<u8>>,
+    pub timed_out: bool,
+}
+
+/// Run `cmd` to completion, honoring `sandbox_guard`'s timeout when present, and
+/// capture output when `capture_output` is set.
+///
+/// This is the single execution primitive shared by the CLI `pybun run` command
+/// (`commands::run_script` / `commands::run_python_code`) and the MCP `pybun_run`
+/// tool (`mcp::call_run`). Callers are still responsible for building their own
+/// `SandboxConfig` and calling [`apply_python_sandbox`] beforehand (CLI flags vs
+/// MCP `sandbox_policy` JSON have different shapes, and sandbox application must
+/// happen before other `cmd.env()` calls because it clears the environment) — but
+/// centralizing the sandboxed-vs-plain execution branch, timeout handling, and
+/// output capture here means the two entry points can no longer silently diverge
+/// in this behavior (Issue #272).
+pub fn execute_with_optional_sandbox(
+    cmd: &mut Command,
+    sandbox_guard: Option<&SandboxGuard>,
+    capture_output: bool,
+) -> std::io::Result<SandboxedExecution> {
+    let mut timed_out = false;
+    let (status, stdout, stderr) = if let Some(guard) = sandbox_guard {
+        match execute_sandboxed(cmd, guard.resource_limits.timeout_secs, capture_output)? {
+            SandboxExecOutcome::Completed {
+                status,
+                stdout,
+                stderr,
+            } => (status, stdout, stderr),
+            SandboxExecOutcome::TimedOut => {
+                timed_out = true;
+                (timeout_exit_status(), None, None)
+            }
+        }
+    } else if capture_output {
+        let output = cmd.output()?;
+        (output.status, Some(output.stdout), Some(output.stderr))
+    } else {
+        let status = cmd.status()?;
+        (status, None, None)
+    };
+
+    Ok(SandboxedExecution {
+        status,
+        stdout,
+        stderr,
+        timed_out,
+    })
+}
+
 /// Spawn a thread that reads a child process pipe to completion.
 fn spawn_pipe_reader<R>(mut reader: R) -> thread::JoinHandle<Vec<u8>>
 where
@@ -817,6 +871,51 @@ except Exception as exc:  # pragma: no cover - defensive, should not happen
 mod tests {
     use super::*;
 
+    fn successful_command() -> Command {
+        #[cfg(unix)]
+        {
+            let mut cmd = Command::new("sh");
+            cmd.arg("-c").arg("exit 0");
+            cmd
+        }
+        #[cfg(windows)]
+        {
+            let mut cmd = Command::new("cmd");
+            cmd.arg("/C").arg("exit 0");
+            cmd
+        }
+    }
+
+    fn output_command(message: &str) -> Command {
+        #[cfg(unix)]
+        {
+            let mut cmd = Command::new("sh");
+            cmd.arg("-c").arg(format!("echo {message}"));
+            cmd
+        }
+        #[cfg(windows)]
+        {
+            let mut cmd = Command::new("cmd");
+            cmd.arg("/C").arg(format!("echo {message}"));
+            cmd
+        }
+    }
+
+    fn long_running_command() -> Command {
+        #[cfg(unix)]
+        {
+            let mut cmd = Command::new("sleep");
+            cmd.arg("5");
+            cmd
+        }
+        #[cfg(windows)]
+        {
+            let mut cmd = Command::new("cmd");
+            cmd.arg("/C").arg("ping -n 6 127.0.0.1 >NUL");
+            cmd
+        }
+    }
+
     #[test]
     fn default_safe_env_vars_includes_path_and_home() {
         let safe = default_safe_env_vars();
@@ -872,6 +971,82 @@ mod tests {
         let guard = apply_python_sandbox(&mut cmd, config).expect("sandbox setup should succeed");
         assert!(guard.allow_env.is_empty());
         assert_eq!(guard.rejected_env, vec!["SECRET_API_KEY".to_string()]);
+    }
+
+    // ─── execute_with_optional_sandbox (Issue #272) ─────────────────────────
+    //
+    // `execute_with_optional_sandbox` is the single execution primitive now
+    // shared by CLI `pybun run` (`commands::run_script` / `run_python_code`)
+    // and MCP `pybun_run` (`mcp::call_run`). These tests exercise it directly
+    // so that a future change to sandboxed-vs-plain execution, timeout
+    // handling, or output capture is guaranteed to affect both entry points
+    // identically instead of silently diverging between them.
+
+    #[test]
+    fn execute_with_optional_sandbox_plain_no_capture_uses_status() {
+        let mut cmd = successful_command();
+        let result = execute_with_optional_sandbox(&mut cmd, None, false)
+            .expect("plain command should execute");
+        assert!(result.status.success());
+        assert!(result.stdout.is_none());
+        assert!(result.stderr.is_none());
+        assert!(!result.timed_out);
+    }
+
+    #[test]
+    fn execute_with_optional_sandbox_plain_capture_returns_output() {
+        let mut cmd = output_command("hello");
+        let result = execute_with_optional_sandbox(&mut cmd, None, true)
+            .expect("plain command should execute");
+        assert!(result.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(result.stdout.as_deref().unwrap_or_default()).trim(),
+            "hello"
+        );
+        assert!(!result.timed_out);
+    }
+
+    #[test]
+    fn execute_with_optional_sandbox_honors_sandbox_timeout() {
+        let mut cmd = long_running_command();
+        let config = SandboxConfig {
+            timeout_secs: 1,
+            ..Default::default()
+        };
+        let guard = apply_python_sandbox(&mut cmd, config).expect("sandbox setup should succeed");
+        let result = execute_with_optional_sandbox(&mut cmd, Some(&guard), true)
+            .expect("sandboxed timeout should not error");
+        assert!(
+            result.timed_out,
+            "a 1s-timeout sandbox running `sleep 5` should report timed_out"
+        );
+        assert_eq!(result.status, timeout_exit_status());
+    }
+
+    #[test]
+    fn execute_with_optional_sandbox_sandboxed_completion_captures_output() {
+        let mut cmd = output_command("from-sandbox");
+        let guard = apply_python_sandbox(&mut cmd, SandboxConfig::default())
+            .expect("sandbox setup should succeed");
+        let result = execute_with_optional_sandbox(&mut cmd, Some(&guard), true)
+            .expect("sandboxed command should execute");
+        assert!(!result.timed_out);
+        assert!(result.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(result.stdout.as_deref().unwrap_or_default()).trim(),
+            "from-sandbox"
+        );
+    }
+
+    #[test]
+    fn execute_with_optional_sandbox_preserves_io_error_type() {
+        let mut cmd = Command::new("pybun-command-that-does-not-exist");
+        let result = execute_with_optional_sandbox(&mut cmd, None, false);
+        let _: &std::io::Result<SandboxedExecution> = &result;
+        match result {
+            Ok(_) => panic!("missing executable should fail"),
+            Err(error) => assert_eq!(error.kind(), std::io::ErrorKind::NotFound),
+        }
     }
 
     #[test]
