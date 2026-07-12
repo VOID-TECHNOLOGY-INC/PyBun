@@ -2983,10 +2983,32 @@ impl McpServer {
 
         let working_dir = std::env::current_dir().map_err(|e| e.to_string())?;
 
+        // Fail open (empty package list) on env/pip errors, consistent with
+        // this tool's pre-existing behavior: an agent calling pybun_audit
+        // should get a best-effort scan, not a hard error, if the
+        // environment can't be inspected.
         let packages = match find_python_env(&working_dir) {
-            Ok(env) => list_installed_packages(&env.python_path),
+            Ok(env) => list_installed_packages(&env.python_path).unwrap_or_default(),
             Err(_) => vec![],
         };
+
+        if packages.is_empty() {
+            return Ok(json!({
+                "status": "ok",
+                "summary": {
+                    "scanned": 0,
+                    "vulnerable": 0,
+                    "critical": 0,
+                    "high": 0,
+                    "medium": 0,
+                    "low": 0
+                },
+                "vulnerabilities": [],
+                "scanner": "osv",
+                "scanner_version": "1.0"
+            })
+            .to_string());
+        }
 
         let osv_url = crate::audit::default_osv_url();
         let report = scan_for_vulnerabilities(&packages, &osv_url, severity_threshold).await?;

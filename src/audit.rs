@@ -66,10 +66,12 @@ pub fn default_osv_url() -> String {
 }
 
 /// List installed packages in the given Python environment via
-/// `pip list --format=json`. Returns an empty list (rather than erroring) if
-/// pip is unavailable or the invocation fails, so callers can treat "nothing
-/// to scan" uniformly.
-pub fn list_installed_packages(python_path: &Path) -> Vec<InstalledPackage> {
+/// `pip list --format=json`. Returns `Err` if pip could not be invoked, exited
+/// non-zero, or produced output that isn't valid JSON, so callers doing
+/// CI-gated scans (`--fail-on`) can distinguish "verified zero packages"
+/// from "failed to inspect the environment" rather than silently treating
+/// both as a clean scan.
+pub fn list_installed_packages(python_path: &Path) -> Result<Vec<InstalledPackage>, String> {
     let output = ProcessCommand::new(python_path)
         .args([
             "-m",
@@ -79,14 +81,22 @@ pub fn list_installed_packages(python_path: &Path) -> Vec<InstalledPackage> {
             "--disable-pip-version-check",
         ])
         .output()
-        .ok();
+        .map_err(|e| format!("failed to run `{}`: {e}", python_path.display()))?;
 
-    let raw: Vec<Value> = output
-        .filter(|o| o.status.success())
-        .and_then(|o| serde_json::from_slice(&o.stdout).ok())
-        .unwrap_or_default();
+    if !output.status.success() {
+        return Err(format!(
+            "`{} -m pip list --format=json` exited with {}: {}",
+            python_path.display(),
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
 
-    raw.into_iter()
+    let raw: Vec<Value> = serde_json::from_slice(&output.stdout)
+        .map_err(|e| format!("failed to parse `pip list --format=json` output: {e}"))?;
+
+    Ok(raw
+        .into_iter()
         .map(|p| InstalledPackage {
             name: p
                 .get("name")
@@ -99,7 +109,7 @@ pub fn list_installed_packages(python_path: &Path) -> Vec<InstalledPackage> {
                 .unwrap_or("")
                 .to_string(),
         })
-        .collect()
+        .collect())
 }
 
 /// Query the OSV API for known vulnerabilities affecting `packages`, keeping
@@ -226,6 +236,19 @@ pub fn severity_level(s: &str) -> u8 {
     }
 }
 
+/// Inverse of [`severity_level`]. Used to compute the more permissive of two
+/// thresholds (e.g. `--severity-threshold` and `--fail-on`) as a string
+/// suitable for [`scan_for_vulnerabilities`].
+pub fn severity_str_for_level(level: u8) -> &'static str {
+    match level {
+        0 => "none",
+        1 => "low",
+        2 => "medium",
+        3 => "high",
+        _ => "critical",
+    }
+}
+
 fn extract_severity(vuln: &Value) -> String {
     // Primary: database_specific.severity — present in GHSA-sourced advisories
     if let Some(db_sev) = vuln
@@ -266,7 +289,12 @@ fn normalize_severity(s: &str) -> String {
 /// Heuristic: if any of C/I/A is H → HIGH; all N → MEDIUM; else LOW.
 /// Scope:Changed or PR:N+UI:N escalates to CRITICAL when C:H.
 fn severity_from_cvss_vector(vector: &str) -> Option<String> {
-    if !vector.starts_with("CVSS:") {
+    // Only CVSS v3.x base metrics are interpreted below (AV/AC/PR/UI/S/C/I/A
+    // with the specific values this heuristic expects). A bare "CVSS:"
+    // prefix would also match CVSS v2 (no version segment) or a future v4.x
+    // vector, whose metric names/values differ and would be misclassified by
+    // this v3-specific logic.
+    if !vector.starts_with("CVSS:3.0/") && !vector.starts_with("CVSS:3.1/") {
         return None;
     }
 
@@ -370,6 +398,34 @@ mod tests {
     }
 
     #[test]
+    fn extract_severity_falls_back_to_cvss_vector_regardless_of_metric_order() {
+        // Same metrics as above, reordered — the exact-key lookup must not
+        // depend on segment position.
+        let vuln = json!({
+            "severity": [{"type": "CVSS_V3", "score": "CVSS:3.1/C:H/I:N/A:N/AV:N/AC:L/PR:N/UI:N/S:U"}]
+        });
+        assert_eq!(extract_severity(&vuln), "high");
+    }
+
+    #[test]
+    fn extract_severity_ignores_cvss_v2_vectors() {
+        // CVSS v2 has no version segment and different metric semantics; a
+        // bare "CVSS:" prefix check would misclassify this using v3 rules.
+        let vuln = json!({
+            "severity": [{"type": "CVSS_V2", "score": "AV:N/AC:L/Au:N/C:C/I:C/A:C"}]
+        });
+        assert_eq!(extract_severity(&vuln), "low");
+    }
+
+    #[test]
+    fn extract_severity_ignores_malformed_cvss_header() {
+        let vuln = json!({
+            "severity": [{"type": "CVSS_V3", "score": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:N/VA:N/SC:N/SI:N/SA:N"}]
+        });
+        assert_eq!(extract_severity(&vuln), "low");
+    }
+
+    #[test]
     fn extract_severity_defaults_to_low_when_no_data() {
         let vuln = json!({});
         assert_eq!(extract_severity(&vuln), "low");
@@ -409,6 +465,23 @@ mod tests {
         assert_eq!(report.scanned, 0);
         assert_eq!(report.unscanned, 0);
         assert!(report.vulnerabilities.is_empty());
+    }
+
+    #[test]
+    fn list_installed_packages_returns_err_when_python_binary_missing() {
+        // A path that doesn't exist should surface as an error, not silently
+        // become "zero packages" — CI callers (`pybun audit --fail-on`) rely
+        // on distinguishing "scanned, found nothing" from "couldn't scan".
+        let result =
+            list_installed_packages(Path::new("/nonexistent/path/to/python-does-not-exist"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn severity_str_for_level_round_trips_with_severity_level() {
+        for s in ["none", "low", "medium", "high", "critical"] {
+            assert_eq!(severity_str_for_level(severity_level(s)), s);
+        }
     }
 
     #[test]
