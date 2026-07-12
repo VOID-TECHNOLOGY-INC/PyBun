@@ -1,5 +1,40 @@
 # Changelog
 
+## v0.1.22
+
+### Features
+- feat(audit): expose `pybun audit` vulnerability scanning on the CLI (Issue #316) (#336)
+- feat(drift): dependency drift detection via AST import analysis (Issue #248) (#258)
+- feat(mcp): add `pybun_audit` (Issue #247), `pybun_test` (Issue #246), and `pybun_context` (Issue #245) tools, structured traceback diagnostics for `pybun_run` (Issue #243), and a structured audit log (#257, #256, #255, #251, #252)
+- feat(benchmark): add a dedicated PyBun vs uv head-to-head benchmark suite (Issue #236) (#237)
+- perf(resolver): parallelize metadata fetching (Issue #239 Phase 1) (#331)
+
+### Fixes
+- fix(pypi): document cache directory precedence (Issue #269) and self-heal legacy JSON cache decode errors (Issue #262) (#330, #296)
+- fix(pep723): self-heal `last_used` cache decode failures (Issue #306), corrupt script lockfiles in the CLI run path (Issue #301), and corrupted script cache entries (Issue #299) (#329, #322, #307)
+- fix(diagnostics): standardize `E_*` codes and emit a diagnostic on script exit failure (Issue #266), and force locale-neutral English in JSON diagnostics (Issue #270) (#328, #323)
+- fix(doctor): detect corrupt PyPI cache entries (Issue #268) (#327)
+- fix(outdated): self-heal corrupt `pybun.lockb` instead of hard-failing (Issue #325) (#326)
+- fix(run): report `cache_hit=true` on PEP 723 warm runs (Issue #267), remove the `--python` flag from the uv backend to fix warm cache (Issue #238), and bypass the uv backend when a PyBun script lockfile exists (Issue #234) (#321, #240, #235)
+- fix(resolver): warn on silently dropped PEP 508 extras (Issue #285) (#320)
+- fix(mcp): stop `pybun_install` from reporting false success (Issue #284), and default `pybun_run` to sandboxed execution (#319, #253)
+- fix(upgrade/run/lock/install): select wheels via the target venv's Python instead of `PATH` (Issue #295, #294, #293, #291) (#318, #304, #303, #292)
+- fix(sandbox): preserve `subprocess.Popen` class identity when blocking (Issue #300), raise a clean denial at connect-time instead of corrupting `ssl.py` (Issue #263), and surface a warning when a credential-shaped `--allow-env` is rejected (Issue #259) (#308, #298, #277)
+- fix(maintenance): scope `upgrade --dry-run` artifacts to changed packages only (Issue #261) (#297)
+- fix(install): default install target no longer falls back to system Python (Issue #286), and `.python-version` bare-PATH fallback no longer bypasses the safe-install-target guard (Issue #289) (#288, #290)
+- fix(bootstrap): fail closed on placeholder checksum and HTTP asset URLs (Issue #283) (#287)
+- fix(cli): support multiple packages in `pybun add`/`pybun remove` (Issue #264) (#278)
+- fix(init): default to a buildable package scaffold (#276)
+
+### Refactor
+- refactor: extract shared spawn/timeout/kill logic into `proc_exec` (Issue #273) (#335)
+- refactor(mcp): share the optional-sandbox execution primitive (Issue #272) (#334)
+
+### Chores
+- chore(deps): trim tokio feature flags from full to minimal set (Issue #274) (#333)
+- chore(deps): bump the cargo-minor-patch group, and routine updates for zip, toml, thiserror, and console (#324)
+- docs: fix stale/contradictory status claims across the doc set (#309), reposition PyBun as an agent interface layer rather than a uv competitor (#241), and add subagent resume/review workflow guidance (#332, #305)
+
 ## v0.1.21
 
 ### Features
