@@ -10,6 +10,10 @@ use thiserror::Error;
 use tokio::fs::{self, File};
 use tokio::io::{AsyncWriteExt, BufWriter};
 
+/// Upper bound on a server-supplied `Retry-After` value, so a malicious or
+/// misconfigured index cannot stall a download indefinitely.
+const MAX_RETRY_AFTER_SECS: u64 = 5;
+
 #[derive(Debug, Clone)]
 pub struct SignatureSpec {
     pub signature: String,
@@ -230,13 +234,15 @@ impl Downloader {
                             source: Box::new(e),
                         });
                     }
-                    // Respect Retry-After on 429/503 when the server sends one;
-                    // otherwise fall back to exponential backoff: 1s, 2s, 4s.
+                    // Respect Retry-After on 429/503 when the server sends one,
+                    // capped to avoid a malicious/misconfigured server stalling
+                    // the download indefinitely; otherwise fall back to
+                    // exponential backoff: 1s, 2s, 4s.
                     let backoff = match &e {
                         DownloadError::HttpStatus {
                             retry_after: Some(secs),
                             ..
-                        } => Duration::from_secs(*secs),
+                        } => Duration::from_secs((*secs).min(MAX_RETRY_AFTER_SECS)),
                         _ => Duration::from_secs(1 << (attempt - 1)),
                     };
                     eprintln!("retrying download {} (attempt {}): {}", url, attempt + 1, e);
@@ -509,6 +515,36 @@ mod tests {
             }
             other => panic!("expected MaxRetriesExceeded, got {other:?}"),
         }
+    }
+
+    /// A server-supplied `Retry-After` must be capped so a malicious or
+    /// misconfigured index cannot stall a download indefinitely.
+    #[tokio::test]
+    async fn retry_after_is_capped() {
+        let server = MockServer::start();
+        let mock = server.mock(|when, then| {
+            when.method(GET).path("/slow.whl");
+            then.status(429)
+                .header("Retry-After", "999999999")
+                .body("slow down");
+        });
+
+        let dir = tempdir().unwrap();
+        let dest = dir.path().join("slow.whl");
+        let downloader = Downloader::new();
+
+        let start = Instant::now();
+        let result = downloader
+            .download_file(&server.url("/slow.whl"), &dest, None)
+            .await;
+        let elapsed = start.elapsed();
+
+        assert!(result.is_err());
+        mock.assert_calls(3);
+        assert!(
+            elapsed < Duration::from_secs(MAX_RETRY_AFTER_SECS * 2 + 5),
+            "Retry-After should be capped at {MAX_RETRY_AFTER_SECS}s per attempt, took {elapsed:?}"
+        );
     }
 
     /// A successful download should not be affected by the new classification
