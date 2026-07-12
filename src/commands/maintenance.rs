@@ -1,5 +1,7 @@
 use super::RenderDetail;
+use crate::audit::{default_osv_url, list_installed_packages, scan_for_vulnerabilities};
 use crate::cache::{Cache, format_size, parse_size};
+use crate::cli::AuditArgs;
 use crate::env::find_python_env;
 use crate::pep723_cache::Pep723Cache;
 use crate::project::Project;
@@ -442,4 +444,193 @@ pub(super) fn run_gc(
     });
 
     Ok(RenderDetail::with_json(summary, json_detail))
+}
+
+// ---------------------------------------------------------------------------
+// pybun audit (OSV vulnerability scan) — Issue #316
+// ---------------------------------------------------------------------------
+
+pub(super) async fn run_audit(args: &AuditArgs, collector: &mut EventCollector) -> RenderDetail {
+    let severity_threshold = args.severity_threshold.as_str();
+    let fail_on = args.fail_on.map(|s| s.as_str());
+
+    let working_dir = std::env::current_dir().unwrap_or_default();
+
+    let python_env = match find_python_env(&working_dir) {
+        Ok(env) => env,
+        Err(e) => {
+            collector.error_with_code(
+                "E_AUDIT_PYTHON_ENV_NOT_FOUND",
+                format!("Python environment not found: {}", e),
+                "Run `pybun install` to create a project environment (or set PYBUN_ENV), then re-run `pybun audit`.",
+            );
+            return RenderDetail::error(
+                format!(
+                    "Vulnerability scan failed: Python environment not found: {}",
+                    e
+                ),
+                json!({ "error": e.to_string() }),
+            );
+        }
+    };
+
+    // A pip-list failure means the environment could not actually be
+    // inspected; treating it as "zero packages" would let `--fail-on` pass
+    // silently in CI even though nothing was scanned.
+    let packages = match list_installed_packages(&python_env.python_path) {
+        Ok(packages) => packages,
+        Err(e) => {
+            collector.error_with_code(
+                "E_AUDIT_PIP_LIST_FAILED",
+                format!("Failed to list installed packages: {}", e),
+                "Ensure pip is available in the active Python environment, then re-run `pybun audit`.",
+            );
+            return RenderDetail::error(
+                format!("Vulnerability scan failed: could not list installed packages ({e})"),
+                json!({ "error": e }),
+            );
+        }
+    };
+
+    // Scan at the more permissive (numerically lower) of --severity-threshold
+    // and --fail-on. --severity-threshold alone controls what is *displayed*
+    // below; if it were also used to filter the OSV query, a lower --fail-on
+    // level (e.g. `--severity-threshold=critical --fail-on=high`) would have
+    // its matching vulnerabilities discarded before the CI gate ever saw
+    // them, making --fail-on silently pass.
+    let display_threshold_level = crate::audit::severity_level(severity_threshold);
+    let fail_on_level = fail_on.map(crate::audit::severity_level);
+    let scan_threshold_level = match fail_on_level {
+        Some(level) => display_threshold_level.min(level),
+        None => display_threshold_level,
+    };
+    let scan_threshold = crate::audit::severity_str_for_level(scan_threshold_level);
+
+    let osv_url = default_osv_url();
+    let report = match scan_for_vulnerabilities(&packages, &osv_url, scan_threshold).await {
+        Ok(report) => report,
+        Err(e) => {
+            collector.error_with_code(
+                "E_AUDIT_OSV_QUERY_FAILED",
+                format!("Failed to query OSV vulnerability database: {}", e),
+                "Check network connectivity, or set PYBUN_OSV_URL to point at a reachable mirror.",
+            );
+            return RenderDetail::error(
+                format!("Vulnerability scan failed: {}", e),
+                json!({ "error": e }),
+            );
+        }
+    };
+
+    // --fail-on is evaluated against the full scan_threshold-filtered report
+    // (not the display-filtered list below), so it still catches findings
+    // below --severity-threshold.
+    let failing_vulns: Vec<&crate::audit::Vulnerability> = match fail_on_level {
+        Some(level) => report
+            .vulnerabilities
+            .iter()
+            .filter(|v| crate::audit::severity_level(&v.severity) >= level)
+            .collect(),
+        None => Vec::new(),
+    };
+    let should_fail = !failing_vulns.is_empty();
+
+    // What gets displayed/reported respects --severity-threshold specifically.
+    let displayed: Vec<&crate::audit::Vulnerability> = report
+        .vulnerabilities
+        .iter()
+        .filter(|v| crate::audit::severity_level(&v.severity) >= display_threshold_level)
+        .collect();
+
+    let vulnerabilities: Vec<Value> = displayed
+        .iter()
+        .map(|v| {
+            json!({
+                "package": v.package,
+                "installed_version": v.installed_version,
+                "vulnerability_id": v.vulnerability_id,
+                "severity": v.severity,
+                "description": v.description,
+                "fix_version": v.fix_version,
+            })
+        })
+        .collect();
+
+    for v in &displayed {
+        let mut diag = Diagnostic::warning(format!(
+            "{} {} is affected by {} (severity: {})",
+            v.package, v.installed_version, v.vulnerability_id, v.severity
+        ))
+        .with_code("W_AUDIT_VULNERABILITY_FOUND")
+        .with_context(json!({
+            "package": v.package,
+            "installed_version": v.installed_version,
+            "vulnerability_id": v.vulnerability_id,
+            "severity": v.severity,
+        }));
+        if let Some(fix_version) = &v.fix_version {
+            diag = diag.with_suggestion(format!(
+                "Run `pybun upgrade {} {}` (or `pybun install`) to remediate.",
+                v.package, fix_version
+            ));
+        }
+        collector.diagnostic(diag);
+    }
+
+    let count_at = |severity: &str| displayed.iter().filter(|v| v.severity == severity).count();
+
+    let summary = if vulnerabilities.is_empty() {
+        format!(
+            "No known vulnerabilities found in {} package(s)",
+            report.scanned
+        )
+    } else {
+        format!(
+            "Found {} vulnerabilit{} in {} package(s) scanned",
+            vulnerabilities.len(),
+            if vulnerabilities.len() == 1 {
+                "y"
+            } else {
+                "ies"
+            },
+            report.scanned
+        )
+    };
+
+    if should_fail {
+        let fail_on_str = fail_on.unwrap_or("");
+        collector.error_with_code(
+            "E_AUDIT_FAIL_ON_THRESHOLD",
+            format!(
+                "Found {} vulnerabilit{} at or above --fail-on={} severity",
+                failing_vulns.len(),
+                if failing_vulns.len() == 1 { "y" } else { "ies" },
+                fail_on_str
+            ),
+            "Run `pybun upgrade` for the affected package(s), or raise --fail-on if this is an accepted risk.",
+        );
+    }
+
+    let json_detail = json!({
+        "summary": {
+            "scanned": report.scanned,
+            "vulnerable": vulnerabilities.len(),
+            "critical": count_at("critical"),
+            "high": count_at("high"),
+            "medium": count_at("medium"),
+            "low": count_at("low"),
+            "unscanned": report.unscanned,
+        },
+        "vulnerabilities": vulnerabilities,
+        "severity_threshold": severity_threshold,
+        "fail_on": fail_on,
+        "scanner": "osv",
+        "scanner_version": "1.0",
+    });
+
+    if should_fail {
+        RenderDetail::error(summary, json_detail)
+    } else {
+        RenderDetail::with_json(summary, json_detail)
+    }
 }

@@ -124,6 +124,7 @@ fn help_snapshots() {
         ("help_schema", &["schema", "--help"]),
         ("help_schema_print", &["schema", "print", "--help"]),
         ("help_schema_check", &["schema", "check", "--help"]),
+        ("help_audit", &["audit", "--help"]),
     ];
 
     for (name, args) in cases {

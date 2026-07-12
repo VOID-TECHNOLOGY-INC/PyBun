@@ -26,6 +26,7 @@ Commands:
   outdated     Check for outdated dependencies
   upgrade      Upgrade dependencies within constraints
   drift        Detect dependency drift: undeclared imports and unused declarations
+  audit        Scan installed packages for known vulnerabilities using the OSV database
   help         Print this message or the help of the given subcommand(s)
 
 Options:

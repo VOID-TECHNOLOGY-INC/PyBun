@@ -903,6 +903,11 @@ pub async fn execute(cli: Cli) -> Result<()> {
                 }
             }
         }
+        Commands::Audit(args) => {
+            collector.info("Scanning installed packages for known vulnerabilities");
+            let detail = maintenance::run_audit(args, &mut collector).await;
+            ("audit".to_string(), detail)
+        }
     };
 
     // Record command end
