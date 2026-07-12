@@ -592,6 +592,12 @@ pub struct AuditArgs {
     /// gating (e.g. `pybun audit --fail-on=high`). Off by default.
     #[arg(long, value_enum, value_name = "LEVEL")]
     pub fail_on: Option<SeverityLevel>,
+    /// Allow scanning the resolved system Python instead of a project-local
+    /// environment. Without this flag, `pybun audit` refuses to silently
+    /// fall back to system Python when no project venv is found (mirrors
+    /// `pybun install --system`; see Issue #338).
+    #[arg(long)]
+    pub system: bool,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]

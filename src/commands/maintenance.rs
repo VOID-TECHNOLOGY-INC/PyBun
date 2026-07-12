@@ -474,6 +474,46 @@ pub(super) async fn run_audit(args: &AuditArgs, collector: &mut EventCollector) 
         }
     };
 
+    // `find_python_env` silently falls back to system/global Python when no
+    // project venv, PYBUN_ENV, PYBUN_PYTHON, or .python-version is found.
+    // Auditing the system interpreter reports vulnerabilities for host
+    // packages the project never uses (false positives) and never scans the
+    // project's real dependencies (false all-clears). Combined with
+    // `--fail-on`, this can gate CI on packages unrelated to the repo. This
+    // mirrors the guard added for `pybun install` in #286/#289: refuse the
+    // silent fallback unless the caller explicitly opts in with `--system`.
+    let python_env_json = json!({
+        "path": python_env.python_path.display().to_string(),
+        "version": python_env.version,
+        "source": format!("{}", python_env.source),
+    });
+
+    if matches!(python_env.source, crate::env::EnvSource::System) {
+        if args.system {
+            let warning = format!(
+                "warning: pybun audit is scanning system Python ({}) because --system was specified.",
+                python_env.python_path.display()
+            );
+            eprintln!("{}", warning);
+            collector.diagnostic(
+                Diagnostic::warning(warning)
+                    .with_code("W_AUDIT_SYSTEM_ENV")
+                    .with_context(python_env_json.clone()),
+            );
+        } else {
+            let message = "No project-local Python environment found; refusing to silently scan system/global Python.".to_string();
+            collector.error_with_code(
+                "E_AUDIT_NO_PROJECT_ENV",
+                message.clone(),
+                "Run `pybun install` to create a project environment (or set PYBUN_ENV), then re-run `pybun audit`. Pass --system to explicitly audit the system Python interpreter instead.",
+            );
+            return RenderDetail::error(
+                format!("Vulnerability scan failed: {}", message),
+                json!({ "error": message, "python_env": python_env_json }),
+            );
+        }
+    }
+
     // A pip-list failure means the environment could not actually be
     // inspected; treating it as "zero packages" would let `--fail-on` pass
     // silently in CI even though nothing was scanned.
@@ -487,7 +527,7 @@ pub(super) async fn run_audit(args: &AuditArgs, collector: &mut EventCollector) 
             );
             return RenderDetail::error(
                 format!("Vulnerability scan failed: could not list installed packages ({e})"),
-                json!({ "error": e }),
+                json!({ "error": e, "python_env": python_env_json }),
             );
         }
     };
@@ -517,7 +557,7 @@ pub(super) async fn run_audit(args: &AuditArgs, collector: &mut EventCollector) 
             );
             return RenderDetail::error(
                 format!("Vulnerability scan failed: {}", e),
-                json!({ "error": e }),
+                json!({ "error": e, "python_env": python_env_json }),
             );
         }
     };
@@ -626,6 +666,7 @@ pub(super) async fn run_audit(args: &AuditArgs, collector: &mut EventCollector) 
         "fail_on": fail_on,
         "scanner": "osv",
         "scanner_version": "1.0",
+        "python_env": python_env_json,
     });
 
     if should_fail {

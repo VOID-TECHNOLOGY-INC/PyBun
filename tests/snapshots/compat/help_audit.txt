@@ -13,5 +13,7 @@ Options:
           Progress UI mode (auto hides on non-TTY) [env: PYBUN_PROGRESS=] [default: auto] [possible values: auto, always, never]
       --no-progress
           Disable progress UI
+      --system
+          Allow scanning the resolved system Python instead of a project-local environment. Without this flag, `pybun audit` refuses to silently fall back to system Python when no project venv is found (mirrors `pybun install --system`; see Issue #338)
   -h, --help
           Print help
