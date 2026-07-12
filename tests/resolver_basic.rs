@@ -580,3 +580,38 @@ async fn fetches_sibling_dependency_metadata_concurrently() {
          if fetches ran concurrently"
     );
 }
+
+// ============================================================================
+// Issue #339: `==` / `!=` specifiers must use PEP 440 equality (zero-padded
+// release comparison), not raw string equality.
+// ============================================================================
+
+#[tokio::test]
+async fn exact_specifier_matches_zero_padded_candidate() {
+    // `lib==1.4` must resolve against candidate `1.4.0`.
+    let mut index = InMemoryIndex::default();
+    index.add("app", "1.0.0", ["lib==1.4"]);
+    index.add("lib", "1.4.0", Vec::<&str>::new());
+
+    let resolution = resolve(vec![Requirement::exact("app", "1.0.0")], &index)
+        .await
+        .unwrap();
+    let lib = resolution.packages.get("lib").expect("lib resolved");
+    assert_eq!(lib.version, "1.4.0");
+}
+
+#[tokio::test]
+async fn not_equal_specifier_excludes_zero_padded_candidate() {
+    // `lib!=1.0` must exclude candidate `1.0.0` (the highest version here)
+    // and fall back to `0.9.0` instead of installing the excluded version.
+    let mut index = InMemoryIndex::default();
+    index.add("app", "1.0.0", ["lib!=1.0"]);
+    index.add("lib", "0.9.0", Vec::<&str>::new());
+    index.add("lib", "1.0.0", Vec::<&str>::new());
+
+    let resolution = resolve(vec![Requirement::exact("app", "1.0.0")], &index)
+        .await
+        .unwrap();
+    let lib = resolution.packages.get("lib").expect("lib resolved");
+    assert_eq!(lib.version, "0.9.0");
+}
