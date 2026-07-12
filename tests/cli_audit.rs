@@ -88,10 +88,13 @@ fn audit_json_returns_valid_structure_with_mocked_osv() {
     });
 
     let osv_url = format!("{}/v1/querybatch", server.base_url());
+    // No project-local venv exists in this tempdir, so `find_python_env`
+    // would resolve to the system interpreter. Issue #338: pybun audit
+    // refuses that silent fallback unless --system is passed explicitly.
     let output = bin()
         .current_dir(project.path())
         .env("PYBUN_OSV_URL", &osv_url)
-        .args(["--format=json", "audit"])
+        .args(["--format=json", "audit", "--system"])
         .output()
         .expect("failed to run pybun audit");
 
@@ -108,6 +111,117 @@ fn audit_json_returns_valid_structure_with_mocked_osv() {
     assert!(value["detail"]["summary"].is_object());
     assert_eq!(value["detail"]["summary"]["vulnerable"].as_i64(), Some(0));
     assert!(value["detail"]["vulnerabilities"].is_array());
+    assert!(
+        value["detail"]["python_env"]["path"].is_string(),
+        "detail.python_env.path should disclose the scanned interpreter. Got: {value}"
+    );
+    assert_eq!(
+        value["detail"]["python_env"]["source"].as_str(),
+        Some("system PATH (GLOBAL)")
+    );
+}
+
+/// Regression test for Issue #338: `pybun audit` must not silently scan the
+/// system/global Python site-packages when the current project has no venv.
+/// It must refuse with a clear diagnostic instead.
+#[test]
+fn audit_refuses_system_python_fallback_without_flag() {
+    let project = tempdir().unwrap();
+
+    let server = MockServer::start();
+    let _osv_mock = server.mock(|when, then| {
+        when.method(POST).path("/v1/querybatch");
+        then.status(200)
+            .header("Content-Type", "application/json")
+            .body(r#"{"results":[]}"#);
+    });
+
+    let osv_url = format!("{}/v1/querybatch", server.base_url());
+    let output = bin()
+        .current_dir(project.path())
+        .env("PYBUN_OSV_URL", &osv_url)
+        .args(["--format=json", "audit"])
+        .output()
+        .expect("failed to run pybun audit");
+
+    assert!(
+        !output.status.success(),
+        "audit should refuse to silently scan system Python when no project venv exists"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let value: Value = serde_json::from_str(&stdout).expect("valid JSON output");
+    assert_eq!(value["status"].as_str(), Some("error"));
+
+    let diagnostics = value["diagnostics"]
+        .as_array()
+        .expect("diagnostics should be array");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d["code"].as_str() == Some("E_AUDIT_NO_PROJECT_ENV")),
+        "expected E_AUDIT_NO_PROJECT_ENV diagnostic. Got: {diagnostics:?}"
+    );
+
+    // Even on this refusal path, the scanned/would-be-scanned environment
+    // must be disclosed so an agent can tell exactly what was (not) audited.
+    assert!(
+        value["detail"]["python_env"]["path"].is_string(),
+        "detail.python_env.path should be present even on refusal. Got: {value}"
+    );
+    assert_eq!(
+        value["detail"]["python_env"]["source"].as_str(),
+        Some("system PATH (GLOBAL)")
+    );
+}
+
+/// Regression test for Issue #338: when `--system` is explicitly passed,
+/// pybun audit may fall back to system Python, but must emit a warning
+/// diagnostic disclosing the fallback (no silent scanning).
+#[test]
+fn audit_system_flag_allows_fallback_with_warning() {
+    let project = tempdir().unwrap();
+
+    let server = MockServer::start();
+    let _osv_mock = server.mock(|when, then| {
+        when.method(POST).path("/v1/querybatch");
+        then.status(200)
+            .header("Content-Type", "application/json")
+            .body(r#"{"results":[]}"#);
+    });
+
+    let osv_url = format!("{}/v1/querybatch", server.base_url());
+    let output = bin()
+        .current_dir(project.path())
+        .env("PYBUN_OSV_URL", &osv_url)
+        .args(["--format=json", "audit", "--system"])
+        .output()
+        .expect("failed to run pybun audit");
+
+    assert!(
+        output.status.success(),
+        "audit --system should succeed and scan system Python. stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let value: Value = serde_json::from_str(&stdout).expect("valid JSON output");
+    assert_eq!(value["status"].as_str(), Some("ok"));
+
+    let diagnostics = value["diagnostics"]
+        .as_array()
+        .expect("diagnostics should be array");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d["code"].as_str() == Some("W_AUDIT_SYSTEM_ENV")),
+        "expected W_AUDIT_SYSTEM_ENV diagnostic. Got: {diagnostics:?}"
+    );
+
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("system Python"),
+        "stderr should warn about scanning system Python"
+    );
 }
 
 #[cfg(unix)]
@@ -171,6 +285,18 @@ fn audit_json_reports_vulnerability_from_mocked_osv() {
     assert_eq!(value["detail"]["summary"]["scanned"].as_i64(), Some(1));
     assert_eq!(value["detail"]["summary"]["vulnerable"].as_i64(), Some(1));
     assert_eq!(value["detail"]["summary"]["high"].as_i64(), Some(1));
+
+    // Issue #338: detail.python_env must disclose exactly which interpreter
+    // was scanned. Here PYBUN_ENV points at an explicit fake venv, so the
+    // audit should proceed normally (no system-fallback guard triggered).
+    assert_eq!(
+        value["detail"]["python_env"]["path"].as_str(),
+        Some(fake_venv.join("bin").join("python").to_str().unwrap())
+    );
+    assert_eq!(
+        value["detail"]["python_env"]["source"].as_str(),
+        Some("PYBUN_ENV (LOCAL)")
+    );
 
     let vulns = value["detail"]["vulnerabilities"]
         .as_array()
@@ -418,10 +544,12 @@ fn audit_severity_threshold_filters_low_severity_findings() {
     });
 
     let osv_url = format!("{}/v1/querybatch", server.base_url());
+    // No project-local venv exists here; pass --system so this test exercises
+    // --severity-threshold rather than the Issue #338 system-fallback guard.
     bin()
         .current_dir(project.path())
         .env("PYBUN_OSV_URL", &osv_url)
-        .args(["audit", "--severity-threshold=critical"])
+        .args(["audit", "--severity-threshold=critical", "--system"])
         .assert()
         .success();
 }
