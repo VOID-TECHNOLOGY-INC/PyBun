@@ -99,6 +99,8 @@ pub enum Commands {
     Upgrade(UpgradeArgs),
     /// Detect dependency drift: undeclared imports and unused declarations.
     Drift(DriftArgs),
+    /// Scan installed packages for known vulnerabilities using the OSV database.
+    Audit(AuditArgs),
 }
 
 #[derive(Subcommand, Debug)]
@@ -578,6 +580,38 @@ pub struct DriftArgs {
     /// Directory to analyze (defaults to current directory).
     #[arg(long, value_name = "PATH")]
     pub path: Option<std::path::PathBuf>,
+}
+
+#[derive(Args, Debug)]
+pub struct AuditArgs {
+    /// Only report vulnerabilities at or above this severity level.
+    #[arg(long, default_value = "low", value_enum)]
+    pub severity_threshold: SeverityLevel,
+    /// Exit with a non-zero status (and JSON status: "error") when
+    /// vulnerabilities at or above this severity are found. Useful for CI
+    /// gating (e.g. `pybun audit --fail-on=high`). Off by default.
+    #[arg(long, value_enum, value_name = "LEVEL")]
+    pub fail_on: Option<SeverityLevel>,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+#[value(rename_all = "lower")]
+pub enum SeverityLevel {
+    Low,
+    Medium,
+    High,
+    Critical,
+}
+
+impl SeverityLevel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SeverityLevel::Low => "low",
+            SeverityLevel::Medium => "medium",
+            SeverityLevel::High => "high",
+            SeverityLevel::Critical => "critical",
+        }
+    }
 }
 
 #[derive(Args, Debug)]

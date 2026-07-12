@@ -35,6 +35,7 @@ pub fn requires_tokio_runtime(cli: &Cli) -> bool {
             | Commands::Outdated(_)
             | Commands::Upgrade(_)
             | Commands::Build(_)
+            | Commands::Audit(_)
     )
 }
 

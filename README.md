@@ -291,6 +291,20 @@ pybun drift
 pybun drift --path ./src
 ```
 
+#### Vulnerability Scanning
+
+Scan installed packages against the [OSV](https://osv.dev) database (same scan logic as the MCP `pybun_audit` tool):
+
+```bash
+pybun audit
+
+# Only report medium severity and above
+pybun audit --severity-threshold=medium
+
+# Exit non-zero when high/critical vulnerabilities are found (CI gating)
+pybun audit --fail-on=high
+```
+
 ### Profile Management
 
 ```bash

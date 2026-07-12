@@ -1,5 +1,7 @@
 use super::RenderDetail;
+use crate::audit::{default_osv_url, list_installed_packages, scan_for_vulnerabilities};
 use crate::cache::{Cache, format_size, parse_size};
+use crate::cli::AuditArgs;
 use crate::env::find_python_env;
 use crate::pep723_cache::Pep723Cache;
 use crate::project::Project;
@@ -442,4 +444,121 @@ pub(super) fn run_gc(
     });
 
     Ok(RenderDetail::with_json(summary, json_detail))
+}
+
+// ---------------------------------------------------------------------------
+// pybun audit (OSV vulnerability scan) — Issue #316
+// ---------------------------------------------------------------------------
+
+pub(super) async fn run_audit(args: &AuditArgs, collector: &mut EventCollector) -> RenderDetail {
+    let severity_threshold = args.severity_threshold.as_str();
+    let fail_on = args.fail_on.map(|s| s.as_str());
+
+    let working_dir = std::env::current_dir().unwrap_or_default();
+    let packages = match find_python_env(&working_dir) {
+        Ok(env) => list_installed_packages(&env.python_path),
+        Err(e) => {
+            collector.warning(format!("Python environment not found: {}", e));
+            vec![]
+        }
+    };
+
+    let osv_url = default_osv_url();
+    let report = match scan_for_vulnerabilities(&packages, &osv_url, severity_threshold).await {
+        Ok(report) => report,
+        Err(e) => {
+            collector.error_with_code(
+                "E_AUDIT_OSV_QUERY_FAILED",
+                format!("Failed to query OSV vulnerability database: {}", e),
+                "Check network connectivity, or set PYBUN_OSV_URL to point at a reachable mirror.",
+            );
+            return RenderDetail::error(
+                format!("Vulnerability scan failed: {}", e),
+                json!({ "error": e }),
+            );
+        }
+    };
+
+    let vulnerabilities: Vec<Value> = report
+        .vulnerabilities
+        .iter()
+        .map(|v| {
+            json!({
+                "package": v.package,
+                "installed_version": v.installed_version,
+                "vulnerability_id": v.vulnerability_id,
+                "severity": v.severity,
+                "description": v.description,
+                "fix_version": v.fix_version,
+            })
+        })
+        .collect();
+
+    for v in &report.vulnerabilities {
+        let mut diag = Diagnostic::warning(format!(
+            "{} {} is affected by {} (severity: {})",
+            v.package, v.installed_version, v.vulnerability_id, v.severity
+        ))
+        .with_code("W_AUDIT_VULNERABILITY_FOUND")
+        .with_context(json!({
+            "package": v.package,
+            "installed_version": v.installed_version,
+            "vulnerability_id": v.vulnerability_id,
+            "severity": v.severity,
+        }));
+        if let Some(fix_version) = &v.fix_version {
+            diag = diag.with_suggestion(format!(
+                "Run `pybun upgrade {} {}` (or `pybun install`) to remediate.",
+                v.package, fix_version
+            ));
+        }
+        collector.diagnostic(diag);
+    }
+
+    let summary = if vulnerabilities.is_empty() {
+        format!(
+            "No known vulnerabilities found in {} package(s)",
+            report.scanned
+        )
+    } else {
+        format!(
+            "Found {} vulnerabilit{} in {} package(s) scanned",
+            vulnerabilities.len(),
+            if vulnerabilities.len() == 1 {
+                "y"
+            } else {
+                "ies"
+            },
+            report.scanned
+        )
+    };
+
+    let json_detail = json!({
+        "summary": {
+            "scanned": report.scanned,
+            "vulnerable": vulnerabilities.len(),
+            "critical": report.count_at_severity("critical"),
+            "high": report.count_at_severity("high"),
+            "medium": report.count_at_severity("medium"),
+            "low": report.count_at_severity("low"),
+            "unscanned": report.unscanned,
+        },
+        "vulnerabilities": vulnerabilities,
+        "severity_threshold": severity_threshold,
+        "fail_on": fail_on,
+        "scanner": "osv",
+        "scanner_version": "1.0",
+    });
+
+    let should_fail = fail_on.is_some_and(|threshold| {
+        report
+            .highest_severity_level()
+            .is_some_and(|level| level >= crate::audit::severity_level(threshold))
+    });
+
+    if should_fail {
+        RenderDetail::error(summary, json_detail)
+    } else {
+        RenderDetail::with_json(summary, json_detail)
+    }
 }

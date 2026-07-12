@@ -1,5 +1,6 @@
 #[cfg(feature = "performance-allocator")]
 pub mod allocator;
+pub mod audit;
 pub mod build;
 pub mod cache;
 pub mod cli;
