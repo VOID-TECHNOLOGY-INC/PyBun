@@ -2255,3 +2255,100 @@ fn make_fake_pip_venv(dir: &Path, _pip_list_json: &str) -> std::path::PathBuf {
     // Windows stub — tests guarded by #[cfg(unix)] where needed
     dir.join("fake_venv")
 }
+
+// =============================================================================
+// Issue #341: MCP pybun_resolve mirrors the CLI `--pre` opt-in — pre-release
+// versions are excluded by default and only selected when `"pre": true`.
+// =============================================================================
+
+fn index_prerelease_fixture() -> std::path::PathBuf {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("manifest dir");
+    std::path::Path::new(&manifest_dir)
+        .join("tests")
+        .join("fixtures")
+        .join("index_prerelease.json")
+}
+
+#[test]
+fn mcp_tools_call_resolve_excludes_prereleases_by_default() {
+    let temp = tempdir().unwrap();
+    let index = index_prerelease_fixture();
+
+    let mut child = pybun_bin()
+        .env("PYBUN_HOME", temp.path())
+        .current_dir(temp.path())
+        .args(["mcp", "serve", "--stdio"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to start MCP server");
+
+    if let Some(mut stdin) = child.stdin.take() {
+        let init_req = r#"{"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0.1.0"}}}"#;
+        writeln!(stdin, "{}", init_req).ok();
+
+        let call_req = format!(
+            r#"{{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{{"name":"pybun_resolve","arguments":{{"requirements":["lib>=1.0.0"],"index":"{}"}}}}}}"#,
+            index.display()
+        );
+        writeln!(stdin, "{}", call_req).ok();
+        stdin.flush().ok();
+    }
+
+    let output = child.wait_with_output().expect("failed to wait");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(
+        stdout.contains("resolved"),
+        "pybun_resolve should resolve against the fixture index. Got: {}",
+        stdout
+    );
+    assert!(
+        !stdout.contains("2.0.0rc1"),
+        "pre-release 2.0.0rc1 must be excluded by default. Got: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("1.0.0"),
+        "stable 1.0.0 should be selected by default. Got: {}",
+        stdout
+    );
+}
+
+#[test]
+fn mcp_tools_call_resolve_pre_opts_in_to_prereleases() {
+    let temp = tempdir().unwrap();
+    let index = index_prerelease_fixture();
+
+    let mut child = pybun_bin()
+        .env("PYBUN_HOME", temp.path())
+        .current_dir(temp.path())
+        .args(["mcp", "serve", "--stdio"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to start MCP server");
+
+    if let Some(mut stdin) = child.stdin.take() {
+        let init_req = r#"{"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0.1.0"}}}"#;
+        writeln!(stdin, "{}", init_req).ok();
+
+        let call_req = format!(
+            r#"{{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{{"name":"pybun_resolve","arguments":{{"requirements":["lib>=1.0.0"],"index":"{}","pre":true}}}}}}"#,
+            index.display()
+        );
+        writeln!(stdin, "{}", call_req).ok();
+        stdin.flush().ok();
+    }
+
+    let output = child.wait_with_output().expect("failed to wait");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(
+        stdout.contains("2.0.0rc1"),
+        "\"pre\": true must allow the pre-release to be selected. Got: {}",
+        stdout
+    );
+}

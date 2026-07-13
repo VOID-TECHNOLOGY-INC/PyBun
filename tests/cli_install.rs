@@ -864,3 +864,72 @@ fn install_selects_wheel_for_target_venv_python_not_path_python() {
          not whatever python3/python resolves to on PATH"
     );
 }
+
+// =============================================================================
+// Issue #341: pre-release versions must be excluded by default (PEP 440) and
+// only selected with the `--pre` opt-in, a specifier mentioning a pre-release,
+// or as a fallback when only pre-releases satisfy the constraints.
+// =============================================================================
+
+fn index_prerelease_path() -> std::path::PathBuf {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("manifest dir");
+    std::path::Path::new(&manifest_dir)
+        .join("tests")
+        .join("fixtures")
+        .join("index_prerelease.json")
+}
+
+#[test]
+fn install_excludes_prerelease_versions_by_default() {
+    let temp = tempdir().unwrap();
+    let lock_path = temp.path().join("pybun.lockb");
+    let index = index_prerelease_path();
+
+    bin()
+        .args([
+            "install",
+            "--index",
+            index.to_str().unwrap(),
+            "--require",
+            "lib>=1.0.0",
+            "--lock",
+            lock_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let lock = Lockfile::load_from_path(&lock_path).expect("lock loads");
+    let lib = lock.packages.get("lib").expect("lib entry");
+    assert_eq!(
+        lib.version, "1.0.0",
+        "pre-release 2.0.0rc1 must not be selected without --pre"
+    );
+}
+
+#[test]
+fn install_pre_flag_opts_in_to_prerelease_versions() {
+    let temp = tempdir().unwrap();
+    let lock_path = temp.path().join("pybun.lockb");
+    let index = index_prerelease_path();
+
+    bin()
+        .args([
+            "install",
+            "--index",
+            index.to_str().unwrap(),
+            "--require",
+            "lib>=1.0.0",
+            "--pre",
+            "--lock",
+            lock_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let lock = Lockfile::load_from_path(&lock_path).expect("lock loads");
+    let lib = lock.packages.get("lib").expect("lib entry");
+    assert_eq!(
+        lib.version, "2.0.0rc1",
+        "--pre must allow the pre-release to be selected"
+    );
+}

@@ -472,3 +472,109 @@ fn index_missing_hash_path() -> std::path::PathBuf {
         .join("fixtures")
         .join("index_missing_hash.json")
 }
+
+// ---------------------------------------------------------------------------
+// Issue #341: when only pre-release versions satisfy the constraints and the
+// user did not opt in via `--pre`, the resolver falls back to the pre-release
+// but the selection must be surfaced as a `W_PRERELEASE_SELECTED` warning
+// diagnostic instead of being silent.
+// ---------------------------------------------------------------------------
+
+fn index_prerelease_path() -> std::path::PathBuf {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("manifest dir");
+    std::path::Path::new(&manifest_dir)
+        .join("tests")
+        .join("fixtures")
+        .join("index_prerelease.json")
+}
+
+#[test]
+fn install_prerelease_fallback_outputs_w_prerelease_selected_diagnostic() {
+    let temp = tempdir().unwrap();
+    let lock_path = temp.path().join("pybun.lockb");
+    let index = index_prerelease_path();
+
+    let output = bin()
+        .args([
+            "install",
+            "--index",
+            index.to_str().unwrap(),
+            "--require",
+            "prelib",
+            "--lock",
+            lock_path.to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let stdout = String::from_utf8(output).expect("utf8");
+    let parsed: Value = serde_json::from_str(&stdout).expect("json output");
+
+    assert_eq!(parsed["status"], "ok");
+
+    // The only available version (a pre-release) is still installed.
+    let lock = Lockfile::load_from_path(&lock_path).expect("lock loads");
+    let prelib = lock.packages.get("prelib").expect("prelib entry");
+    assert_eq!(prelib.version, "0.9.0b1");
+
+    let diags = parsed["diagnostics"].as_array().expect("diagnostics array");
+    let pre_diag = diags
+        .iter()
+        .find(|d| d.get("code") == Some(&Value::from("W_PRERELEASE_SELECTED")))
+        .expect("expected W_PRERELEASE_SELECTED diagnostic");
+
+    assert_eq!(pre_diag["level"], "warning");
+    let message = pre_diag["message"].as_str().expect("message string");
+    assert!(
+        message.contains("prelib") && message.contains("0.9.0b1"),
+        "diagnostic message should name the package and pre-release version: {message}"
+    );
+    assert_eq!(pre_diag["context"]["package"], "prelib");
+    assert_eq!(pre_diag["context"]["version"], "0.9.0b1");
+}
+
+#[test]
+fn install_with_pre_flag_does_not_emit_prerelease_diagnostic() {
+    let temp = tempdir().unwrap();
+    let lock_path = temp.path().join("pybun.lockb");
+    let index = index_prerelease_path();
+
+    let output = bin()
+        .args([
+            "install",
+            "--index",
+            index.to_str().unwrap(),
+            "--require",
+            "prelib",
+            "--pre",
+            "--lock",
+            lock_path.to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let stdout = String::from_utf8(output).expect("utf8");
+    let parsed: Value = serde_json::from_str(&stdout).expect("json output");
+
+    assert_eq!(parsed["status"], "ok");
+    let diags = parsed["diagnostics"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        !diags
+            .iter()
+            .any(|d| d.get("code") == Some(&Value::from("W_PRERELEASE_SELECTED"))),
+        "explicit --pre opt-in must not produce the fallback warning: {diags:?}"
+    );
+}

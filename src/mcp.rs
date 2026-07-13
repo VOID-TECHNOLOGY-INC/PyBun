@@ -1041,6 +1041,10 @@ impl McpServer {
                             "type": "array",
                             "items": {"type": "string"},
                             "description": "List of requirements (e.g., ['requests>=2.28', 'flask'])"
+                        },
+                        "pre": {
+                            "type": "boolean",
+                            "description": "Allow pre-release and dev versions when resolving (PEP 440 excludes them by default unless a specifier mentions one; default: false)"
                         }
                     },
                     "required": ["requirements"]
@@ -1064,6 +1068,10 @@ impl McpServer {
                         "system": {
                             "type": "boolean",
                             "description": "Allow installing into system Python instead of creating a project-local .pybun/venv (default: false)"
+                        },
+                        "pre": {
+                            "type": "boolean",
+                            "description": "Allow pre-release and dev versions when resolving (PEP 440 excludes them by default unless a specifier mentions one; default: false)"
                         },
                         "index": {
                             "type": "string",
@@ -1477,7 +1485,7 @@ impl McpServer {
     // Tool implementations
     async fn call_resolve(&self, args: Value) -> Result<String, String> {
         use crate::index::load_index_from_path;
-        use crate::resolver::{Requirement, resolve};
+        use crate::resolver::{Requirement, ResolveOptions, resolve_with_options};
 
         let requirements: Vec<String> = args
             .get("requirements")
@@ -1498,6 +1506,11 @@ impl McpServer {
             .iter()
             .map(|s| s.parse().unwrap_or_else(|_| Requirement::any(s.trim())))
             .collect();
+
+        // Opt-in to pre-release versions (mirrors the CLI `--pre` flag).
+        let resolve_options = ResolveOptions {
+            allow_prerelease: args.get("pre").and_then(|p| p.as_bool()).unwrap_or(false),
+        };
 
         // Try to load index from common locations
         let index_path = args
@@ -1527,9 +1540,10 @@ impl McpServer {
         };
 
         match index_result {
-            Ok(index) => match resolve(parsed_reqs.clone(), &index).await {
-                Ok(resolution) => {
-                    let packages: Vec<Value> = resolution
+            Ok(index) => {
+                match resolve_with_options(parsed_reqs.clone(), &index, resolve_options).await {
+                    Ok(resolution) => {
+                        let packages: Vec<Value> = resolution
                         .packages
                         .values()
                         .map(|pkg| {
@@ -1541,16 +1555,24 @@ impl McpServer {
                         })
                         .collect();
 
-                    Ok(json!({
-                        "status": "resolved",
-                        "requirements": requirements,
-                        "packages": packages,
-                        "count": resolution.packages.len(),
-                    })
-                    .to_string())
+                        let prerelease_fallbacks: Vec<Value> = resolution
+                            .prerelease_fallbacks
+                            .iter()
+                            .map(|p| json!({ "name": p.name, "version": p.version }))
+                            .collect();
+
+                        Ok(json!({
+                            "status": "resolved",
+                            "requirements": requirements,
+                            "packages": packages,
+                            "count": resolution.packages.len(),
+                            "prerelease_fallbacks": prerelease_fallbacks,
+                        })
+                        .to_string())
+                    }
+                    Err(e) => Err(format!("Resolution failed: {}", e)),
                 }
-                Err(e) => Err(format!("Resolution failed: {}", e)),
-            },
+            }
             Err(e) => {
                 // Return a partial result indicating index is not available
                 Ok(json!({
@@ -1627,6 +1649,9 @@ impl McpServer {
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("pybun.lockb"));
 
+        // Opt-in to pre-release versions (mirrors the CLI `--pre` flag).
+        let pre = args.get("pre").and_then(|p| p.as_bool()).unwrap_or(false);
+
         let install_args = crate::cli::InstallArgs {
             offline,
             system,
@@ -1636,6 +1661,7 @@ impl McpServer {
             workspace: false,
             member: None,
             group: None,
+            pre,
         };
 
         let mut collector = EventCollector::new();

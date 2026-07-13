@@ -594,6 +594,99 @@ pub fn select_artifact_for_platform_with_cp(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Resolution {
     pub packages: BTreeMap<String, ResolvedPackage>,
+    /// Packages that resolved to a pre-release version via the fallback path
+    /// (only pre-releases satisfied the constraints) without an explicit
+    /// opt-in. Callers surface these as `W_PRERELEASE_SELECTED` warnings
+    /// (Issue #341).
+    pub prerelease_fallbacks: Vec<PrereleaseFallback>,
+}
+
+/// A package that resolved to a pre-release version only because no stable
+/// version satisfied the constraints (Issue #341).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrereleaseFallback {
+    pub name: String,
+    pub version: String,
+}
+
+/// Options controlling dependency resolution behavior.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ResolveOptions {
+    /// Allow pre-release/dev versions to be selected for every package
+    /// (CLI `--pre` / MCP `pre`). Defaults to `false`, matching the PEP 440
+    /// rule that pre-releases are excluded unless opted in (Issue #341).
+    pub allow_prerelease: bool,
+}
+
+/// Report whether `version` is a PEP 440 pre-release or dev release.
+///
+/// Detects pre-release segments (`a`/`alpha`, `b`/`beta`, `c`, `rc`, `pre`,
+/// `preview`) and dev segments (`dev`) case-insensitively, with `.`/`-`/`_`
+/// or no separator. Post-releases (`post`/`rev`/`r`) are NOT pre-releases,
+/// but a version with both a pre and a post segment (e.g. `1.0a1.post2`) is.
+/// Epoch prefixes (`N!`) and local version labels (`+...`) are ignored.
+///
+/// This is a deliberately small scanner; the full PEP 440 version type is
+/// tracked separately in Issue #340.
+pub fn is_prerelease(version: &str) -> bool {
+    let lower = version.trim().to_ascii_lowercase();
+    // Local version labels (`+...`) never affect pre-release status.
+    let without_local = lower.split('+').next().unwrap_or("");
+    // Strip an epoch prefix (`N!`).
+    let core = match without_local.split_once('!') {
+        Some((epoch, rest)) if !epoch.is_empty() && epoch.bytes().all(|b| b.is_ascii_digit()) => {
+            rest
+        }
+        _ => without_local,
+    };
+
+    let bytes = core.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i].is_ascii_alphabetic() {
+            let start = i;
+            while i < bytes.len() && bytes[i].is_ascii_alphabetic() {
+                i += 1;
+            }
+            match &core[start..i] {
+                // Pre-release spellings (PEP 440 normalizes alpha -> a,
+                // beta -> b, c/pre/preview -> rc) plus dev releases.
+                "a" | "b" | "c" | "rc" | "alpha" | "beta" | "pre" | "preview" | "dev" => {
+                    return true;
+                }
+                // Post-release spellings (post/rev/r) and anything else are
+                // not pre-release markers.
+                _ => {}
+            }
+        } else {
+            i += 1;
+        }
+    }
+    false
+}
+
+/// The version literal a [`VersionSpec`] compares against, if any.
+fn spec_version(spec: &VersionSpec) -> Option<&str> {
+    match spec {
+        VersionSpec::Exact(v)
+        | VersionSpec::Minimum(v)
+        | VersionSpec::MinimumExclusive(v)
+        | VersionSpec::MaximumInclusive(v)
+        | VersionSpec::Maximum(v)
+        | VersionSpec::NotEqual(v)
+        | VersionSpec::Compatible(v) => Some(v),
+        VersionSpec::Any => None,
+    }
+}
+
+/// PEP 440: a specifier that itself mentions a pre-release version opts the
+/// package into pre-release candidates (e.g. `pkg>=2.0rc1`).
+fn constraints_mention_prerelease(reqs: &[Requirement]) -> bool {
+    reqs.iter().any(|r| {
+        r.specs
+            .iter()
+            .any(|s| spec_version(s).is_some_and(is_prerelease))
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -700,9 +793,22 @@ pub trait PackageIndex {
 }
 
 /// Deterministic resolver that works with exact-version or minimum requirements in parallel.
+///
+/// Pre-release/dev versions are excluded by default per PEP 440; use
+/// [`resolve_with_options`] with [`ResolveOptions::allow_prerelease`] to opt
+/// in (Issue #341).
 pub async fn resolve(
     requirements: Vec<Requirement>,
     index: &impl PackageIndex,
+) -> Result<Resolution, ResolveError> {
+    resolve_with_options(requirements, index, ResolveOptions::default()).await
+}
+
+/// [`resolve`] with explicit [`ResolveOptions`].
+pub async fn resolve_with_options(
+    requirements: Vec<Requirement>,
+    index: &impl PackageIndex,
+    options: ResolveOptions,
 ) -> Result<Resolution, ResolveError> {
     let mut resolved: BTreeMap<String, ResolvedPackage> = BTreeMap::new();
     let mut constraints: BTreeMap<String, Vec<Requirement>> = BTreeMap::new();
@@ -826,6 +932,7 @@ pub async fn resolve(
                     &req.name,
                     &candidates,
                     requested_by.as_deref(),
+                    options.allow_prerelease,
                 ) {
                     batch_resolved.insert(req.name.clone(), pkg.clone());
                     fetch_events.push(FetchEvent {
@@ -864,6 +971,7 @@ pub async fn resolve(
                 &req.name,
                 candidates,
                 requested_by.as_deref(),
+                options.allow_prerelease,
             )?;
 
             batch_resolved.insert(req.name.clone(), pkg.clone());
@@ -937,7 +1045,33 @@ pub async fn resolve(
         pending = next_batch;
     }
 
-    Ok(Resolution { packages: resolved })
+    // Report packages that ended up on a pre-release version without an
+    // explicit opt-in (neither `--pre` nor a specifier mentioning a
+    // pre-release): these were selected via the only-pre-releases-satisfy
+    // fallback and callers surface them as `W_PRERELEASE_SELECTED`
+    // (Issue #341).
+    let prerelease_fallbacks = if options.allow_prerelease {
+        Vec::new()
+    } else {
+        resolved
+            .iter()
+            .filter(|(name, pkg)| {
+                is_prerelease(&pkg.version)
+                    && !constraints
+                        .get(name.as_str())
+                        .is_some_and(|reqs| constraints_mention_prerelease(reqs))
+            })
+            .map(|(name, pkg)| PrereleaseFallback {
+                name: name.clone(),
+                version: pkg.version.clone(),
+            })
+            .collect()
+    };
+
+    Ok(Resolution {
+        packages: resolved,
+        prerelease_fallbacks,
+    })
 }
 
 fn select_with_constraints(
@@ -945,12 +1079,36 @@ fn select_with_constraints(
     name: &str,
     candidates: &[ResolvedPackage],
     requested_by: Option<&str>,
+    allow_prerelease: bool,
 ) -> Result<ResolvedPackage, ResolveError> {
     let constraints = reqs.get(name).cloned().unwrap_or_default();
-    let candidate = candidates
+    let satisfying: Vec<&ResolvedPackage> = candidates
         .iter()
         .filter(|pkg| constraints.iter().all(|r| r.is_satisfied_by(&pkg.version)))
-        .max_by(|a, b| version_cmp(&a.version, &b.version));
+        .collect();
+
+    // PEP 440: pre-release/dev versions are excluded by default. They are
+    // considered when the caller opted in (`--pre`), when a specifier for
+    // this package itself mentions a pre-release version, or as a fallback
+    // when only pre-releases satisfy the constraints (Issue #341).
+    let prereleases_allowed = allow_prerelease || constraints_mention_prerelease(&constraints);
+    let candidate = if prereleases_allowed {
+        satisfying
+            .iter()
+            .max_by(|a, b| version_cmp(&a.version, &b.version))
+    } else {
+        satisfying
+            .iter()
+            .filter(|pkg| !is_prerelease(&pkg.version))
+            .max_by(|a, b| version_cmp(&a.version, &b.version))
+            .or_else(|| {
+                // Fallback: only pre-releases satisfy the constraints.
+                satisfying
+                    .iter()
+                    .max_by(|a, b| version_cmp(&a.version, &b.version))
+            })
+    }
+    .copied();
 
     if let Some(pkg) = candidate {
         Ok(pkg.clone())
@@ -2467,6 +2625,179 @@ mod tests {
                 "py3 wheel should be compatible with {cp_tag}"
             );
         }
+    }
+
+    // --- Pre-release handling (Issue #341) ---
+
+    #[test]
+    fn test_is_prerelease_classification() {
+        // Pre-release / dev versions (PEP 440): must be detected.
+        for v in [
+            "1.0rc1",
+            "1.0.rc1",
+            "1.0.0rc1",
+            "1.0-alpha2",
+            "1.0.alpha2",
+            "1.0b3",
+            "1.0.0b3",
+            "1.0.beta3",
+            "1.0c1",
+            "1.0.preview1",
+            "1.0.pre1",
+            "1.0.dev1",
+            "1.0.0.dev0",
+            "1.0a1",
+            "1.0a1.post2",
+            "1.0.post1.dev2",
+            "1.0.0RC1",
+            "1.0.0A1",
+            "2.0.0.DEV3",
+            "1!2.0a1",
+            "1.0rc1+local.tag",
+        ] {
+            assert!(is_prerelease(v), "{v} should be classified as pre-release");
+        }
+
+        // Final and post releases: NOT pre-releases.
+        for v in [
+            "1.0",
+            "1.0.0",
+            "2.5.0",
+            "1.0.post1",
+            "1.0.0.post2",
+            "1.0.POST1",
+            "1.0.rev1",
+            "1.0.r1",
+            "1!2.0",
+            "1.0+local.abc",
+            "1.0.post1+local",
+        ] {
+            assert!(
+                !is_prerelease(v),
+                "{v} should NOT be classified as pre-release"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_resolve_excludes_prereleases_by_default() {
+        let mut index = InMemoryIndex::default();
+        index.add("pkg", "1.0.0", Vec::<String>::new());
+        index.add("pkg", "2.0.0rc1", Vec::<String>::new());
+
+        let req = Requirement::any("pkg");
+        let resolution = resolve(vec![req], &index).await.unwrap();
+
+        assert_eq!(
+            resolution.packages.get("pkg").map(|p| p.version.as_str()),
+            Some("1.0.0"),
+            "pre-release 2.0.0rc1 must be excluded by default"
+        );
+        assert!(
+            resolution.prerelease_fallbacks.is_empty(),
+            "no fallback warning expected when a stable version is selected"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_resolve_allows_prereleases_with_opt_in() {
+        let mut index = InMemoryIndex::default();
+        index.add("pkg", "1.0.0", Vec::<String>::new());
+        index.add("pkg", "2.0.0rc1", Vec::<String>::new());
+
+        let req = Requirement::any("pkg");
+        let resolution = resolve_with_options(
+            vec![req],
+            &index,
+            ResolveOptions {
+                allow_prerelease: true,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            resolution.packages.get("pkg").map(|p| p.version.as_str()),
+            Some("2.0.0rc1"),
+            "--pre opt-in must allow selecting the pre-release"
+        );
+        assert!(
+            resolution.prerelease_fallbacks.is_empty(),
+            "explicit opt-in is not a fallback; no warning expected"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_resolve_allows_prerelease_when_specifier_mentions_one() {
+        let mut index = InMemoryIndex::default();
+        index.add("pkg", "1.0.0", Vec::<String>::new());
+        index.add("pkg", "2.0.0rc1", Vec::<String>::new());
+
+        // The specifier itself mentions a pre-release version, which opts this
+        // package into pre-release candidates (PEP 440 / pip behavior).
+        let req = Requirement::from_str("pkg>=2.0.0rc1").unwrap();
+        let resolution = resolve(vec![req], &index).await.unwrap();
+
+        assert_eq!(
+            resolution.packages.get("pkg").map(|p| p.version.as_str()),
+            Some("2.0.0rc1"),
+            "a specifier mentioning a pre-release must allow pre-release candidates"
+        );
+        assert!(
+            resolution.prerelease_fallbacks.is_empty(),
+            "specifier-mentioned pre-release is not a fallback; no warning expected"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_resolve_falls_back_to_prerelease_when_only_prereleases_exist() {
+        let mut index = InMemoryIndex::default();
+        index.add("pkg", "1.0.0rc1", Vec::<String>::new());
+        index.add("pkg", "1.0.0rc2", Vec::<String>::new());
+
+        let req = Requirement::any("pkg");
+        let resolution = resolve(vec![req], &index).await.unwrap();
+
+        assert_eq!(
+            resolution.packages.get("pkg").map(|p| p.version.as_str()),
+            Some("1.0.0rc2"),
+            "when only pre-releases satisfy the constraints, the highest must be selected"
+        );
+        assert_eq!(
+            resolution.prerelease_fallbacks,
+            vec![PrereleaseFallback {
+                name: "pkg".to_string(),
+                version: "1.0.0rc2".to_string(),
+            }],
+            "fallback selection must be reported so callers can emit W_PRERELEASE_SELECTED"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_resolve_prerelease_dependency_of_stable_package() {
+        // A stable top-level package whose dependency only ships pre-releases:
+        // the dependency should fall back and be reported.
+        let mut index = InMemoryIndex::default();
+        index.add("app", "1.0.0", vec!["libpre"]);
+        index.add("libpre", "0.9.0b1", Vec::<String>::new());
+
+        let req = Requirement::any("app");
+        let resolution = resolve(vec![req], &index).await.unwrap();
+
+        assert_eq!(
+            resolution
+                .packages
+                .get("libpre")
+                .map(|p| p.version.as_str()),
+            Some("0.9.0b1")
+        );
+        assert_eq!(
+            resolution.prerelease_fallbacks,
+            vec![PrereleaseFallback {
+                name: "libpre".to_string(),
+                version: "0.9.0b1".to_string(),
+            }]
+        );
     }
 
     // ====================================================================

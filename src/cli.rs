@@ -173,6 +173,10 @@ pub struct InstallArgs {
     /// `[project.optional-dependencies]` then `[dependency-groups]`).
     #[arg(long, value_name = "NAME")]
     pub group: Option<String>,
+    /// Allow pre-release and dev versions when resolving (PEP 440 excludes
+    /// them by default unless a specifier mentions one).
+    #[arg(long)]
+    pub pre: bool,
 }
 
 #[derive(Args, Debug)]
@@ -197,6 +201,10 @@ pub struct PackageArgs {
     /// Use offline mode when cache is sufficient.
     #[arg(long)]
     pub offline: bool,
+    /// Allow pre-release and dev versions when resolving (PEP 440 excludes
+    /// them by default unless a specifier mentions one).
+    #[arg(long)]
+    pub pre: bool,
 }
 
 #[derive(Args, Debug)]
@@ -644,6 +652,10 @@ pub struct UpgradeArgs {
     /// Scope the upgrade to a named dependency group's dependencies.
     #[arg(long, value_name = "NAME")]
     pub group: Option<String>,
+    /// Allow pre-release and dev versions when resolving (PEP 440 excludes
+    /// them by default unless a specifier mentions one).
+    #[arg(long)]
+    pub pre: bool,
 }
 
 /// Render a JSON help envelope when the raw CLI arguments request both
