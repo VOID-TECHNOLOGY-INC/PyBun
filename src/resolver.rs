@@ -52,7 +52,7 @@ impl VersionSpec {
     /// Check whether `version` satisfies this single constraint.
     pub fn matches(&self, version: &str) -> bool {
         match self {
-            VersionSpec::Exact(v) => v == version,
+            VersionSpec::Exact(v) => versions_equal(version, v),
             VersionSpec::Minimum(min) => compare_versions(version, min) != Ordering::Less,
             VersionSpec::MinimumExclusive(min) => {
                 compare_versions(version, min) == Ordering::Greater
@@ -61,7 +61,7 @@ impl VersionSpec {
                 compare_versions(version, max) != Ordering::Greater
             }
             VersionSpec::Maximum(max) => compare_versions(version, max) == Ordering::Less,
-            VersionSpec::NotEqual(v) => v != version,
+            VersionSpec::NotEqual(v) => !versions_equal(version, v),
             VersionSpec::Compatible(base) => is_compatible_release(version, base),
             VersionSpec::Any => true,
         }
@@ -1279,6 +1279,54 @@ pub fn parse_version_relaxed(input: &str) -> Option<Version> {
         format!("{}-{}", prefix_norm, suffix_norm)
     };
     Version::parse(&semver_str).ok()
+}
+
+/// PEP 440-aware equality used by the `==` / `!=` specifiers (Issue #339).
+///
+/// Release segments are compared numerically with zero padding of the shorter
+/// release (`1.4` == `1.4.0`, `2024.01` == `2024.1`, but `1.2.3` != `1.2.3.4`),
+/// and any trailing suffix (pre/post/dev/local) is normalized for case and
+/// `-`/`_`/`.` separators so `1.0.POST1` == `1.0.post1`. Falls back to raw
+/// string equality when either side cannot be parsed as a release-shaped
+/// version. Ordering semantics are deliberately untouched (PEP 440 ordering is
+/// tracked separately in Issue #340).
+fn versions_equal(a: &str, b: &str) -> bool {
+    match (split_release_suffix(a), split_release_suffix(b)) {
+        (Some((rel_a, suf_a)), Some((rel_b, suf_b))) => {
+            let len = rel_a.len().max(rel_b.len());
+            let seg = |rel: &[u64], i: usize| rel.get(i).copied().unwrap_or(0);
+            (0..len).all(|i| seg(&rel_a, i) == seg(&rel_b, i)) && suf_a == suf_b
+        }
+        _ => a == b,
+    }
+}
+
+/// Split a version string into its numeric release segments and a normalized
+/// suffix (lowercased, with `-`/`_`/`.` separators stripped). Returns `None`
+/// when the string does not start with a numeric release segment or a segment
+/// is not a plain number, letting callers fall back to string comparison.
+fn split_release_suffix(input: &str) -> Option<(Vec<u64>, String)> {
+    let input = input.trim();
+    let boundary = input
+        .char_indices()
+        .find(|(_, ch)| !ch.is_ascii_digit() && *ch != '.')
+        .map(|(idx, _)| idx)
+        .unwrap_or(input.len());
+    let (release, suffix) = input.split_at(boundary);
+    let segments = release
+        .split('.')
+        .filter(|part| !part.is_empty())
+        .map(|part| part.parse::<u64>().ok())
+        .collect::<Option<Vec<u64>>>()?;
+    if segments.is_empty() {
+        return None;
+    }
+    let normalized_suffix: String = suffix
+        .chars()
+        .filter(|ch| !matches!(ch, '-' | '_' | '.'))
+        .map(|ch| ch.to_ascii_lowercase())
+        .collect();
+    Some((segments, normalized_suffix))
 }
 
 /// A single token in a tokenized PEP 508 environment marker expression.
@@ -2750,5 +2798,74 @@ mod tests {
                 version: "0.9.0b1".to_string(),
             }]
         );
+    }
+
+    // ====================================================================
+    // Issue #339: `==` / `!=` must use PEP 440-aware equality (zero-padded
+    // release segments, case/separator normalization), not raw string
+    // equality.
+    // ====================================================================
+
+    #[test]
+    fn exact_spec_matches_zero_padded_release() {
+        // PEP 440: `==1.4` must match `1.4.0` (zero padding).
+        assert!(VersionSpec::Exact("1.4".to_string()).matches("1.4.0"));
+    }
+
+    #[test]
+    fn exact_spec_normalizes_leading_zero_segments() {
+        // PEP 440: `==2024.01` must match `2024.1`.
+        assert!(VersionSpec::Exact("2024.01".to_string()).matches("2024.1"));
+        assert!(VersionSpec::Exact("2024.1".to_string()).matches("2024.01"));
+    }
+
+    #[test]
+    fn not_equal_spec_excludes_zero_padded_release() {
+        // PEP 440: `!=1.0` must exclude `1.0.0` (the dangerous direction).
+        assert!(!VersionSpec::NotEqual("1.0".to_string()).matches("1.0.0"));
+    }
+
+    #[test]
+    fn exact_spec_is_case_insensitive_for_suffixes() {
+        // PEP 440: `==1.0.POST1` must match `1.0.post1`.
+        assert!(VersionSpec::Exact("1.0.POST1".to_string()).matches("1.0.post1"));
+    }
+
+    #[test]
+    fn exact_spec_still_matches_identical_version() {
+        assert!(VersionSpec::Exact("1.0".to_string()).matches("1.0"));
+    }
+
+    #[test]
+    fn not_equal_spec_allows_different_version() {
+        assert!(VersionSpec::NotEqual("1.0".to_string()).matches("1.1"));
+    }
+
+    #[test]
+    fn exact_spec_falls_back_to_string_equality_when_unparseable() {
+        // Versions without a numeric release segment fall back to raw
+        // string equality.
+        assert!(VersionSpec::Exact("not-a-version".to_string()).matches("not-a-version"));
+        assert!(!VersionSpec::Exact("not-a-version".to_string()).matches("other"));
+        assert!(!VersionSpec::NotEqual("not-a-version".to_string()).matches("not-a-version"));
+        assert!(!VersionSpec::Exact("not-a-version".to_string()).matches("1.0.0"));
+    }
+
+    #[test]
+    fn exact_spec_wildcard_behavior_unchanged() {
+        // Wildcard specifiers are not supported by the resolver today
+        // (`==1.4.*` never matched under string equality); the PEP 440
+        // equality fix must not silently change that.
+        assert!(!VersionSpec::Exact("1.4.*".to_string()).matches("1.4.2"));
+        assert!(!VersionSpec::Exact("1.4.*".to_string()).matches("1.4.0"));
+    }
+
+    #[test]
+    fn exact_spec_does_not_truncate_extra_release_segments() {
+        // Zero padding pads the *shorter* release; `==1.2.3` must NOT
+        // match `1.2.3.4` and `!=1.2.3` must not exclude it.
+        assert!(!VersionSpec::Exact("1.2.3".to_string()).matches("1.2.3.4"));
+        assert!(VersionSpec::NotEqual("1.2.3".to_string()).matches("1.2.3.4"));
+        assert!(VersionSpec::Exact("1.2.3.0".to_string()).matches("1.2.3"));
     }
 }
