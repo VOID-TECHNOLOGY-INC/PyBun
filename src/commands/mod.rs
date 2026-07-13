@@ -16,9 +16,9 @@ use crate::pypi::{PyPiClient, PyPiIndex};
 use crate::release_manifest::{ReleaseManifest, current_release_target};
 use crate::resolver::parse_version_relaxed;
 use crate::resolver::{
-    PackageIndex, Requirement, compare_versions, cp_tag_to_dotted_version, current_platform_tags,
-    is_wheel_python_compatible, parse_wheel_tags, python_version_to_cp_tag, resolve,
-    select_artifact_for_platform_with_cp,
+    PackageIndex, Requirement, Resolution, ResolveOptions, compare_versions,
+    cp_tag_to_dotted_version, current_platform_tags, is_wheel_python_compatible, parse_wheel_tags,
+    python_version_to_cp_tag, resolve, resolve_with_options, select_artifact_for_platform_with_cp,
 };
 use crate::sandbox;
 use crate::sbom;
@@ -150,6 +150,7 @@ pub async fn execute(cli: Cli) -> Result<()> {
                         workspace: false,
                         member: None,
                         group: None,
+                        pre: args.pre,
                     };
 
                     let packages_json: Vec<serde_json::Value> = packages
@@ -1392,6 +1393,33 @@ fn warn_on_ignored_extras(requirements: &[Requirement], collector: &mut EventCol
     }
 }
 
+/// Emit a `W_PRERELEASE_SELECTED` warning for every package that resolved to
+/// a pre-release version via the fallback path (only pre-releases satisfied
+/// the constraints, without a `--pre` opt-in or a specifier mentioning a
+/// pre-release). PEP 440 excludes pre-releases from version selection by
+/// default, so the fallback is made visible instead of silent (Issue #341).
+fn warn_on_prerelease_fallback(resolution: &Resolution, collector: &mut EventCollector) {
+    for pick in &resolution.prerelease_fallbacks {
+        let message = format!(
+            "selected pre-release version {} {} because only pre-release versions satisfy the constraints",
+            pick.name, pick.version
+        );
+        eprintln!("warning: {}", message);
+        collector.diagnostic(
+            Diagnostic::warning(message)
+                .with_code("W_PRERELEASE_SELECTED")
+                .with_suggestion(
+                    "Pass --pre to opt in to pre-release versions explicitly, or pin a stable version."
+                        .to_string(),
+                )
+                .with_context(json!({
+                    "package": pick.name,
+                    "version": pick.version,
+                })),
+        );
+    }
+}
+
 pub(crate) async fn install(
     args: &crate::cli::InstallArgs,
     collector: &mut EventCollector,
@@ -1444,10 +1472,13 @@ pub(crate) async fn install(
 
     let source_index_url: String;
     let offline = args.offline;
+    let resolve_options = ResolveOptions {
+        allow_prerelease: args.pre,
+    };
     let resolution = if let Some(index_path) = args.index.clone() {
         source_index_url = index_path.display().to_string();
         let index = load_index_from_path(&index_path).map_err(|e| eyre!(e))?;
-        match resolve(requirements.clone(), &index).await {
+        match resolve_with_options(requirements.clone(), &index, resolve_options).await {
             Ok(r) => r,
             Err(e) => {
                 for d in crate::self_heal::diagnostics_for_resolve_error(&requirements, &e) {
@@ -1465,7 +1496,8 @@ pub(crate) async fn install(
             source_index_url, offline
         ));
         let index = PyPiIndex::new(client);
-        let resolve_result = resolve(requirements.clone(), &index).await;
+        let resolve_result =
+            resolve_with_options(requirements.clone(), &index, resolve_options).await;
         for notice in index.take_stale_cache_notices() {
             collector.warning(notice);
         }
@@ -1479,6 +1511,7 @@ pub(crate) async fn install(
             }
         }
     };
+    warn_on_prerelease_fallback(&resolution, collector);
     collector.event_with(EventType::ResolveComplete, |event| {
         event.message = Some("Resolved dependencies".to_string());
         event.progress = Some(40);
@@ -2009,6 +2042,7 @@ async fn lock_dependencies(args: &LockArgs, collector: &mut EventCollector) -> R
             }
         }
     };
+    warn_on_prerelease_fallback(&resolution, collector);
 
     collector.event_with(EventType::ResolveComplete, |event| {
         event.message = Some("Resolved dependencies".to_string());
@@ -3202,6 +3236,7 @@ async fn run_script(
                         }
                         let resolution =
                             resolution.map_err(|e: crate::resolver::ResolveError| eyre!(e))?;
+                        warn_on_prerelease_fallback(&resolution, collector);
 
                         // Prepare site-packages path
                         let major_minor = python_version
@@ -5038,22 +5073,27 @@ async fn run_upgrade(args: &UpgradeArgs, collector: &mut EventCollector) -> Resu
     collector.event(EventType::ResolveStart);
 
     // Re-resolve dependencies
+    let resolve_options = ResolveOptions {
+        allow_prerelease: args.pre,
+    };
     let source_index_url: String;
     let resolution = if let Some(index_path) = &args.index {
         source_index_url = index_path.display().to_string();
         let index = load_index_from_path(index_path)?;
-        resolve(requirements.clone(), &index).await?
+        resolve_with_options(requirements.clone(), &index, resolve_options).await?
     } else {
         let pypi_client = PyPiClient::from_env(args.offline)
             .map_err(|e| eyre!("failed to create PyPI client: {}", e))?;
         source_index_url = pypi_client.index_url();
         let pypi_index = PyPiIndex::new(pypi_client);
-        let resolve_result = resolve(requirements.clone(), &pypi_index).await;
+        let resolve_result =
+            resolve_with_options(requirements.clone(), &pypi_index, resolve_options).await;
         for notice in pypi_index.take_stale_cache_notices() {
             collector.warning(notice);
         }
         resolve_result?
     };
+    warn_on_prerelease_fallback(&resolution, collector);
 
     collector.event(EventType::ResolveComplete);
 

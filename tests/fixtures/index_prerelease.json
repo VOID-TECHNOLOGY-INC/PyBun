@@ -1,0 +1,35 @@
+[
+  {
+    "name": "lib",
+    "version": "1.0.0",
+    "dependencies": [],
+    "wheels": [
+      {
+        "file": "lib-1.0.0-py3-none-any.whl",
+        "hash": "sha256:lib100"
+      }
+    ]
+  },
+  {
+    "name": "lib",
+    "version": "2.0.0rc1",
+    "dependencies": [],
+    "wheels": [
+      {
+        "file": "lib-2.0.0rc1-py3-none-any.whl",
+        "hash": "sha256:lib200rc1"
+      }
+    ]
+  },
+  {
+    "name": "prelib",
+    "version": "0.9.0b1",
+    "dependencies": [],
+    "wheels": [
+      {
+        "file": "prelib-0.9.0b1-py3-none-any.whl",
+        "hash": "sha256:prelib090b1"
+      }
+    ]
+  }
+]

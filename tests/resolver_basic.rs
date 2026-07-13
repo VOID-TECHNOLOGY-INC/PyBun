@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use pybun::resolver::{
-    InMemoryIndex, PackageArtifacts, PackageIndex, Requirement, ResolveError, ResolvedPackage,
-    resolve,
+    InMemoryIndex, PackageArtifacts, PackageIndex, PrereleaseFallback, Requirement, ResolveError,
+    ResolveOptions, ResolvedPackage, resolve, resolve_with_options,
 };
 
 #[tokio::test]
@@ -201,7 +201,9 @@ async fn relaxed_semver_handles_two_segment_requirement() {
 
 #[tokio::test]
 async fn pre_release_treated_as_less_than_final() {
-    // <2.4 should allow 2.4.0rc1 (pre-release) over 2.3.x
+    // 2.4.0rc1 orders below 2.4, so it satisfies `lib<2.4` — but PEP 440
+    // excludes pre-releases from selection by default (Issue #341), so the
+    // stable 2.3.5 wins unless the caller opts in.
     let mut index = InMemoryIndex::default();
     index.add("root", "1.0.0", ["lib<2.4"]);
     index.add("lib", "2.4.0rc1", Vec::<&str>::new());
@@ -211,7 +213,22 @@ async fn pre_release_treated_as_less_than_final() {
         .await
         .unwrap();
     let lib = resolution.packages.get("lib").expect("lib resolved");
-    assert_eq!(lib.version, "2.4.0rc1");
+    assert_eq!(lib.version, "2.3.5");
+
+    let resolution = resolve_with_options(
+        vec![Requirement::exact("root", "1.0.0")],
+        &index,
+        ResolveOptions {
+            allow_prerelease: true,
+        },
+    )
+    .await
+    .unwrap();
+    let lib = resolution.packages.get("lib").expect("lib resolved");
+    assert_eq!(
+        lib.version, "2.4.0rc1",
+        "with --pre the pre-release still orders below 2.4 and wins over 2.3.5"
+    );
 }
 
 #[tokio::test]
@@ -578,5 +595,85 @@ async fn fetches_sibling_dependency_metadata_concurrently() {
         elapsed < serial_lower_bound / 2,
         "resolve() took {elapsed:?}, expected well under {serial_lower_bound:?} \
          if fetches ran concurrently"
+    );
+}
+
+// --- Pre-release handling (Issue #341) ---
+
+#[tokio::test]
+async fn excludes_prerelease_versions_by_default() {
+    let mut index = InMemoryIndex::default();
+    index.add("app", "1.0.0", ["lib>=1.0.0"]);
+    index.add("lib", "1.0.0", Vec::<&str>::new());
+    index.add("lib", "2.0.0rc1", Vec::<&str>::new());
+
+    let resolution = resolve(vec![Requirement::exact("app", "1.0.0")], &index)
+        .await
+        .unwrap();
+    let lib = resolution.packages.get("lib").expect("lib resolved");
+    assert_eq!(
+        lib.version, "1.0.0",
+        "pre-release 2.0.0rc1 must be excluded by default (PEP 440)"
+    );
+    assert!(resolution.prerelease_fallbacks.is_empty());
+}
+
+#[tokio::test]
+async fn allows_prerelease_versions_with_opt_in() {
+    let mut index = InMemoryIndex::default();
+    index.add("lib", "1.0.0", Vec::<&str>::new());
+    index.add("lib", "2.0.0rc1", Vec::<&str>::new());
+
+    let resolution = resolve_with_options(
+        vec![Requirement::any("lib")],
+        &index,
+        ResolveOptions {
+            allow_prerelease: true,
+        },
+    )
+    .await
+    .unwrap();
+    let lib = resolution.packages.get("lib").expect("lib resolved");
+    assert_eq!(lib.version, "2.0.0rc1");
+    assert!(
+        resolution.prerelease_fallbacks.is_empty(),
+        "opt-in selection is not a fallback"
+    );
+}
+
+#[tokio::test]
+async fn specifier_mentioning_prerelease_allows_prereleases_for_that_package() {
+    let mut index = InMemoryIndex::default();
+    index.add("lib", "1.0.0", Vec::<&str>::new());
+    index.add("lib", "2.0.0rc1", Vec::<&str>::new());
+
+    let resolution = resolve(vec![Requirement::minimum("lib", "2.0.0rc1")], &index)
+        .await
+        .unwrap();
+    let lib = resolution.packages.get("lib").expect("lib resolved");
+    assert_eq!(lib.version, "2.0.0rc1");
+    assert!(
+        resolution.prerelease_fallbacks.is_empty(),
+        "a specifier mentioning a pre-release is an explicit opt-in, not a fallback"
+    );
+}
+
+#[tokio::test]
+async fn falls_back_to_prerelease_when_only_prereleases_satisfy() {
+    let mut index = InMemoryIndex::default();
+    index.add("prelib", "0.9.0b1", Vec::<&str>::new());
+
+    let resolution = resolve(vec![Requirement::any("prelib")], &index)
+        .await
+        .unwrap();
+    let prelib = resolution.packages.get("prelib").expect("prelib resolved");
+    assert_eq!(prelib.version, "0.9.0b1");
+    assert_eq!(
+        resolution.prerelease_fallbacks,
+        vec![PrereleaseFallback {
+            name: "prelib".to_string(),
+            version: "0.9.0b1".to_string(),
+        }],
+        "fallback pre-release selection must be reported for W_PRERELEASE_SELECTED"
     );
 }

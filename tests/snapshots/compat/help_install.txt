@@ -14,4 +14,5 @@ Options:
       --workspace                Operate on the whole workspace, merging dependencies from the root and all members. Useful when run from inside a workspace member directory
       --member <NAME>            Operate on a single workspace member by its `[project.name]`
       --group <NAME>             Operate on a named dependency group (checks `[project.optional-dependencies]` then `[dependency-groups]`)
+      --pre                      Allow pre-release and dev versions when resolving (PEP 440 excludes them by default unless a specifier mentions one)
   -h, --help                     Print help

@@ -208,6 +208,7 @@ mod tests {
                 workspace: false,
                 member: None,
                 group: None,
+                pre: false,
             }),
         };
         assert!(requires_tokio_runtime(&cli));
