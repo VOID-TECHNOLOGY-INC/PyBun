@@ -1,4 +1,5 @@
 use crate::lockfile::PackageSource;
+use crate::pep440::Pep440Version;
 use futures::StreamExt;
 use semver::Version;
 use std::cmp::Ordering;
@@ -626,9 +627,12 @@ pub struct ResolveOptions {
 /// but a version with both a pre and a post segment (e.g. `1.0a1.post2`) is.
 /// Epoch prefixes (`N!`) and local version labels (`+...`) are ignored.
 ///
-/// This is a deliberately small scanner; the full PEP 440 version type is
-/// tracked separately in Issue #340.
+/// Versions inside the PEP 440 grammar are classified by [`Pep440Version`];
+/// the scanner below is the fallback for strings outside it (Issue #340).
 pub fn is_prerelease(version: &str) -> bool {
+    if let Some(parsed) = Pep440Version::parse(version) {
+        return parsed.is_prerelease();
+    }
     let lower = version.trim().to_ascii_lowercase();
     // Local version labels (`+...`) never affect pre-release status.
     let without_local = lower.split('+').next().unwrap_or("");
@@ -1236,7 +1240,16 @@ fn build_requested_chain(
 }
 
 /// Compare two version strings, returning their ordering.
+///
+/// Uses PEP 440 ordering (epochs, post-releases above their base, numeric
+/// pre-release ordering, `dev < a < b < rc < final < post`) when both sides
+/// parse as PEP 440 versions (Issue #340). Falls back to the legacy relaxed
+/// semver comparison, then raw string ordering, for strings outside the
+/// PEP 440 grammar.
 pub fn compare_versions(a: &str, b: &str) -> Ordering {
+    if let (Some(left), Some(right)) = (Pep440Version::parse(a), Pep440Version::parse(b)) {
+        return left.cmp(&right);
+    }
     match (parse_version_relaxed(a), parse_version_relaxed(b)) {
         (Some(left), Some(right)) => left.cmp(&right),
         _ => a.cmp(b),
@@ -1288,9 +1301,26 @@ pub fn parse_version_relaxed(input: &str) -> Option<Version> {
 /// and any trailing suffix (pre/post/dev/local) is normalized for case and
 /// `-`/`_`/`.` separators so `1.0.POST1` == `1.0.post1`. Falls back to raw
 /// string equality when either side cannot be parsed as a release-shaped
-/// version. Ordering semantics are deliberately untouched (PEP 440 ordering is
-/// tracked separately in Issue #340).
-fn versions_equal(a: &str, b: &str) -> bool {
+/// version.
+///
+/// `spec` is the version literal written in the specifier. Per PEP 440, when
+/// the specifier has no local version label, local labels on candidates are
+/// ignored (`==1.0` matches `1.0+cpu`); when it has one, the labels must
+/// match exactly (Issue #340).
+fn versions_equal(candidate: &str, spec: &str) -> bool {
+    if let (Some(cand), Some(spec)) = (Pep440Version::parse(candidate), Pep440Version::parse(spec))
+    {
+        if spec.has_local() {
+            return cand == spec;
+        }
+        return cand.public_cmp(&spec) == Ordering::Equal;
+    }
+    versions_equal_relaxed(candidate, spec)
+}
+
+/// Legacy release-plus-suffix equality (Issue #339), kept as the fallback for
+/// strings outside the PEP 440 grammar.
+fn versions_equal_relaxed(a: &str, b: &str) -> bool {
     match (split_release_suffix(a), split_release_suffix(b)) {
         (Some((rel_a, suf_a)), Some((rel_b, suf_b))) => {
             let len = rel_a.len().max(rel_b.len());
@@ -2867,5 +2897,46 @@ mod tests {
         assert!(!VersionSpec::Exact("1.2.3".to_string()).matches("1.2.3.4"));
         assert!(VersionSpec::NotEqual("1.2.3".to_string()).matches("1.2.3.4"));
         assert!(VersionSpec::Exact("1.2.3.0".to_string()).matches("1.2.3"));
+    }
+
+    #[test]
+    fn exact_spec_without_local_label_ignores_candidate_local() {
+        // PEP 440: a specifier without a local version label matches any
+        // local variant of that public version.
+        assert!(VersionSpec::Exact("1.0.0".to_string()).matches("1.0.0+cpu"));
+        assert!(!VersionSpec::NotEqual("1.0.0".to_string()).matches("1.0.0+cpu"));
+    }
+
+    #[test]
+    fn exact_spec_with_local_label_requires_exact_local_match() {
+        assert!(VersionSpec::Exact("1.0.0+cpu".to_string()).matches("1.0.0+cpu"));
+        assert!(!VersionSpec::Exact("1.0.0+cpu".to_string()).matches("1.0.0+cu118"));
+        assert!(!VersionSpec::Exact("1.0.0+cpu".to_string()).matches("1.0.0"));
+        assert!(VersionSpec::NotEqual("1.0.0+cpu".to_string()).matches("1.0.0"));
+    }
+
+    #[test]
+    fn exact_spec_normalizes_prerelease_spelling_aliases() {
+        // PEP 440 normalization: c -> rc, alpha -> a, beta -> b.
+        assert!(VersionSpec::Exact("1.0rc1".to_string()).matches("1.0c1"));
+        assert!(VersionSpec::Exact("1.0a1".to_string()).matches("1.0alpha1"));
+        assert!(!VersionSpec::NotEqual("1.0rc1".to_string()).matches("1.0c1"));
+    }
+
+    #[test]
+    fn exact_spec_epoch_must_match() {
+        assert!(!VersionSpec::Exact("1!1.0".to_string()).matches("1.0"));
+        assert!(VersionSpec::Exact("1!1.0".to_string()).matches("1!1.0.0"));
+    }
+
+    #[test]
+    fn compare_versions_follows_pep440_ordering() {
+        use std::cmp::Ordering;
+        assert_eq!(compare_versions("1.0.post1", "1.0"), Ordering::Greater);
+        assert_eq!(compare_versions("1!1.0", "2.0"), Ordering::Greater);
+        assert_eq!(compare_versions("1.0a10", "1.0a2"), Ordering::Greater);
+        assert_eq!(compare_versions("1.0.post1", "1.0rc1"), Ordering::Greater);
+        assert_eq!(compare_versions("1.0.dev1", "1.0a1"), Ordering::Less);
+        assert_eq!(compare_versions("1.4", "1.4.0"), Ordering::Equal);
     }
 }
