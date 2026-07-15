@@ -722,7 +722,6 @@ async fn falls_back_to_prerelease_when_only_prereleases_satisfy() {
     );
 }
 
-
 // --- Issue #340: PEP 440 ordering (post-releases, epochs, numeric pre-release order) ---
 
 #[tokio::test]
