@@ -978,7 +978,7 @@ pub async fn resolve_with_options(
                 }
                 // Try to select a version that satisfies all constraints seen so far
                 let candidates = version_cache.get(&req.name).cloned().unwrap_or_default();
-                if let Ok(pkg) = select_with_constraints(
+                match select_with_constraints(
                     &constraints,
                     &req.name,
                     &candidates,
@@ -986,24 +986,30 @@ pub async fn resolve_with_options(
                     options.allow_prerelease,
                     options.python_version.as_deref(),
                 ) {
-                    batch_resolved.insert(req.name.clone(), pkg.clone());
-                    fetch_events.push(FetchEvent {
-                        name: req.name.clone(),
-                        candidate: pkg,
-                        requested_by: requested_by.clone(),
-                        kind: FetchKind::Reconcile,
-                    });
-                } else {
-                    let existing_chain = build_chain(&parents, &req.name);
-                    let requested_chain =
-                        build_requested_chain(&parents, &req.name, requested_by.clone());
-                    return Err(ResolveError::Conflict {
-                        name: req.name.clone(),
-                        existing: existing.version.clone(),
-                        requested: req.constraint_display(),
-                        existing_chain,
-                        requested_chain,
-                    });
+                    Ok(pkg) => {
+                        batch_resolved.insert(req.name.clone(), pkg.clone());
+                        fetch_events.push(FetchEvent {
+                            name: req.name.clone(),
+                            candidate: pkg,
+                            requested_by: requested_by.clone(),
+                            kind: FetchKind::Reconcile,
+                        });
+                    }
+                    // Keep the interpreter-conflict detail instead of
+                    // degrading it to a generic version conflict (Issue #342).
+                    Err(err @ ResolveError::PythonIncompatible(_)) => return Err(err),
+                    Err(_) => {
+                        let existing_chain = build_chain(&parents, &req.name);
+                        let requested_chain =
+                            build_requested_chain(&parents, &req.name, requested_by.clone());
+                        return Err(ResolveError::Conflict {
+                            name: req.name.clone(),
+                            existing: existing.version.clone(),
+                            requested: req.constraint_display(),
+                            existing_chain,
+                            requested_chain,
+                        });
+                    }
                 }
                 continue;
             }

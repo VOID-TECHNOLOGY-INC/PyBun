@@ -1509,8 +1509,10 @@ pub(crate) async fn install(
     let working_dir = std::env::current_dir()?;
     let target_env_probe = crate::env::find_python_env(&working_dir)?;
     let python_version_override = python_version_env_override();
-    // PYBUN_FORCE_CP_TAG lets tests (and users) pin the CPython tag deterministically,
-    // bypassing interpreter detection entirely.
+    // PYBUN_FORCE_CP_TAG lets tests (and users) pin the CPython tag deterministically.
+    // Note it no longer bypasses interpreter detection on its own: the detected version
+    // is also needed for `requires-python` filtering, so detection is only skipped when
+    // PYBUN_PYPI_PYTHON_VERSION covers that too.
     let forced_cp_tag = std::env::var("PYBUN_FORCE_CP_TAG")
         .ok()
         .filter(|v| !v.trim().is_empty());

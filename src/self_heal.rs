@@ -172,7 +172,8 @@ pub fn diagnostics_for_resolve_error(
             if let Some(newest) = newest_compatible {
                 diags.push(
                     Diagnostic::hint(format!(
-                        "newest {name} release compatible with Python {python_version} is {newest}"
+                        "newest {name} release compatible with Python {python_version} is \
+                         {newest} (ignoring the version constraint {constraint})"
                     ))
                     .with_code("H_RESOLVE_PYTHON_NEWEST_COMPATIBLE")
                     .with_context(json!({ "name": name, "version": newest })),

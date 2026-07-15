@@ -869,3 +869,37 @@ async fn unparseable_requires_python_specs_are_lenient() {
         "wildcard/unparseable parts must never reject a candidate"
     );
 }
+
+#[tokio::test]
+async fn reconciliation_preserves_python_incompatible_error() {
+    // Diamond: a picks lib 2.0.0 first; b then narrows to lib<2.0.0, whose
+    // only candidate is rejected by requires-python on the target Python.
+    // The interpreter conflict must surface, not a generic version conflict.
+    let mut index = InMemoryIndex::default();
+    index.add("a", "1.0.0", ["lib"]);
+    index.add("b", "1.0.0", ["lib<2.0.0"]);
+    index.add("lib", "2.0.0", Vec::<&str>::new());
+    index.add_with_requires_python("lib", "1.13.1", Vec::<&str>::new(), Some(">=3.10"));
+
+    let err = resolve_with_options(
+        vec![
+            Requirement::exact("a", "1.0.0"),
+            Requirement::exact("b", "1.0.0"),
+        ],
+        &index,
+        ResolveOptions {
+            python_version: Some("3.9.18".into()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap_err();
+    match err {
+        ResolveError::PythonIncompatible(details) => {
+            assert_eq!(details.name, "lib");
+            assert_eq!(details.rejected_version, "1.13.1");
+            assert_eq!(details.rejected_requires_python, ">=3.10");
+        }
+        other => panic!("expected PythonIncompatible, got {other:?}"),
+    }
+}
