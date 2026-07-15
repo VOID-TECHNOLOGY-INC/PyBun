@@ -933,3 +933,69 @@ fn install_pre_flag_opts_in_to_prerelease_versions() {
         "--pre must allow the pre-release to be selected"
     );
 }
+
+// =============================================================================
+// Issue #342: candidates whose requires-python excludes the target interpreter
+// must be skipped, resolving the newest release that supports it instead.
+// =============================================================================
+
+fn index_requires_python_path() -> std::path::PathBuf {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("manifest dir");
+    std::path::Path::new(&manifest_dir)
+        .join("tests")
+        .join("fixtures")
+        .join("index_requires_python.json")
+}
+
+#[test]
+fn install_skips_versions_incompatible_with_target_python() {
+    let temp = tempdir().unwrap();
+    let lock_path = temp.path().join("pybun.lockb");
+    let index = index_requires_python_path();
+
+    bin()
+        .env("PYBUN_PYPI_PYTHON_VERSION", "3.9.18")
+        .args([
+            "install",
+            "--index",
+            index.to_str().unwrap(),
+            "--require",
+            "lib",
+            "--lock",
+            lock_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let lock = Lockfile::load_from_path(&lock_path).expect("lock loads");
+    let lib = lock.packages.get("lib").expect("lib entry");
+    assert_eq!(
+        lib.version, "1.13.1",
+        "lib 2.0.0 requires Python >=3.10 and must be skipped on 3.9"
+    );
+}
+
+#[test]
+fn install_keeps_newest_version_when_target_python_matches() {
+    let temp = tempdir().unwrap();
+    let lock_path = temp.path().join("pybun.lockb");
+    let index = index_requires_python_path();
+
+    bin()
+        .env("PYBUN_PYPI_PYTHON_VERSION", "3.12.1")
+        .args([
+            "install",
+            "--index",
+            index.to_str().unwrap(),
+            "--require",
+            "lib",
+            "--lock",
+            lock_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let lock = Lockfile::load_from_path(&lock_path).expect("lock loads");
+    let lib = lock.packages.get("lib").expect("lib entry");
+    assert_eq!(lib.version, "2.0.0");
+}

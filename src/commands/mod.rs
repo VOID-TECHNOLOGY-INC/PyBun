@@ -18,7 +18,7 @@ use crate::resolver::parse_version_relaxed;
 use crate::resolver::{
     PackageIndex, Requirement, Resolution, ResolveOptions, compare_versions,
     cp_tag_to_dotted_version, current_platform_tags, is_wheel_python_compatible, parse_wheel_tags,
-    python_version_to_cp_tag, resolve, resolve_with_options, select_artifact_for_platform_with_cp,
+    python_version_to_cp_tag, resolve_with_options, select_artifact_for_platform_with_cp,
 };
 use crate::sandbox;
 use crate::sbom;
@@ -1420,6 +1420,29 @@ fn warn_on_prerelease_fallback(resolution: &Resolution, collector: &mut EventCol
     }
 }
 
+/// Explicit `PYBUN_PYPI_PYTHON_VERSION` override for the resolution target
+/// Python version, if set and non-empty.
+fn python_version_env_override() -> Option<String> {
+    std::env::var("PYBUN_PYPI_PYTHON_VERSION")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
+/// Python version used for `requires-python` candidate filtering during
+/// resolution (Issue #342): the `PYBUN_PYPI_PYTHON_VERSION` override wins,
+/// otherwise the interpreter detected for the current working directory
+/// (`PYBUN_ENV` / project venv / system Python). `None` — for example when
+/// no interpreter can be found — disables the filter.
+pub(crate) fn resolve_target_python_version() -> Option<String> {
+    if let Some(version) = python_version_env_override() {
+        return Some(version);
+    }
+    let cwd = std::env::current_dir().ok()?;
+    let probe = crate::env::find_python_env(&cwd).ok()?;
+    get_python_version(&probe.python_path).ok()
+}
+
 pub(crate) async fn install(
     args: &crate::cli::InstallArgs,
     collector: &mut EventCollector,
@@ -1470,10 +1493,47 @@ pub(crate) async fn install(
         });
     }
 
+    // Detect the CPython tag of the actual install target (PYBUN_ENV / PYBUN_PYTHON /
+    // project venv / system Python) *before* selecting wheels, so artifact selection
+    // matches the Python interpreter packages will actually be installed into.
+    // Selecting wheels against whatever `python3`/`python` happens to resolve on PATH
+    // (the previous behavior) can silently pick wheels for the wrong CPython ABI
+    // (Issue #291). This is read-only detection only — creating a project-local venv
+    // (and the associated system-Python safe-install-target guard) is deferred to the
+    // later "Install wheels" step below, so a resolve-only or failed install doesn't
+    // have the side effect of mutating the filesystem.
+    //
+    // Detection happens before resolution because the same interpreter version also
+    // drives `requires-python` candidate filtering (Issue #342). The interpreter is
+    // only spawned when no environment override makes it unnecessary.
+    let working_dir = std::env::current_dir()?;
+    let target_env_probe = crate::env::find_python_env(&working_dir)?;
+    let python_version_override = python_version_env_override();
+    // PYBUN_FORCE_CP_TAG lets tests (and users) pin the CPython tag deterministically.
+    // Note it no longer bypasses interpreter detection on its own: the detected version
+    // is also needed for `requires-python` filtering, so detection is only skipped when
+    // PYBUN_PYPI_PYTHON_VERSION covers that too.
+    let forced_cp_tag = std::env::var("PYBUN_FORCE_CP_TAG")
+        .ok()
+        .filter(|v| !v.trim().is_empty());
+    let detected_python_version = if python_version_override.is_none() || forced_cp_tag.is_none() {
+        get_python_version(&target_env_probe.python_path).ok()
+    } else {
+        None
+    };
+    let active_cp_tag = forced_cp_tag
+        .or_else(|| {
+            detected_python_version
+                .as_deref()
+                .and_then(python_version_to_cp_tag)
+        })
+        .unwrap_or_else(|| "cp311".to_string());
+
     let source_index_url: String;
     let offline = args.offline;
     let resolve_options = ResolveOptions {
         allow_prerelease: args.pre,
+        python_version: python_version_override.or(detected_python_version),
     };
     let resolution = if let Some(index_path) = args.index.clone() {
         source_index_url = index_path.display().to_string();
@@ -1516,30 +1576,6 @@ pub(crate) async fn install(
         event.message = Some("Resolved dependencies".to_string());
         event.progress = Some(40);
     });
-
-    // Detect the CPython tag of the actual install target (PYBUN_ENV / PYBUN_PYTHON /
-    // project venv / system Python) *before* selecting wheels, so artifact selection
-    // matches the Python interpreter packages will actually be installed into.
-    // Selecting wheels against whatever `python3`/`python` happens to resolve on PATH
-    // (the previous behavior) can silently pick wheels for the wrong CPython ABI
-    // (Issue #291). This is read-only detection only — creating a project-local venv
-    // (and the associated system-Python safe-install-target guard) is deferred to the
-    // later "Install wheels" step below, so a resolve-only or failed install doesn't
-    // have the side effect of mutating the filesystem.
-    let working_dir = std::env::current_dir()?;
-    let target_env_probe = crate::env::find_python_env(&working_dir)?;
-
-    // PYBUN_FORCE_CP_TAG lets tests (and users) pin the CPython tag deterministically,
-    // bypassing interpreter detection entirely.
-    let active_cp_tag = std::env::var("PYBUN_FORCE_CP_TAG")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .or_else(|| {
-            get_python_version(&target_env_probe.python_path)
-                .ok()
-                .and_then(|v| python_version_to_cp_tag(&v))
-        })
-        .unwrap_or_else(|| "cp311".to_string());
 
     let platform_tags = current_platform_tags();
     let mut lock = Lockfile::new(
@@ -2007,10 +2043,14 @@ async fn lock_dependencies(args: &LockArgs, collector: &mut EventCollector) -> R
 
     let source_index_url: String;
     let offline = args.offline;
+    let resolve_options = ResolveOptions {
+        python_version: resolve_target_python_version(),
+        ..Default::default()
+    };
     let resolution = if let Some(index_path) = args.index.clone() {
         source_index_url = index_path.display().to_string();
         let index = load_index_from_path(&index_path).map_err(|e| eyre!(e))?;
-        match resolve(requirements.clone(), &index).await {
+        match resolve_with_options(requirements.clone(), &index, resolve_options).await {
             Ok(r) => r,
             Err(e) => {
                 for d in crate::self_heal::diagnostics_for_resolve_error(&requirements, &e) {
@@ -2028,7 +2068,8 @@ async fn lock_dependencies(args: &LockArgs, collector: &mut EventCollector) -> R
             source_index_url, offline
         ));
         let index = PyPiIndex::new(client);
-        let resolve_result = resolve(requirements.clone(), &index).await;
+        let resolve_result =
+            resolve_with_options(requirements.clone(), &index, resolve_options).await;
         for notice in index.take_stale_cache_notices() {
             collector.warning(notice);
         }
@@ -3230,7 +3271,16 @@ async fn run_script(
                         // But PyPiClient::from_env handles env vars.
                         let client = PyPiClient::from_env(false).map_err(|e| eyre!(e))?;
                         let index = PyPiIndex::new(client);
-                        let resolution = resolve(requirements, &index).await;
+                        let resolution = resolve_with_options(
+                            requirements,
+                            &index,
+                            ResolveOptions {
+                                python_version: python_version_env_override()
+                                    .or_else(|| Some(python_version.clone())),
+                                ..Default::default()
+                            },
+                        )
+                        .await;
                         for notice in index.take_stale_cache_notices() {
                             collector.warning(notice);
                         }
@@ -5075,6 +5125,7 @@ async fn run_upgrade(args: &UpgradeArgs, collector: &mut EventCollector) -> Resu
     // Re-resolve dependencies
     let resolve_options = ResolveOptions {
         allow_prerelease: args.pre,
+        python_version: resolve_target_python_version(),
     };
     let source_index_url: String;
     let resolution = if let Some(index_path) = &args.index {
