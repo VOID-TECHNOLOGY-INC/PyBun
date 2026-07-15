@@ -712,3 +712,54 @@ async fn falls_back_to_prerelease_when_only_prereleases_satisfy() {
         "fallback pre-release selection must be reported for W_PRERELEASE_SELECTED"
     );
 }
+
+// --- Issue #340: PEP 440 ordering (post-releases, epochs, numeric pre-release order) ---
+
+#[tokio::test]
+async fn post_release_sorts_above_base_release() {
+    let mut index = InMemoryIndex::default();
+    index.add("lib", "1.0", Vec::<&str>::new());
+    index.add("lib", "1.0.post1", Vec::<&str>::new());
+
+    let resolution = resolve(vec![Requirement::any("lib")], &index)
+        .await
+        .unwrap();
+    let lib = resolution.packages.get("lib").expect("lib resolved");
+    assert_eq!(lib.version, "1.0.post1", "PEP 440: 1.0.post1 > 1.0");
+    assert!(
+        resolution.prerelease_fallbacks.is_empty(),
+        "a post-release is not a pre-release fallback"
+    );
+}
+
+#[tokio::test]
+async fn epoch_dominates_release_comparison() {
+    let mut index = InMemoryIndex::default();
+    index.add("lib", "2.0", Vec::<&str>::new());
+    index.add("lib", "1!1.0", Vec::<&str>::new());
+
+    let resolution = resolve(vec![Requirement::any("lib")], &index)
+        .await
+        .unwrap();
+    let lib = resolution.packages.get("lib").expect("lib resolved");
+    assert_eq!(lib.version, "1!1.0", "PEP 440: 1!1.0 > 2.0");
+}
+
+#[tokio::test]
+async fn numeric_prerelease_segments_compare_numerically() {
+    let mut index = InMemoryIndex::default();
+    index.add("lib", "1.0a2", Vec::<&str>::new());
+    index.add("lib", "1.0a10", Vec::<&str>::new());
+
+    let resolution = resolve_with_options(
+        vec![Requirement::any("lib")],
+        &index,
+        ResolveOptions {
+            allow_prerelease: true,
+        },
+    )
+    .await
+    .unwrap();
+    let lib = resolution.packages.get("lib").expect("lib resolved");
+    assert_eq!(lib.version, "1.0a10", "PEP 440: 1.0a10 > 1.0a2");
+}
