@@ -14,6 +14,9 @@ pub struct IndexPackage {
     pub wheels: Vec<IndexWheel>,
     #[serde(default)]
     pub sdist: Option<String>,
+    /// PEP 440 `requires-python` specifier for this release (Issue #342).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requires_python: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
@@ -81,7 +84,13 @@ fn build_index(packages: Vec<IndexPackage>) -> InMemoryIndex {
                 sdist: pkg.sdist.clone(),
             }
         };
-        index.add_with_artifacts(pkg.name, pkg.version, pkg.dependencies, artifacts);
+        index.add_entry(
+            pkg.name,
+            pkg.version,
+            pkg.dependencies,
+            artifacts,
+            pkg.requires_python.as_deref(),
+        );
     }
     index
 }
@@ -252,6 +261,23 @@ mod tests {
             .expect("package");
         assert_eq!(pkg.dependencies.len(), 1);
         assert_eq!(pkg.dependencies[0].to_string(), "dep==2.0.0");
+        assert_eq!(pkg.requires_python, None);
+    }
+
+    #[tokio::test]
+    async fn index_fixture_carries_requires_python() {
+        let index = build_index(vec![IndexPackage {
+            name: "app".into(),
+            version: "1.0.0".into(),
+            requires_python: Some(">=3.10".into()),
+            ..Default::default()
+        }]);
+        let pkg = index
+            .get("app", "1.0.0")
+            .await
+            .expect("no error")
+            .expect("package");
+        assert_eq!(pkg.requires_python.as_deref(), Some(">=3.10"));
     }
 
     // ==========================================================================

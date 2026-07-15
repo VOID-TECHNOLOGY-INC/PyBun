@@ -1,0 +1,5 @@
+[
+  {"name":"lib","version":"1.13.1","dependencies":[],"requires_python":">=3.8","wheels":[{"file":"lib-1.13.1-py3-none-any.whl","hash":"sha256:lib1131"}]},
+  {"name":"lib","version":"2.0.0","dependencies":[],"requires_python":">=3.10","wheels":[{"file":"lib-2.0.0-py3-none-any.whl","hash":"sha256:lib200"}]},
+  {"name":"strictlib","version":"3.0.0","dependencies":[],"requires_python":">=3.12","wheels":[{"file":"strictlib-3.0.0-py3-none-any.whl","hash":"sha256:strictlib300"}]}
+]

@@ -389,6 +389,7 @@ impl PyPiClient {
             dependencies: deps,
             source: Some(source.clone()),
             artifacts,
+            requires_python: pkg.requires_python.clone(),
         }
     }
 
@@ -502,6 +503,10 @@ struct ReleaseFile {
     yanked: Option<bool>,
     #[serde(default)]
     digests: Option<HashMap<String, String>>,
+    /// PEP 440 `requires-python` specifier published per release file
+    /// (Issue #342). PyPI serves the same value for every file of a release.
+    #[serde(default)]
+    requires_python: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -536,6 +541,8 @@ struct CachedPackage {
     wheels: Vec<CachedWheel>,
     #[serde(default)]
     sdist: Option<String>,
+    #[serde(default)]
+    requires_python: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -935,6 +942,12 @@ fn build_cached_packages(
         }
         let mut wheels = Vec::new();
         let mut sdist = None;
+        // PyPI publishes the same requires_python for every file of a
+        // release; take it from the first file that carries it (Issue #342).
+        let requires_python = files
+            .iter()
+            .filter(|file| !file.yanked.unwrap_or(false))
+            .find_map(|file| file.requires_python.clone());
         for file in files {
             if file.yanked.unwrap_or(false) {
                 continue;
@@ -976,6 +989,7 @@ fn build_cached_packages(
             dependencies,
             wheels,
             sdist,
+            requires_python,
         });
     }
     packages

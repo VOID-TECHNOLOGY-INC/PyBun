@@ -220,6 +220,7 @@ async fn pre_release_treated_as_less_than_final() {
         &index,
         ResolveOptions {
             allow_prerelease: true,
+            ..Default::default()
         },
     )
     .await
@@ -272,6 +273,7 @@ async fn resolves_dependencies_fetched_after_selection() {
     all_map.insert(
         "app".to_string(),
         vec![ResolvedPackage {
+            requires_python: None,
             name: "app".to_string(),
             version: "1.0.0".to_string(),
             dependencies: Vec::new(),
@@ -282,6 +284,7 @@ async fn resolves_dependencies_fetched_after_selection() {
     all_map.insert(
         "dep".to_string(),
         vec![ResolvedPackage {
+            requires_python: None,
             name: "dep".to_string(),
             version: "1.0.0".to_string(),
             dependencies: Vec::new(),
@@ -294,6 +297,7 @@ async fn resolves_dependencies_fetched_after_selection() {
     get_map.insert(
         ("app".to_string(), "1.0.0".to_string()),
         ResolvedPackage {
+            requires_python: None,
             name: "app".to_string(),
             version: "1.0.0".to_string(),
             dependencies: vec![Requirement::exact("dep", "1.0.0")],
@@ -511,6 +515,7 @@ async fn fetches_sibling_dependency_metadata_concurrently() {
     all_map.insert(
         "app".to_string(),
         vec![ResolvedPackage {
+            requires_python: None,
             name: "app".to_string(),
             version: "1.0.0".to_string(),
             dependencies: Vec::new(),
@@ -521,6 +526,7 @@ async fn fetches_sibling_dependency_metadata_concurrently() {
     get_map.insert(
         ("app".to_string(), "1.0.0".to_string()),
         ResolvedPackage {
+            requires_python: None,
             name: "app".to_string(),
             version: "1.0.0".to_string(),
             dependencies: sibling_names
@@ -536,6 +542,7 @@ async fn fetches_sibling_dependency_metadata_concurrently() {
         all_map.insert(
             name.clone(),
             vec![ResolvedPackage {
+                requires_python: None,
                 name: name.clone(),
                 version: "1.0.0".to_string(),
                 dependencies: Vec::new(),
@@ -546,6 +553,7 @@ async fn fetches_sibling_dependency_metadata_concurrently() {
         get_map.insert(
             (name.clone(), "1.0.0".to_string()),
             ResolvedPackage {
+                requires_python: None,
                 name: name.clone(),
                 version: "1.0.0".to_string(),
                 dependencies: Vec::new(),
@@ -664,6 +672,7 @@ async fn allows_prerelease_versions_with_opt_in() {
         &index,
         ResolveOptions {
             allow_prerelease: true,
+            ..Default::default()
         },
     )
     .await
@@ -710,5 +719,153 @@ async fn falls_back_to_prerelease_when_only_prereleases_satisfy() {
             version: "0.9.0b1".to_string(),
         }],
         "fallback pre-release selection must be reported for W_PRERELEASE_SELECTED"
+    );
+}
+
+// --- Issue #342: requires-python metadata filters incompatible candidates ---
+
+#[tokio::test]
+async fn filters_versions_incompatible_with_target_python() {
+    let mut index = InMemoryIndex::default();
+    index.add_with_requires_python("lib", "1.13.1", Vec::<&str>::new(), Some(">=3.8"));
+    index.add_with_requires_python("lib", "2.0.0", Vec::<&str>::new(), Some(">=3.10"));
+
+    let resolution = resolve_with_options(
+        vec![Requirement::any("lib")],
+        &index,
+        ResolveOptions {
+            python_version: Some("3.9.18".into()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let lib = resolution.packages.get("lib").expect("lib resolved");
+    assert_eq!(
+        lib.version, "1.13.1",
+        "2.0.0 requires Python >=3.10 and must be skipped on 3.9"
+    );
+}
+
+#[tokio::test]
+async fn no_target_python_means_no_requires_python_filtering() {
+    let mut index = InMemoryIndex::default();
+    index.add_with_requires_python("lib", "1.13.1", Vec::<&str>::new(), Some(">=3.8"));
+    index.add_with_requires_python("lib", "2.0.0", Vec::<&str>::new(), Some(">=3.10"));
+
+    let resolution = resolve_with_options(
+        vec![Requirement::any("lib")],
+        &index,
+        ResolveOptions {
+            python_version: None,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let lib = resolution.packages.get("lib").expect("lib resolved");
+    assert_eq!(lib.version, "2.0.0");
+}
+
+#[tokio::test]
+async fn missing_requires_python_metadata_is_always_compatible() {
+    let mut index = InMemoryIndex::default();
+    index.add("lib", "2.5.0", Vec::<&str>::new());
+    index.add_with_requires_python("lib", "3.0.0", Vec::<&str>::new(), Some(">=3.10"));
+
+    let resolution = resolve_with_options(
+        vec![Requirement::any("lib")],
+        &index,
+        ResolveOptions {
+            python_version: Some("3.8.10".into()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let lib = resolution.packages.get("lib").expect("lib resolved");
+    assert_eq!(lib.version, "2.5.0");
+}
+
+#[tokio::test]
+async fn errors_when_no_version_supports_target_python() {
+    let mut index = InMemoryIndex::default();
+    index.add_with_requires_python("lib", "2.0.0", Vec::<&str>::new(), Some(">=3.10"));
+    index.add_with_requires_python("lib", "2.1.0", Vec::<&str>::new(), Some(">=3.11"));
+
+    let err = resolve_with_options(
+        vec![Requirement::any("lib")],
+        &index,
+        ResolveOptions {
+            python_version: Some("3.8.10".into()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap_err();
+    match err {
+        ResolveError::PythonIncompatible(details) => {
+            assert_eq!(details.name, "lib");
+            assert_eq!(details.python_version, "3.8.10");
+            assert_eq!(details.rejected_version, "2.1.0");
+            assert_eq!(details.rejected_requires_python, ">=3.11");
+            assert_eq!(details.newest_compatible, None);
+        }
+        other => panic!("expected PythonIncompatible, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn python_incompatible_error_names_newest_compatible_release() {
+    let mut index = InMemoryIndex::default();
+    index.add_with_requires_python("lib", "1.13.1", Vec::<&str>::new(), Some(">=3.8"));
+    index.add_with_requires_python("lib", "2.0.0", Vec::<&str>::new(), Some(">=3.10"));
+
+    let err = resolve_with_options(
+        vec![Requirement::minimum("lib", "2.0.0")],
+        &index,
+        ResolveOptions {
+            python_version: Some("3.8.10".into()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap_err();
+    match err {
+        ResolveError::PythonIncompatible(details) => {
+            assert_eq!(
+                details.newest_compatible,
+                Some("1.13.1".to_string()),
+                "hint should name the newest release usable on the target Python"
+            );
+        }
+        other => panic!("expected PythonIncompatible, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn unparseable_requires_python_specs_are_lenient() {
+    let mut index = InMemoryIndex::default();
+    index.add_with_requires_python(
+        "lib",
+        "1.0.0",
+        Vec::<&str>::new(),
+        Some("!=3.0.*, >=2.7, not-a-spec"),
+    );
+
+    let resolution = resolve_with_options(
+        vec![Requirement::any("lib")],
+        &index,
+        ResolveOptions {
+            python_version: Some("3.9.18".into()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let lib = resolution.packages.get("lib").expect("lib resolved");
+    assert_eq!(
+        lib.version, "1.0.0",
+        "wildcard/unparseable parts must never reject a candidate"
     );
 }

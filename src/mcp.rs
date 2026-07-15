@@ -1510,6 +1510,7 @@ impl McpServer {
         // Opt-in to pre-release versions (mirrors the CLI `--pre` flag).
         let resolve_options = ResolveOptions {
             allow_prerelease: args.get("pre").and_then(|p| p.as_bool()).unwrap_or(false),
+            python_version: crate::commands::resolve_target_python_version(),
         };
 
         // Try to load index from common locations

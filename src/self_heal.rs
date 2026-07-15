@@ -136,6 +136,50 @@ pub fn diagnostics_for_resolve_error(
                 .with_context(json!({ "error": msg })),
             ]
         }
+        ResolveError::PythonIncompatible(details) => {
+            let crate::resolver::PythonIncompatibility {
+                name,
+                constraint,
+                python_version,
+                requested_by,
+                rejected_version,
+                rejected_requires_python,
+                newest_compatible,
+            } = details.as_ref();
+            let mut diags = Vec::new();
+            diags.push(
+                Diagnostic::error(format!(
+                    "Could not resolve dependencies: no version of {name} matching {constraint} \
+                     supports Python {python_version} ({name} {rejected_version} requires \
+                     Python {rejected_requires_python})"
+                ))
+                .with_code("E_RESOLVE_PYTHON_INCOMPATIBLE")
+                .with_suggestion(
+                    "Upgrade the target Python interpreter, or loosen the version constraint \
+                     to allow an older, compatible release.",
+                )
+                .with_context(json!({
+                    "name": name,
+                    "constraint": constraint,
+                    "python_version": python_version,
+                    "requested_by": requested_by,
+                    "rejected_version": rejected_version,
+                    "rejected_requires_python": rejected_requires_python,
+                    "newest_compatible": newest_compatible,
+                    "root_requirements": root_reqs,
+                })),
+            );
+            if let Some(newest) = newest_compatible {
+                diags.push(
+                    Diagnostic::hint(format!(
+                        "newest {name} release compatible with Python {python_version} is {newest}"
+                    ))
+                    .with_code("H_RESOLVE_PYTHON_NEWEST_COMPATIBLE")
+                    .with_context(json!({ "name": name, "version": newest })),
+                );
+            }
+            diags
+        }
     }
 }
 

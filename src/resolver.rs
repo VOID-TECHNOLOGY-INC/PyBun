@@ -340,6 +340,10 @@ pub struct ResolvedPackage {
     pub dependencies: Vec<Requirement>,
     pub source: Option<PackageSource>,
     pub artifacts: PackageArtifacts,
+    /// PEP 440 specifier from the package's `requires-python` metadata
+    /// (PyPI `requires_python` / index fixture `requires_python`). `None`
+    /// means the package declares no interpreter constraint (Issue #342).
+    pub requires_python: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -610,12 +614,35 @@ pub struct PrereleaseFallback {
 }
 
 /// Options controlling dependency resolution behavior.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ResolveOptions {
     /// Allow pre-release/dev versions to be selected for every package
     /// (CLI `--pre` / MCP `pre`). Defaults to `false`, matching the PEP 440
     /// rule that pre-releases are excluded unless opted in (Issue #341).
     pub allow_prerelease: bool,
+    /// Python version of the resolution target interpreter (e.g. `3.9.18`).
+    /// When set, candidates whose `requires-python` specifier does not match
+    /// are skipped during selection; `None` disables the filter (Issue #342).
+    pub python_version: Option<String>,
+}
+
+/// Report whether a `requires-python` specifier admits `python_version`.
+///
+/// Comma-separated PEP 440 clauses are all required to match. Clauses this
+/// resolver cannot evaluate — wildcards (`!=3.0.*`) or otherwise unparseable
+/// parts — are treated as satisfied, so imperfect metadata can only ever
+/// widen the candidate set, never wrongly exclude a version (Issue #342).
+pub fn requires_python_allows(requires_python: &str, python_version: &str) -> bool {
+    requires_python.split(',').all(|part| {
+        let part = part.trim();
+        if part.is_empty() || part.contains('*') {
+            return true;
+        }
+        match parse_version_spec(part) {
+            Ok(spec) => spec.matches(python_version),
+            Err(_) => true,
+        }
+    })
 }
 
 /// Report whether `version` is a PEP 440 pre-release or dev release.
@@ -778,6 +805,30 @@ pub enum ResolveError {
     },
     #[error("io error: {0}")]
     Io(String),
+    #[error(
+        "no version of {} matching {} supports Python {} (newest matching release {} requires Python {})",
+        .0.name, .0.constraint, .0.python_version, .0.rejected_version, .0.rejected_requires_python
+    )]
+    PythonIncompatible(Box<PythonIncompatibility>),
+}
+
+/// Details of a `requires-python` resolution failure (Issue #342). Boxed in
+/// [`ResolveError::PythonIncompatible`] to keep the error type small.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PythonIncompatibility {
+    pub name: String,
+    pub constraint: String,
+    /// The resolution target interpreter version the candidates were
+    /// checked against.
+    pub python_version: String,
+    pub requested_by: Option<String>,
+    /// Highest version that satisfied the version constraints but was
+    /// rejected by its `requires-python` specifier.
+    pub rejected_version: String,
+    pub rejected_requires_python: String,
+    /// Newest release (ignoring the version constraints) that does support
+    /// the target Python, for the diagnostic hint.
+    pub newest_compatible: Option<String>,
 }
 
 pub trait PackageIndex {
@@ -933,6 +984,7 @@ pub async fn resolve_with_options(
                     &candidates,
                     requested_by.as_deref(),
                     options.allow_prerelease,
+                    options.python_version.as_deref(),
                 ) {
                     batch_resolved.insert(req.name.clone(), pkg.clone());
                     fetch_events.push(FetchEvent {
@@ -972,6 +1024,7 @@ pub async fn resolve_with_options(
                 candidates,
                 requested_by.as_deref(),
                 options.allow_prerelease,
+                options.python_version.as_deref(),
             )?;
 
             batch_resolved.insert(req.name.clone(), pkg.clone());
@@ -1080,11 +1133,28 @@ fn select_with_constraints(
     candidates: &[ResolvedPackage],
     requested_by: Option<&str>,
     allow_prerelease: bool,
+    python_version: Option<&str>,
 ) -> Result<ResolvedPackage, ResolveError> {
     let constraints = reqs.get(name).cloned().unwrap_or_default();
-    let satisfying: Vec<&ResolvedPackage> = candidates
+    let matching: Vec<&ResolvedPackage> = candidates
         .iter()
         .filter(|pkg| constraints.iter().all(|r| r.is_satisfied_by(&pkg.version)))
+        .collect();
+
+    // Drop candidates whose `requires-python` metadata excludes the
+    // resolution target interpreter (Issue #342). Packages without the
+    // metadata are always kept.
+    let python_compatible = |pkg: &ResolvedPackage| {
+        python_version.is_none_or(|py| {
+            pkg.requires_python
+                .as_deref()
+                .is_none_or(|spec| requires_python_allows(spec, py))
+        })
+    };
+    let satisfying: Vec<&ResolvedPackage> = matching
+        .iter()
+        .copied()
+        .filter(|pkg| python_compatible(pkg))
         .collect();
 
     // PEP 440: pre-release/dev versions are excluded by default. They are
@@ -1111,24 +1181,55 @@ fn select_with_constraints(
     .copied();
 
     if let Some(pkg) = candidate {
-        Ok(pkg.clone())
-    } else {
-        let constraint_display = if constraints.is_empty() {
-            "*".to_string()
-        } else {
-            constraints
-                .iter()
-                .map(|r| r.constraint_display())
-                .collect::<Vec<_>>()
-                .join(" & ")
-        };
-        Err(ResolveError::Missing {
-            name: name.to_string(),
-            constraint: constraint_display,
-            requested_by: requested_by.map(ToString::to_string),
-            available_versions: candidates.iter().map(|p| p.version.clone()).collect(),
-        })
+        return Ok(pkg.clone());
     }
+
+    let constraint_display = if constraints.is_empty() {
+        "*".to_string()
+    } else {
+        constraints
+            .iter()
+            .map(|r| r.constraint_display())
+            .collect::<Vec<_>>()
+            .join(" & ")
+    };
+
+    // Versions matched the constraints but every one of them was rejected
+    // by `requires-python`: report the interpreter conflict, not a generic
+    // "missing" error (Issue #342).
+    if let (Some(py), Some(rejected)) = (
+        python_version,
+        matching
+            .iter()
+            .max_by(|a, b| version_cmp(&a.version, &b.version)),
+    ) {
+        let newest_compatible = candidates
+            .iter()
+            .filter(|pkg| python_compatible(pkg))
+            .max_by(|a, b| version_cmp(&a.version, &b.version))
+            .map(|pkg| pkg.version.clone());
+        return Err(ResolveError::PythonIncompatible(Box::new(
+            PythonIncompatibility {
+                name: name.to_string(),
+                constraint: constraint_display,
+                python_version: py.to_string(),
+                requested_by: requested_by.map(ToString::to_string),
+                rejected_version: rejected.version.clone(),
+                rejected_requires_python: rejected
+                    .requires_python
+                    .clone()
+                    .unwrap_or_else(|| "*".to_string()),
+                newest_compatible,
+            },
+        )));
+    }
+
+    Err(ResolveError::Missing {
+        name: name.to_string(),
+        constraint: constraint_display,
+        requested_by: requested_by.map(ToString::to_string),
+        available_versions: candidates.iter().map(|p| p.version.clone()).collect(),
+    })
 }
 
 #[derive(Default)]
@@ -1149,12 +1250,36 @@ impl InMemoryIndex {
         self.add_with_artifacts(name, version, deps, artifacts);
     }
 
+    pub fn add_with_requires_python(
+        &mut self,
+        name: impl Into<String>,
+        version: impl Into<String>,
+        deps: impl IntoIterator<Item = impl AsRef<str>>,
+        requires_python: Option<&str>,
+    ) {
+        let name = name.into();
+        let version = version.into();
+        let artifacts = PackageArtifacts::universal(&name, &version);
+        self.add_entry(name, version, deps, artifacts, requires_python);
+    }
+
     pub fn add_with_artifacts(
         &mut self,
         name: impl Into<String>,
         version: impl Into<String>,
         deps: impl IntoIterator<Item = impl AsRef<str>>,
         artifacts: PackageArtifacts,
+    ) {
+        self.add_entry(name, version, deps, artifacts, None);
+    }
+
+    pub fn add_entry(
+        &mut self,
+        name: impl Into<String>,
+        version: impl Into<String>,
+        deps: impl IntoIterator<Item = impl AsRef<str>>,
+        artifacts: PackageArtifacts,
+        requires_python: Option<&str>,
     ) {
         let name = name.into();
         let version = version.into();
@@ -1168,6 +1293,7 @@ impl InMemoryIndex {
             dependencies: deps,
             source: None,
             artifacts,
+            requires_python: requires_python.map(ToString::to_string),
         };
         self.pkgs.insert((name, version), pkg);
     }
@@ -2454,6 +2580,7 @@ mod tests {
     #[test]
     fn select_artifact_prefers_cp311_wheel_over_cp310_on_python_311() {
         let pkg = ResolvedPackage {
+            requires_python: None,
             name: "pyarrow".to_string(),
             version: "14.0.0".to_string(),
             dependencies: vec![],
@@ -2491,6 +2618,7 @@ mod tests {
     #[test]
     fn select_artifact_prefers_cp310_wheel_over_cp311_on_python_310() {
         let pkg = ResolvedPackage {
+            requires_python: None,
             name: "pyarrow".to_string(),
             version: "14.0.0".to_string(),
             dependencies: vec![],
@@ -2529,6 +2657,7 @@ mod tests {
     fn select_artifact_excludes_incompatible_python_version() {
         // Only cp310 wheel available, but we're on cp311
         let pkg = ResolvedPackage {
+            requires_python: None,
             name: "pyarrow".to_string(),
             version: "14.0.0".to_string(),
             dependencies: vec![],
@@ -2557,6 +2686,7 @@ mod tests {
     fn select_artifact_uses_abi3_wheel_as_fallback() {
         // abi3 wheel available in addition to cp311
         let pkg = ResolvedPackage {
+            requires_python: None,
             name: "cryptography".to_string(),
             version: "41.0.0".to_string(),
             dependencies: vec![],
@@ -2601,6 +2731,7 @@ mod tests {
     #[test]
     fn select_artifact_py3_wheel_is_always_compatible() {
         let pkg = ResolvedPackage {
+            requires_python: None,
             name: "requests".to_string(),
             version: "2.28.0".to_string(),
             dependencies: vec![],
@@ -2711,6 +2842,7 @@ mod tests {
             &index,
             ResolveOptions {
                 allow_prerelease: true,
+                ..Default::default()
             },
         )
         .await
@@ -2867,5 +2999,27 @@ mod tests {
         assert!(!VersionSpec::Exact("1.2.3".to_string()).matches("1.2.3.4"));
         assert!(VersionSpec::NotEqual("1.2.3".to_string()).matches("1.2.3.4"));
         assert!(VersionSpec::Exact("1.2.3.0".to_string()).matches("1.2.3"));
+    }
+
+    #[test]
+    fn requires_python_allows_basic_specifiers() {
+        assert!(requires_python_allows(">=3.8", "3.9.18"));
+        assert!(!requires_python_allows(">=3.10", "3.9.18"));
+        assert!(requires_python_allows(">=3.8,<3.13", "3.12.1"));
+        assert!(!requires_python_allows(">=3.8,<3.13", "3.13.0"));
+        assert!(requires_python_allows("<=3.9", "3.9"));
+        assert!(!requires_python_allows("!=3.9", "3.9.0"));
+    }
+
+    #[test]
+    fn requires_python_allows_is_lenient_on_unsupported_clauses() {
+        // Wildcards are outside this resolver's specifier support: skip
+        // the clause rather than wrongly reject the candidate.
+        assert!(requires_python_allows("!=3.0.*, >=2.7", "3.9.18"));
+        // Unparseable clauses (bad metadata) must never exclude a version.
+        assert!(requires_python_allows("garbage", "3.9.18"));
+        assert!(requires_python_allows("", "3.9.18"));
+        // ...but valid clauses alongside them still apply.
+        assert!(!requires_python_allows("garbage, >=3.10", "3.9.18"));
     }
 }

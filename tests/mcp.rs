@@ -2352,3 +2352,59 @@ fn mcp_tools_call_resolve_pre_opts_in_to_prereleases() {
         stdout
     );
 }
+
+// =============================================================================
+// Issue #342: pybun_resolve must skip candidates whose requires-python
+// excludes the resolution target interpreter.
+// =============================================================================
+
+fn index_requires_python_fixture() -> std::path::PathBuf {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("manifest dir");
+    std::path::Path::new(&manifest_dir)
+        .join("tests")
+        .join("fixtures")
+        .join("index_requires_python.json")
+}
+
+#[test]
+fn mcp_tools_call_resolve_filters_by_requires_python() {
+    let temp = tempdir().unwrap();
+    let index = index_requires_python_fixture();
+
+    let mut child = pybun_bin()
+        .env("PYBUN_HOME", temp.path())
+        .env("PYBUN_PYPI_PYTHON_VERSION", "3.9.18")
+        .current_dir(temp.path())
+        .args(["mcp", "serve", "--stdio"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to start MCP server");
+
+    if let Some(mut stdin) = child.stdin.take() {
+        let init_req = r#"{"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0.1.0"}}}"#;
+        writeln!(stdin, "{}", init_req).ok();
+
+        let call_req = format!(
+            r#"{{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{{"name":"pybun_resolve","arguments":{{"requirements":["lib"],"index":"{}"}}}}}}"#,
+            index.display()
+        );
+        writeln!(stdin, "{}", call_req).ok();
+        stdin.flush().ok();
+    }
+
+    let output = child.wait_with_output().expect("failed to wait");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(
+        stdout.contains("1.13.1"),
+        "the newest Python-3.9-compatible release should be selected. Got: {}",
+        stdout
+    );
+    assert!(
+        !stdout.contains("\"2.0.0\""),
+        "lib 2.0.0 (requires-python >=3.10) must be skipped on Python 3.9. Got: {}",
+        stdout
+    );
+}

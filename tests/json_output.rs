@@ -578,3 +578,99 @@ fn install_with_pre_flag_does_not_emit_prerelease_diagnostic() {
         "explicit --pre opt-in must not produce the fallback warning: {diags:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Issue #342: requires-python metadata must filter candidates; when no
+// version supports the target Python the failure is a structured
+// E_RESOLVE_PYTHON_INCOMPATIBLE diagnostic, not a generic missing error.
+// ---------------------------------------------------------------------------
+
+fn index_requires_python_path() -> std::path::PathBuf {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("manifest dir");
+    std::path::Path::new(&manifest_dir)
+        .join("tests")
+        .join("fixtures")
+        .join("index_requires_python.json")
+}
+
+#[test]
+fn install_python_incompatible_outputs_structured_diagnostic() {
+    let temp = tempdir().unwrap();
+    let lock_path = temp.path().join("pybun.lockb");
+    let index = index_requires_python_path();
+
+    let output = bin()
+        .env("PYBUN_PYPI_PYTHON_VERSION", "3.9.18")
+        .args([
+            "install",
+            "--index",
+            index.to_str().unwrap(),
+            "--require",
+            "strictlib",
+            "--lock",
+            lock_path.to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .assert()
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+
+    let stdout = String::from_utf8(output).expect("utf8");
+    let parsed: Value = serde_json::from_str(&stdout).expect("json output");
+
+    assert_eq!(parsed["status"], "error");
+    let diags = parsed["diagnostics"].as_array().expect("diagnostics array");
+    let diag = diags
+        .iter()
+        .find(|d| d.get("code") == Some(&Value::from("E_RESOLVE_PYTHON_INCOMPATIBLE")))
+        .expect("expected E_RESOLVE_PYTHON_INCOMPATIBLE diagnostic");
+    let message = diag["message"].as_str().expect("message string");
+    assert!(
+        message.contains("strictlib") && message.contains("3.9.18") && message.contains(">=3.12"),
+        "diagnostic should name package, target Python, and the requires-python spec: {message}"
+    );
+    assert_eq!(diag["context"]["python_version"], "3.9.18");
+    assert_eq!(diag["context"]["rejected_version"], "3.0.0");
+    assert_eq!(diag["context"]["rejected_requires_python"], ">=3.12");
+}
+
+#[test]
+fn install_python_incompatible_hint_names_newest_compatible_release() {
+    let temp = tempdir().unwrap();
+    let lock_path = temp.path().join("pybun.lockb");
+    let index = index_requires_python_path();
+
+    // lib>=2.0.0 forces the 3.10-only release while an older 3.8-compatible
+    // release exists: the hint should point at it.
+    let output = bin()
+        .env("PYBUN_PYPI_PYTHON_VERSION", "3.9.18")
+        .args([
+            "install",
+            "--index",
+            index.to_str().unwrap(),
+            "--require",
+            "lib>=2.0.0",
+            "--lock",
+            lock_path.to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .assert()
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+
+    let stdout = String::from_utf8(output).expect("utf8");
+    let parsed: Value = serde_json::from_str(&stdout).expect("json output");
+
+    let diags = parsed["diagnostics"].as_array().expect("diagnostics array");
+    let hint = diags
+        .iter()
+        .find(|d| d.get("code") == Some(&Value::from("H_RESOLVE_PYTHON_NEWEST_COMPATIBLE")))
+        .expect("expected H_RESOLVE_PYTHON_NEWEST_COMPATIBLE hint");
+    assert_eq!(hint["context"]["version"], "1.13.1");
+}
