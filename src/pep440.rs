@@ -131,12 +131,14 @@ impl Pep440Version {
             post = Some(num);
             s = rest;
         } else if let Some(rest) = s.strip_prefix('-') {
+            // Only an implicit post-release (`-N`) when digits follow the
+            // `-`; otherwise leave the `-` in place — it may be the
+            // separator of a dev segment (`1.0-dev-0`).
             let digits = leading_digits(rest);
-            if digits.is_empty() {
-                return None;
+            if !digits.is_empty() {
+                post = Some(digits.parse().ok()?);
+                s = &rest[digits.len()..];
             }
-            post = Some(digits.parse().ok()?);
-            s = &rest[digits.len()..];
         }
 
         // Dev release: `[.-_]? dev [.-_]? N?`
@@ -189,6 +191,15 @@ impl Pep440Version {
     /// True when the version carries a local version label (`+...`).
     pub fn has_local(&self) -> bool {
         !self.local.is_empty()
+    }
+
+    /// Compare only the epoch and (zero-padded) release segments — the
+    /// "base version" comparison from pypa/packaging, ignoring
+    /// pre/post/dev segments and local labels. Used by the `<`/`>`
+    /// exclusive ordered comparisons to decide whether a candidate is a
+    /// pre-/post-release *of the specified version* (Issue #350).
+    pub fn base_cmp(&self, other: &Self) -> Ordering {
+        self.cmp_release(other)
     }
 
     /// Compare ignoring local version labels — the "public" comparison
@@ -420,6 +431,18 @@ mod tests {
                 "{bad:?} should not parse"
             );
         }
+    }
+
+    #[test]
+    fn dash_separated_dev_segment_parses() {
+        // Found by the Issue #350 property suite: a `-` that is not an
+        // implicit post-release (`-N`) must still be usable as the
+        // separator of the following dev segment.
+        assert_eq!(v("1.0-dev-0"), v("1.0.dev0"));
+        assert_eq!(v("1.0-dev"), v("1.0.dev0"));
+        assert_eq!(v("0-dev-0"), v("0.dev0"));
+        // A trailing `-` with nothing after it is still invalid.
+        assert!(Pep440Version::parse("1.0-").is_none());
     }
 
     #[test]

@@ -55,13 +55,11 @@ impl VersionSpec {
         match self {
             VersionSpec::Exact(v) => versions_equal(version, v),
             VersionSpec::Minimum(min) => compare_versions(version, min) != Ordering::Less,
-            VersionSpec::MinimumExclusive(min) => {
-                compare_versions(version, min) == Ordering::Greater
-            }
+            VersionSpec::MinimumExclusive(min) => exclusive_greater_than(version, min),
             VersionSpec::MaximumInclusive(max) => {
                 compare_versions(version, max) != Ordering::Greater
             }
-            VersionSpec::Maximum(max) => compare_versions(version, max) == Ordering::Less,
+            VersionSpec::Maximum(max) => exclusive_less_than(version, max),
             VersionSpec::NotEqual(v) => !versions_equal(version, v),
             VersionSpec::Compatible(base) => is_compatible_release(version, base),
             VersionSpec::Any => true,
@@ -1439,6 +1437,54 @@ pub fn parse_version_relaxed(input: &str) -> Option<Version> {
 /// the specifier has no local version label, local labels on candidates are
 /// ignored (`==1.0` matches `1.0+cpu`); when it has one, the labels must
 /// match exactly (Issue #340).
+/// PEP 440 exclusive ordered comparison `>V` (Issue #350).
+///
+/// Beyond plain ordering, PEP 440 requires that `>V` "MUST NOT allow a
+/// post-release of the given version unless V itself is a post release" and
+/// "MUST NOT match a local version of the specified version". Falls back to
+/// plain ordering when either side is outside the PEP 440 grammar.
+fn exclusive_greater_than(candidate: &str, spec: &str) -> bool {
+    if compare_versions(candidate, spec) != Ordering::Greater {
+        return false;
+    }
+    let (Some(cand), Some(spec)) = (Pep440Version::parse(candidate), Pep440Version::parse(spec))
+    else {
+        return true;
+    };
+    // `2.0.post1` does not satisfy `>2.0` (but `2.1.post1` does, and any
+    // post-release satisfies `>2.0.post0`).
+    if cand.post.is_some() && spec.post.is_none() && cand.base_cmp(&spec) == Ordering::Equal {
+        return false;
+    }
+    // `2.0+local` does not satisfy `>2.0` (but `2.1+local` does).
+    if cand.has_local() && cand.public_cmp(&spec) == Ordering::Equal {
+        return false;
+    }
+    true
+}
+
+/// PEP 440 exclusive ordered comparison `<V` (Issue #350).
+///
+/// Beyond plain ordering, PEP 440 requires that `<V` "MUST NOT allow a
+/// pre-release of the specified version unless the specified version is
+/// itself a pre-release". Falls back to plain ordering when either side is
+/// outside the PEP 440 grammar.
+fn exclusive_less_than(candidate: &str, spec: &str) -> bool {
+    if compare_versions(candidate, spec) != Ordering::Less {
+        return false;
+    }
+    let (Some(cand), Some(spec)) = (Pep440Version::parse(candidate), Pep440Version::parse(spec))
+    else {
+        return true;
+    };
+    // `2.0rc1` / `2.0.dev1` do not satisfy `<2.0` (but `1.9rc1` does, and
+    // `3.0.0a7` satisfies `<3.0.0a8`).
+    if cand.is_prerelease() && !spec.is_prerelease() && cand.base_cmp(&spec) == Ordering::Equal {
+        return false;
+    }
+    true
+}
+
 fn versions_equal(candidate: &str, spec: &str) -> bool {
     if let (Some(cand), Some(spec)) = (Pep440Version::parse(candidate), Pep440Version::parse(spec))
     {
@@ -3026,6 +3072,48 @@ mod tests {
         // equality fix must not silently change that.
         assert!(!VersionSpec::Exact("1.4.*".to_string()).matches("1.4.2"));
         assert!(!VersionSpec::Exact("1.4.*".to_string()).matches("1.4.0"));
+    }
+
+    #[test]
+    fn exclusive_greater_than_excludes_posts_and_locals_of_spec_version() {
+        // PEP 440: `>V` must not match a post-release of V (unless V is
+        // itself a post-release) nor a local version of V (Issue #350).
+        let gt = |spec: &str, cand: &str| VersionSpec::MinimumExclusive(spec.into()).matches(cand);
+
+        assert!(!gt("2.0", "2.0.post1"));
+        assert!(!gt("2.0", "2.0+local"));
+        assert!(
+            gt("2.0", "2.1.post1"),
+            "post of a different release is fine"
+        );
+        assert!(
+            gt("2.0", "2.1+local"),
+            "local of a different release is fine"
+        );
+        assert!(
+            gt("2.0.post0", "2.0.post1"),
+            "spec itself is a post-release"
+        );
+        assert!(
+            gt("1.0.dev1", "1.0.dev2+local"),
+            "local whose public part exceeds the spec is fine"
+        );
+        // Outside the PEP 440 grammar: plain ordering only.
+        assert!(gt("not-a-version", "z-not-a-version"));
+    }
+
+    #[test]
+    fn exclusive_less_than_excludes_prereleases_of_spec_version() {
+        // PEP 440: `<V` must not match a pre-release of V unless V is
+        // itself a pre-release (Issue #350).
+        let lt = |spec: &str, cand: &str| VersionSpec::Maximum(spec.into()).matches(cand);
+
+        assert!(!lt("2.0", "2.0rc1"));
+        assert!(!lt("2.0", "2.0.dev1"));
+        assert!(!lt("2.0", "2.0a1.post1"));
+        assert!(lt("2.1", "2.0rc1"), "pre of a different release is fine");
+        assert!(lt("3.0.0a8", "3.0.0a7"), "spec itself is a pre-release");
+        assert!(lt("2.0", "1.9"));
     }
 
     #[test]
