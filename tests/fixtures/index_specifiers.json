@@ -88,5 +88,53 @@
     "version": "2.1.0",
     "dependencies": [],
     "wheels": [{"file": "lib-2.1.0-py3-none-any.whl", "hash": "sha256:lib210"}]
+  },
+  {
+    "name": "pep440-post",
+    "version": "1.0.0",
+    "dependencies": [],
+    "wheels": [{"file": "pep440-post-1.0.0-py3-none-any.whl", "hash": "sha256:pep440post100"}]
+  },
+  {
+    "name": "pep440-post",
+    "version": "1.0.0.post1",
+    "dependencies": [],
+    "wheels": [{"file": "pep440-post-1.0.0.post1-py3-none-any.whl", "hash": "sha256:pep440post100post1"}]
+  },
+  {
+    "name": "pep440-dev",
+    "version": "1.0.0",
+    "dependencies": [],
+    "wheels": [{"file": "pep440-dev-1.0.0-py3-none-any.whl", "hash": "sha256:pep440dev100"}]
+  },
+  {
+    "name": "pep440-dev",
+    "version": "1.1.0.dev1",
+    "dependencies": [],
+    "wheels": [{"file": "pep440-dev-1.1.0.dev1-py3-none-any.whl", "hash": "sha256:pep440dev110dev1"}]
+  },
+  {
+    "name": "pep440-epoch",
+    "version": "2.0.0",
+    "dependencies": [],
+    "wheels": [{"file": "pep440-epoch-2.0.0-py3-none-any.whl", "hash": "sha256:pep440epoch200"}]
+  },
+  {
+    "name": "pep440-epoch",
+    "version": "1!1.0.0",
+    "dependencies": [],
+    "wheels": [{"file": "pep440-epoch-1!1.0.0-py3-none-any.whl", "hash": "sha256:pep440epoch1e100"}]
+  },
+  {
+    "name": "pep440-local",
+    "version": "1.0.0",
+    "dependencies": [],
+    "wheels": [{"file": "pep440-local-1.0.0-py3-none-any.whl", "hash": "sha256:pep440local100"}]
+  },
+  {
+    "name": "pep440-local",
+    "version": "1.0.0+cpu",
+    "dependencies": [],
+    "wheels": [{"file": "pep440-local-1.0.0+cpu-py3-none-any.whl", "hash": "sha256:pep440local100cpu"}]
   }
 ]
