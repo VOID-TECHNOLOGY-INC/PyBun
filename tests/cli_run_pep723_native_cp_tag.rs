@@ -18,14 +18,20 @@
 //! `run_script` code under test a real reactor, which is representative of
 //! how it *is* reachable in-process (e.g. from a Tokio-hosted caller).
 //!
-//! This test is kept in its own file (a separate test binary) because it
-//! mutates process-global environment variables (`PYBUN_ENV`, `PATH`,
-//! `PYBUN_PEP723_BACKEND`, `PYBUN_PYPI_BASE_URL`, `PYBUN_PYPI_CACHE_DIR`,
-//! `PYBUN_HOME`) for the duration of the `execute()` call — isolating it from
-//! `tests/cli_run.rs`'s other tests (some of which rely on the real `uv`
-//! executable being reachable via the inherited PATH) avoids any risk of
-//! cross-test interference from `cargo test`'s default in-process test
-//! parallelism.
+//! ## Why the test re-executes its own test binary as a child process
+//!
+//! The `run_script` path under test reads its configuration from ambient
+//! environment variables (`PYBUN_ENV`, `PATH`, `PYBUN_PEP723_BACKEND`,
+//! `PYBUN_PYPI_BASE_URL`, `PYBUN_PYPI_CACHE_DIR`, `PYBUN_HOME`). Mutating
+//! those with `std::env::set_var` in the test process is a latent race with
+//! any other test thread in the same binary (Issue #349) — Rust 2024 made
+//! `set_var` unsafe for exactly this reason. Instead, the outer test spawns
+//! the current test binary again, selecting the `#[ignore]`d child test
+//! below, and passes the environment overrides per-child via
+//! `Command::env(...)`, which is race-free. The child runs `execute()`
+//! in-process under `#[tokio::test]` and never mutates any environment; the
+//! outer test owns the mock PyPI server and asserts on which wheels were
+//! downloaded after the child exits.
 
 use httpmock::prelude::*;
 use pybun::cli::{Cli, Commands, OutputFormat, ProgressMode, RunArgs};
@@ -102,44 +108,54 @@ fn fake_venv_reporting_version(root: &std::path::Path, version_line: &str) -> st
     venv_dir
 }
 
-/// RAII guard that sets an env var and restores its previous value (or
-/// removes it) on drop, so a panicking assertion never leaves this test's
-/// environment overrides behind for the process (relevant since we run other
-/// tests in this same file / share the process' env).
-struct EnvVarGuard {
-    key: &'static str,
-    previous: Option<String>,
-}
+/// Name of the env var the outer test uses to hand the PEP 723 script path
+/// to the child test process. Its presence also marks "running as the
+/// spawned child" — the child test skips itself when invoked any other way
+/// (e.g. a manual `cargo test -- --ignored`).
+const CHILD_SCRIPT_ENV: &str = "PYBUN_TEST_CP_TAG_SCRIPT";
 
-impl EnvVarGuard {
-    fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
-        let previous = std::env::var(key).ok();
-        // SAFETY: test-only, single-threaded w.r.t. these specific keys within this file.
-        unsafe { std::env::set_var(key, value) };
-        Self { key, previous }
-    }
-}
-
-impl EnvVarGuard {
-    fn unset(key: &'static str) -> Self {
-        let previous = std::env::var(key).ok();
-        // SAFETY: test-only, single-threaded w.r.t. these specific keys within this file.
-        unsafe { std::env::remove_var(key) };
-        Self { key, previous }
-    }
-}
-
-impl Drop for EnvVarGuard {
-    fn drop(&mut self) {
-        match &self.previous {
-            Some(v) => unsafe { std::env::set_var(self.key, v) },
-            None => unsafe { std::env::remove_var(self.key) },
-        }
-    }
-}
-
+/// Child half of the regression test: runs `pybun run` in-process against
+/// the environment prepared by the outer test. Never mutates process env —
+/// everything it needs was injected per-child by `Command::env(...)`.
 #[tokio::test]
-async fn run_pep723_native_installer_selects_wheel_for_target_venv_python_not_path_python() {
+#[ignore = "child process half of run_pep723_native_installer_selects_wheel_for_target_venv_python_not_path_python; not meaningful standalone"]
+async fn run_pep723_native_cp_tag_child() {
+    let Ok(script) = std::env::var(CHILD_SCRIPT_ENV) else {
+        eprintln!("skipping: {CHILD_SCRIPT_ENV} not set (only runs as a spawned child test)");
+        return;
+    };
+
+    let cli = Cli {
+        format: OutputFormat::Json,
+        progress: ProgressMode::Never,
+        no_progress: true,
+        command: Commands::Run(RunArgs {
+            target: Some(script),
+            code: None,
+            sandbox: false,
+            allow_network: false,
+            allow_read: Vec::new(),
+            allow_write: Vec::new(),
+            allow_env: Vec::new(),
+            sandbox_timeout: DEFAULT_SANDBOX_TIMEOUT_SECS,
+            sandbox_memory: 0,
+            sandbox_cpu: 0,
+            profile: "dev".to_string(),
+            passthrough: Vec::new(),
+        }),
+    };
+
+    let result = execute(cli).await;
+
+    assert!(
+        result.is_ok(),
+        "pybun run (native PEP 723 installer) failed: {:?}",
+        result.err()
+    );
+}
+
+#[test]
+fn run_pep723_native_installer_selects_wheel_for_target_venv_python_not_path_python() {
     // Pick a fake target-venv Python version guaranteed to differ from
     // whatever python3/python resolves on PATH in this test environment.
     let real_version = real_path_python_version();
@@ -248,42 +264,36 @@ print("hello")
 "#;
     fs::write(&script, content).unwrap();
 
-    // Scope all env var overrides with RAII guards so they're restored even
-    // if an assertion below panics.
-    let _path_guard = EnvVarGuard::set("PATH", &filtered_path);
-    let _env_guard = EnvVarGuard::set("PYBUN_ENV", &venv);
-    let _force_cp_tag_guard = EnvVarGuard::unset("PYBUN_FORCE_CP_TAG");
-    let _backend_guard = EnvVarGuard::set("PYBUN_PEP723_BACKEND", "pybun");
-    let _base_url_guard = EnvVarGuard::set("PYBUN_PYPI_BASE_URL", &base);
-    let _pypi_cache_guard = EnvVarGuard::set("PYBUN_PYPI_CACHE_DIR", pypi_cache.path());
-    let _home_guard = EnvVarGuard::set("PYBUN_HOME", pybun_home.path());
-
-    let cli = Cli {
-        format: OutputFormat::Json,
-        progress: ProgressMode::Never,
-        no_progress: true,
-        command: Commands::Run(RunArgs {
-            target: Some(script.to_string_lossy().to_string()),
-            code: None,
-            sandbox: false,
-            allow_network: false,
-            allow_read: Vec::new(),
-            allow_write: Vec::new(),
-            allow_env: Vec::new(),
-            sandbox_timeout: DEFAULT_SANDBOX_TIMEOUT_SECS,
-            sandbox_memory: 0,
-            sandbox_cpu: 0,
-            profile: "dev".to_string(),
-            passthrough: Vec::new(),
-        }),
-    };
-
-    let result = execute(cli).await;
+    // Re-execute this test binary, selecting only the `#[ignore]`d child
+    // test above, with all environment overrides applied per-child via
+    // `Command::env(...)`. Child-process env is isolated, so no other test
+    // thread in this process can ever observe these values (Issue #349).
+    let exe = std::env::current_exe().expect("locate current test binary");
+    let output = std::process::Command::new(exe)
+        .args([
+            "run_pep723_native_cp_tag_child",
+            "--exact",
+            "--ignored",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env("PATH", &filtered_path)
+        .env("PYBUN_ENV", &venv)
+        .env_remove("PYBUN_FORCE_CP_TAG")
+        .env("PYBUN_PEP723_BACKEND", "pybun")
+        .env("PYBUN_PYPI_BASE_URL", &base)
+        .env("PYBUN_PYPI_CACHE_DIR", pypi_cache.path())
+        .env("PYBUN_HOME", pybun_home.path())
+        .env(CHILD_SCRIPT_ENV, &script)
+        .output()
+        .expect("spawn child test process");
 
     assert!(
-        result.is_ok(),
-        "pybun run (native PEP 723 installer) failed: {:?}",
-        result.err()
+        output.status.success(),
+        "child test process failed (status {:?})\n--- stdout ---\n{}\n--- stderr ---\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
     );
 
     // Regression check for Issue #294: the wheel matching the *target venv's*

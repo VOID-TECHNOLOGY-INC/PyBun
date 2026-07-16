@@ -198,14 +198,10 @@ async fn concurrent_metadata_fetch_is_deduped() {
             .body(meta_body.clone());
     });
 
-    let prev_base = std::env::var("PYBUN_PYPI_BASE_URL").ok();
-    let prev_cache = std::env::var("PYBUN_PYPI_CACHE_DIR").ok();
-    unsafe {
-        std::env::set_var("PYBUN_PYPI_BASE_URL", &base);
-        std::env::set_var("PYBUN_PYPI_CACHE_DIR", cache_dir.to_str().unwrap());
-    }
-
-    let client = PyPiClient::from_env(false).unwrap();
+    // Explicit configuration instead of PYBUN_PYPI_BASE_URL /
+    // PYBUN_PYPI_CACHE_DIR: mutating process-wide env vars here races with
+    // the other tests in this binary running on parallel threads (Issue #349).
+    let client = PyPiClient::with_config(&base, cache_dir, false).unwrap();
     let index = PyPiIndex::new(client);
 
     let fut1 = index.get("app", "1.0.0");
@@ -218,19 +214,6 @@ async fn concurrent_metadata_fetch_is_deduped() {
 
     assert_eq!(project_mock.calls(), 1);
     assert_eq!(meta_mock.calls(), 1);
-
-    unsafe {
-        if let Some(value) = prev_base {
-            std::env::set_var("PYBUN_PYPI_BASE_URL", value);
-        } else {
-            std::env::remove_var("PYBUN_PYPI_BASE_URL");
-        }
-        if let Some(value) = prev_cache {
-            std::env::set_var("PYBUN_PYPI_CACHE_DIR", value);
-        } else {
-            std::env::remove_var("PYBUN_PYPI_CACHE_DIR");
-        }
-    }
 }
 
 #[test]

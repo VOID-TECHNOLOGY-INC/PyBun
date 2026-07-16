@@ -153,12 +153,15 @@ fn resolve_pypi_cache_dir(
 }
 
 impl PyPiClient {
-    pub fn from_env(offline: bool) -> Result<Self, PyPiError> {
-        let base =
-            std::env::var("PYBUN_PYPI_BASE_URL").unwrap_or_else(|_| "https://pypi.org".to_string());
-        let normalized = normalize_base(&base)?;
-        let cache_dir_override = std::env::var("PYBUN_PYPI_CACHE_DIR").ok();
-        let cache_dir = resolve_pypi_cache_dir(cache_dir_override.as_deref(), dirs::cache_dir())?;
+    /// Build a client from explicit configuration. This is the primary
+    /// constructor: it takes the base URL and cache directory as arguments so
+    /// callers (and tests) never depend on ambient process environment.
+    pub fn with_config(
+        base_url: &str,
+        cache_dir: PathBuf,
+        offline: bool,
+    ) -> Result<Self, PyPiError> {
+        let normalized = normalize_base(base_url)?;
         Ok(Self {
             base: normalized,
             cache_dir,
@@ -168,6 +171,16 @@ impl PyPiClient {
             deps_once: Arc::new(OnceMap::new()),
             stale_cache_notices: Arc::new(Mutex::new(Vec::new())),
         })
+    }
+
+    /// Production wrapper over [`PyPiClient::with_config`] that reads
+    /// `PYBUN_PYPI_BASE_URL` / `PYBUN_PYPI_CACHE_DIR` from the environment.
+    pub fn from_env(offline: bool) -> Result<Self, PyPiError> {
+        let base =
+            std::env::var("PYBUN_PYPI_BASE_URL").unwrap_or_else(|_| "https://pypi.org".to_string());
+        let cache_dir_override = std::env::var("PYBUN_PYPI_CACHE_DIR").ok();
+        let cache_dir = resolve_pypi_cache_dir(cache_dir_override.as_deref(), dirs::cache_dir())?;
+        Self::with_config(&base, cache_dir, offline)
     }
 
     /// Drain and return any notices about stale/corrupt cache entries that
@@ -1021,6 +1034,29 @@ mod tests {
         let policy = HttpCachePolicy::from_headers(&headers, 100);
         assert!(policy.is_fresh(160));
         assert!(!policy.is_fresh(161));
+    }
+
+    #[test]
+    fn with_config_uses_explicit_base_and_cache_dir() {
+        let cache_dir = PathBuf::from("/tmp/explicit-pypi-cache");
+
+        let client =
+            PyPiClient::with_config("http://127.0.0.1:9999", cache_dir.clone(), true).unwrap();
+
+        assert_eq!(client.base.as_str(), "http://127.0.0.1:9999/");
+        assert_eq!(client.cache_dir, cache_dir);
+        assert!(client.offline);
+    }
+
+    #[test]
+    fn with_config_rejects_invalid_base_url() {
+        let result = PyPiClient::with_config("not a url", PathBuf::from("/tmp/cache"), false);
+
+        match result {
+            Err(PyPiError::InvalidBaseUrl(_)) => {}
+            Err(other) => panic!("expected InvalidBaseUrl, got {other}"),
+            Ok(_) => panic!("invalid base URL must be rejected"),
+        }
     }
 
     #[test]
