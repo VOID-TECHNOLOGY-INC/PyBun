@@ -85,14 +85,14 @@ fn corpus_ordering_is_reflexive() {
     }
 }
 
-/// Each `(specifier, version, expected)` triple from the pypa/packaging
-/// match table must agree with the resolver's parse + match pipeline.
-#[test]
-fn specifier_table_matches_reference() {
-    let rows = fixture_lines("pep440_specifiers.tsv");
+/// Run every `(specifier, version, expected)` triple of a fixture table
+/// through the resolver's real parse + match pipeline, collecting
+/// disagreements.
+fn check_specifier_table(fixture: &str, min_rows: usize) {
+    let rows = fixture_lines(fixture);
     assert!(
-        rows.len() > 100,
-        "specifier table unexpectedly small ({} rows) — fixture damaged?",
+        rows.len() > min_rows,
+        "{fixture} unexpectedly small ({} rows) — fixture damaged?",
         rows.len()
     );
 
@@ -121,8 +121,25 @@ fn specifier_table_matches_reference() {
     }
     assert!(
         failures.is_empty(),
-        "{} specifier disagreements with the pypa/packaging table:\n{}",
+        "{} specifier disagreements with {fixture}:\n{}",
         failures.len(),
         failures.join("\n")
     );
+}
+
+/// Each triple from the hand-written pypa/packaging match table must agree
+/// with the resolver.
+#[test]
+fn specifier_table_matches_reference() {
+    check_specifier_table("pep440_specifiers.tsv", 100);
+}
+
+/// Each triple from the generated exclusive-comparison cross-product table
+/// (ground truth: pypa/packaging 26.2, see the fixture header) must agree
+/// with the resolver. This covers the `>`/`<` exclusion-rule combinations
+/// the hand-written table misses (differing pre-release phases, posts of
+/// pre-releases, dev-of-post specs).
+#[test]
+fn generated_exclusive_comparison_table_matches_reference() {
+    check_specifier_table("pep440_specifiers_generated.tsv", 800);
 }

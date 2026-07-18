@@ -7,7 +7,7 @@
 //! invariants that hand-picked example tests structurally cannot cover.
 
 use proptest::prelude::*;
-use pybun::pep440::Pep440Version;
+use pybun::pep440::{LocalSegment, Pep440Version};
 use pybun::resolver::{VersionSpec, compare_versions};
 use std::cmp::Ordering;
 
@@ -154,7 +154,15 @@ proptest! {
         prop_assert_eq!(parsed.pre.map(|(ph, n)| (ph as u8, n)), p.2);
         prop_assert_eq!(parsed.post, p.3);
         prop_assert_eq!(parsed.dev, p.4);
-        prop_assert_eq!(parsed.local.len(), p.5.len());
+        let expected_local: Vec<LocalSegment> = p
+            .5
+            .iter()
+            .map(|seg| match seg.parse::<u64>() {
+                Ok(n) => LocalSegment::Num(n),
+                Err(_) => LocalSegment::Alpha(seg.clone()),
+            })
+            .collect();
+        prop_assert_eq!(&parsed.local, &expected_local);
         prop_assert_eq!(
             parsed.is_prerelease(),
             p.2.is_some() || p.4.is_some(),

@@ -54,11 +54,9 @@ impl VersionSpec {
     pub fn matches(&self, version: &str) -> bool {
         match self {
             VersionSpec::Exact(v) => versions_equal(version, v),
-            VersionSpec::Minimum(min) => compare_versions(version, min) != Ordering::Less,
+            VersionSpec::Minimum(min) => inclusive_greater_equal(version, min),
             VersionSpec::MinimumExclusive(min) => exclusive_greater_than(version, min),
-            VersionSpec::MaximumInclusive(max) => {
-                compare_versions(version, max) != Ordering::Greater
-            }
+            VersionSpec::MaximumInclusive(max) => inclusive_less_equal(version, max),
             VersionSpec::Maximum(max) => exclusive_less_than(version, max),
             VersionSpec::NotEqual(v) => !versions_equal(version, v),
             VersionSpec::Compatible(base) => is_compatible_release(version, base),
@@ -1441,8 +1439,13 @@ pub fn parse_version_relaxed(input: &str) -> Option<Version> {
 ///
 /// Beyond plain ordering, PEP 440 requires that `>V` "MUST NOT allow a
 /// post-release of the given version unless V itself is a post release" and
-/// "MUST NOT match a local version of the specified version". Falls back to
-/// plain ordering when either side is outside the PEP 440 grammar.
+/// "MUST NOT match a local version of the specified version". Semantics
+/// verified against pypa/packaging 26.2 (see
+/// `tests/fixtures/pep440_specifiers_generated.tsv`): "post-release of V"
+/// means the candidate's *post base* — epoch, release, and pre-release
+/// segment — is exactly V, so `>1.0a1` still admits `1.0.post1` and
+/// `1.0b1.post1`. Falls back to plain ordering when either side is outside
+/// the PEP 440 grammar.
 fn exclusive_greater_than(candidate: &str, spec: &str) -> bool {
     if compare_versions(candidate, spec) != Ordering::Greater {
         return false;
@@ -1451,13 +1454,22 @@ fn exclusive_greater_than(candidate: &str, spec: &str) -> bool {
     else {
         return true;
     };
-    // `2.0.post1` does not satisfy `>2.0` (but `2.1.post1` does, and any
-    // post-release satisfies `>2.0.post0`).
-    if cand.post.is_some() && spec.post.is_none() && cand.base_cmp(&spec) == Ordering::Equal {
+    // `2.0.post1` does not satisfy `>2.0`, but `2.1.post1` / `1.0b1.post1`
+    // vs `>1.0a1` do; any post-release satisfies `>2.0.post0`, and a spec
+    // carrying dev/local segments is not a bare post base, so it excludes
+    // nothing.
+    if cand.post.is_some()
+        && spec.post.is_none()
+        && spec.dev.is_none()
+        && !spec.has_local()
+        && cand.pre == spec.pre
+        && cand.base_cmp(&spec) == Ordering::Equal
+    {
         return false;
     }
-    // `2.0+local` does not satisfy `>2.0` (but `2.1+local` does).
-    if cand.has_local() && cand.public_cmp(&spec) == Ordering::Equal {
+    // `2.0+local` does not satisfy `>2.0` (but `2.1+local` does, and a
+    // spec that itself carries a local label excludes nothing).
+    if cand.has_local() && !spec.has_local() && cand.public_cmp(&spec) == Ordering::Equal {
         return false;
     }
     true
@@ -1467,8 +1479,13 @@ fn exclusive_greater_than(candidate: &str, spec: &str) -> bool {
 ///
 /// Beyond plain ordering, PEP 440 requires that `<V` "MUST NOT allow a
 /// pre-release of the specified version unless the specified version is
-/// itself a pre-release". Falls back to plain ordering when either side is
-/// outside the PEP 440 grammar.
+/// itself a pre-release". Semantics verified against pypa/packaging 26.2:
+/// the excluded region is every pre-release at or above V's *earliest
+/// pre-release* (V with a `.dev0` segment appended and local label
+/// stripped) — so `2.0rc1` and `2.0.dev1` do not satisfy `<2.0`, while
+/// `2.0a1` still satisfies `<2.0.post1` and `1.9rc1` satisfies `<2.0`.
+/// Falls back to plain ordering when either side is outside the PEP 440
+/// grammar.
 fn exclusive_less_than(candidate: &str, spec: &str) -> bool {
     if compare_versions(candidate, spec) != Ordering::Less {
         return false;
@@ -1477,12 +1494,40 @@ fn exclusive_less_than(candidate: &str, spec: &str) -> bool {
     else {
         return true;
     };
-    // `2.0rc1` / `2.0.dev1` do not satisfy `<2.0` (but `1.9rc1` does, and
-    // `3.0.0a7` satisfies `<3.0.0a8`).
-    if cand.is_prerelease() && !spec.is_prerelease() && cand.base_cmp(&spec) == Ordering::Equal {
-        return false;
+    // Final/post-release candidates below V are always fine, and a spec
+    // that is itself a pre-release excludes nothing (`3.0.0a7` satisfies
+    // `<3.0.0a8`).
+    if !cand.is_prerelease() || spec.is_prerelease() {
+        return true;
     }
-    true
+    let mut earliest_prerelease = spec.clone();
+    earliest_prerelease.dev = Some(0);
+    earliest_prerelease.local = Vec::new();
+    cand.cmp(&earliest_prerelease) == Ordering::Less
+}
+
+/// PEP 440 inclusive ordered comparison `>=V` (Issue #350): the candidate's
+/// *public* version is compared, so local labels never affect the outcome.
+/// Falls back to plain ordering outside the PEP 440 grammar.
+fn inclusive_greater_equal(candidate: &str, spec: &str) -> bool {
+    if let (Some(cand), Some(spec)) = (Pep440Version::parse(candidate), Pep440Version::parse(spec))
+    {
+        cand.public_cmp(&spec) != Ordering::Less
+    } else {
+        compare_versions(candidate, spec) != Ordering::Less
+    }
+}
+
+/// PEP 440 inclusive ordered comparison `<=V` (Issue #350): the candidate's
+/// *public* version is compared, so `<=2` matches `2.0+local`. Falls back
+/// to plain ordering outside the PEP 440 grammar.
+fn inclusive_less_equal(candidate: &str, spec: &str) -> bool {
+    if let (Some(cand), Some(spec)) = (Pep440Version::parse(candidate), Pep440Version::parse(spec))
+    {
+        cand.public_cmp(&spec) != Ordering::Greater
+    } else {
+        compare_versions(candidate, spec) != Ordering::Greater
+    }
 }
 
 fn versions_equal(candidate: &str, spec: &str) -> bool {
@@ -3098,6 +3143,20 @@ mod tests {
             gt("1.0.dev1", "1.0.dev2+local"),
             "local whose public part exceeds the spec is fine"
         );
+        // The excluded "post-release of V" region is keyed on the
+        // candidate's post base (epoch/release/pre), verified against
+        // pypa/packaging 26.2 — a post of a *different* pre-release phase
+        // (or of the final release) is a legitimate match.
+        assert!(gt("1.0a1", "1.0b1.post1"));
+        assert!(gt("1.0a1", "1.0.post1"));
+        assert!(gt("1.0.dev1", "1.0.post1"), "dev spec is not a post base");
+        assert!(
+            !gt("1.0a1", "1.0a1.post1"),
+            "post of exactly the spec'd pre"
+        );
+        // A spec carrying its own local label (lenient parse; the PEP 440
+        // grammar disallows it) never triggers the local exclusion.
+        assert!(gt("2.0+abc", "2.0+xyz"));
         // Outside the PEP 440 grammar: plain ordering only.
         assert!(gt("not-a-version", "z-not-a-version"));
     }
@@ -3114,6 +3173,28 @@ mod tests {
         assert!(lt("2.1", "2.0rc1"), "pre of a different release is fine");
         assert!(lt("3.0.0a8", "3.0.0a7"), "spec itself is a pre-release");
         assert!(lt("2.0", "1.9"));
+        // The excluded region starts at V's earliest pre-release (V.dev0),
+        // verified against pypa/packaging 26.2: pre-releases of the *base*
+        // release stay outside `V.postN`'s exclusion window.
+        assert!(lt("2.0.post1", "2.0a1"));
+        assert!(lt("2.0.post1", "2.0.dev1"));
+        assert!(!lt("2.0.post1", "2.0.post1.dev1"), "dev of exactly V.post1");
+        assert!(lt("1.0.dev5", "1.0.dev3"), "spec itself is a pre-release");
+    }
+
+    #[test]
+    fn inclusive_comparisons_ignore_candidate_local_labels() {
+        // Verified against pypa/packaging 26.2: `>=`/`<=` compare the
+        // candidate's public version, so local labels never flip the
+        // outcome at the boundary.
+        let le = |spec: &str, cand: &str| VersionSpec::MaximumInclusive(spec.into()).matches(cand);
+        let ge = |spec: &str, cand: &str| VersionSpec::Minimum(spec.into()).matches(cand);
+
+        assert!(le("2", "2.0+local"), "<=2 must match 2.0+local");
+        assert!(le("2.0.post1", "2.0.post1+local"));
+        assert!(!le("2", "2.0.post1+local"));
+        assert!(ge("2", "2.0+local"));
+        assert!(!ge("2.1", "2.0+local"));
     }
 
     #[test]
