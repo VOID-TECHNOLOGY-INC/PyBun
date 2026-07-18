@@ -201,9 +201,11 @@ async fn relaxed_semver_handles_two_segment_requirement() {
 
 #[tokio::test]
 async fn pre_release_treated_as_less_than_final() {
-    // 2.4.0rc1 orders below 2.4, so it satisfies `lib<2.4` — but PEP 440
-    // excludes pre-releases from selection by default (Issue #341), so the
-    // stable 2.3.5 wins unless the caller opts in.
+    // 2.4.0rc1 orders below 2.4 — but PEP 440's exclusive ordered comparison
+    // says `<2.4` must not match a pre-release *of 2.4* (Issue #350), and
+    // pre-releases are excluded from selection by default anyway (Issue
+    // #341), so the stable 2.3.5 wins. Even with --pre, `<2.4` still rejects
+    // 2.4.0rc1 (pip behaves the same way).
     let mut index = InMemoryIndex::default();
     index.add("root", "1.0.0", ["lib<2.4"]);
     index.add("lib", "2.4.0rc1", Vec::<&str>::new());
@@ -227,8 +229,41 @@ async fn pre_release_treated_as_less_than_final() {
     .unwrap();
     let lib = resolution.packages.get("lib").expect("lib resolved");
     assert_eq!(
-        lib.version, "2.4.0rc1",
-        "with --pre the pre-release still orders below 2.4 and wins over 2.3.5"
+        lib.version, "2.3.5",
+        "even with --pre, `<2.4` must not match 2.4.0rc1 (a pre-release of 2.4, \
+         per PEP 440 exclusive ordered comparison)"
+    );
+}
+
+#[tokio::test]
+async fn pre_release_of_earlier_version_wins_with_opt_in() {
+    // With --pre, a pre-release that is *not* of the spec'd version is a
+    // legitimate candidate for `<2.4` and outranks the older stable.
+    let mut index = InMemoryIndex::default();
+    index.add("root", "1.0.0", ["lib<2.4"]);
+    index.add("lib", "2.3.9rc1", Vec::<&str>::new());
+    index.add("lib", "2.3.5", Vec::<&str>::new());
+
+    let resolution = resolve(vec![Requirement::exact("root", "1.0.0")], &index)
+        .await
+        .unwrap();
+    let lib = resolution.packages.get("lib").expect("lib resolved");
+    assert_eq!(lib.version, "2.3.5", "pre-releases excluded by default");
+
+    let resolution = resolve_with_options(
+        vec![Requirement::exact("root", "1.0.0")],
+        &index,
+        ResolveOptions {
+            allow_prerelease: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let lib = resolution.packages.get("lib").expect("lib resolved");
+    assert_eq!(
+        lib.version, "2.3.9rc1",
+        "with --pre a pre-release below the bound (and not of 2.4 itself) wins"
     );
 }
 

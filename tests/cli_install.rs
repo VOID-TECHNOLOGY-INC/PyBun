@@ -999,3 +999,106 @@ fn install_keeps_newest_version_when_target_python_matches() {
     let lib = lock.packages.get("lib").expect("lib entry");
     assert_eq!(lib.version, "2.0.0");
 }
+
+// =============================================================================
+// E2E tests for PEP 440 non-trivial version forms — post/dev/epoch/local
+// (Issue #350: exercise the full resolve path, not just the unit comparator)
+// =============================================================================
+
+fn install_from_specifier_index(require: &str, lock_path: &std::path::Path) {
+    let index = index_specifiers_path();
+    bin()
+        .args([
+            "install",
+            "--index",
+            index.to_str().unwrap(),
+            "--require",
+            require,
+            "--lock",
+            lock_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+}
+
+#[test]
+fn install_selects_post_release_above_base() {
+    let temp = tempdir().unwrap();
+    let lock_path = temp.path().join("pybun.lockb");
+
+    install_from_specifier_index("pep440-post>=1.0.0", &lock_path);
+
+    let lock = Lockfile::load_from_path(&lock_path).expect("lock loads");
+    let pkg = lock.packages.get("pep440-post").expect("entry");
+    assert_eq!(
+        pkg.version, "1.0.0.post1",
+        ">=1.0.0 should select the post-release above the base release"
+    );
+}
+
+#[test]
+fn install_rejects_post_release_for_exclusive_minimum_of_same_base() {
+    // PEP 440: `>1.0.0` must not match `1.0.0.post1`, and `1.0.0` itself
+    // is not greater — so resolution has no candidate and must fail.
+    let temp = tempdir().unwrap();
+    let lock_path = temp.path().join("pybun.lockb");
+    let index = index_specifiers_path();
+
+    bin()
+        .args([
+            "install",
+            "--index",
+            index.to_str().unwrap(),
+            "--require",
+            "pep440-post>1.0.0",
+            "--lock",
+            lock_path.to_str().unwrap(),
+        ])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn install_excludes_dev_release_by_default() {
+    let temp = tempdir().unwrap();
+    let lock_path = temp.path().join("pybun.lockb");
+
+    install_from_specifier_index("pep440-dev>=1.0.0", &lock_path);
+
+    let lock = Lockfile::load_from_path(&lock_path).expect("lock loads");
+    let pkg = lock.packages.get("pep440-dev").expect("entry");
+    assert_eq!(
+        pkg.version, "1.0.0",
+        "1.1.0.dev1 is a pre-release and must not be selected without --pre"
+    );
+}
+
+#[test]
+fn install_epoch_dominates_release_ordering() {
+    let temp = tempdir().unwrap();
+    let lock_path = temp.path().join("pybun.lockb");
+
+    install_from_specifier_index("pep440-epoch>=2.0.0", &lock_path);
+
+    let lock = Lockfile::load_from_path(&lock_path).expect("lock loads");
+    let pkg = lock.packages.get("pep440-epoch").expect("entry");
+    assert_eq!(
+        pkg.version, "1!1.0.0",
+        "epoch 1 sorts above every epoch-0 release, including 2.0.0"
+    );
+}
+
+#[test]
+fn install_exact_match_ignores_local_label_and_prefers_it() {
+    // `==1.0.0` matches both `1.0.0` and `1.0.0+cpu` (a specifier without
+    // a local label ignores candidate labels), and the local variant sorts
+    // higher.
+    let temp = tempdir().unwrap();
+    let lock_path = temp.path().join("pybun.lockb");
+
+    install_from_specifier_index("pep440-local==1.0.0", &lock_path);
+
+    let lock = Lockfile::load_from_path(&lock_path).expect("lock loads");
+    let pkg = lock.packages.get("pep440-local").expect("entry");
+    assert_eq!(pkg.version, "1.0.0+cpu");
+}
