@@ -25,3 +25,11 @@ pep723_fixture = "fixtures/pep723.py"
 pep723_clear_envs = true
 pep723_clear_fs_cache = false
 
+[scenarios.uv_comparison]
+enabled = true
+iterations = 5
+warmup = 1
+trim_ratio = 0.1
+cv_threshold = 0.15
+adhoc_package = "ruff"
+

@@ -42,10 +42,10 @@ jobs:
       - name: Build pybun (release)
         run: cargo build --release
 
-      - name: Run benchmarks (B3)
+      - name: Run benchmarks (B3, C-series)
         run: |
           cd scripts/benchmark
-          python bench.py -s run --config config_ci.toml --format json -o results-ci
+          python bench.py -s run,uv_comparison --config config_ci.toml --format json -o results-ci
 
       - name: UX gate
         run: |
