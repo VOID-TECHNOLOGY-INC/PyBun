@@ -1123,6 +1123,52 @@ fn mcp_pybun_run_default_sandbox_reports_process_and_file_size_limits() {
     );
 }
 
+#[test]
+fn mcp_pybun_run_auto_installs_pep723_dependencies() {
+    // Issue #272: the CLI `pybun run` auto-installs PEP 723 inline dependencies
+    // before executing a script (see `run_pep723_json_shows_auto_install_info`
+    // in tests/cli_run.rs). MCP's `pybun_run` must not silently skip this step -
+    // an agent invoking `pybun_run` on a script with inline dependencies should
+    // get the same dependency planning/install behavior as the CLI, not a bare
+    // `ModuleNotFoundError`. Uses PYBUN_PEP723_DRY_RUN=1 so the test stays fast
+    // and hermetic (no real network/venv install), while still exercising the
+    // PEP 723 metadata parsing + planning path that `call_run` currently never
+    // reaches at all.
+    let project = tempdir().unwrap();
+    let script = project.path().join("pep723_with_deps.py");
+    fs::write(
+        &script,
+        r#"# /// script
+# dependencies = ["requests>=2.28.0", "rich"]
+# ///
+print("test")
+"#,
+    )
+    .unwrap();
+
+    let script_json = serde_json::to_string(script.to_str().unwrap()).unwrap();
+    let call_req = format!(
+        r#"{{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{{"name":"pybun_run","arguments":{{"script":{script_json}}}}}}}"#
+    );
+    let stdout = mcp_call_in(
+        &[&call_req],
+        project.path(),
+        &[("PYBUN_PEP723_DRY_RUN", OsString::from("1"))],
+    );
+    let result = tool_result_json(&stdout, 2);
+
+    assert!(
+        result["pep723_dependencies"]
+            .as_array()
+            .is_some_and(
+                |deps| deps.iter().any(|d| d.as_str() == Some("requests>=2.28.0"))
+                    && deps.iter().any(|d| d.as_str() == Some("rich"))
+            ),
+        "pybun_run over MCP should report the PEP 723 dependencies it planned to \
+         install, matching the CLI's `pep723_dependencies` behavior. Got: {result}"
+    );
+}
+
 // ─── MCP structured action audit log (Issue #249) ───────────────────────────
 
 #[test]

@@ -1368,7 +1368,7 @@ impl McpServer {
             match tool_name {
                 "pybun_resolve" => self.call_resolve(tool_args.clone()).await,
                 "pybun_install" => self.call_install(tool_args.clone()).await,
-                "pybun_run" => self.call_run(tool_args.clone()),
+                "pybun_run" => self.call_run(tool_args.clone()).await,
                 "pybun_gc" => self.call_gc(tool_args.clone()),
                 "pybun_doctor" => self.call_doctor(tool_args.clone()),
                 "pybun_lint" => self.call_lint(tool_args.clone()),
@@ -1709,9 +1709,9 @@ impl McpServer {
         }
     }
 
-    fn call_run(&self, args: Value) -> Result<String, String> {
+    async fn call_run(&self, args: Value) -> Result<String, String> {
         use crate::env::find_python_env;
-        use crate::sandbox::{self, SandboxConfig, apply_python_sandbox};
+        use crate::schema::EventCollector;
 
         let script = args.get("script").and_then(|s| s.as_str());
         let code = args.get("code").and_then(|c| c.as_str());
@@ -1764,99 +1764,104 @@ impl McpServer {
             .to_string());
         }
 
-        let sandbox_config = use_sandbox.then_some(effective_sandbox_config);
+        // Delegate to the same `commands::run_script` implementation the CLI's
+        // `pybun run` uses, so PEP 723 dependency auto-install, sandboxing, and
+        // interpreter discovery cannot silently diverge between the MCP and CLI
+        // entry points (Issue #272). Interpreter discovery and sandboxed execution
+        // were already shared via `env::find_python_env` /
+        // `sandbox::execute_with_optional_sandbox`; this closes the remaining gap
+        // where MCP skipped PEP 723 dependency install entirely.
+        let run_args_struct = crate::cli::RunArgs {
+            target: script.map(|s| s.to_string()),
+            code: code.map(|s| s.to_string()),
+            sandbox: use_sandbox,
+            allow_network: effective_sandbox_config.allow_network,
+            allow_read: effective_sandbox_config.allow_read.clone(),
+            allow_write: effective_sandbox_config.allow_write.clone(),
+            allow_env: effective_sandbox_config.allow_env.clone(),
+            sandbox_timeout: effective_sandbox_config.timeout_secs,
+            sandbox_memory: effective_sandbox_config.memory_limit_mb,
+            sandbox_cpu: effective_sandbox_config.cpu_limit_secs,
+            profile: "dev".to_string(),
+            passthrough: run_args,
+        };
 
-        // Find Python interpreter
+        // Reported for informational purposes only; `run_script` performs its own
+        // (identical) interpreter discovery internally.
         let working_dir = std::env::current_dir().map_err(|e| e.to_string())?;
-        let env = find_python_env(&working_dir).map_err(|e| e.to_string())?;
-        let python_path = env.python_path.to_string_lossy().to_string();
+        let python_path = find_python_env(&working_dir)
+            .map(|env| env.python_path.to_string_lossy().to_string())
+            .unwrap_or_default();
 
-        let build_result = |mut cmd: ProcessCommand,
-                            target: &str,
-                            config: Option<SandboxConfig>|
-         -> Result<String, String> {
-            for arg in &run_args {
-                cmd.arg(arg);
-            }
-            let guard = config
-                .map(|c| apply_python_sandbox(&mut cmd, c).map_err(|e| e.to_string()))
-                .transpose()?;
+        let mut collector = EventCollector::new();
+        let result = crate::commands::run_script(
+            &run_args_struct,
+            &mut collector,
+            crate::cli::OutputFormat::Json,
+        )
+        .await;
 
-            // Shared with the CLI `pybun run` command (`commands::run_script` /
-            // `commands::run_python_code`) via `sandbox::execute_with_optional_sandbox`,
-            // so sandboxed-vs-plain execution, timeout handling, and output capture
-            // cannot silently diverge between the MCP and CLI entry points (Issue #272).
-            let sandbox::SandboxedExecution {
-                status,
-                stdout,
-                stderr,
-                timed_out,
-            } = sandbox::execute_with_optional_sandbox(&mut cmd, guard.as_ref(), true)
-                .map_err(|e| format!("Failed to execute: {}", e))?;
-            let stdout = stdout.unwrap_or_default();
-            let stderr = stderr.unwrap_or_default();
-
-            let audit = guard.as_ref().map(|g| g.read_audit());
-            let resource_limits = guard.as_ref().map(|g| g.resource_limits.clone());
-            drop(guard);
-
-            let exit_code = status.code().unwrap_or(-1);
-            let stdout = String::from_utf8_lossy(&stdout).to_string();
-            let stderr = String::from_utf8_lossy(&stderr).to_string();
-
-            // Parse Python traceback into structured diagnostics when the process failed
-            let diagnostics: Option<Value> = if !status.success() && !stderr.is_empty() {
-                crate::traceback::parse(&stderr).map(|tb| {
-                    json!([{
-                        "level": "error",
-                        "code": tb.code,
-                        "exception_type": tb.exception_type,
-                        "message": tb.message,
-                        "location": tb.location.map(|loc| json!({
+        match result {
+            Ok(outcome) => {
+                // Enrich diagnostics with a structured traceback when the script
+                // failed, mirroring the CLI `pybun run` dispatcher (Issue #266).
+                if outcome.exit_code != 0
+                    && let Some(tb) = outcome.stderr.as_deref().and_then(crate::traceback::parse)
+                {
+                    let mut diag = crate::schema::Diagnostic::error(tb.message.clone());
+                    diag.code = Some(tb.code);
+                    diag.file = tb.location.as_ref().map(|l| l.file.clone());
+                    diag.line = tb.location.as_ref().map(|l| l.line);
+                    diag.exception_type = Some(tb.exception_type);
+                    diag.location = tb.location.as_ref().map(|loc| {
+                        json!({
                             "file": loc.file,
                             "line": loc.line,
                             "function": loc.function,
-                        })),
-                        "next_action": tb.next_action.map(|a| json!({
+                        })
+                    });
+                    diag.next_action = tb.next_action.map(|a| {
+                        json!({
                             "tool": a.tool,
                             "args": a.args,
-                        })),
-                    }])
+                        })
+                    });
+                    collector.diagnostic(diag);
+                }
+                let diagnostics =
+                    serde_json::to_value(collector.into_diagnostics()).unwrap_or(Value::Null);
+
+                let sandboxed = outcome.sandbox.as_ref().map(|s| s.enabled).unwrap_or(false);
+                let audit = outcome.sandbox.as_ref().and_then(|s| s.audit.clone());
+                let resource_limits = outcome.sandbox.as_ref().map(|s| s.resource_limits.clone());
+                let timed_out = outcome
+                    .sandbox
+                    .as_ref()
+                    .map(|s| s.timed_out)
+                    .unwrap_or(false);
+
+                Ok(json!({
+                    "status": if outcome.exit_code == 0 { "success" } else { "error" },
+                    "target": outcome.target,
+                    "exit_code": outcome.exit_code,
+                    "stdout": outcome.stdout.unwrap_or_default(),
+                    "stderr": outcome.stderr.unwrap_or_default(),
+                    "python": python_path,
+                    "sandboxed": sandboxed,
+                    "audit": audit,
+                    "resource_limits": resource_limits,
+                    "timed_out": timed_out,
+                    "diagnostics": diagnostics,
+                    "warnings": warnings,
+                    "pep723_dependencies": outcome.pep723_deps,
+                    "pep723_backend": outcome.pep723_backend,
+                    "temp_env": outcome.temp_env,
+                    "cleanup": outcome.cleanup,
+                    "cache_hit": outcome.cache_hit,
                 })
-            } else {
-                None
-            };
-
-            Ok(json!({
-                "status": if status.success() { "success" } else { "error" },
-                "target": target,
-                "exit_code": exit_code,
-                "stdout": stdout,
-                "stderr": stderr,
-                "python": python_path,
-                "sandboxed": use_sandbox,
-                "audit": audit,
-                "resource_limits": resource_limits,
-                "timed_out": timed_out,
-                "diagnostics": diagnostics,
-                "warnings": warnings,
-            })
-            .to_string())
-        };
-
-        match (script, code) {
-            (Some(script_path), _) => {
-                let path = PathBuf::from(script_path);
-                let mut cmd = ProcessCommand::new(&python_path);
-                cmd.arg(&path);
-                build_result(cmd, script_path, sandbox_config)
+                .to_string())
             }
-            (_, Some(inline_code)) => {
-                let mut cmd = ProcessCommand::new(&python_path);
-                cmd.arg("-c").arg(inline_code);
-                build_result(cmd, "inline_code", sandbox_config)
-            }
-            _ => Err("Either 'script' or 'code' must be provided".to_string()),
+            Err(e) => Err(e.to_string()),
         }
     }
 
