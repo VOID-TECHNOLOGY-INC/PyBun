@@ -2606,36 +2606,36 @@ struct ScriptLockInfo {
 }
 
 #[derive(Debug)]
-struct RunOutcome {
-    summary: String,
-    target: Option<String>,
-    exit_code: i32,
-    pep723_deps: Vec<String>,
+pub(crate) struct RunOutcome {
+    pub(crate) summary: String,
+    pub(crate) target: Option<String>,
+    pub(crate) exit_code: i32,
+    pub(crate) pep723_deps: Vec<String>,
     /// Execution backend for PEP 723 scripts (system/pybun/uv_run).
-    pep723_backend: String,
+    pub(crate) pep723_backend: String,
     /// Environment path used for PEP 723 dependencies (cached or temporary)
-    temp_env: Option<String>,
+    pub(crate) temp_env: Option<String>,
     /// Whether the environment was cleaned up (only in no-cache mode)
-    cleanup: bool,
+    pub(crate) cleanup: bool,
     /// Whether the environment was a cache hit
-    cache_hit: bool,
+    pub(crate) cache_hit: bool,
     /// Captured stdout (only when `--format=json`).
-    stdout: Option<String>,
+    pub(crate) stdout: Option<String>,
     /// Captured stderr (only when `--format=json`).
-    stderr: Option<String>,
+    pub(crate) stderr: Option<String>,
     /// Sandbox information when enabled
-    sandbox: Option<SandboxInfo>,
+    pub(crate) sandbox: Option<SandboxInfo>,
     /// Applied launch profile info
-    profile: RunProfileInfo,
+    pub(crate) profile: RunProfileInfo,
 }
 
 #[derive(Debug, Clone)]
-struct RunProfileInfo {
-    name: String,
-    optimization_level: u8,
-    lazy_imports: bool,
-    lazy_imports_injected: bool,
-    timing: bool,
+pub(crate) struct RunProfileInfo {
+    pub(crate) name: String,
+    pub(crate) optimization_level: u8,
+    pub(crate) lazy_imports: bool,
+    pub(crate) lazy_imports_injected: bool,
+    pub(crate) timing: bool,
 }
 
 /// Emit a `warn`-level diagnostic for each resource limit that was requested
@@ -2666,18 +2666,18 @@ fn emit_rejected_allow_env_diagnostics(collector: &mut EventCollector, rejected_
 }
 
 #[derive(Debug, Clone)]
-struct SandboxInfo {
-    enabled: bool,
-    allow_network: bool,
-    allow_read: Vec<String>,
-    allow_write: Vec<String>,
+pub(crate) struct SandboxInfo {
+    pub(crate) enabled: bool,
+    pub(crate) allow_network: bool,
+    pub(crate) allow_read: Vec<String>,
+    pub(crate) allow_write: Vec<String>,
     /// Env var *names* (never values) that were explicitly allowed through the env filter.
-    allow_env: Vec<String>,
-    default_deny_write: Vec<String>,
-    enforcement: String,
-    audit: Option<sandbox::SandboxAudit>,
-    resource_limits: sandbox::ResourceLimits,
-    timed_out: bool,
+    pub(crate) allow_env: Vec<String>,
+    pub(crate) default_deny_write: Vec<String>,
+    pub(crate) enforcement: String,
+    pub(crate) audit: Option<sandbox::SandboxAudit>,
+    pub(crate) resource_limits: sandbox::ResourceLimits,
+    pub(crate) timed_out: bool,
 }
 
 #[derive(Debug)]
@@ -2775,7 +2775,7 @@ fn capture_stdio(bytes: &[u8]) -> Option<String> {
     Some(out)
 }
 
-async fn run_script(
+pub(crate) async fn run_script(
     args: &crate::cli::RunArgs,
     collector: &mut EventCollector,
     format: OutputFormat,
