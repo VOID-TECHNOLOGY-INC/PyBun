@@ -172,9 +172,16 @@ jobs:
           fail_ci_if_error: false
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
-      - name: Print coverage summary (report-only, no threshold gate yet)
-        continue-on-error: true
-        run: cargo llvm-cov report 2>&1 | tail -10
+      - name: Enforce coverage ratchet
+        # Baseline measured on main via `cargo llvm-cov report` (line coverage) was 84.51%
+        # (2026-07-24, see docs/PLAN.md Issue #348). The gate is set to baseline - 1 (83%),
+        # rounded down, to absorb measurement noise while still catching regressions.
+        #
+        # Ratchet-up policy: this is a floor, not the target (project policy is 80%+ line
+        # coverage, and we're already above that). When coverage improves and stays improved
+        # across a few PRs, bump --fail-under-lines upward (and update the baseline comment
+        # here plus docs/PLAN.md) manually — there is no automation for raising the ratchet.
+        run: cargo llvm-cov report --fail-under-lines 83
 
   winget-validate:
     name: winget validate

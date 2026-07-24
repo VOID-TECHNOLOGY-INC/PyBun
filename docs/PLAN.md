@@ -251,6 +251,10 @@
 - PR-A8: Runtime catalog hardening（実チェックサム管理 + 3.13 preview）
   - Goal: 埋め込み runtime metadata の完全性・更新性を強化し、3.13 preview を段階導入。
   - Tests: runtime metadata 検証テスト、3.13 install/list の互換テスト。
+- [DONE] PR-A20: coverage job のしきい値ゲート化（report-only → enforced ratchet）(Issue #348)
+  - Goal: #189 で追加した `cargo-llvm-cov` coverage job / Codecov upload / `just coverage` は測定のみで、`.github/workflows/ci.yml` の `Print coverage summary (report-only, no threshold gate yet)` ステップは何も強制していなかった（未完の受け入れ条件: baseline documented; threshold gate added）。このままだと coverage は静かに劣化しうる。
+  - Current: `main` 上で CI と同一コマンド（`cargo llvm-cov --workspace --lcov --output-path lcov.info --exclude-from-report "downloader_integration"` → `cargo llvm-cov report`）をローカル実行し、line coverage baseline = **84.51%**（2026-07-24 計測、TOTAL行 Lines: 24234 total / 3754 missed）を実測。`.github/workflows/ci.yml` の report-only ステップを `Enforce coverage ratchet` に置き換え、`cargo llvm-cov report --fail-under-lines 83`（baseline を切り捨てて -1 した ratchet。測定ノイズを吸収しつつ回帰を検知）を実行するよう変更。既存の `--exclude-from-report "downloader_integration"` 除外はそのまま維持（分母を honest に保つ）。ratchet を上げる運用ルール（coverage 改善時は `--fail-under-lines` の値とこのコメント・baseline を手動で引き上げる。自動化なし）は ci.yml 内のコメントとして明記。プロジェクトの公式ポリシー（80%+ line coverage）は既に達成しているが、ratchet はそれより保守的な「後退させない」ための floor として設定している。
+  - Tests: `cargo llvm-cov report --fail-under-lines 83` をローカルで baseline データに対して実行し exit code 0 を確認（gate が現状のカバレッジに対して green であることの検証）。`cargo clippy --all-targets --all-features -- -D warnings`、`cargo fmt -- --check`、`cargo test --lib`、`python3 -c "import yaml; yaml.safe_load(open('.github/workflows/ci.yml'))"`（YAML 構文検証）。
 
 ## Milestones & PR Tracks
 Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; parallelizable items marked (||).
