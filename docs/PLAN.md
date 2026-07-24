@@ -194,7 +194,7 @@
     - Step 1 (このPRで実施): `cargo check` + `cargo clippy` を windows-latest で必須化 — コンパイル/`#[cfg(...)]` breakage を検出。
     - Step 2 (未実施・follow-up): windows-latest で `cargo test` を `continue-on-error: true` で実行し、`cli_*` テストの PATH/venv 前提、minisign 可用性（`choco install minisign`）、Unix専用 sandbox テストの `#[cfg(unix)]` 漏れなどを triage する。
     - Step 3 (未実施・follow-up): Step 2 が green になった時点で required に昇格する。
-  - このリポジトリでは Windows 実機での `cargo check`/`clippy` 実行歴がこれまで一度もなく、事前レビューでは `src/` 内の `#[cfg(unix)]`/`#[cfg(windows)]` ペア（`proc_exec.rs`, `sandbox.rs`, `env.rs`, `installer.rs`, `module_finder.rs`, `runtime.rs`, `commands/mod.rs`）と `src/allocator.rs`（Windows: mimalloc / 非Windows: jemalloc）の構文上の完全性を目視確認したのみで、実際の windows-latest ランナー結果が本PRでの初めての正式な検証となる。
+    このリポジトリでは Windows 実機での `cargo check`/`clippy` 実行歴がこれまで一度もなく、事前レビューでは `src/` 内の `#[cfg(unix)]`/`#[cfg(windows)]` ペア（`proc_exec.rs`, `sandbox.rs`, `env.rs`, `installer.rs`, `module_finder.rs`, `runtime.rs`, `commands/mod.rs`）と `src/allocator.rs`（Windows: mimalloc / 非Windows: jemalloc）の構文上の完全性を目視確認したのみで、実際の windows-latest ランナー結果が本PRでの初めての正式な検証となる。
   - Tests: `python3 -c "import yaml; yaml.safe_load(open('.github/workflows/ci.yml'))"` でYAML構文確認。ローカル（非Windows）環境で `cargo fmt -- --check` / `cargo clippy --all-targets --all-features -- -D warnings` / `cargo test --lib` を実行し既存プラットフォームのCI設定・コードに影響がないことを確認。Windows実行結果自体はCI（本PR）が最初の権威ある検証。
 
 - [DONE] PR-UX1: `pybun init` non-TTY actionable error (Issue #133)
