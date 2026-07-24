@@ -2287,6 +2287,17 @@ mod tests {
         {
             assert!(!req_32bit.marker_applies());
         }
+
+        // On other target_os/target_arch combinations (e.g. Windows), neither
+        // `#[cfg]` block above compiles, which would otherwise make
+        // `req_32bit` an unused variable under `-D warnings` (Issue #347).
+        #[cfg(not(any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64")
+        )))]
+        {
+            let _ = req_32bit;
+        }
     }
 
     #[test]
