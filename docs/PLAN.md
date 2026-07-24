@@ -381,8 +381,8 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
   - Risk: 運用/セキュリティ（bind addr, auth）を詰める必要があるので、後回しでもよい。
 - [DONE] PR4.4: Observability layer (structured logging defaults, `PYBUN_TRACE=1` tracing/trace-id propagation, redaction hooks).  
   - Depends on: PR4.1.  
-  - Current: Full observability via `src/schema.rs`. PYBUN_TRACE=1 enables UUID trace IDs. Event streaming with timestamps. Diagnostics array. Schema version tracking. PYBUN_LOG for log level control. Sensitive env vars not leaked in output.
-  - Tests: 9 observability E2E tests (trace_id presence/absence, event timestamps, duration_ms, schema version, diagnostics, env var redaction, log level, event types).
+  - Current: Full observability via `src/schema.rs`. PYBUN_TRACE=1 enables UUID trace IDs. Event streaming with timestamps. Diagnostics array. Schema version tracking. Sensitive env vars not leaked in output. Note: the `PYBUN_LOG`/profile `log_level` field was removed (Issue #361) — it was set but never read back to control logging, so it was dead/misleading configuration.
+  - Tests: 9 observability E2E tests (trace_id presence/absence, event timestamps, duration_ms, schema version, diagnostics, env var redaction, event types).
 
 ### M5: Builder & Security (Phase 3/4)
 - [DONE] PR5.0 (bootstrap): `pybun build` の “まず動く” 実装（`python -m build` の薄いラッパー + `--sbom` はスタブ出力）  

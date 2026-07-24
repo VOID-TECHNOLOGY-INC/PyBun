@@ -333,8 +333,6 @@ Diagnostics / dry-run testing:
 - `PYBUN_X_DRY_RUN`: Dry-run override used in tests
 - `PYBUN_X_DRY_RUN_EXIT_CODE`: Simulated exit code override used in tests
 
-Note: `PYBUN_LOG` is currently only *set* by `pybun profile` (to record the profile's configured log level); no code path reads it back to control logging output, so it does not yet do anything if set manually.
-
 ## Common Tasks
 
 ### Adding a New Command

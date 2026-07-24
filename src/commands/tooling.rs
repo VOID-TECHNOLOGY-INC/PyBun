@@ -637,14 +637,12 @@ pub(super) fn run_profile(
                 "base": {
                     "hot_reload": base_config.hot_reload,
                     "lazy_imports": base_config.lazy_imports,
-                    "log_level": base_config.log_level,
                     "tracing": base_config.tracing,
                     "optimization_level": base_config.optimization_level,
                 },
                 "compare": {
                     "hot_reload": other_config.hot_reload,
                     "lazy_imports": other_config.lazy_imports,
-                    "log_level": other_config.log_level,
                     "tracing": other_config.tracing,
                     "optimization_level": other_config.optimization_level,
                 },
@@ -693,8 +691,6 @@ pub(super) fn run_profile(
                     "hot_reload": config.hot_reload,
                     "lazy_imports": config.lazy_imports,
                     "module_cache": config.module_cache,
-                    "log_level": config.log_level,
-                    "log_level_str": config.log_level_str(),
                     "tracing": config.tracing,
                     "timing": config.timing,
                     "debug_checks": config.debug_checks,
@@ -722,7 +718,6 @@ pub(super) fn run_profile(
             "config": {
                 "hot_reload": config.hot_reload,
                 "lazy_imports": config.lazy_imports,
-                "log_level": config.log_level,
             },
         }),
     ))
