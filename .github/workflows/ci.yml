@@ -177,6 +177,12 @@ jobs:
         # (2026-07-24, see docs/PLAN.md Issue #348). The gate is set to baseline - 1 (83%),
         # rounded down, to absorb measurement noise while still catching regressions.
         #
+        # `--exclude-from-report` is not a valid flag on the `report` subcommand (it only
+        # applies at profile-generation time, in the "Generate coverage report" step above);
+        # `cargo llvm-cov report` here reads that same already-filtered profile data, so the
+        # 83% threshold is directly comparable to the 84.51% baseline without repeating the
+        # flag.
+        #
         # Ratchet-up policy: this is a floor, not the target (project policy is 80%+ line
         # coverage, and we're already above that). When coverage improves and stays improved
         # across a few PRs, bump --fail-under-lines upward (and update the baseline comment
