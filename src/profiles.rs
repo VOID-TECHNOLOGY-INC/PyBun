@@ -4,8 +4,8 @@
 //! environments: dev, prod, and benchmark.
 //!
 //! ## Profiles
-//! - **dev**: Development mode with hot reload, lazy imports disabled, verbose logging
-//! - **prod**: Production mode with optimizations enabled, minimal logging
+//! - **dev**: Development mode with hot reload, lazy imports disabled
+//! - **prod**: Production mode with optimizations enabled
 //! - **benchmark**: Benchmarking mode with tracing enabled, timing output
 
 use serde::{Deserialize, Serialize};
@@ -16,10 +16,10 @@ use std::path::Path;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Profile {
-    /// Development profile - verbose, hot reload enabled.
+    /// Development profile - hot reload enabled.
     #[default]
     Dev,
-    /// Production profile - optimized, minimal logging.
+    /// Production profile - optimized.
     Prod,
     /// Benchmark profile - timing and tracing enabled.
     Benchmark,
@@ -62,8 +62,6 @@ pub struct ProfileConfig {
     pub lazy_imports: bool,
     /// Enable module finder cache.
     pub module_cache: bool,
-    /// Logging verbosity: 0 = quiet, 1 = normal, 2 = verbose, 3 = debug.
-    pub log_level: u8,
     /// Enable performance tracing.
     pub tracing: bool,
     /// Enable timing output for benchmarks.
@@ -84,7 +82,6 @@ impl ProfileConfig {
             hot_reload: true,
             lazy_imports: false,
             module_cache: true,
-            log_level: 2,
             tracing: false,
             timing: false,
             debug_checks: true,
@@ -100,7 +97,6 @@ impl ProfileConfig {
             hot_reload: false,
             lazy_imports: true,
             module_cache: true,
-            log_level: 1,
             tracing: false,
             timing: false,
             debug_checks: false,
@@ -116,7 +112,6 @@ impl ProfileConfig {
             hot_reload: false,
             lazy_imports: false,
             module_cache: false, // Disable cache for accurate benchmarking
-            log_level: 1,
             tracing: true,
             timing: true,
             debug_checks: false,
@@ -143,17 +138,6 @@ impl ProfileConfig {
         }
     }
 
-    /// Get log level as a string for PYBUN_LOG environment variable.
-    pub fn log_level_str(&self) -> &str {
-        match self.log_level {
-            0 => "error",
-            1 => "warn",
-            2 => "info",
-            3 => "debug",
-            _ => "trace",
-        }
-    }
-
     /// Check if this is a development profile.
     pub fn is_dev(&self) -> bool {
         self.profile == Profile::Dev
@@ -175,7 +159,6 @@ impl ProfileConfig {
         // SAFETY: Single-threaded CLI context
         unsafe {
             std::env::set_var("PYBUN_PROFILE", self.profile.to_string());
-            std::env::set_var("PYBUN_LOG", self.log_level_str());
 
             if self.tracing {
                 std::env::set_var("PYBUN_TRACE", "1");
@@ -191,7 +174,7 @@ impl ProfileConfig {
     /// Generate a summary of the profile settings.
     pub fn summary(&self) -> String {
         format!(
-            "Profile: {}\n  Hot reload: {}\n  Lazy imports: {}\n  Module cache: {}\n  Log level: {} ({})\n  Tracing: {}\n  Timing: {}\n  Debug checks: {}\n  Python optimization: -O{}",
+            "Profile: {}\n  Hot reload: {}\n  Lazy imports: {}\n  Module cache: {}\n  Tracing: {}\n  Timing: {}\n  Debug checks: {}\n  Python optimization: -O{}",
             self.profile,
             if self.hot_reload {
                 "enabled"
@@ -208,8 +191,6 @@ impl ProfileConfig {
             } else {
                 "disabled"
             },
-            self.log_level,
-            self.log_level_str(),
             if self.tracing { "enabled" } else { "disabled" },
             if self.timing { "enabled" } else { "disabled" },
             if self.debug_checks {
@@ -240,7 +221,6 @@ impl ProfileConfig {
         self.hot_reload = other.hot_reload;
         self.lazy_imports = other.lazy_imports;
         self.module_cache = other.module_cache;
-        self.log_level = other.log_level;
         self.tracing = other.tracing;
         self.timing = other.timing;
         self.debug_checks = other.debug_checks;
@@ -386,16 +366,16 @@ mod tests {
     }
 
     #[test]
-    fn test_log_level_str() {
-        let mut config = ProfileConfig::dev();
-        config.log_level = 0;
-        assert_eq!(config.log_level_str(), "error");
-        config.log_level = 1;
-        assert_eq!(config.log_level_str(), "warn");
-        config.log_level = 2;
-        assert_eq!(config.log_level_str(), "info");
-        config.log_level = 3;
-        assert_eq!(config.log_level_str(), "debug");
+    fn apply_to_env_does_not_set_pybun_log() {
+        // PYBUN_LOG was previously set here but never read back anywhere,
+        // making it dead/misleading configuration (Issue #361). Removed.
+        // SAFETY: test runs single-threaded within this process for this var.
+        unsafe {
+            std::env::remove_var("PYBUN_LOG");
+        }
+        let config = ProfileConfig::dev();
+        config.apply_to_env();
+        assert!(std::env::var("PYBUN_LOG").is_err());
     }
 
     #[test]
