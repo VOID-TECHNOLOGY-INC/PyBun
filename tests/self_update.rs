@@ -22,6 +22,7 @@ fn release_binary_name() -> &'static str {
     if cfg!(windows) { "pybun.exe" } else { "pybun" }
 }
 
+#[cfg_attr(not(unix), allow(unused_variables))]
 fn make_executable(path: &Path) {
     #[cfg(unix)]
     {
