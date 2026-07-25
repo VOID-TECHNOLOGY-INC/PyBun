@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 use assert_cmd::Command;
 use assert_cmd::cargo::cargo_bin_cmd;
 use std::fs;
@@ -7,7 +9,6 @@ fn bin() -> Command {
     cargo_bin_cmd!("pybun")
 }
 
-#[cfg(unix)]
 #[test]
 fn test_detects_python3_only_venv() {
     let temp = tempdir().unwrap();
