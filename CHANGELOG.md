@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.1.23
+
+### Fixes
+- fix(resolver): compare `==`/`!=` specifiers via PEP 440 semantics instead of raw string equality (Issue #339)
+- fix(resolver): exclude pre-release versions by default, add `--pre` opt-in (Issue #341)
+- fix(resolver): replace the semver shim with PEP 440 version ordering (Issue #340)
+- fix(resolver): honor `requires-python` metadata when selecting candidates (Issue #342)
+- fix(downloader): fail fast on 4xx responses and preserve the underlying retry cause (Issue #343)
+- fix(audit): guard the silent system Python fallback in `pybun audit` (Issue #338)
+- fix(test): eliminate process-wide env mutation in parallel tests (Issue #349)
+- fix(mcp): delegate `pybun_run` to `commands::run_script` for PEP 723 parity (Issue #272)
+- fix(profiles): remove dead `PYBUN_LOG` configuration (Issue #361)
+
+### Tests
+- test(resolver): add a PEP 440 conformance corpus and property tests; fix `>`/`<` exclusive comparison (Issue #350)
+
+### CI
+- ci(benchmark): run the `uv_comparison` scenario in the UX gate benchmark step
+- ci(matrix): add a `windows-latest` check+clippy job (Issue #347)
+- ci(coverage): add a ratcheting threshold gate to the coverage job (Issue #348)
+
+### Chores
+- chore(deps): routine dependency bumps (`actions/setup-python`, cargo minor/patch group)
+
 ## v0.1.22
 
 ### Features
