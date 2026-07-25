@@ -484,6 +484,7 @@ dependencies = [
 // `pybun lock` in #293, and `pybun run` in #294).
 // =============================================================================
 
+#[cfg(unix)]
 fn index_cp_tag_mismatch_path() -> PathBuf {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("manifest dir");
     Path::new(&manifest_dir)

@@ -1,6 +1,7 @@
+#![cfg(not(windows))]
+
 use std::fs;
 use std::io::Read;
-#[cfg(not(windows))]
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Command;
@@ -24,7 +25,6 @@ fn sha256sum(path: &Path) -> String {
     hex::encode(hasher.finalize())
 }
 
-#[cfg(not(windows))]
 #[test]
 fn pypi_shim_bootstraps_from_manifest() {
     let temp = tempdir().unwrap();

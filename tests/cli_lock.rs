@@ -195,6 +195,7 @@ version = "0.1.0"
 // target venv — same root cause as #291 (fixed for `pybun install` in #292).
 // =============================================================================
 
+#[cfg(unix)]
 fn index_cp_tag_mismatch_path() -> PathBuf {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("manifest dir");
     Path::new(&manifest_dir)
