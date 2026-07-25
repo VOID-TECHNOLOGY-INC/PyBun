@@ -750,6 +750,7 @@ fn write_fake_python(dir: &std::path::Path, version: &str) -> std::path::PathBuf
     path
 }
 
+#[cfg(unix)]
 fn write_lockfile_with_wheel(path: &std::path::Path, wheel_filename: &str) {
     use pybun::lockfile::{Lockfile, Package, PackageSource};
 
