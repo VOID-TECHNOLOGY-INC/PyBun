@@ -1,3 +1,8 @@
+//! Unix-only: this test's fake venv `python` is a `#!/bin/sh` script relying
+//! on POSIX executable permission bits (`PermissionsExt::set_mode`), which
+//! has no Windows equivalent (Issue #347 — windows-check CI job).
+#![cfg(unix)]
+
 //! Regression test for Issue #294: `pybun run`'s native (non-uv) PEP 723
 //! installer selected wheels using the PATH-detected CPython tag instead of
 //! the *target venv's* already-known Python version (same root cause as

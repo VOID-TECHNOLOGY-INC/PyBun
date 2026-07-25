@@ -176,6 +176,27 @@ jobs:
         continue-on-error: true
         run: cargo llvm-cov report 2>&1 | tail -10
 
+  windows-check:
+    name: windows compile check
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-targets: true
+          cache-on-failure: true
+      - name: check
+        shell: bash
+        run: cargo check --all-targets --all-features
+      - name: clippy
+        shell: bash
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
   winget-validate:
     name: winget validate
     runs-on: windows-latest

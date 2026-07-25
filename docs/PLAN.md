@@ -188,6 +188,15 @@
   - Current: `.github/dependabot.yml` を追加し、`cargo` / `pip` / `github-actions` の3 ecosystemを `directory: "/"` で監視。各更新は weekly schedule、`open-pull-requests-limit: 5`、minor/patch grouping を設定し、更新PRのノイズを抑えながらセキュリティ・パッチ更新を継続的に拾える構成にした。
   - Tests: `tests/dependabot_config.rs` を追加し、Dependabot設定が3 ecosystemを含むこと、weekly schedule、open PR上限、minor/patch grouping を持つことを検証。Red確認後、`cargo test --test dependabot_config` がパス。`ruby -e 'require "yaml"; ...'` で `.github/dependabot.yml` をYAMLとして読み込み、3 ecosystem が解決されることも確認。
 
+- [DONE] PR-CI2: Windows CI compile check — Step 1 of staged Windows CI enablement (Issue #347)
+  - Goal: Windows x86_64 バイナリは `release.yml`（`x86_64-pc-windows-msvc`）でビルド・配布されているにもかかわらず、`ci.yml` のテストマトリクスは `ubuntu-latest` / `macos-latest` のみで、唯一の Windows ジョブ (`winget-validate`) は manifest テキストの検証のみでコードを一切コンパイルしていなかった。Windows 固有のリグレッション（`#[cfg(windows)]` 経路、mimalloc アロケータ、パス処理）が完全に未検証のまま出荷され続けていた。
+  - Current: `.github/workflows/ci.yml` に `windows-check`（`runs-on: windows-latest`）ジョブを追加。`dtolnay/rust-toolchain@stable` + `Swatinem/rust-cache@v2` で既存 `test` ジョブと同じ toolchain/cache 構成を踏襲し、`shell: bash` で `cargo check --all-targets --all-features` と `cargo clippy --all-targets --all-features -- -D warnings` を実行（`-D warnings` で必須チェック、`continue-on-error` は使用しない）。段階導入計画（Issue #347 提案）の Step 1 のみを実装：
+    - Step 1 (このPRで実施): `cargo check` + `cargo clippy` を windows-latest で必須化 — コンパイル/`#[cfg(...)]` breakage を検出。
+    - Step 2 (未実施・follow-up): windows-latest で `cargo test` を `continue-on-error: true` で実行し、`cli_*` テストの PATH/venv 前提、minisign 可用性（`choco install minisign`）、Unix専用 sandbox テストの `#[cfg(unix)]` 漏れなどを triage する。
+    - Step 3 (未実施・follow-up): Step 2 が green になった時点で required に昇格する。
+    このリポジトリでは Windows 実機での `cargo check`/`clippy` 実行歴がこれまで一度もなく、事前レビューでは `src/` 内の `#[cfg(unix)]`/`#[cfg(windows)]` ペア（`proc_exec.rs`, `sandbox.rs`, `env.rs`, `installer.rs`, `module_finder.rs`, `runtime.rs`, `commands/mod.rs`）と `src/allocator.rs`（Windows: mimalloc / 非Windows: jemalloc）の構文上の完全性を目視確認したのみで、実際の windows-latest ランナー結果が本PRでの初めての正式な検証となる。
+  - Tests: `python3 -c "import yaml; yaml.safe_load(open('.github/workflows/ci.yml'))"` でYAML構文確認。ローカル（非Windows）環境で `cargo fmt -- --check` / `cargo clippy --all-targets --all-features -- -D warnings` / `cargo test --lib` を実行し既存プラットフォームのCI設定・コードに影響がないことを確認。Windows実行結果自体はCI（本PR）が最初の権威ある検証。
+
 - [DONE] PR-UX1: `pybun init` non-TTY actionable error (Issue #133)
   - Goal: non-TTY 環境で `pybun init`（`--yes` なし）を実行した際、"IO error: not a terminal" の代わりに `--yes` フラグを案内する actionable diagnostic を返す。
   - Current: `init_project()` に `&mut EventCollector` を追加し、stdin が TTY でない場合は `E_INIT_NOT_INTERACTIVE` diagnostic（`suggestion` フィールドに `pybun init --yes` 案内）を push してから早期 return。テキストモードの stderr にも `--yes` を含むメッセージを出力。

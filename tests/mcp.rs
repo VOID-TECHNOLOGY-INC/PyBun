@@ -1660,6 +1660,7 @@ fn mcp_tools_list_includes_pybun_test() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn mcp_pybun_test_all_passing_returns_summary() {
     let project = tempdir().unwrap();
@@ -1763,6 +1764,7 @@ fn mcp_pybun_test_failures_include_rerun_command() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn mcp_pybun_test_passed_entries_have_required_fields() {
     let project = tempdir().unwrap();
@@ -1847,6 +1849,7 @@ fn mcp_pybun_test_empty_project_returns_empty_summary() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn mcp_pybun_test_changed_runs_git_modified_files() {
     let project = tempdir().unwrap();

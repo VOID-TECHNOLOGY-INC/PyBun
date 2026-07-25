@@ -1,9 +1,12 @@
 use assert_cmd::Command;
 use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
-use pybun::lockfile::{Lockfile, Package, PackageSource};
+#[cfg(unix)]
+use pybun::lockfile::Package;
+use pybun::lockfile::{Lockfile, PackageSource};
 use serde_json::Value;
 use std::fs;
+#[cfg(unix)]
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
@@ -484,6 +487,7 @@ dependencies = [
 // `pybun lock` in #293, and `pybun run` in #294).
 // =============================================================================
 
+#[cfg(unix)]
 fn index_cp_tag_mismatch_path() -> PathBuf {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("manifest dir");
     Path::new(&manifest_dir)
