@@ -796,6 +796,7 @@ fn install_resolves_manylinux_2_28_wheel_on_linux_x86_64() {
 // happens to resolve on PATH.
 // =============================================================================
 
+#[cfg(unix)]
 fn index_cp_tag_mismatch_path() -> std::path::PathBuf {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("manifest dir");
     std::path::Path::new(&manifest_dir)
