@@ -26,7 +26,7 @@ zip = { version = "8.6", default-features = false, features = ["deflate"] }
 uuid = { version = "1.11", features = ["v4"] }
 sha2 = "0.11"
 hex = "0.4"
-base64 = "0.22"
+base64 = "0.23"
 ed25519-dalek = { version = "2.1", features = ["std"] }
 fs2 = "0.4"
 # Native file system watcher (optional, for `pybun watch`)
