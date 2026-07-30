@@ -1,4 +1,28 @@
-use super::*;
+use super::{
+    RenderDetail, SandboxInfo, get_python_version, python_version_env_override,
+    resolve_target_python_version, script_lock_path,
+};
+use crate::cli::{LockArgs, OutdatedArgs, UpgradeArgs};
+use crate::index::load_index_from_path;
+use crate::lockfile::{Lockfile, Package, PackageSource};
+use crate::pep723;
+use crate::project::Project;
+use crate::pypi::{PyPiClient, PyPiIndex};
+use crate::resolver::parse_version_relaxed;
+use crate::resolver::{
+    PackageIndex, Requirement, Resolution, ResolveOptions, compare_versions, current_platform_tags,
+    python_version_to_cp_tag, resolve_with_options, select_artifact_for_platform_with_cp,
+};
+use crate::schema::{Diagnostic, EventCollector, EventType};
+use crate::workspace::Workspace;
+use color_eyre::eyre::{Result, eyre};
+use console::Style;
+use futures::stream::{self, StreamExt};
+use serde_json::{Value, json};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::str::FromStr;
+use std::sync::Arc;
 
 /// Resolve dependency specifiers scoped by `--member` (optionally narrowed by
 /// `--group`) or `--group` alone, against an already-discovered workspace (or
@@ -216,7 +240,7 @@ fn warn_on_ignored_extras(requirements: &[Requirement], collector: &mut EventCol
 /// the constraints, without a `--pre` opt-in or a specifier mentioning a
 /// pre-release). PEP 440 excludes pre-releases from version selection by
 /// default, so the fallback is made visible instead of silent (Issue #341).
-pub(crate) fn warn_on_prerelease_fallback(resolution: &Resolution, collector: &mut EventCollector) {
+pub(super) fn warn_on_prerelease_fallback(resolution: &Resolution, collector: &mut EventCollector) {
     for pick in &resolution.prerelease_fallbacks {
         let message = format!(
             "selected pre-release version {} {} because only pre-release versions satisfy the constraints",
@@ -624,12 +648,12 @@ pub(crate) struct InstallOutcome {
 }
 
 #[derive(Debug)]
-pub(crate) struct LockOutcome {
-    pub(crate) summary: String,
-    pub(crate) lockfile: PathBuf,
-    pub(crate) packages: Vec<String>,
-    pub(crate) verified: bool,
-    pub(crate) artifacts: Vec<Value>,
+pub(super) struct LockOutcome {
+    pub(super) summary: String,
+    pub(super) lockfile: PathBuf,
+    pub(super) packages: Vec<String>,
+    pub(super) verified: bool,
+    pub(super) artifacts: Vec<Value>,
 }
 
 fn is_missing_sha256(hash: Option<&str>) -> bool {
@@ -769,7 +793,7 @@ fn emit_lockfile_verification_drift(lockfile: &Lockfile, collector: &mut EventCo
     });
 }
 
-pub(crate) async fn lock_dependencies(
+pub(super) async fn lock_dependencies(
     args: &LockArgs,
     collector: &mut EventCollector,
 ) -> Result<LockOutcome> {
@@ -972,19 +996,19 @@ pub(crate) async fn lock_dependencies(
 // ---------------------------------------------------------------------------
 
 #[derive(Debug)]
-pub(crate) struct AddedPackage {
-    pub(crate) name: String,
-    pub(crate) version: Option<String>,
+pub(super) struct AddedPackage {
+    pub(super) name: String,
+    pub(super) version: Option<String>,
 }
 
 #[derive(Debug)]
-pub(crate) struct AddOutcome {
-    pub(crate) summary: String,
-    pub(crate) packages: Vec<AddedPackage>,
-    pub(crate) added_deps: Vec<String>,
+pub(super) struct AddOutcome {
+    pub(super) summary: String,
+    pub(super) packages: Vec<AddedPackage>,
+    pub(super) added_deps: Vec<String>,
 }
 
-pub(crate) fn add_package(args: &crate::cli::PackageArgs) -> Result<AddOutcome> {
+pub(super) fn add_package(args: &crate::cli::PackageArgs) -> Result<AddOutcome> {
     if args.packages.is_empty() {
         return Err(eyre!("package name is required"));
     }
@@ -1056,18 +1080,18 @@ pub(crate) fn add_package(args: &crate::cli::PackageArgs) -> Result<AddOutcome> 
 // ---------------------------------------------------------------------------
 
 #[derive(Debug)]
-pub(crate) struct RemovedPackage {
-    pub(crate) name: String,
-    pub(crate) removed: bool,
+pub(super) struct RemovedPackage {
+    pub(super) name: String,
+    pub(super) removed: bool,
 }
 
 #[derive(Debug)]
-pub(crate) struct RemoveOutcome {
-    pub(crate) summary: String,
-    pub(crate) packages: Vec<RemovedPackage>,
+pub(super) struct RemoveOutcome {
+    pub(super) summary: String,
+    pub(super) packages: Vec<RemovedPackage>,
 }
 
-pub(crate) fn remove_package(args: &crate::cli::PackageArgs) -> Result<RemoveOutcome> {
+pub(super) fn remove_package(args: &crate::cli::PackageArgs) -> Result<RemoveOutcome> {
     if args.packages.is_empty() {
         return Err(eyre!("package name is required"));
     }
@@ -1128,9 +1152,9 @@ pub(crate) fn remove_package(args: &crate::cli::PackageArgs) -> Result<RemoveOut
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
-pub(crate) struct ScriptLockInfo {
-    pub(crate) lock: Lockfile,
-    pub(crate) lock_hash: String,
+pub(super) struct ScriptLockInfo {
+    pub(super) lock: Lockfile,
+    pub(super) lock_hash: String,
 }
 
 #[derive(Debug)]
@@ -1159,17 +1183,17 @@ pub(crate) struct RunOutcome {
 
 #[derive(Debug, Clone)]
 pub(crate) struct RunProfileInfo {
-    pub(crate) name: String,
-    pub(crate) optimization_level: u8,
-    pub(crate) lazy_imports: bool,
-    pub(crate) lazy_imports_injected: bool,
-    pub(crate) timing: bool,
+    pub(super) name: String,
+    pub(super) optimization_level: u8,
+    pub(super) lazy_imports: bool,
+    pub(super) lazy_imports_injected: bool,
+    pub(super) timing: bool,
 }
 // ---------------------------------------------------------------------------
 // pybun outdated
 // ---------------------------------------------------------------------------
 
-pub(crate) async fn run_outdated(
+pub(super) async fn run_outdated(
     args: &OutdatedArgs,
     collector: &mut EventCollector,
 ) -> Result<RenderDetail> {
@@ -1390,7 +1414,7 @@ fn classify_update(current: &str, latest: &str) -> &'static str {
 // pybun upgrade
 // ---------------------------------------------------------------------------
 
-pub(crate) async fn run_upgrade(
+pub(super) async fn run_upgrade(
     args: &UpgradeArgs,
     collector: &mut EventCollector,
 ) -> Result<RenderDetail> {

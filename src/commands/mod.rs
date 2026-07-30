@@ -1,24 +1,20 @@
 use crate::build::{BuildBackend, BuildCache};
 use crate::cli::{
-    Cli, Commands, DriftArgs, InitArgs, InitTemplate, LockArgs, McpCommands, OutdatedArgs,
-    OutputFormat, ProgressMode, PythonCommands, SchemaArgs, SchemaCommands, SelfCommands,
-    TelemetryCommands, UpgradeArgs,
+    Cli, Commands, DriftArgs, InitArgs, InitTemplate, McpCommands, OutputFormat, ProgressMode,
+    PythonCommands, SchemaArgs, SchemaCommands, SelfCommands, TelemetryCommands,
 };
 use crate::env::{EnvSource, find_python_env};
-use crate::index::load_index_from_path;
 use crate::installer;
-use crate::lockfile::{Lockfile, Package, PackageSource};
+use crate::lockfile::Lockfile;
 use crate::pep723;
 use crate::pep723_cache::{Pep723Cache, Pep723CacheKey};
 use crate::progress::{ProgressConfig, ProgressDriver};
 use crate::project::Project;
 use crate::pypi::{PyPiClient, PyPiIndex};
 use crate::release_manifest::{ReleaseManifest, current_release_target};
-use crate::resolver::parse_version_relaxed;
 use crate::resolver::{
-    PackageIndex, Requirement, Resolution, ResolveOptions, compare_versions,
-    cp_tag_to_dotted_version, current_platform_tags, is_wheel_python_compatible, parse_wheel_tags,
-    python_version_to_cp_tag, resolve_with_options, select_artifact_for_platform_with_cp,
+    Requirement, ResolveOptions, cp_tag_to_dotted_version, is_wheel_python_compatible,
+    parse_wheel_tags, python_version_to_cp_tag, resolve_with_options,
 };
 use crate::sandbox;
 use crate::sbom;
@@ -27,31 +23,22 @@ use crate::schema::{
 };
 use crate::self_update::apply_update_for_asset;
 use crate::wheel_cache::WheelCache;
-use crate::workspace::Workspace;
 use color_eyre::eyre::{Result, eyre};
-use console::Style;
 use dialoguer::{Input, theme::ColorfulTheme};
-use futures::stream::{self, StreamExt};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
-use std::collections::HashMap;
 use std::fs;
 use std::io::IsTerminal;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
-use std::str::FromStr;
-use std::sync::Arc;
 use std::time::Duration;
 
 mod install;
-pub(crate) use install::{
-    AddOutcome, InstallOutcome, LockOutcome, RemoveOutcome, RunOutcome, RunProfileInfo,
-    ScriptLockInfo, add_package, install, lock_dependencies, remove_package, run_outdated,
-    run_upgrade, warn_on_prerelease_fallback,
-};
+use install::{AddOutcome, LockOutcome, RemoveOutcome, RunProfileInfo, ScriptLockInfo};
+pub(crate) use install::{InstallOutcome, RunOutcome, install};
 mod maintenance;
 mod test;
 mod tooling;
@@ -177,7 +164,7 @@ pub async fn execute(cli: Cli) -> Result<()> {
         Commands::Install(args) => {
             collector.event(EventType::ResolveStart);
             let pre_error_count = collector.error_diagnostic_count();
-            let result = install(args, &mut collector).await;
+            let result = install::install(args, &mut collector).await;
             match result {
                 Ok(InstallOutcome {
                     summary,
@@ -225,7 +212,7 @@ pub async fn execute(cli: Cli) -> Result<()> {
             }
         }
         Commands::Add(args) => {
-            let result = add_package(args);
+            let result = install::add_package(args);
             match result {
                 Ok(AddOutcome {
                     summary,
@@ -258,7 +245,7 @@ pub async fn execute(cli: Cli) -> Result<()> {
                         .collect();
 
                     let pre_error_count = collector.error_diagnostic_count();
-                    match install(&install_args, &mut collector).await {
+                    match install::install(&install_args, &mut collector).await {
                         Ok(_) => (
                             "add".to_string(),
                             RenderDetail::with_json(
@@ -319,7 +306,7 @@ pub async fn execute(cli: Cli) -> Result<()> {
             }
         }
         Commands::Remove(args) => {
-            let result = remove_package(args);
+            let result = install::remove_package(args);
             match result {
                 Ok(RemoveOutcome { summary, packages }) => {
                     let packages_json: Vec<serde_json::Value> = packages
@@ -359,7 +346,7 @@ pub async fn execute(cli: Cli) -> Result<()> {
         Commands::Lock(args) => {
             collector.event(EventType::ResolveStart);
             let pre_error_count = collector.error_diagnostic_count();
-            let result = lock_dependencies(args, &mut collector).await;
+            let result = install::lock_dependencies(args, &mut collector).await;
             match result {
                 Ok(LockOutcome {
                     summary,
@@ -932,7 +919,7 @@ pub async fn execute(cli: Cli) -> Result<()> {
         }
         Commands::Outdated(args) => {
             let pre_error_count = collector.error_diagnostic_count();
-            let result = run_outdated(args, &mut collector).await;
+            let result = install::run_outdated(args, &mut collector).await;
             match result {
                 Ok(detail) => ("outdated".to_string(), detail),
                 Err(e) => {
@@ -959,7 +946,7 @@ pub async fn execute(cli: Cli) -> Result<()> {
         }
         Commands::Upgrade(args) => {
             let pre_error_count = collector.error_diagnostic_count();
-            let result = run_upgrade(args, &mut collector).await;
+            let result = install::run_upgrade(args, &mut collector).await;
             match result {
                 Ok(detail) => ("upgrade".to_string(), detail),
                 Err(e) => {
@@ -2128,7 +2115,7 @@ pub(crate) async fn run_script(
                         }
                         let resolution =
                             resolution.map_err(|e: crate::resolver::ResolveError| eyre!(e))?;
-                        warn_on_prerelease_fallback(&resolution, collector);
+                        install::warn_on_prerelease_fallback(&resolution, collector);
 
                         // Prepare site-packages path
                         let major_minor = python_version
