@@ -82,76 +82,45 @@ pub struct Requirement {
 }
 
 impl Requirement {
-    pub fn exact(name: impl Into<String>, version: impl Into<String>) -> Self {
+    fn with_spec(name: impl Into<String>, spec: VersionSpec) -> Self {
         Self {
             name: name.into(),
-            specs: vec![VersionSpec::Exact(version.into())],
+            specs: vec![spec],
             marker: None,
             extras: Vec::new(),
         }
+    }
+
+    pub fn exact(name: impl Into<String>, version: impl Into<String>) -> Self {
+        Self::with_spec(name, VersionSpec::Exact(version.into()))
     }
 
     pub fn minimum(name: impl Into<String>, version: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            specs: vec![VersionSpec::Minimum(version.into())],
-            marker: None,
-            extras: Vec::new(),
-        }
+        Self::with_spec(name, VersionSpec::Minimum(version.into()))
     }
 
     pub fn minimum_exclusive(name: impl Into<String>, version: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            specs: vec![VersionSpec::MinimumExclusive(version.into())],
-            marker: None,
-            extras: Vec::new(),
-        }
+        Self::with_spec(name, VersionSpec::MinimumExclusive(version.into()))
     }
 
     pub fn maximum_inclusive(name: impl Into<String>, version: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            specs: vec![VersionSpec::MaximumInclusive(version.into())],
-            marker: None,
-            extras: Vec::new(),
-        }
+        Self::with_spec(name, VersionSpec::MaximumInclusive(version.into()))
     }
 
     pub fn maximum(name: impl Into<String>, version: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            specs: vec![VersionSpec::Maximum(version.into())],
-            marker: None,
-            extras: Vec::new(),
-        }
+        Self::with_spec(name, VersionSpec::Maximum(version.into()))
     }
 
     pub fn not_equal(name: impl Into<String>, version: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            specs: vec![VersionSpec::NotEqual(version.into())],
-            marker: None,
-            extras: Vec::new(),
-        }
+        Self::with_spec(name, VersionSpec::NotEqual(version.into()))
     }
 
     pub fn compatible(name: impl Into<String>, version: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            specs: vec![VersionSpec::Compatible(version.into())],
-            marker: None,
-            extras: Vec::new(),
-        }
+        Self::with_spec(name, VersionSpec::Compatible(version.into()))
     }
 
     pub fn any(name: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            specs: vec![VersionSpec::Any],
-            marker: None,
-            extras: Vec::new(),
-        }
+        Self::with_spec(name, VersionSpec::Any)
     }
 
     fn constraint_display(&self) -> String {

@@ -138,9 +138,9 @@ pub struct Diagnostic {
 }
 
 impl Diagnostic {
-    pub fn error(message: impl Into<String>) -> Self {
+    fn with_severity(level: DiagnosticLevel, message: impl Into<String>) -> Self {
         Self {
-            level: DiagnosticLevel::Error,
+            level,
             code: None,
             message: message.into(),
             file: None,
@@ -152,54 +152,22 @@ impl Diagnostic {
             next_action: None,
             fix_candidates: None,
         }
+    }
+
+    pub fn error(message: impl Into<String>) -> Self {
+        Self::with_severity(DiagnosticLevel::Error, message)
     }
 
     pub fn warning(message: impl Into<String>) -> Self {
-        Self {
-            level: DiagnosticLevel::Warning,
-            code: None,
-            message: message.into(),
-            file: None,
-            line: None,
-            suggestion: None,
-            context: None,
-            exception_type: None,
-            location: None,
-            next_action: None,
-            fix_candidates: None,
-        }
+        Self::with_severity(DiagnosticLevel::Warning, message)
     }
 
     pub fn info(message: impl Into<String>) -> Self {
-        Self {
-            level: DiagnosticLevel::Info,
-            code: None,
-            message: message.into(),
-            file: None,
-            line: None,
-            suggestion: None,
-            context: None,
-            exception_type: None,
-            location: None,
-            next_action: None,
-            fix_candidates: None,
-        }
+        Self::with_severity(DiagnosticLevel::Info, message)
     }
 
     pub fn hint(message: impl Into<String>) -> Self {
-        Self {
-            level: DiagnosticLevel::Hint,
-            code: None,
-            message: message.into(),
-            file: None,
-            line: None,
-            suggestion: None,
-            context: None,
-            exception_type: None,
-            location: None,
-            next_action: None,
-            fix_candidates: None,
-        }
+        Self::with_severity(DiagnosticLevel::Hint, message)
     }
 
     pub fn with_code(mut self, code: impl Into<String>) -> Self {
