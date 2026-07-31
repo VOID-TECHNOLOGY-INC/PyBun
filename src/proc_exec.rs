@@ -99,10 +99,10 @@ pub fn join_pipe_reader(handle: Option<thread::JoinHandle<Vec<u8>>>) -> Option<V
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    fn successful_command() -> Command {
+    pub(crate) fn successful_command() -> Command {
         #[cfg(unix)]
         {
             let mut cmd = Command::new("sh");

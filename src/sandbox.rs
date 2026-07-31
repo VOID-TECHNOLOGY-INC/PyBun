@@ -823,21 +823,7 @@ except Exception as exc:  # pragma: no cover - defensive, should not happen
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn successful_command() -> Command {
-        #[cfg(unix)]
-        {
-            let mut cmd = Command::new("sh");
-            cmd.arg("-c").arg("exit 0");
-            cmd
-        }
-        #[cfg(windows)]
-        {
-            let mut cmd = Command::new("cmd");
-            cmd.arg("/C").arg("exit 0");
-            cmd
-        }
-    }
+    use crate::proc_exec::tests::successful_command;
 
     fn output_command(message: &str) -> Command {
         #[cfg(unix)]
