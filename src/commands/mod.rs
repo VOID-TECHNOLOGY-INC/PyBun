@@ -379,7 +379,22 @@ pub async fn execute(cli: Cli) -> Result<()> {
         }
         Commands::Run(args) => {
             collector.event(EventType::ScriptStart);
-            let result = run_script(args, &mut collector, cli.format).await;
+            // PYBUN_SANDBOX_ALLOW_NETWORK is a documented CLI convenience
+            // (equivalent to --allow-network) resolved *only* here, at the
+            // real CLI entry point. `run_script`/`run_python_code` are shared
+            // with the MCP `pybun_run` tool, which builds `RunArgs` directly
+            // from a client-supplied sandbox policy rather than through this
+            // dispatcher; resolving the env var inside those shared functions
+            // would let an ambient env var on the parent pybun process
+            // silently override an MCP client's explicit `allow_network:
+            // false` (Issue #376).
+            let mut args = args.clone();
+            if !args.allow_network {
+                args.allow_network = std::env::var("PYBUN_SANDBOX_ALLOW_NETWORK")
+                    .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                    .unwrap_or(false);
+            }
+            let result = run_script(&args, &mut collector, cli.format).await;
             match result {
                 Ok(RunOutcome {
                     summary,

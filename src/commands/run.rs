@@ -895,10 +895,15 @@ pub(crate) async fn run_script(
         if is_uv_runner {
             return Err(eyre!("--sandbox is not supported with uv run backend"));
         }
-        let allow_network = args.allow_network
-            || std::env::var("PYBUN_SANDBOX_ALLOW_NETWORK")
-                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                .unwrap_or(false);
+        // `args.allow_network` is already fully resolved by the caller: the
+        // CLI dispatcher (`commands::execute`) folds in the
+        // PYBUN_SANDBOX_ALLOW_NETWORK env var before calling in, and the MCP
+        // `pybun_run` tool resolves it from the client's sandbox policy. Do
+        // not re-consult the ambient env var here, since this function is
+        // shared by both entry points and MCP callers must not have an
+        // explicit `allow_network: false` silently overridden by the parent
+        // process's environment (Issue #376).
+        let allow_network = args.allow_network;
         collector.info(format!("sandbox enabled (allow_network={})", allow_network));
         let guard = sandbox::apply_python_sandbox(
             &mut cmd,
@@ -1171,10 +1176,15 @@ fn run_python_code(
     let mut sandbox_info: Option<SandboxInfo> = None;
     let mut sandbox_guard: Option<sandbox::SandboxGuard> = None;
     if args.sandbox {
-        let allow_network = args.allow_network
-            || std::env::var("PYBUN_SANDBOX_ALLOW_NETWORK")
-                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                .unwrap_or(false);
+        // `args.allow_network` is already fully resolved by the caller: the
+        // CLI dispatcher (`commands::execute`) folds in the
+        // PYBUN_SANDBOX_ALLOW_NETWORK env var before calling in, and the MCP
+        // `pybun_run` tool resolves it from the client's sandbox policy. Do
+        // not re-consult the ambient env var here, since this function is
+        // shared by both entry points and MCP callers must not have an
+        // explicit `allow_network: false` silently overridden by the parent
+        // process's environment (Issue #376).
+        let allow_network = args.allow_network;
         collector.info(format!(
             "sandbox enabled for inline code (allow_network={})",
             allow_network

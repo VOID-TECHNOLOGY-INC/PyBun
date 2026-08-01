@@ -1152,6 +1152,132 @@ fn mcp_pybun_run_sandbox_policy_preserves_allow_network() {
     );
 }
 
+#[test]
+fn mcp_pybun_run_ambient_allow_network_env_does_not_override_explicit_false() {
+    // Issue #376: PYBUN_SANDBOX_ALLOW_NETWORK set in the *parent* pybun
+    // process environment (e.g. inherited from a shell or CI runner) must
+    // not silently override an explicit `allow_network: false` sandbox
+    // policy sent by the MCP client.
+    let call_req = r#"{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_run","arguments":{"code":"import os\nprint(os.environ.get('PYBUN_SANDBOX_ALLOW_NETWORK', 'missing'))","sandbox_policy":{"allow_network":false}}}}"#;
+    let project = tempdir().unwrap();
+    let stdout = mcp_call_in(
+        &[call_req],
+        project.path(),
+        &[("PYBUN_SANDBOX_ALLOW_NETWORK", OsString::from("1"))],
+    );
+    let result = tool_result_json(&stdout, 2);
+
+    assert_eq!(result["sandboxed"].as_bool(), Some(true), "{result}");
+    assert!(
+        result["stdout"]
+            .as_str()
+            .is_some_and(|stdout| stdout.trim() == "missing"),
+        "ambient PYBUN_SANDBOX_ALLOW_NETWORK=1 on the parent process must not leak into a \
+         sandbox whose policy explicitly disabled network access: {result}"
+    );
+}
+
+#[test]
+fn mcp_pybun_run_blocks_io_open_bypass() {
+    // Issue #376: `io.open` previously kept an unpatched reference even
+    // after `builtins.open` was patched, letting sandboxed code bypass the
+    // read allowlist via `import io; io.open(...)`.
+    let secret = tempdir().unwrap();
+    let secret_path = secret.path().join("secret.txt");
+    fs::write(&secret_path, "top secret").unwrap();
+    let readable = tempdir().unwrap();
+
+    let secret_json = serde_json::to_string(secret_path.to_str().unwrap()).unwrap();
+    let allow_read_json = serde_json::to_string(readable.path().to_str().unwrap()).unwrap();
+    let code = format!(
+        "import io\ntry:\n    io.open({secret_json}).read()\n    print('bypassed')\nexcept PermissionError:\n    print('blocked')"
+    );
+    let code_json = serde_json::to_string(&code).unwrap();
+    let call_req = format!(
+        r#"{{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{{"name":"pybun_run","arguments":{{"code":{code_json},"sandbox_policy":{{"allow_read":[{allow_read_json}]}}}}}}}}"#
+    );
+    let stdout = mcp_call(&[&call_req]);
+    let result = tool_result_json(&stdout, 2);
+
+    assert!(
+        result["stdout"]
+            .as_str()
+            .is_some_and(|stdout| stdout.contains("blocked")),
+        "io.open must be subject to the same read policy as builtins.open: {result}"
+    );
+}
+
+#[test]
+fn mcp_pybun_run_blocks_os_open_bypass() {
+    // Issue #376: `os.open` was left unpatched, letting sandboxed code
+    // bypass both the read and write allowlists via the raw os-level API.
+    let secret = tempdir().unwrap();
+    let secret_path = secret.path().join("secret.txt");
+    fs::write(&secret_path, "top secret").unwrap();
+    let readable = tempdir().unwrap();
+
+    let secret_json = serde_json::to_string(secret_path.to_str().unwrap()).unwrap();
+    let allow_read_json = serde_json::to_string(readable.path().to_str().unwrap()).unwrap();
+    let code = format!(
+        "import os\ntry:\n    os.close(os.open({secret_json}, os.O_RDONLY))\n    print('bypassed')\nexcept PermissionError:\n    print('blocked')"
+    );
+    let code_json = serde_json::to_string(&code).unwrap();
+    let call_req = format!(
+        r#"{{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{{"name":"pybun_run","arguments":{{"code":{code_json},"sandbox_policy":{{"allow_read":[{allow_read_json}]}}}}}}}}"#
+    );
+    let stdout = mcp_call(&[&call_req]);
+    let result = tool_result_json(&stdout, 2);
+
+    assert!(
+        result["stdout"]
+            .as_str()
+            .is_some_and(|stdout| stdout.contains("blocked")),
+        "os.open must be subject to the same read policy as builtins.open: {result}"
+    );
+}
+
+#[test]
+fn mcp_pybun_run_blocks_udp_sendto_when_network_disabled() {
+    // Issue #376: only connect/connect_ex were patched, so a connectionless
+    // UDP socket could send/receive datagrams via sendto/recvfrom without
+    // ever calling connect, bypassing the network block entirely.
+    let call_req = r#"{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_run","arguments":{"code":"import socket\ns = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)\ntry:\n    s.sendto(b'x', ('8.8.8.8', 53))\n    print('bypassed')\nexcept PermissionError:\n    print('blocked')","sandbox_policy":{"allow_network":false}}}}"#;
+    let stdout = mcp_call(&[call_req]);
+    let result = tool_result_json(&stdout, 2);
+
+    assert!(
+        result["stdout"]
+            .as_str()
+            .is_some_and(|stdout| stdout.contains("blocked")),
+        "UDP sendto must be blocked alongside TCP connect when network access is disabled: {result}"
+    );
+}
+
+#[test]
+fn mcp_pybun_run_write_policy_denies_sys_prefix_despite_always_allow_read() {
+    // Issue #376: `_is_allowed` was shared between read and write checks, so
+    // sys-prefix directories (always readable, for imports) were also always
+    // writable once an explicit write allowlist was configured -- letting
+    // sandboxed code overwrite interpreter/stdlib files under an explicit
+    // write policy meant to restrict writes to a single directory.
+    let writable = tempdir().unwrap();
+    let allow_write_json = serde_json::to_string(writable.path().to_str().unwrap()).unwrap();
+    let code = "import sys\ntry:\n    open(sys.executable, 'wb').write(b'tampered')\n    print('bypassed')\nexcept PermissionError:\n    print('blocked')";
+    let code_json = serde_json::to_string(code).unwrap();
+    let call_req = format!(
+        r#"{{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{{"name":"pybun_run","arguments":{{"code":{code_json},"sandbox_policy":{{"allow_write":[{allow_write_json}]}}}}}}}}"#
+    );
+    let stdout = mcp_call(&[&call_req]);
+    let result = tool_result_json(&stdout, 2);
+
+    assert!(
+        result["stdout"]
+            .as_str()
+            .is_some_and(|stdout| stdout.contains("blocked")),
+        "an explicit write allowlist must not implicitly grant write access to sys prefixes: {result}"
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn mcp_pybun_run_default_sandbox_reports_process_and_file_size_limits() {
