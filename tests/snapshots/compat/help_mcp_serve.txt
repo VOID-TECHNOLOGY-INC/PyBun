@@ -3,9 +3,10 @@ Start MCP server for programmatic control
 Usage: pybun mcp serve [OPTIONS]
 
 Options:
-      --format <FORMAT>      Output format for machine readability [default: text] [possible values: text, json]
-      --port <PORT>          Port to bind (for HTTP mode) [default: 9999]
-      --progress <PROGRESS>  Progress UI mode (auto hides on non-TTY) [env: PYBUN_PROGRESS=] [default: auto] [possible values: auto, always, never]
-      --stdio                Use stdio mode for MCP communication
-      --no-progress          Disable progress UI
-  -h, --help                 Print help
+      --format <FORMAT>          Output format for machine readability [default: text] [possible values: text, json]
+      --port <PORT>              Port to bind (for HTTP mode) [default: 9999]
+      --progress <PROGRESS>      Progress UI mode (auto hides on non-TTY) [env: PYBUN_PROGRESS=] [default: auto] [possible values: auto, always, never]
+      --stdio                    Use stdio mode for MCP communication
+      --allow-unsafe-no-sandbox  Allow clients to set `unsafe_no_sandbox: true` on `pybun_run` calls. Disabled by default; client-supplied JSON-RPC arguments alone can never disable the sandbox (Issue #377)
+      --no-progress              Disable progress UI
+  -h, --help                     Print help
