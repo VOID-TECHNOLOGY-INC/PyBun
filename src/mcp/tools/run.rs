@@ -52,21 +52,32 @@ pub(crate) async fn call_run(args: Value) -> Result<String, String> {
     if script.is_none() && code.is_none() {
         return Err("Either 'script' or 'code' must be provided".to_string());
     }
-    if let Some(script_path) = script {
-        let path = PathBuf::from(script_path);
-        if !path.exists() {
-            return Err(format!("Script not found: {}", script_path));
+    // Resolve `script` to its canonicalized form up front and use that
+    // resolved path everywhere downstream (including the actual execution
+    // target), rather than re-deriving it from the untrusted raw string.
+    // Re-resolving later would reopen a TOCTOU window between this
+    // containment check and execution (e.g. a symlink swapped in after the
+    // check but before the run).
+    let canonical_script = match script {
+        Some(script_path) => {
+            let path = PathBuf::from(script_path);
+            if !path.exists() {
+                return Err(format!("Script not found: {}", script_path));
+            }
+            let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+            let canonical_cwd = cwd.canonicalize().map_err(|e| e.to_string())?;
+            let canonical_path = path.canonicalize().map_err(|e| e.to_string())?;
+            if canonical_path.strip_prefix(&canonical_cwd).is_err() {
+                return Err(format!(
+                    "Script path resolves outside the current project directory: {}",
+                    script_path
+                ));
+            }
+            Some(canonical_path.to_string_lossy().to_string())
         }
-        let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-        let canonical_cwd = cwd.canonicalize().map_err(|e| e.to_string())?;
-        let canonical_path = path.canonicalize().map_err(|e| e.to_string())?;
-        if canonical_path.strip_prefix(&canonical_cwd).is_err() {
-            return Err(format!(
-                "Script path resolves outside the current project directory: {}",
-                script_path
-            ));
-        }
-    }
+        None => None,
+    };
+    let script = canonical_script.as_deref();
     if dry_run {
         let (risk_level, risk_reasons) = estimate_run_risk(script, code, use_sandbox);
         return Ok(json!({
