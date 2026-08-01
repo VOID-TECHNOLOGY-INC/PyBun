@@ -1237,6 +1237,35 @@ fn mcp_pybun_run_blocks_os_open_bypass() {
 }
 
 #[test]
+fn mcp_pybun_run_blocks_os_open_o_tmpfile_write_bypass() {
+    // Issue #376 follow-up: os.O_TMPFILE (Linux) creates an unnamed file
+    // inside the target directory even when combined with O_RDONLY, so it
+    // must be treated as a write to that directory despite not setting
+    // O_CREAT/O_TRUNC/O_APPEND. On platforms without O_TMPFILE the script
+    // reports "skipped" and the assertion accepts that outcome.
+    let unwritable = tempdir().unwrap();
+    let readable = tempdir().unwrap();
+    let unwritable_json = serde_json::to_string(unwritable.path().to_str().unwrap()).unwrap();
+    let allow_read_json = serde_json::to_string(readable.path().to_str().unwrap()).unwrap();
+    let code = format!(
+        "import os\nif not hasattr(os, 'O_TMPFILE'):\n    print('skipped')\nelse:\n    try:\n        os.close(os.open({unwritable_json}, os.O_TMPFILE | os.O_RDONLY))\n        print('bypassed')\n    except PermissionError:\n        print('blocked')"
+    );
+    let code_json = serde_json::to_string(&code).unwrap();
+    let call_req = format!(
+        r#"{{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{{"name":"pybun_run","arguments":{{"code":{code_json},"sandbox_policy":{{"allow_read":[{allow_read_json}]}}}}}}}}"#
+    );
+    let stdout = mcp_call(&[&call_req]);
+    let result = tool_result_json(&stdout, 2);
+
+    assert!(
+        result["stdout"]
+            .as_str()
+            .is_some_and(|stdout| stdout.contains("blocked") || stdout.contains("skipped")),
+        "O_TMPFILE must be treated as a write to the target directory: {result}"
+    );
+}
+
+#[test]
 fn mcp_pybun_run_blocks_udp_sendto_when_network_disabled() {
     // Issue #376: only connect/connect_ex were patched, so a connectionless
     // UDP socket could send/receive datagrams via sendto/recvfrom without

@@ -801,13 +801,17 @@ def _patch_filesystem():
     # bypassing every check above.
     io.open = _checked_open
 
+    # O_TMPFILE (Linux 3.11+) creates an unnamed file inside the given
+    # directory even when combined with O_RDONLY, so it must count as a
+    # write to that directory despite not setting O_CREAT/O_TRUNC/O_APPEND.
+    _WRITE_FLAGS = os.O_CREAT | os.O_TRUNC | os.O_APPEND
+    if hasattr(os, "O_TMPFILE"):
+        _WRITE_FLAGS |= os.O_TMPFILE
+
     def _checked_os_open(path, flags, *args, **kwargs):
         accmode = flags & os.O_ACCMODE
         wants_read = accmode in (os.O_RDONLY, os.O_RDWR)
-        wants_write = (
-            accmode in (os.O_WRONLY, os.O_RDWR)
-            or bool(flags & (os.O_CREAT | os.O_TRUNC | os.O_APPEND))
-        )
+        wants_write = accmode in (os.O_WRONLY, os.O_RDWR) or bool(flags & _WRITE_FLAGS)
         if not isinstance(path, (str, bytes, os.PathLike)):
             return _orig_os_open(path, flags, *args, **kwargs)
         decoded = os.fsdecode(os.fspath(path))
