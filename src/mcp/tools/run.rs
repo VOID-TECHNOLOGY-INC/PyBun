@@ -3,7 +3,8 @@
 //! Extracted from `mcp.rs` (Issue #344).
 
 use super::super::audit::{
-    describe_run_target, estimate_run_risk, mcp_sandbox_config_from_policy, sandbox_policy_json,
+    describe_run_target, estimate_run_risk, mcp_allow_unsafe_no_sandbox,
+    mcp_sandbox_config_from_policy, sandbox_policy_json, unsafe_no_sandbox_denied_warning,
     unsafe_no_sandbox_warning,
 };
 use serde_json::{Value, json};
@@ -25,17 +26,24 @@ pub(crate) async fn call_run(args: Value) -> Result<String, String> {
         })
         .unwrap_or_default();
 
-    let unsafe_no_sandbox = args
+    let unsafe_no_sandbox_requested = args
         .get("unsafe_no_sandbox")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    // Client-supplied JSON-RPC arguments alone must never disable the sandbox;
+    // the server operator must also opt in via `--allow-unsafe-no-sandbox`.
+    let unsafe_no_sandbox = unsafe_no_sandbox_requested && mcp_allow_unsafe_no_sandbox();
     let use_sandbox = !unsafe_no_sandbox;
     let policy = args
         .get("sandbox_policy")
         .cloned()
         .unwrap_or_else(|| json!({}));
     let effective_sandbox_config = mcp_sandbox_config_from_policy(&policy);
-    let warnings = unsafe_no_sandbox_warning(unsafe_no_sandbox);
+    let warnings = if unsafe_no_sandbox_requested && !unsafe_no_sandbox {
+        unsafe_no_sandbox_denied_warning()
+    } else {
+        unsafe_no_sandbox_warning(unsafe_no_sandbox)
+    };
 
     let dry_run = args
         .get("dry_run")
@@ -44,11 +52,32 @@ pub(crate) async fn call_run(args: Value) -> Result<String, String> {
     if script.is_none() && code.is_none() {
         return Err("Either 'script' or 'code' must be provided".to_string());
     }
-    if let Some(script_path) = script
-        && !PathBuf::from(script_path).exists()
-    {
-        return Err(format!("Script not found: {}", script_path));
-    }
+    // Resolve `script` to its canonicalized form up front and use that
+    // resolved path everywhere downstream (including the actual execution
+    // target), rather than re-deriving it from the untrusted raw string.
+    // Re-resolving later would reopen a TOCTOU window between this
+    // containment check and execution (e.g. a symlink swapped in after the
+    // check but before the run).
+    let canonical_script = match script {
+        Some(script_path) => {
+            let path = PathBuf::from(script_path);
+            if !path.exists() {
+                return Err(format!("Script not found: {}", script_path));
+            }
+            let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+            let canonical_cwd = cwd.canonicalize().map_err(|e| e.to_string())?;
+            let canonical_path = path.canonicalize().map_err(|e| e.to_string())?;
+            if canonical_path.strip_prefix(&canonical_cwd).is_err() {
+                return Err(format!(
+                    "Script path resolves outside the current project directory: {}",
+                    script_path
+                ));
+            }
+            Some(canonical_path.to_string_lossy().to_string())
+        }
+        None => None,
+    };
+    let script = canonical_script.as_deref();
     if dry_run {
         let (risk_level, risk_reasons) = estimate_run_risk(script, code, use_sandbox);
         return Ok(json!({

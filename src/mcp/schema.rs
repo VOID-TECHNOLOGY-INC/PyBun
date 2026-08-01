@@ -87,7 +87,7 @@ pub(super) fn build_tools_list() -> Vec<Tool> {
                     },
                     "unsafe_no_sandbox": {
                         "type": "boolean",
-                        "description": "Disable the default MCP sandbox. Use only in controlled environments."
+                        "description": "Request disabling the default MCP sandbox. Only takes effect if the server was started with `pybun mcp serve --allow-unsafe-no-sandbox`; otherwise this request is denied and the sandbox remains enabled."
                     },
                     "sandbox_policy": {
                         "type": "object",

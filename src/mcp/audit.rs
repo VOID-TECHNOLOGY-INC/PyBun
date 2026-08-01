@@ -756,6 +756,15 @@ pub(super) fn sandbox_policy_json(config: &crate::sandbox::SandboxConfig) -> Val
     })
 }
 
+/// Server-side gate for `unsafe_no_sandbox`. Client-supplied JSON-RPC arguments
+/// alone must never disable the sandbox; the operator must also opt in via
+/// `pybun mcp serve --allow-unsafe-no-sandbox` (which sets this env var).
+pub(super) fn mcp_allow_unsafe_no_sandbox() -> bool {
+    std::env::var("PYBUN_MCP_ALLOW_UNSAFE_NO_SANDBOX")
+        .map(|v| v == "1")
+        .unwrap_or(false)
+}
+
 pub(super) fn unsafe_no_sandbox_warning(enabled: bool) -> Vec<Value> {
     if enabled {
         vec![json!({
@@ -767,6 +776,15 @@ pub(super) fn unsafe_no_sandbox_warning(enabled: bool) -> Vec<Value> {
     } else {
         vec![]
     }
+}
+
+pub(super) fn unsafe_no_sandbox_denied_warning() -> Vec<Value> {
+    vec![json!({
+        "level": "warning",
+        "code": "W_MCP_UNSAFE_NO_SANDBOX_DENIED",
+        "message": "unsafe_no_sandbox=true was requested but denied because the MCP server was not started with --allow-unsafe-no-sandbox",
+        "suggestion": "Restart `pybun mcp serve` with --allow-unsafe-no-sandbox if you intend to allow sandbox opt-out."
+    })]
 }
 
 pub(super) fn describe_run_target(script: Option<&str>, code: Option<&str>) -> String {

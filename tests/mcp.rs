@@ -979,8 +979,13 @@ fn mcp_pybun_run_defaults_to_sandbox_without_policy() {
 
 #[test]
 fn mcp_pybun_run_unsafe_no_sandbox_allows_explicit_opt_out_with_warning() {
+    let temp = tempdir().unwrap();
     let call_req = r#"{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_run","arguments":{"code":"import subprocess, sys\nsubprocess.run([sys.executable, '-c', \"print('optout-child')\"])", "unsafe_no_sandbox": true}}}"#;
-    let stdout = mcp_call(&[call_req]);
+    let stdout = mcp_call_in(
+        &[call_req],
+        temp.path(),
+        &[("PYBUN_MCP_ALLOW_UNSAFE_NO_SANDBOX", OsString::from("1"))],
+    );
     let result = tool_result_json(&stdout, 2);
 
     assert_eq!(result["sandboxed"].as_bool(), Some(false), "{result}");
@@ -994,6 +999,50 @@ fn mcp_pybun_run_unsafe_no_sandbox_allows_explicit_opt_out_with_warning() {
         result["warnings"][0]["code"].as_str(),
         Some("W_MCP_UNSAFE_NO_SANDBOX"),
         "{result}"
+    );
+}
+
+#[test]
+fn mcp_pybun_run_unsafe_no_sandbox_denied_without_server_gate() {
+    // Without PYBUN_MCP_ALLOW_UNSAFE_NO_SANDBOX set, a client-requested
+    // unsafe_no_sandbox=true must be denied and the sandbox must stay enabled
+    // (Issue #377: unauthenticated sandbox disable).
+    let call_req = r#"{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_run","arguments":{"code":"print('should-be-sandboxed')", "unsafe_no_sandbox": true}}}"#;
+    let stdout = mcp_call(&[call_req]);
+    let result = tool_result_json(&stdout, 2);
+
+    assert_eq!(result["sandboxed"].as_bool(), Some(true), "{result}");
+    assert_eq!(
+        result["warnings"][0]["code"].as_str(),
+        Some("W_MCP_UNSAFE_NO_SANDBOX_DENIED"),
+        "{result}"
+    );
+}
+
+#[test]
+fn mcp_pybun_run_script_path_traversal_rejected() {
+    // A script path that resolves outside the current working directory must
+    // be rejected (Issue #377: path traversal via `script`).
+    let project = tempdir().unwrap();
+    let outside = tempdir().unwrap();
+    let outside_script = outside.path().join("outside.py");
+    fs::write(&outside_script, "print('should-not-run')").unwrap();
+
+    let script_json = serde_json::to_string(outside_script.to_str().unwrap()).unwrap();
+    let call_req = format!(
+        r#"{{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{{"name":"pybun_run","arguments":{{"script":{script_json}}}}}}}"#
+    );
+    let stdout = mcp_call_in(&[&call_req], project.path(), &[]);
+
+    let responses = json_rpc_lines(&stdout);
+    let response = responses
+        .iter()
+        .find(|value| value["id"].as_i64() == Some(2))
+        .unwrap_or_else(|| panic!("tools/call response with id 2 should be present: {stdout}"));
+    assert_eq!(
+        response["result"]["isError"].as_bool(),
+        Some(true),
+        "expected an error response for path traversal, got: {response}"
     );
 }
 
