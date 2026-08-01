@@ -238,6 +238,7 @@ mod tests {
             command: Commands::Mcp(McpCommands::Serve(McpServeArgs {
                 port: 9999,
                 stdio: true,
+                allow_unsafe_no_sandbox: false,
             })),
         };
         assert!(requires_tokio_runtime(&cli));

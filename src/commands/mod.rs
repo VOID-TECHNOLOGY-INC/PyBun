@@ -643,6 +643,13 @@ pub async fn execute(cli: Cli) -> Result<()> {
         }
         Commands::Mcp(cmd) => match cmd {
             McpCommands::Serve(args) => {
+                if args.allow_unsafe_no_sandbox {
+                    // SAFETY: single-threaded at startup, before any concurrent
+                    // access to the environment begins.
+                    unsafe {
+                        std::env::set_var("PYBUN_MCP_ALLOW_UNSAFE_NO_SANDBOX", "1");
+                    }
+                }
                 if args.stdio {
                     // Run MCP server in stdio mode - this blocks until shutdown
                     if let Err(e) = crate::mcp::run_stdio_server().await {

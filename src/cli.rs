@@ -411,6 +411,11 @@ pub struct McpServeArgs {
     /// Use stdio mode for MCP communication.
     #[arg(long)]
     pub stdio: bool,
+    /// Allow clients to set `unsafe_no_sandbox: true` on `pybun_run` calls.
+    /// Disabled by default; client-supplied JSON-RPC arguments alone can
+    /// never disable the sandbox (Issue #377).
+    #[arg(long)]
+    pub allow_unsafe_no_sandbox: bool,
 }
 
 #[derive(Subcommand, Debug)]
