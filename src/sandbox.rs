@@ -265,13 +265,16 @@ pub fn apply_python_sandbox(cmd: &mut Command, config: SandboxConfig) -> Result<
         .map_err(|e| eyre!("failed to join PYTHONPATH entries for sandbox: {e}"))?;
     cmd.env("PYTHONPATH", joined);
 
-    // Note: std::env::var reads from the *parent process* environment, not from `cmd`.
-    // env_clear() above only strips the *child's* inherited env, so reading
-    // PYBUN_SANDBOX_ALLOW_NETWORK here correctly reflects the caller's intent.
-    let allow_network = config.allow_network
-        || std::env::var("PYBUN_SANDBOX_ALLOW_NETWORK")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
+    // Network access is decided solely by `config.allow_network`. Do not also
+    // consult the parent process's `PYBUN_SANDBOX_ALLOW_NETWORK` here: this
+    // function is the single security-relevant chokepoint shared by both the
+    // CLI and MCP entry points, and an ambient env var on the *parent* pybun
+    // process (inherited from a shell, CI runner, or wrapper script) must
+    // never be able to silently flip an explicit `allow_network: false` to
+    // true. Callers that want the env var to act as a CLI convenience flag
+    // (see `commands/mod.rs`'s CLI dispatcher) resolve it themselves before
+    // building the config, where the decision is explicit and auditable.
+    let allow_network = config.allow_network;
 
     cmd.env("PYBUN_SANDBOX", "1");
     if allow_network {
@@ -538,6 +541,7 @@ pub fn execute_with_optional_sandbox(
 /// static string with no Rust format-macro escaping issues.
 const SITECUSTOMIZE_PY: &str = r#"
 import os
+import io
 import sys
 import json
 import atexit
@@ -546,6 +550,7 @@ import subprocess
 import builtins
 
 _orig_open = builtins.open  # save before any patching
+_orig_os_open = os.open  # save before any patching
 
 ALLOW_NETWORK = os.environ.get("PYBUN_SANDBOX_ALLOW_NETWORK") == "1"
 _AUDIT_FILE = os.environ.get("PYBUN_SANDBOX_AUDIT_FILE", "")
@@ -563,6 +568,16 @@ def _load_policy_paths(name):
 
 
 def _normalize_path(path):
+    # KNOWN RESIDUAL RISK (TOCTOU): realpath() resolves symlinks at the time
+    # of this check, but the actual open()/os.open() call happens afterward.
+    # A symlink swapped in between the check and the syscall (e.g. by a
+    # concurrent process) could redirect an allowed path to a denied one.
+    # Closing this fully would require O_NOFOLLOW plus resolving-then-
+    # opening by file descriptor throughout the stdlib, which is impractical
+    # to retrofit onto every os.* call the sandbox patches. Accepted as a
+    # low-probability gap for now: sandboxed code cannot itself create
+    # symlinks outside its write allowlist (symlink() is checked above), so
+    # exploiting this requires an external actor racing the filesystem.
     return os.path.realpath(os.path.abspath(path))
 
 
@@ -608,13 +623,34 @@ def _deny(reason, audit_key=None):
     raise PermissionError("pybun sandbox: " + reason + " blocked")
 
 
-def _is_allowed(path, allowed_paths):
-    """Return True if path is under any of the allowed directories or sys prefixes."""
+def _is_read_allowed(path):
+    """Return True if path is readable: under the read allowlist or a sys prefix.
+
+    Sys prefixes (the interpreter's own install dirs) are always readable so
+    that Python's own imports keep working even under a restrictive read
+    policy.
+    """
     try:
         normalized_path = _normalize_path(os.fsdecode(os.fspath(path)))
         if any(_path_within(normalized_path, p) for p in _ALWAYS_ALLOW_READ):
             return True
-        return any(_path_within(normalized_path, p) for p in allowed_paths)
+        return any(_path_within(normalized_path, p) for p in _ALLOW_READ)
+    except Exception:
+        return False
+
+
+def _is_write_allowed(path):
+    """Return True if path is under the write allowlist.
+
+    Deliberately does NOT consult _ALWAYS_ALLOW_READ: sys prefixes must stay
+    readable for imports but are not implicitly writable just because an
+    explicit write allowlist was configured. Treating them as always-writable
+    let sandboxed code overwrite interpreter/stdlib files whenever a write
+    policy was set (the policy was meant to restrict writes, not widen them).
+    """
+    try:
+        normalized_path = _normalize_path(os.fsdecode(os.fspath(path)))
+        return any(_path_within(normalized_path, p) for p in _ALLOW_WRITE)
     except Exception:
         return False
 
@@ -716,6 +752,17 @@ def _block_network():
     if hasattr(socket, "socketpair"):
         socket.socketpair = _blocked
 
+    # connect/connect_ex only cover connection-oriented (TCP) sockets. A
+    # connectionless UDP socket can send and receive datagrams to arbitrary
+    # remote addresses via sendto/sendmsg/recvfrom/recvmsg without ever
+    # calling connect, which previously bypassed the network block entirely.
+    for _name in ("sendto", "sendmsg"):
+        if hasattr(socket.socket, _name):
+            setattr(socket.socket, _name, _blocked_connect)
+    for _name in ("recvfrom", "recvmsg"):
+        if hasattr(socket.socket, _name):
+            setattr(socket.socket, _name, _blocked_connect)
+
 
 def _patch_filesystem():
     def _check_write_path(path, action):
@@ -727,7 +774,7 @@ def _patch_filesystem():
         if _AUDIT_FILE_PATH and _normalize_path(decoded) == _AUDIT_FILE_PATH:
             _deny(action + " sandbox audit file", "blocked_file_writes")
         if _HAS_WRITE_POLICY:
-            if not _is_allowed(decoded, _ALLOW_WRITE):
+            if not _is_write_allowed(decoded):
                 _deny(action + " " + decoded, "blocked_file_writes")
         elif _HAS_DEFAULT_DENY_WRITE:
             if _is_in_denied(decoded, _DEFAULT_DENY_WRITE):
@@ -741,13 +788,37 @@ def _patch_filesystem():
         if not path:
             return _orig_open(file, mode, *args, **kwargs)
         if _HAS_READ_POLICY and _mode_needs_read(mode):
-            if not _is_allowed(path, _ALLOW_READ):
+            if not _is_read_allowed(path):
                 _deny("read from " + path, "blocked_file_reads")
         if _mode_needs_write(mode):
             _check_write_path(path, "write to")
         return _orig_open(file, mode, *args, **kwargs)
 
     builtins.open = _checked_open
+    # io.open is the same underlying function as builtins.open in CPython,
+    # but code that does `from io import open` or `io.open(...)` binds it
+    # directly and previously kept a reference to the unpatched original,
+    # bypassing every check above.
+    io.open = _checked_open
+
+    def _checked_os_open(path, flags, *args, **kwargs):
+        accmode = flags & os.O_ACCMODE
+        wants_read = accmode in (os.O_RDONLY, os.O_RDWR)
+        wants_write = (
+            accmode in (os.O_WRONLY, os.O_RDWR)
+            or bool(flags & (os.O_CREAT | os.O_TRUNC | os.O_APPEND))
+        )
+        if not isinstance(path, (str, bytes, os.PathLike)):
+            return _orig_os_open(path, flags, *args, **kwargs)
+        decoded = os.fsdecode(os.fspath(path))
+        if decoded:
+            if _HAS_READ_POLICY and wants_read and not _is_read_allowed(decoded):
+                _deny("read from " + decoded, "blocked_file_reads")
+            if wants_write:
+                _check_write_path(decoded, "write to")
+        return _orig_os_open(path, flags, *args, **kwargs)
+
+    os.open = _checked_os_open
 
     def _wrap_single_path_mutation(fn, action):
         def _wrapped(path, *args, **kwargs):

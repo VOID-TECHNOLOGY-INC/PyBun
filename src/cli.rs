@@ -207,7 +207,7 @@ pub struct PackageArgs {
     pub pre: bool,
 }
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Clone)]
 pub struct RunArgs {
     /// Script or module to execute. Use -c/--code for inline code.
     #[arg(value_name = "TARGET", allow_hyphen_values = true)]
