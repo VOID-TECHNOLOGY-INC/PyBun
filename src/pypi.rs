@@ -315,9 +315,7 @@ impl PyPiClient {
             .map_err(|e| PyPiError::Parse(e.to_string()))?;
         let resp = self.http.get(url).send().await?;
         if !resp.status().is_success() {
-            return Err(PyPiError::Http(
-                resp.error_for_status().unwrap_err().to_string(),
-            ));
+            return Err(PyPiError::Http(resp.status().to_string()));
         }
         let body: VersionResponse = resp.json().await?;
         Ok(body.info.requires_dist.unwrap_or_default())
@@ -703,7 +701,11 @@ fn eval_python_version_marker(marker: &str, py_version: &str) -> Option<bool> {
             let rhs = rhs.trim_matches(|c: char| c == '"' || c == '\'' || c.is_whitespace());
             match lhs_var {
                 "python_version" => {
-                    return Some(compare_versions(&major_minor(py_version), rhs, op));
+                    return Some(compare_versions(
+                        &major_minor(py_version),
+                        &major_minor(rhs),
+                        op,
+                    ));
                 }
                 "python_full_version" => {
                     return Some(compare_versions(py_version, rhs, op));
@@ -1064,6 +1066,15 @@ mod tests {
         // A python_version marker must not be evaluated against the full
         // patch-level precision that python_full_version requires.
         assert!(marker_allows(r#"python_version >= "3.11""#, "3.11.0"));
+    }
+
+    #[test]
+    fn marker_python_version_truncates_nonstandard_three_part_rhs() {
+        // python_version markers are major.minor per PEP 508, but some
+        // real-world metadata uses a 3-part rhs. Both sides must be
+        // truncated to major.minor so the comparison is still meaningful.
+        assert!(marker_allows(r#"python_version == "3.10.7""#, "3.10.2"));
+        assert!(marker_allows(r#"python_version >= "3.10.1""#, "3.10.5"));
     }
 
     #[test]
