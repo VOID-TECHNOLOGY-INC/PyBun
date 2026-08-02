@@ -216,6 +216,57 @@ async fn concurrent_metadata_fetch_is_deduped() {
     assert_eq!(meta_mock.calls(), 1);
 }
 
+#[tokio::test]
+async fn version_metadata_server_error_surfaces_as_error() {
+    // Issue #381: a non-success status from the per-version metadata
+    // endpoint must propagate as an error instead of silently resolving to
+    // an empty dependency list, which would corrupt dependency resolution.
+    let temp = tempdir().unwrap();
+    let cache_dir = temp.path().join("cache");
+    let server = MockServer::start();
+    let base = server.base_url();
+    let wheel_sha256 = wheel_sha256();
+
+    let project_body = json!({
+        "info": { "name": "app", "version": "1.0.0" },
+        "releases": {
+            "1.0.0": [
+                {
+                    "filename": "app-1.0.0-py3-none-any.whl",
+                    "packagetype": "bdist_wheel",
+                    "url": format!("{}/files/app-1.0.0-py3-none-any.whl", base),
+                    "yanked": false,
+                    "digests": { "sha256": wheel_sha256 }
+                }
+            ]
+        }
+    })
+    .to_string();
+
+    server.mock(|when, then| {
+        when.method(GET).path("/pypi/app/json");
+        then.status(200)
+            .header("Content-Type", "application/json")
+            .body(project_body.clone());
+    });
+
+    server.mock(|when, then| {
+        when.method(GET).path("/pypi/app/1.0.0/json");
+        then.status(500);
+    });
+
+    let client = PyPiClient::with_config(&base, cache_dir, false).unwrap();
+    let index = PyPiIndex::new(client);
+
+    let result = index.get("app", "1.0.0").await;
+    assert!(
+        result.is_err(),
+        "expected a 500 from the version metadata endpoint to surface as an \
+         error, got {:?}",
+        result
+    );
+}
+
 #[test]
 fn install_does_not_prefetch_all_version_metadata() {
     let temp = tempdir().unwrap();

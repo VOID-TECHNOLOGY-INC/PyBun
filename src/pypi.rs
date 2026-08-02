@@ -315,7 +315,9 @@ impl PyPiClient {
             .map_err(|e| PyPiError::Parse(e.to_string()))?;
         let resp = self.http.get(url).send().await?;
         if !resp.status().is_success() {
-            return Ok(Vec::new());
+            return Err(PyPiError::Http(
+                resp.error_for_status().unwrap_err().to_string(),
+            ));
         }
         let body: VersionResponse = resp.json().await?;
         Ok(body.info.requires_dist.unwrap_or_default())
@@ -675,10 +677,9 @@ pub(crate) fn marker_allows(marker: &str, py_version: &str) -> bool {
         return false;
     }
 
-    // Handle simple python_version comparisons; if parsing fails, allow by default
-    if marker.contains("python_version")
-        && matches!(eval_python_version_marker(&marker, py_version), Some(false))
-    {
+    // Handle simple python_version/python_full_version comparisons; if
+    // parsing fails, allow by default
+    if matches!(eval_python_version_marker(&marker, py_version), Some(false)) {
         return false;
     }
 
@@ -690,15 +691,35 @@ fn eval_python_version_marker(marker: &str, py_version: &str) -> Option<bool> {
     let ops = ["<=", ">=", "==", "!=", "<", ">"];
     for op in ops {
         if let Some(idx) = marker.find(op) {
-            if !marker[..idx].contains("python_version") {
-                continue;
-            }
+            // The marker variable is the identifier immediately preceding
+            // the operator (e.g. `os_name == "nt" and python_version >= "3.8"`
+            // must not match on `os_name`).
+            let lhs_var = marker[..idx]
+                .trim()
+                .rsplit(|c: char| !(c.is_alphanumeric() || c == '_'))
+                .next()
+                .unwrap_or("");
             let rhs = marker[idx + op.len()..].trim();
             let rhs = rhs.trim_matches(|c: char| c == '"' || c == '\'' || c.is_whitespace());
-            return Some(compare_versions(py_version, rhs, op));
+            match lhs_var {
+                "python_version" => {
+                    return Some(compare_versions(&major_minor(py_version), rhs, op));
+                }
+                "python_full_version" => {
+                    return Some(compare_versions(py_version, rhs, op));
+                }
+                _ => continue,
+            }
         }
     }
     None
+}
+
+fn major_minor(version: &str) -> String {
+    let mut parts = version.splitn(3, '.');
+    let major = parts.next().unwrap_or("0");
+    let minor = parts.next().unwrap_or("0");
+    format!("{major}.{minor}")
 }
 
 fn compare_versions(lhs: &str, rhs: &str, op: &str) -> bool {
@@ -1022,6 +1043,39 @@ mod tests {
     fn marker_respects_python_version() {
         assert!(!marker_allows(r#"python_version >= "3.14""#, "3.11"));
         assert!(marker_allows(r#"python_version < "3.14""#, "3.11"));
+    }
+
+    #[test]
+    fn marker_python_version_matches_any_patch_level() {
+        assert!(marker_allows(r#"python_version == "3.10""#, "3.10.7"));
+        assert!(!marker_allows(r#"python_version == "3.10""#, "3.9.7"));
+    }
+
+    #[test]
+    fn marker_distinguishes_python_full_version_from_python_version() {
+        assert!(marker_allows(
+            r#"python_full_version >= "3.11.4""#,
+            "3.11.4"
+        ));
+        assert!(!marker_allows(
+            r#"python_full_version >= "3.11.4""#,
+            "3.11.3"
+        ));
+        // A python_version marker must not be evaluated against the full
+        // patch-level precision that python_full_version requires.
+        assert!(marker_allows(r#"python_version >= "3.11""#, "3.11.0"));
+    }
+
+    #[test]
+    fn marker_extracts_python_version_token_from_compound_marker() {
+        assert!(!marker_allows(
+            r#"os_name == "nt" and python_version >= "3.99""#,
+            "3.11"
+        ));
+        assert!(marker_allows(
+            r#"os_name == "nt" and python_version >= "3.8""#,
+            "3.11"
+        ));
     }
 
     #[test]
