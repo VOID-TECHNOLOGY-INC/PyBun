@@ -12,8 +12,13 @@ use std::process::{Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
+
 /// Outcome of running a command to completion, possibly subject to a
 /// wall-clock timeout.
+#[derive(Debug)]
+#[must_use]
 pub enum ProcExecOutcome {
     /// The process exited on its own (or no timeout was configured).
     Completed {
@@ -43,6 +48,23 @@ pub fn spawn_with_timeout(
         cmd.stderr(Stdio::piped());
     }
 
+    // Put the child in its own process group (pgid == child pid) so that on
+    // timeout we can kill the whole tree via `killpg`, not just the direct
+    // child. Without this, a child that spawns further subprocesses (e.g. a
+    // shell script that backgrounds a long-running process) leaks those
+    // grandchildren once the direct child is killed.
+    #[cfg(unix)]
+    // SAFETY: `setsid` is async-signal-safe and is the only call made in the
+    // closure, as required between fork and exec by `pre_exec`.
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+
     let mut child = cmd.spawn()?;
 
     let stdout_handle = child.stdout.take().map(spawn_pipe_reader);
@@ -60,7 +82,7 @@ pub fn spawn_with_timeout(
         if let Some(timeout) = timeout
             && start.elapsed() >= timeout
         {
-            let _ = child.kill();
+            kill_process_tree(&mut child);
             let _ = child.wait();
             join_pipe_reader(stdout_handle);
             join_pipe_reader(stderr_handle);
@@ -78,6 +100,27 @@ pub fn spawn_with_timeout(
         stdout,
         stderr,
     })
+}
+
+/// Kill `child` and, on Unix, every other process in its process group
+/// (which — because `spawn_with_timeout` calls `setsid` in `pre_exec` —
+/// contains the child and any subprocesses it spawned). On non-Unix
+/// platforms this only terminates the direct child.
+fn kill_process_tree(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    {
+        // The child's pid is also its process group id, since we `setsid`
+        // right after fork. Signal the whole group before falling back to
+        // `Child::kill` in case the group signal failed (e.g. the child
+        // exited between spawn and here, making the pgid stale).
+        let pid = child.id() as libc::pid_t;
+        // SAFETY: `killpg` with a plain integer pgid and signal number is a
+        // simple libc call with no preconditions beyond a valid pgid.
+        unsafe {
+            libc::killpg(pid, libc::SIGKILL);
+        }
+    }
+    let _ = child.kill();
 }
 
 /// Spawn a thread that reads a child process pipe to completion.
@@ -198,6 +241,53 @@ pub(crate) mod tests {
         assert!(matches!(outcome, ProcExecOutcome::TimedOut));
         // Should return well before the process's own 30s duration.
         assert!(start.elapsed() < Duration::from_secs(10));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn kills_grandchild_processes_on_timeout() {
+        let pidfile = tempfile::NamedTempFile::new().expect("create pidfile");
+        let pidfile_path = pidfile.path().to_path_buf();
+        // Drop the handle but keep the path; the child writes to it.
+        drop(pidfile);
+
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg(format!(
+            "(sleep 30 & echo $! > {}) ; sleep 30",
+            pidfile_path.display()
+        ));
+        let outcome = spawn_with_timeout(&mut cmd, Some(1), false).expect("spawn should succeed");
+        assert!(matches!(outcome, ProcExecOutcome::TimedOut));
+
+        // Give the grandchild's PID file a moment to be written and the kill
+        // signal to be delivered.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut grandchild_pid: Option<i32> = None;
+        while Instant::now() < deadline {
+            if let Ok(contents) = std::fs::read_to_string(&pidfile_path)
+                && let Ok(pid) = contents.trim().parse::<i32>()
+            {
+                grandchild_pid = Some(pid);
+                break;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        let grandchild_pid = grandchild_pid.expect("grandchild should have written its pid");
+
+        // Poll until the grandchild is gone (kill(pid, 0) fails with ESRCH).
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut alive = true;
+        while Instant::now() < deadline {
+            alive = unsafe { libc::kill(grandchild_pid, 0) == 0 };
+            if !alive {
+                break;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        assert!(
+            !alive,
+            "grandchild process {grandchild_pid} should have been killed"
+        );
     }
 
     #[test]
