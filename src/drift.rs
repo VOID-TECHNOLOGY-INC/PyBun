@@ -64,13 +64,13 @@ pub fn analyze(root: &Path) -> DriftResult {
             .to_string_lossy()
             .to_string();
         if let Ok(content) = std::fs::read_to_string(py_file) {
-            for (line_no, line) in content.lines().enumerate() {
+            for (line_no, line) in logical_import_lines(&content) {
                 let line = line.trim();
                 let pkgs = parse_import_packages(line);
                 if !pkgs.is_empty() {
                     let loc = ImportLocation {
                         file: file_label.clone(),
-                        line: line_no + 1,
+                        line: line_no,
                         statement: line.to_string(),
                     };
                     for pkg in pkgs {
@@ -145,7 +145,7 @@ pub fn analyze(root: &Path) -> DriftResult {
     undeclared_imports.sort_by(|a, b| a.package.cmp(&b.package));
 
     // Find unused declarations
-    let import_aliases_rev = import_aliases_reverse();
+    let import_aliases_rev = import_aliases_reverse(&aliases);
     let mut unused_declarations: Vec<UnusedDeclaration> = declared_raw
         .iter()
         .filter(|dep| {
@@ -195,11 +195,18 @@ pub fn analyze(root: &Path) -> DriftResult {
 /// Collect all .py files recursively, skipping hidden dirs and common noise dirs.
 fn collect_py_files(root: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
-    collect_py_files_inner(root, &mut files);
+    // Track canonical (symlink-resolved) directory paths we've already
+    // descended into, so a symlink cycle (e.g. `a/loop -> a`) can't send the
+    // traversal into unbounded recursion / a stack overflow.
+    let mut visited_dirs: HashSet<PathBuf> = HashSet::new();
+    if let Ok(canonical_root) = std::fs::canonicalize(root) {
+        visited_dirs.insert(canonical_root);
+    }
+    collect_py_files_inner(root, &mut files, &mut visited_dirs);
     files
 }
 
-fn collect_py_files_inner(dir: &Path, out: &mut Vec<PathBuf>) {
+fn collect_py_files_inner(dir: &Path, out: &mut Vec<PathBuf>, visited_dirs: &mut HashSet<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -228,11 +235,96 @@ fn collect_py_files_inner(dir: &Path, out: &mut Vec<PathBuf>) {
         }
 
         if path.is_dir() {
-            collect_py_files_inner(&path, out);
+            // Resolve symlinks before recursing: if we've already visited
+            // this canonical directory (directly or via a different
+            // symlinked path), skip it rather than recursing again.
+            match std::fs::canonicalize(&path) {
+                Ok(canonical) => {
+                    if !visited_dirs.insert(canonical) {
+                        continue;
+                    }
+                }
+                Err(_) => continue,
+            }
+            collect_py_files_inner(&path, out, visited_dirs);
         } else if path.extension().is_some_and(|e| e == "py") {
             out.push(path);
         }
     }
+}
+
+/// Preprocess Python source into logical `(line_no, text)` pairs suitable
+/// for `parse_import_packages`.
+///
+/// Two transformations are applied that plain `content.lines()` iteration
+/// gets wrong:
+/// - Lines inside a triple-quoted string (`"""..."""` or `'''...'''`) are
+///   dropped entirely, so prose inside a docstring that happens to read like
+///   an import statement (e.g. a usage example) is never mistaken for real
+///   code.
+/// - A physical line ending in a bare `\` is joined with the next physical
+///   line, so a backslash-continued `import a, \` statement is parsed as
+///   one logical statement instead of losing the continuation packages (and
+///   emitting a spurious `\` "package" from the dangling backslash).
+///
+/// `line_no` is the 1-based line number of the *first* physical line of each
+/// logical line, matching the numbering used for reporting.
+fn logical_import_lines(content: &str) -> Vec<(usize, String)> {
+    const TRIPLE_QUOTES: [&str; 2] = ["\"\"\"", "'''"];
+
+    let mut out = Vec::new();
+    let mut in_triple: Option<&'static str> = None;
+    let mut pending: Option<(usize, String)> = None;
+
+    for (idx, raw_line) in content.lines().enumerate() {
+        let line_no = idx + 1;
+
+        if let Some(delim) = in_triple {
+            if raw_line.matches(delim).count() % 2 == 1 {
+                in_triple = None;
+            }
+            continue;
+        }
+
+        // Does this line open a triple-quoted string that doesn't also
+        // close again on the same line? If so, everything from here until
+        // the matching close is string content, not code.
+        let mut scan_line = raw_line;
+        for delim in TRIPLE_QUOTES {
+            if raw_line.matches(delim).count() % 2 == 1 {
+                in_triple = Some(delim);
+                scan_line = "";
+                break;
+            }
+        }
+
+        let trimmed_end = scan_line.trim_end();
+        let continues = trimmed_end.ends_with('\\');
+        let content_part = if continues {
+            &trimmed_end[..trimmed_end.len() - 1]
+        } else {
+            scan_line
+        };
+
+        pending = Some(match pending.take() {
+            Some((first_line, mut acc)) => {
+                acc.push(' ');
+                acc.push_str(content_part.trim());
+                (first_line, acc)
+            }
+            None => (line_no, content_part.to_string()),
+        });
+
+        if !continues {
+            out.push(pending.take().expect("just set above"));
+        }
+    }
+
+    if let Some(p) = pending {
+        out.push(p);
+    }
+
+    out
 }
 
 /// Parse a single Python source line and extract top-level package names.
@@ -289,7 +381,10 @@ fn normalize_package_name(name: &str) -> String {
 
 /// Extract bare package name from a PEP 508 dependency specifier.
 fn extract_package_name_from_dep(dep: &str) -> String {
-    dep.split(['>', '<', '=', '!', '[', ';', ' ', '\t'])
+    // PEP 508 delimiters: extras (`[`), a version specifier operator
+    // (`==`, `!=`, `<=`, `>=`, `<`, `>`, `~=`, `===`), an environment
+    // marker (`;`), a direct URL reference (`@`), or whitespace.
+    dep.split(['>', '<', '=', '!', '~', '@', '[', ';', ' ', '\t'])
         .next()
         .unwrap_or(dep)
         .trim()
@@ -325,7 +420,6 @@ pub fn import_aliases() -> HashMap<&'static str, &'static str> {
     m.insert("yaml", "PyYAML");
     m.insert("dotenv", "python-dotenv");
     m.insert("dateutil", "python-dateutil");
-    m.insert("usaddress", "usaddress");
     m.insert("google", "google-cloud-core");
     m.insert("Crypto", "pycryptodome");
     m.insert("jwt", "PyJWT");
@@ -341,10 +435,16 @@ pub fn import_aliases() -> HashMap<&'static str, &'static str> {
 }
 
 /// Reverse mapping: PyPI name → list of possible import names.
-fn import_aliases_reverse() -> HashMap<&'static str, Vec<&'static str>> {
+///
+/// Takes the already-built `import_aliases()` map rather than building its
+/// own copy, since it's derived data from the same table (avoids rebuilding
+/// the alias `HashMap` twice per `analyze()` call).
+fn import_aliases_reverse(
+    aliases: &HashMap<&'static str, &'static str>,
+) -> HashMap<&'static str, Vec<&'static str>> {
     let mut m: HashMap<&'static str, Vec<&'static str>> = HashMap::new();
-    for (import_name, pypi_name) in import_aliases() {
-        m.entry(pypi_name).or_default().push(import_name);
+    for (import_name, pypi_name) in aliases {
+        m.entry(*pypi_name).or_default().push(*import_name);
     }
     m
 }
@@ -833,5 +933,106 @@ mod tests {
         let files = collect_py_files(dir.path());
         // .pyc files won't be picked up (.py extension only), but __pycache__ is also skipped
         assert_eq!(files.len(), 1);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn collect_py_files_handles_symlink_cycle() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join("a")).unwrap();
+        std::fs::write(dir.path().join("a/mod.py"), "").unwrap();
+        // `a/loop` symlinks back to the root, forming a cycle. Traversal
+        // must detect and skip the repeat instead of recursing forever.
+        std::os::unix::fs::symlink(dir.path(), dir.path().join("a/loop")).unwrap();
+
+        let files = collect_py_files(dir.path());
+        assert_eq!(files.len(), 1, "should find exactly the one real .py file");
+    }
+
+    #[test]
+    fn extract_package_name_strips_tilde_and_at_specifiers() {
+        assert_eq!(extract_package_name_from_dep("requests~=2.28"), "requests");
+        assert_eq!(
+            extract_package_name_from_dep("requests @ https://example.com/requests.whl"),
+            "requests"
+        );
+    }
+
+    #[test]
+    fn import_aliases_never_self_map() {
+        for (import_name, pypi_name) in import_aliases() {
+            assert_ne!(
+                import_name, pypi_name,
+                "alias entry for {import_name} maps to itself, defeating its purpose"
+            );
+        }
+    }
+
+    #[test]
+    fn logical_import_lines_joins_backslash_continuation() {
+        let content = "import numpy, \\\n    pandas\n";
+        let lines = logical_import_lines(content);
+        assert_eq!(lines.len(), 1);
+        let pkgs = parse_import_packages(lines[0].1.trim());
+        assert_eq!(pkgs, vec!["numpy", "pandas"]);
+    }
+
+    #[test]
+    fn logical_import_lines_skips_triple_quoted_string_content() {
+        let content = "def foo():\n    \"\"\"\n    import pandas\n    \"\"\"\n    import sys\n";
+        let lines = logical_import_lines(content);
+        let all_pkgs: Vec<String> = lines
+            .iter()
+            .flat_map(|(_, line)| parse_import_packages(line.trim()))
+            .collect();
+        assert_eq!(all_pkgs, vec!["sys"]);
+    }
+
+    #[test]
+    fn analyze_ignores_imports_inside_docstrings() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("pyproject.toml"),
+            "[project]\nname=\"t\"\nversion=\"0.1\"\ndependencies=[\"requests\"]\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("main.py"),
+            "def foo():\n    \"\"\"\n    Example:\n        import pandas\n    \"\"\"\n    pass\n\nimport requests\n",
+        )
+        .unwrap();
+        let result = analyze(dir.path());
+        let pkgs: Vec<&str> = result
+            .undeclared_imports
+            .iter()
+            .map(|u| u.package.as_str())
+            .collect();
+        assert!(
+            !pkgs.contains(&"pandas"),
+            "docstring example import must not be detected: {pkgs:?}"
+        );
+    }
+
+    #[test]
+    fn analyze_detects_backslash_continued_import() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("pyproject.toml"),
+            "[project]\nname=\"t\"\nversion=\"0.1\"\ndependencies=[]\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("main.py"), "import numpy, \\\n    pandas\n").unwrap();
+        let result = analyze(dir.path());
+        let pkgs: Vec<&str> = result
+            .undeclared_imports
+            .iter()
+            .map(|u| u.package.as_str())
+            .collect();
+        assert!(pkgs.contains(&"numpy"));
+        assert!(pkgs.contains(&"pandas"));
+        assert!(
+            !pkgs.iter().any(|p| p.contains('\\')),
+            "must not register a spurious backslash package: {pkgs:?}"
+        );
     }
 }
