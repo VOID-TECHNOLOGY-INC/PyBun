@@ -54,11 +54,11 @@ pub fn spawn_with_timeout(
     // shell script that backgrounds a long-running process) leaks those
     // grandchildren once the direct child is killed.
     #[cfg(unix)]
-    // SAFETY: `setsid` is async-signal-safe and is the only call made in the
+    // SAFETY: `setpgid` is async-signal-safe and is the only call made in the
     // closure, as required between fork and exec by `pre_exec`.
     unsafe {
         cmd.pre_exec(|| {
-            if libc::setsid() == -1 {
+            if libc::setpgid(0, 0) == -1 {
                 return Err(std::io::Error::last_os_error());
             }
             Ok(())
@@ -103,21 +103,24 @@ pub fn spawn_with_timeout(
 }
 
 /// Kill `child` and, on Unix, every other process in its process group
-/// (which — because `spawn_with_timeout` calls `setsid` in `pre_exec` —
+/// (which — because `spawn_with_timeout` calls `setpgid(0, 0)` in `pre_exec` —
 /// contains the child and any subprocesses it spawned). On non-Unix
 /// platforms this only terminates the direct child.
 fn kill_process_tree(child: &mut std::process::Child) {
     #[cfg(unix)]
     {
-        // The child's pid is also its process group id, since we `setsid`
+        // The child's pid is also its process group id, since we `setpgid(0, 0)`
         // right after fork. Signal the whole group before falling back to
         // `Child::kill` in case the group signal failed (e.g. the child
         // exited between spawn and here, making the pgid stale).
         let pid = child.id() as libc::pid_t;
         // SAFETY: `killpg` with a plain integer pgid and signal number is a
         // simple libc call with no preconditions beyond a valid pgid.
-        unsafe {
-            libc::killpg(pid, libc::SIGKILL);
+        let killed = unsafe { libc::killpg(pid, libc::SIGKILL) } == 0;
+        if !killed {
+            // killpg failed — fall back to direct child kill
+            let _ = child.kill();
+            return;
         }
     }
     let _ = child.kill();
