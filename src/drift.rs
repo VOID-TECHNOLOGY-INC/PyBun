@@ -289,6 +289,11 @@ fn logical_import_lines(content: &str) -> Vec<(usize, String)> {
         // Does this line open a triple-quoted string that doesn't also
         // close again on the same line? If so, everything from here until
         // the matching close is string content, not code.
+        //
+        // KNOWN LIMITATION: this count-based heuristic does not distinguish
+        // triple-quote delimiters from `"""` / `'''` sequences that appear
+        // inside regular string literals. A full fix requires Python
+        // tokenization.
         let mut scan_line = raw_line;
         for delim in TRIPLE_QUOTES {
             if raw_line.matches(delim).count() % 2 == 1 {
@@ -299,7 +304,8 @@ fn logical_import_lines(content: &str) -> Vec<(usize, String)> {
         }
 
         let trimmed_end = scan_line.trim_end();
-        let continues = trimmed_end.ends_with('\\');
+        // A `#` comment that ends with `\` does NOT continue in Python.
+        let continues = !scan_line.trim_start().starts_with('#') && trimmed_end.ends_with('\\');
         let content_part = if continues {
             &trimmed_end[..trimmed_end.len() - 1]
         } else {
@@ -975,6 +981,17 @@ mod tests {
         assert_eq!(lines.len(), 1);
         let pkgs = parse_import_packages(lines[0].1.trim());
         assert_eq!(pkgs, vec!["numpy", "pandas"]);
+    }
+
+    #[test]
+    fn logical_import_lines_does_not_continue_past_comment_backslash() {
+        let content = "# see usage: \\\nimport pandas\n";
+        let lines = logical_import_lines(content);
+        let all_pkgs: Vec<String> = lines
+            .iter()
+            .flat_map(|(_, line)| parse_import_packages(line.trim()))
+            .collect();
+        assert_eq!(all_pkgs, vec!["pandas"]);
     }
 
     #[test]
