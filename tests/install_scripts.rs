@@ -3,6 +3,7 @@
 use std::fs;
 use std::process::Command;
 
+#[cfg(not(windows))]
 use httpmock::prelude::*;
 use pybun::release_manifest::current_release_target;
 use serde_json::json;
@@ -11,6 +12,7 @@ use tempfile::tempdir;
 /// Generates a fresh, unencrypted minisign keypair for test use via the
 /// locally installed `minisign` binary. Returns `None` if minisign is
 /// unavailable so callers can skip gracefully.
+#[cfg(not(windows))]
 fn generate_test_minisign_keypair(dir: &std::path::Path) -> Option<(String, std::path::PathBuf)> {
     if Command::new("minisign").arg("-v").output().is_err() {
         return None;
@@ -35,6 +37,7 @@ fn generate_test_minisign_keypair(dir: &std::path::Path) -> Option<(String, std:
     Some((public_key, sec_path))
 }
 
+#[cfg(not(windows))]
 fn sign_file(sec_path: &std::path::Path, artifact_path: &std::path::Path) -> String {
     let sig_path = artifact_path.with_extension("minisig");
     let status = Command::new("minisign")
@@ -663,6 +666,7 @@ fn install_sh_full_install_succeeds_with_trusted_signature() {
 
 /// Builds a minimal tar.gz archive containing `pybun-<target>/pybun`, matching
 /// the layout install.sh expects to extract.
+#[cfg(not(windows))]
 fn build_archive(target: &str, archive_path: &std::path::Path) {
     let stage = tempdir().unwrap();
     let dir = stage.path().join(format!("pybun-{target}"));
@@ -686,6 +690,7 @@ fn build_archive(target: &str, archive_path: &std::path::Path) {
     assert!(status.success(), "failed to build test archive");
 }
 
+#[cfg(not(windows))]
 fn sha256_hex(path: &std::path::Path) -> String {
     let output = Command::new("shasum")
         .arg("-a")
