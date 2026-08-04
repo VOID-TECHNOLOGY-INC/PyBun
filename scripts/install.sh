@@ -197,6 +197,17 @@ PY
   fi
 }
 
+# Reject anything that isn't a plain version string (optionally prefixed with
+# "v") before it is interpolated into a GitHub release URL. This blocks path
+# traversal / URL-control characters (e.g. "/", "?", "#", whitespace) from
+# altering the constructed manifest or asset URL.
+validate_version() {
+  version="$1"
+  if ! printf '%s' "$version" | grep -Eq '^v?[0-9]+(\.[0-9]+){0,3}([.-][0-9A-Za-z]+)*$'; then
+    die "invalid version string rejected: $version"
+  fi
+}
+
 detect_existing_pybun() {
   DETECTED_PYBUN_PATH=""
   DETECTED_PYBUN_KIND=""
@@ -521,6 +532,10 @@ ARCHIVE_EXT="tar.gz"
 ASSET_NAME="pybun-${TARGET}.${ARCHIVE_EXT}"
 INSTALL_PATH="$BIN_DIR/pybun"
 ALIAS_PATH="$BIN_DIR/$ALIAS_NAME"
+
+if [ -n "$VERSION" ]; then
+  validate_version "$VERSION"
+fi
 
 MANIFEST_SOURCE="${PYBUN_INSTALL_MANIFEST:-}"
 if [ -z "$MANIFEST_SOURCE" ]; then

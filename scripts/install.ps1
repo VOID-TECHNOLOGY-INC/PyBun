@@ -41,6 +41,17 @@ $AssetUrlHostAllowlist = if ($env:PYBUN_INSTALL_ASSET_HOST_ALLOWLIST) {
 # never set this in production use.
 $AssetUrlAllowInsecure = $env:PYBUN_INSTALL_ASSET_ALLOW_INSECURE -eq "1"
 
+function Test-Version {
+    param([string]$VersionValue)
+    # Reject anything that isn't a plain version string (optionally prefixed
+    # with "v") before it is interpolated into a GitHub release URL. This
+    # blocks path traversal / URL-control characters (e.g. "/", "?", "#",
+    # whitespace) from altering the constructed manifest or asset URL.
+    if ($VersionValue -notmatch '^v?[0-9]+(\.[0-9]+){0,3}([.-][0-9A-Za-z]+)*$') {
+        throw "invalid version string rejected: $VersionValue"
+    }
+}
+
 function Test-AssetUrl {
     param([string]$Url)
     if ($Url -match "^https://") {
@@ -224,6 +235,10 @@ $AssetName = "pybun-$Target.$ArchiveExt"
 $BinaryName = if ($IsWindows) { "pybun.exe" } else { "pybun" }
 $InstallPath = Join-Path $BinDir $BinaryName
 $AliasPath = Join-Path $BinDir $AliasBinaryName
+
+if ($Version) {
+    Test-Version -VersionValue $Version
+}
 
 $ManifestSource = $env:PYBUN_INSTALL_MANIFEST
 if (-not $ManifestSource) {
