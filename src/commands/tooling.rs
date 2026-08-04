@@ -753,6 +753,7 @@ pub(super) fn execute_tool(
         .package
         .as_ref()
         .ok_or_else(|| eyre!("package name is required"))?;
+    validate_package_spec(package_spec)?;
 
     // Parse package name and version
     let (package_name, version) = parse_package_spec(package_spec);
@@ -903,6 +904,33 @@ pub(super) fn execute_tool(
 }
 
 /// Parse a package specification like "cowsay==6.1" into (name, version)
+/// Validate a `pybun x` package spec against expected PEP 508 syntax before
+/// it is passed to `pip`/`uv`. Rejects specs starting with `-` (which pip/uv
+/// would otherwise interpret as a CLI flag rather than a package name) and
+/// any characters outside the PEP 508 name/version-specifier grammar.
+fn validate_package_spec(spec: &str) -> Result<()> {
+    if spec.trim().is_empty() {
+        return Err(eyre!("package spec must not be empty"));
+    }
+    if spec.starts_with('-') {
+        return Err(eyre!("package spec must not start with '-': {}", spec));
+    }
+    let valid = spec.chars().all(|c| {
+        c.is_ascii_alphanumeric()
+            || matches!(
+                c,
+                '.' | '_' | '-' | '=' | '<' | '>' | '!' | '~' | ',' | '*' | '+' | '[' | ']'
+            )
+    });
+    if !valid {
+        return Err(eyre!(
+            "package spec contains characters outside PEP 508 syntax: {}",
+            spec
+        ));
+    }
+    Ok(())
+}
+
 pub(super) fn parse_package_spec(spec: &str) -> (String, Option<String>) {
     // Handle various specifier formats
     for sep in ["==", ">=", "<=", "!=", "~=", ">", "<"] {
@@ -1141,6 +1169,26 @@ fn release_url_for_version(version: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn validate_package_spec_accepts_normal_specs() {
+        assert!(validate_package_spec("cowsay").is_ok());
+        assert!(validate_package_spec("cowsay==6.1").is_ok());
+        assert!(validate_package_spec("requests>=2.28.0").is_ok());
+        assert!(validate_package_spec("flask~=2.0.0").is_ok());
+        assert!(validate_package_spec("pkg[extra]==1.0").is_ok());
+    }
+
+    #[test]
+    fn validate_package_spec_rejects_leading_dash_and_bad_chars() {
+        assert!(validate_package_spec("-e file:///etc/passwd").is_err());
+        assert!(validate_package_spec("--upgrade").is_err());
+        assert!(validate_package_spec("").is_err());
+        assert!(validate_package_spec("   ").is_err());
+        assert!(validate_package_spec("pkg; rm -rf /").is_err());
+        assert!(validate_package_spec("pkg && echo pwned").is_err());
+        assert!(validate_package_spec("pkg\nrm -rf /").is_err());
+    }
 
     #[test]
     fn parse_package_spec_simple_name() {

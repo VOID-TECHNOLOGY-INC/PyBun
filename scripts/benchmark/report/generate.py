@@ -13,6 +13,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import sys
 from datetime import datetime
@@ -232,14 +233,15 @@ def generate_html_report(
     meta = latest.get("meta", {})
     summary = latest.get("summary", {})
     sys_info = meta.get("system", {})
-    
-    html = f"""\
+    safe_title = html.escape(title)
+
+    html_out = f"""\
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{title}</title>
+    <title>{safe_title}</title>
     <style>
         :root {{
             --bg: #0d1117;
@@ -319,7 +321,7 @@ def generate_html_report(
     </style>
 </head>
 <body>
-    <h1>{title}</h1>
+    <h1>{safe_title}</h1>
     
     <p>
         <strong>Generated:</strong> {meta.get('timestamp', 'Unknown')}<br>
@@ -371,9 +373,10 @@ def generate_html_report(
     
     for scenario in sorted(by_scenario.keys()):
         scenario_results = by_scenario[scenario]
-        
-        html += f"""
-    <h3>{scenario}</h3>
+        safe_scenario = html.escape(scenario)
+
+        html_out += f"""
+    <h3>{safe_scenario}</h3>
     <table>
         <tr>
             <th>Tool</th>
@@ -384,14 +387,15 @@ def generate_html_report(
             <th>Status</th>
         </tr>
 """
-        
+
         for r in sorted(scenario_results, key=lambda x: x.get("duration_ms", 0)):
             status_class = "success" if r.get("success", True) else "error"
             status_icon = "✅" if r.get("success", True) else "❌"
-            
-            html += f"""
+            safe_tool = html.escape(r["tool"])
+
+            html_out += f"""
         <tr>
-            <td>{r['tool']}</td>
+            <td>{safe_tool}</td>
             <td>{r.get('duration_ms', 0):.2f}</td>
             <td>{r.get('min_ms', 0):.2f}</td>
             <td>{r.get('max_ms', 0):.2f}</td>
@@ -399,17 +403,17 @@ def generate_html_report(
             <td class="{status_class}">{status_icon}</td>
         </tr>
 """
-        
-        html += "    </table>\n"
-    
-    html += f"""
+
+        html_out += "    </table>\n"
+
+    html_out += f"""
     <hr>
     <p><em>Report generated at {datetime.now().isoformat()}</em></p>
 </body>
 </html>
 """
-    
-    return html
+
+    return html_out
 
 
 def main():

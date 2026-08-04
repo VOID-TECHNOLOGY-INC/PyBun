@@ -25,6 +25,8 @@ pub enum PyPiError {
     Io(String),
     #[error("parse error: {0}")]
     Parse(String),
+    #[error("invalid package name: {0}")]
+    InvalidPackageName(String),
 }
 
 impl From<reqwest::Error> for PyPiError {
@@ -226,6 +228,7 @@ impl PyPiClient {
     }
 
     async fn fetch_packages(&self, name: &str) -> Result<Vec<CachedPackage>, PyPiError> {
+        validate_package_name(name)?;
         let cached_entry = self.load_cache(name).await?;
 
         if self.offline {
@@ -309,6 +312,7 @@ impl PyPiClient {
         name: &str,
         version: &str,
     ) -> Result<Vec<String>, PyPiError> {
+        validate_package_name(name)?;
         let url = self
             .base
             .join(&format!("pypi/{}/{}/json", name, version))
@@ -630,6 +634,27 @@ struct CacheControlDirectives {
     max_age: Option<u64>,
     no_cache: bool,
     no_store: bool,
+}
+
+/// Validate a package name against the PEP 503 naming rule
+/// (`[A-Za-z0-9]` optionally followed by runs of `[A-Za-z0-9._-]` and ending
+/// in an alphanumeric) before it is interpolated into a PyPI URL path.
+fn validate_package_name(name: &str) -> Result<(), PyPiError> {
+    let bytes = name.as_bytes();
+    let is_alnum = |b: u8| b.is_ascii_alphanumeric();
+    let is_sep = |b: u8| matches!(b, b'.' | b'_' | b'-');
+    let valid = match bytes {
+        [] => false,
+        [single] => is_alnum(*single),
+        [first, .., last] => {
+            is_alnum(*first) && is_alnum(*last) && bytes.iter().all(|b| is_alnum(*b) || is_sep(*b))
+        }
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(PyPiError::InvalidPackageName(name.to_string()))
+    }
 }
 
 fn normalize_base(input: &str) -> Result<Url, PyPiError> {
@@ -1035,6 +1060,28 @@ fn build_cached_packages(
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn validate_package_name_accepts_pep503_names() {
+        assert!(validate_package_name("requests").is_ok());
+        assert!(validate_package_name("zope.interface").is_ok());
+        assert!(validate_package_name("django-storages").is_ok());
+        assert!(validate_package_name("foo_bar").is_ok());
+        assert!(validate_package_name("a").is_ok());
+        assert!(validate_package_name("A1").is_ok());
+    }
+
+    #[test]
+    fn validate_package_name_rejects_path_traversal_and_control_chars() {
+        assert!(validate_package_name("../../etc/passwd").is_err());
+        assert!(validate_package_name("foo/bar").is_err());
+        assert!(validate_package_name("foo bar").is_err());
+        assert!(validate_package_name("foo\nbar").is_err());
+        assert!(validate_package_name("foo?bar=1").is_err());
+        assert!(validate_package_name("").is_err());
+        assert!(validate_package_name("-leading-dash").is_err());
+        assert!(validate_package_name("trailing-dash-").is_err());
+    }
 
     #[test]
     fn marker_rejects_extra() {
