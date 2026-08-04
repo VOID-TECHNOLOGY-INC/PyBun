@@ -20,6 +20,43 @@ $IsMacOS = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
 $AliasName = "pybun-cli"
 $AliasBinaryName = if ($IsWindows) { "pybun-cli.exe" } else { "pybun-cli" }
 
+# Trusted minisign public key for verifying release artifacts (matches
+# security/pybun-release.pub). Baked into the script so a compromised/MITM'd
+# manifest cannot supply its own key and self-sign a malicious artifact.
+$TrustedMinisignPublicKey = if ($env:PYBUN_INSTALL_TRUSTED_PUBKEY) {
+    $env:PYBUN_INSTALL_TRUSTED_PUBKEY
+} else {
+    "RWQtfZNEyNnATcgzxfwDB+iNwGwW8bwflfnjHMizq6H84B1VRXO92yZ5"
+}
+
+# Hosts allowed for asset download URLs (comma separated).
+$AssetUrlHostAllowlist = if ($env:PYBUN_INSTALL_ASSET_HOST_ALLOWLIST) {
+    $env:PYBUN_INSTALL_ASSET_HOST_ALLOWLIST
+} else {
+    "github.com"
+}
+
+# Test-only escape hatch to allow http:// asset URLs against an allowlisted
+# host (e.g. a local mock server in integration tests). Defaults to disabled;
+# never set this in production use.
+$AssetUrlAllowInsecure = $env:PYBUN_INSTALL_ASSET_ALLOW_INSECURE -eq "1"
+
+function Test-AssetUrl {
+    param([string]$Url)
+    if ($Url -match "^https://") {
+        # ok
+    } elseif ($Url -match "^http://" -and $AssetUrlAllowInsecure) {
+        # ok (test-only)
+    } else {
+        throw "insecure asset URL rejected (must be https): $Url"
+    }
+    $uri = [System.Uri]$Url
+    $allowed = $AssetUrlHostAllowlist -split "," | ForEach-Object { $_.Trim() }
+    if ($allowed -notcontains $uri.Host) {
+        throw "asset URL host not in allowlist ($AssetUrlHostAllowlist): $($uri.Host)"
+    }
+}
+
 function Write-Log {
     param([string]$Message)
     if ($Format -eq "json") {
@@ -210,12 +247,16 @@ if ($Version) {
     $AssetUrl = "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/latest/download/$AssetName"
 }
 
+if ($ManifestSource -match "^http://") {
+    throw "insecure manifest source rejected (http): use https:// or file://, got $ManifestSource"
+}
+
 $ManifestPath = $null
 if ($ManifestSource -like "file://*") {
     $ManifestPath = $ManifestSource.Substring(7)
 } elseif (Test-Path $ManifestSource) {
     $ManifestPath = $ManifestSource
-} elseif ($ManifestSource -match "^https?://") {
+} elseif ($ManifestSource -match "^https://") {
     if ($env:PYBUN_INSTALL_FETCH -eq "1" -or (-not $NoVerify -and -not $DryRun)) {
         $ManifestPath = Join-Path ([System.IO.Path]::GetTempPath()) ("pybun-release-" + [System.Guid]::NewGuid().ToString() + ".json")
         Download-File -Url $ManifestSource -Destination $ManifestPath
@@ -228,7 +269,11 @@ $ManifestReleaseUrl = $null
 $AssetSha = $null
 $SigType = $null
 $SigValue = $null
-$SigPub = $null
+# SigPub always comes from the trusted, script-embedded key. It is never
+# overridden by manifest content: trusting a public key sourced from the
+# same manifest being verified would let an attacker who controls the
+# manifest self-sign a malicious artifact.
+$SigPub = $TrustedMinisignPublicKey
 
 if ($ManifestPath) {
     $manifestData = Get-ManifestData -ManifestPath $ManifestPath -Target $Target
@@ -238,12 +283,14 @@ if ($ManifestPath) {
     $ManifestChannel = $manifest.channel
     $ManifestReleaseUrl = $manifest.release_url
     $AssetName = $asset.name
-    $AssetUrl = $asset.url
+    if ($asset.url) {
+        Test-AssetUrl -Url $asset.url
+        $AssetUrl = $asset.url
+    }
     $AssetSha = $asset.sha256
     if ($asset.signature) {
         $SigType = $asset.signature.type
         $SigValue = $asset.signature.value
-        $SigPub = $asset.signature.public_key
     }
     if (-not $Version -and $ManifestVersion) {
         $Version = $ManifestVersion
@@ -345,20 +392,21 @@ try {
         if ($computed -ne $AssetSha.ToLowerInvariant()) {
             throw "checksum mismatch: expected $AssetSha, got $computed"
         }
-        if ($SigValue -and $SigPub) {
-            $minisign = Get-Command minisign -ErrorAction SilentlyContinue
-            if (-not $minisign) {
-                throw "minisign is required for signature verification (install minisign or use --no-verify)"
-            }
-            $SigPath = Join-Path $TempDir ($AssetName + ".minisig")
-            $PubPath = Join-Path $TempDir "pybun-release.pub"
-            Set-Content -Path $SigPath -Value $SigValue -Encoding ASCII
-            Set-Content -Path $PubPath -Value $SigPub -Encoding ASCII
-            Write-Log "Verifying signature (minisign)"
-            & minisign -Vm $ArtifactPath -x $SigPath -p $PubPath | Out-Null
-            if ($LASTEXITCODE -ne 0) {
-                throw "minisign verification failed"
-            }
+        if (-not $SigValue) {
+            throw "manifest missing signature value for asset (refusing to install unsigned artifact)"
+        }
+        $minisign = Get-Command minisign -ErrorAction SilentlyContinue
+        if (-not $minisign) {
+            throw "minisign is required for signature verification (install minisign or use --no-verify)"
+        }
+        $SigPath = Join-Path $TempDir ($AssetName + ".minisig")
+        $PubPath = Join-Path $TempDir "pybun-release.pub"
+        Set-Content -Path $SigPath -Value $SigValue -Encoding ASCII
+        Set-Content -Path $PubPath -Value "untrusted comment: minisign public key`n$SigPub" -Encoding ASCII
+        Write-Log "Verifying signature (minisign)"
+        & minisign -Vm $ArtifactPath -x $SigPath -p $PubPath | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw "minisign verification failed"
         }
     }
 
