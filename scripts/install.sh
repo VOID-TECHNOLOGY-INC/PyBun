@@ -10,6 +10,22 @@ DRY_RUN=0
 FORMAT="text"
 ALIAS_NAME="pybun-cli"
 
+# Trusted minisign public key for verifying release artifacts. This is the
+# project's actual signing key (security/pybun-release.pub) baked into the
+# script so that a compromised/MITM'd manifest cannot supply its own key and
+# self-sign a malicious artifact. Override only for testing.
+TRUSTED_MINISIGN_PUBLIC_KEY="${PYBUN_INSTALL_TRUSTED_PUBKEY:-RWQtfZNEyNnATcgzxfwDB+iNwGwW8bwflfnjHMizq6H84B1VRXO92yZ5}"
+
+# Hosts allowed for asset download URLs (comma separated). Prevents a
+# compromised/MITM'd manifest from redirecting the download to an
+# attacker-controlled host.
+ASSET_URL_HOST_ALLOWLIST="${PYBUN_INSTALL_ASSET_HOST_ALLOWLIST:-github.com}"
+
+# Test-only escape hatch to allow http:// asset URLs against an allowlisted
+# host (e.g. a local mock server in integration tests). Defaults to disabled;
+# never set this in production use.
+ASSET_URL_ALLOW_INSECURE="${PYBUN_INSTALL_ASSET_ALLOW_INSECURE:-0}"
+
 usage() {
   cat <<'EOF'
 PyBun installer (macOS/Linux)
@@ -127,6 +143,41 @@ sha256sum_file() {
   die "sha256sum or shasum is required for verification"
 }
 
+# Validates that an asset URL uses HTTPS and its host is in the configured
+# allowlist. Called on any asset URL sourced from a (potentially untrusted)
+# manifest before it is used to download an artifact.
+validate_asset_url() {
+  url="$1"
+  case "$url" in
+    https://*)
+      host="${url#https://}"
+      ;;
+    http://*)
+      if [ "$ASSET_URL_ALLOW_INSECURE" != "1" ]; then
+        die "insecure asset URL rejected (must be https): $url"
+      fi
+      host="${url#http://}"
+      ;;
+    *)
+      die "insecure asset URL rejected (must be https): $url"
+      ;;
+  esac
+  host="${host%%/*}"
+  host="${host%%:*}"
+  old_ifs="$IFS"
+  IFS=,
+  matched=0
+  for allowed in $ASSET_URL_HOST_ALLOWLIST; do
+    if [ "$host" = "$allowed" ]; then
+      matched=1
+    fi
+  done
+  IFS="$old_ifs"
+  if [ "$matched" -ne 1 ]; then
+    die "asset URL host not in allowlist ($ASSET_URL_HOST_ALLOWLIST): $host"
+  fi
+}
+
 detect_existing_pybun() {
   DETECTED_PYBUN_PATH=""
   DETECTED_PYBUN_KIND=""
@@ -184,12 +235,25 @@ create_alias() {
   ALIAS_STATUS="error"
 }
 
+# Emits plain NAME=VALUE lines (one per field) for the caller to parse with a
+# whitelist-based `case` loop. Deliberately does NOT shell-quote or eval the
+# values: since the shell side never executes the value content, no quoting
+# is needed and no injection is possible.
+#
+# Values may legitimately contain embedded newlines (e.g. a minisign
+# signature's multi-line file content), so backslashes and newlines are
+# escaped here (\ -> \\, LF -> \n, CR -> \r) and reversed by the shell side
+# with `printf '%b'` after extraction, keeping each emitted line single-line.
+#
+# Note: SIG_PUB (the minisign public key) is intentionally never emitted here.
+# Trusting a public key sourced from the same manifest being verified would
+# let an attacker who controls the manifest self-sign a malicious artifact.
+# The public key always comes from the script's TRUSTED_MINISIGN_PUBLIC_KEY.
 parse_manifest() {
   manifest_path="$1"
   target="$2"
   python3 - "$manifest_path" "$target" <<'PY'
 import json
-import shlex
 import sys
 
 manifest_path = sys.argv[1]
@@ -208,8 +272,11 @@ if not asset:
 
 release_notes = manifest.get("release_notes") or {}
 sig = asset.get("signature") or {}
+
 def emit(name, value):
-    print(f"{name}={shlex.quote(value or '')}")
+    value = value or ""
+    escaped = value.replace("\\", "\\\\").replace("\n", "\\n").replace("\r", "\\r")
+    print(f"{name}={escaped}")
 
 emit("MANIFEST_VERSION", manifest.get("version", ""))
 emit("MANIFEST_CHANNEL", manifest.get("channel", ""))
@@ -219,7 +286,6 @@ emit("ASSET_URL_FROM_MANIFEST", asset.get("url", ""))
 emit("ASSET_SHA_FROM_MANIFEST", asset.get("sha256", ""))
 emit("SIG_TYPE_FROM_MANIFEST", sig.get("type", ""))
 emit("SIG_VALUE_FROM_MANIFEST", sig.get("value", ""))
-emit("SIG_PUB_FROM_MANIFEST", sig.get("public_key", ""))
 emit("RELEASE_NOTES_NAME_FROM_MANIFEST", release_notes.get("name", ""))
 emit("RELEASE_NOTES_URL_FROM_MANIFEST", release_notes.get("url", ""))
 emit("RELEASE_NOTES_SHA_FROM_MANIFEST", release_notes.get("sha256", ""))
@@ -464,7 +530,10 @@ case "$MANIFEST_SOURCE" in
   file://*)
     MANIFEST_PATH="${MANIFEST_SOURCE#file://}"
     ;;
-  http://*|https://*)
+  http://*)
+    die "insecure manifest source rejected (http): use https:// or file://, got $MANIFEST_SOURCE"
+    ;;
+  https://*)
     if [ "${PYBUN_INSTALL_FETCH:-}" = "1" ] || { [ "$NO_VERIFY" -eq 0 ] && [ "$DRY_RUN" -eq 0 ]; }; then
       tmp_manifest="$(mktemp_file)"
       download_file "$MANIFEST_SOURCE" "$tmp_manifest"
@@ -481,10 +550,14 @@ esac
 MANIFEST_VERSION=""
 MANIFEST_CHANNEL=""
 MANIFEST_RELEASE_URL=""
+ASSET_NAME_FROM_MANIFEST=""
+ASSET_URL_FROM_MANIFEST=""
 ASSET_SHA=""
 SIG_TYPE=""
 SIG_VALUE=""
-SIG_PUB=""
+# SIG_PUB is always the trusted, script-embedded key. It is never overridden
+# by manifest content (see parse_manifest for rationale).
+SIG_PUB="$TRUSTED_MINISIGN_PUBLIC_KEY"
 RELEASE_NOTES_NAME=""
 RELEASE_NOTES_URL=""
 RELEASE_NOTES_SHA=""
@@ -493,24 +566,49 @@ if [ -n "$MANIFEST_PATH" ]; then
   if ! command -v python3 >/dev/null 2>&1; then
     die "python3 is required to parse the release manifest"
   fi
-  if manifest_vars="$(parse_manifest "$MANIFEST_PATH" "$TARGET")"; then
-    eval "$manifest_vars"
-    MANIFEST_VERSION="${MANIFEST_VERSION:-}"
-    MANIFEST_CHANNEL="${MANIFEST_CHANNEL:-}"
-    MANIFEST_RELEASE_URL="${MANIFEST_RELEASE_URL:-}"
-    ASSET_NAME="${ASSET_NAME_FROM_MANIFEST:-$ASSET_NAME}"
-    ASSET_URL="${ASSET_URL_FROM_MANIFEST:-$ASSET_URL}"
-    ASSET_SHA="${ASSET_SHA_FROM_MANIFEST:-}"
-    SIG_TYPE="${SIG_TYPE_FROM_MANIFEST:-}"
-    SIG_VALUE="${SIG_VALUE_FROM_MANIFEST:-}"
-    SIG_PUB="${SIG_PUB_FROM_MANIFEST:-}"
-    RELEASE_NOTES_NAME="${RELEASE_NOTES_NAME_FROM_MANIFEST:-}"
-    RELEASE_NOTES_URL="${RELEASE_NOTES_URL_FROM_MANIFEST:-}"
-    RELEASE_NOTES_SHA="${RELEASE_NOTES_SHA_FROM_MANIFEST:-}"
+  manifest_vars_file="$(mktemp_file)"
+  trap 'rm -f "$manifest_vars_file"' EXIT
+  if parse_manifest "$MANIFEST_PATH" "$TARGET" > "$manifest_vars_file"; then
+    # Whitelist-based assignment: no eval, no execution of manifest content.
+    # Reading from a file (not a pipe) avoids the POSIX subshell that would
+    # otherwise discard these assignments once the loop exits.
+    while IFS= read -r manifest_line || [ -n "$manifest_line" ]; do
+      field_name="${manifest_line%%=*}"
+      field_value="${manifest_line#*=}"
+      # Reverse parse_manifest's \\/\n/\r escaping. The format string is a
+      # fixed literal, not derived from field_value, so this cannot execute
+      # or interpret field_value as anything other than data.
+      field_value="$(printf '%b' "$field_value")"
+      case "$field_name" in
+        MANIFEST_VERSION) MANIFEST_VERSION="$field_value" ;;
+        MANIFEST_CHANNEL) MANIFEST_CHANNEL="$field_value" ;;
+        MANIFEST_RELEASE_URL) MANIFEST_RELEASE_URL="$field_value" ;;
+        ASSET_NAME_FROM_MANIFEST) ASSET_NAME_FROM_MANIFEST="$field_value" ;;
+        ASSET_URL_FROM_MANIFEST) ASSET_URL_FROM_MANIFEST="$field_value" ;;
+        ASSET_SHA_FROM_MANIFEST) ASSET_SHA="$field_value" ;;
+        SIG_TYPE_FROM_MANIFEST) SIG_TYPE="$field_value" ;;
+        SIG_VALUE_FROM_MANIFEST) SIG_VALUE="$field_value" ;;
+        RELEASE_NOTES_NAME_FROM_MANIFEST) RELEASE_NOTES_NAME="$field_value" ;;
+        RELEASE_NOTES_URL_FROM_MANIFEST) RELEASE_NOTES_URL="$field_value" ;;
+        RELEASE_NOTES_SHA_FROM_MANIFEST) RELEASE_NOTES_SHA="$field_value" ;;
+        *) ;;
+      esac
+    done < "$manifest_vars_file"
+    rm -f "$manifest_vars_file"
+    trap - EXIT
+    if [ -n "$ASSET_NAME_FROM_MANIFEST" ]; then
+      ASSET_NAME="$ASSET_NAME_FROM_MANIFEST"
+    fi
+    if [ -n "$ASSET_URL_FROM_MANIFEST" ]; then
+      validate_asset_url "$ASSET_URL_FROM_MANIFEST"
+      ASSET_URL="$ASSET_URL_FROM_MANIFEST"
+    fi
     if [ -n "$MANIFEST_VERSION" ] && [ -z "$VERSION" ]; then
       VERSION="$MANIFEST_VERSION"
     fi
   else
+    rm -f "$manifest_vars_file"
+    trap - EXIT
     die "no asset found in manifest for target: $TARGET"
   fi
 elif [ "$NO_VERIFY" -eq 0 ] && [ "$DRY_RUN" -eq 0 ]; then
@@ -586,17 +684,18 @@ if [ "$NO_VERIFY" -eq 0 ]; then
   if [ "$computed_sha" != "$ASSET_SHA" ]; then
     die "checksum mismatch: expected $ASSET_SHA, got $computed_sha"
   fi
-  if [ -n "$SIG_VALUE" ] && [ -n "$SIG_PUB" ]; then
-    if ! command -v minisign >/dev/null 2>&1; then
-      die "minisign is required for signature verification (install minisign or use --no-verify)"
-    fi
-    sig_path="$tmp_dir/${ASSET_NAME}.minisig"
-    pub_path="$tmp_dir/pybun-release.pub"
-    printf '%s\n' "$SIG_VALUE" > "$sig_path"
-    printf '%s\n' "$SIG_PUB" > "$pub_path"
-    log "Verifying signature (minisign)"
-    minisign -Vm "$artifact_path" -x "$sig_path" -p "$pub_path" >/dev/null
+  if [ -z "$SIG_VALUE" ]; then
+    die "manifest missing signature value for asset (refusing to install unsigned artifact)"
   fi
+  if ! command -v minisign >/dev/null 2>&1; then
+    die "minisign is required for signature verification (install minisign or use --no-verify)"
+  fi
+  sig_path="$tmp_dir/${ASSET_NAME}.minisig"
+  pub_path="$tmp_dir/pybun-release.pub"
+  printf '%s\n' "$SIG_VALUE" > "$sig_path"
+  printf 'untrusted comment: minisign public key\n%s\n' "$SIG_PUB" > "$pub_path"
+  log "Verifying signature (minisign)"
+  minisign -Vm "$artifact_path" -x "$sig_path" -p "$pub_path" >/dev/null
 fi
 
 log "Extracting archive"

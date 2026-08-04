@@ -65,7 +65,7 @@ fn install_one_liner_reports_release_notes_from_manifest() {
             {
                 "name": asset_name,
                 "target": target,
-                "url": "https://example.com/pybun.tar.gz",
+                "url": "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v9.9.9/pybun.tar.gz",
                 "sha256": "abc123",
                 "signature": {
                     "type": "ed25519",
@@ -76,7 +76,7 @@ fn install_one_liner_reports_release_notes_from_manifest() {
         ],
         "release_notes": {
             "name": "RELEASE_NOTES.md",
-            "url": "https://example.com/notes",
+            "url": "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v9.9.9/notes",
             "sha256": "deadbeef"
         }
     });
@@ -118,7 +118,7 @@ fn install_one_liner_reports_release_notes_from_manifest() {
 
     assert_eq!(
         release_notes.get("url").and_then(|v| v.as_str()),
-        Some("https://example.com/notes")
+        Some("https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v9.9.9/notes")
     );
     assert_eq!(
         json.get("asset")
