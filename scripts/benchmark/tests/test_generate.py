@@ -50,6 +50,40 @@ class TestGenerateHtmlReportEscaping(unittest.TestCase):
         self.assertNotIn(payload, html_out)
         self.assertIn("&lt;script&gt;", html_out)
 
+    def test_meta_and_system_fields_are_html_escaped(self) -> None:
+        payload = "<script>alert('xss')</script>"
+        results = [
+            {
+                "meta": {
+                    "timestamp": payload,
+                    "pybun_version": payload,
+                    "system": {
+                        "os": payload,
+                        "os_version": payload,
+                        "architecture": payload,
+                        "cpu": payload,
+                        "memory_gb": payload,
+                        "python_version": payload,
+                    },
+                },
+                "summary": {},
+                "results": [
+                    {
+                        "scenario": "install",
+                        "tool": "pip",
+                        "duration_ms": 1.0,
+                        "min_ms": 1.0,
+                        "max_ms": 1.0,
+                        "stddev_ms": 0.0,
+                        "success": True,
+                    }
+                ],
+            }
+        ]
+        html_out = generate.generate_html_report(results)
+        self.assertNotIn(payload, html_out)
+        self.assertIn("&lt;script&gt;", html_out)
+
 
 if __name__ == "__main__":
     unittest.main()

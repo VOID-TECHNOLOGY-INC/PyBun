@@ -234,6 +234,14 @@ def generate_html_report(
     summary = latest.get("summary", {})
     sys_info = meta.get("system", {})
     safe_title = html.escape(title)
+    safe_timestamp = html.escape(str(meta.get("timestamp", "Unknown")))
+    safe_pybun_version = html.escape(str(meta.get("pybun_version", "Unknown")))
+    safe_os = html.escape(str(sys_info.get("os", "Unknown")))
+    safe_os_version = html.escape(str(sys_info.get("os_version", "")))
+    safe_architecture = html.escape(str(sys_info.get("architecture", "Unknown")))
+    safe_cpu = html.escape(str(sys_info.get("cpu", "Unknown")))
+    safe_memory_gb = html.escape(str(sys_info.get("memory_gb", "Unknown")))
+    safe_python_version = html.escape(str(sys_info.get("python_version", "Unknown")))
 
     html_out = f"""\
 <!DOCTYPE html>
@@ -324,18 +332,18 @@ def generate_html_report(
     <h1>{safe_title}</h1>
     
     <p>
-        <strong>Generated:</strong> {meta.get('timestamp', 'Unknown')}<br>
-        <strong>PyBun Version:</strong> {meta.get('pybun_version', 'Unknown')}
+        <strong>Generated:</strong> {safe_timestamp}<br>
+        <strong>PyBun Version:</strong> {safe_pybun_version}
     </p>
-    
+
     <h2>System Information</h2>
     <table>
         <tr><th>Property</th><th>Value</th></tr>
-        <tr><td>OS</td><td>{sys_info.get('os', 'Unknown')} {sys_info.get('os_version', '')}</td></tr>
-        <tr><td>Architecture</td><td>{sys_info.get('architecture', 'Unknown')}</td></tr>
-        <tr><td>CPU</td><td>{sys_info.get('cpu', 'Unknown')}</td></tr>
-        <tr><td>Memory</td><td>{sys_info.get('memory_gb', 'Unknown')} GB</td></tr>
-        <tr><td>Python</td><td>{sys_info.get('python_version', 'Unknown')}</td></tr>
+        <tr><td>OS</td><td>{safe_os} {safe_os_version}</td></tr>
+        <tr><td>Architecture</td><td>{safe_architecture}</td></tr>
+        <tr><td>CPU</td><td>{safe_cpu}</td></tr>
+        <tr><td>Memory</td><td>{safe_memory_gb} GB</td></tr>
+        <tr><td>Python</td><td>{safe_python_version}</td></tr>
     </table>
     
     <h2>Summary</h2>

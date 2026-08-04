@@ -213,6 +213,33 @@ fn install_ps1_dry_run_emits_json() {
 
 // --- Issue #387: unvalidated `-Version` input hardening ---
 
+#[cfg(not(windows))]
+#[test]
+fn install_sh_rejects_malformed_version() {
+    let temp = tempdir().unwrap();
+    let prefix = temp.path().join("prefix");
+
+    let output = Command::new("sh")
+        .arg("scripts/install.sh")
+        .arg("--version")
+        .arg("1.2.3/../../etc/passwd")
+        .arg("--dry-run")
+        .arg("--prefix")
+        .arg(&prefix)
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "installer should reject a malformed version string"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("invalid version string rejected"),
+        "unexpected stderr: {stderr}"
+    );
+}
+
 #[test]
 fn install_ps1_rejects_malformed_version() {
     let temp = tempdir().unwrap();

@@ -27,6 +27,8 @@ pub enum PyPiError {
     Parse(String),
     #[error("invalid package name: {0}")]
     InvalidPackageName(String),
+    #[error("invalid version: {0}")]
+    InvalidVersion(String),
 }
 
 impl From<reqwest::Error> for PyPiError {
@@ -313,6 +315,7 @@ impl PyPiClient {
         version: &str,
     ) -> Result<Vec<String>, PyPiError> {
         validate_package_name(name)?;
+        validate_version(version)?;
         let url = self
             .base
             .join(&format!("pypi/{}/{}/json", name, version))
@@ -654,6 +657,22 @@ fn validate_package_name(name: &str) -> Result<(), PyPiError> {
         Ok(())
     } else {
         Err(PyPiError::InvalidPackageName(name.to_string()))
+    }
+}
+
+/// Validate a version string against the PEP 440 character set
+/// (alphanumerics plus `.`, `+`, `-`, `_`, `!`) before it is interpolated into
+/// a PyPI URL path, blocking `/`, `?`, `#`, whitespace, and control characters
+/// that could otherwise redirect or manipulate the constructed request.
+fn validate_version(version: &str) -> Result<(), PyPiError> {
+    let valid = !version.is_empty()
+        && version
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'+' | b'-' | b'_' | b'!'));
+    if valid {
+        Ok(())
+    } else {
+        Err(PyPiError::InvalidVersion(version.to_string()))
     }
 }
 
@@ -1081,6 +1100,26 @@ mod tests {
         assert!(validate_package_name("").is_err());
         assert!(validate_package_name("-leading-dash").is_err());
         assert!(validate_package_name("trailing-dash-").is_err());
+    }
+
+    #[test]
+    fn validate_version_accepts_pep440_versions() {
+        assert!(validate_version("1.2.3").is_ok());
+        assert!(validate_version("2.0.0rc1").is_ok());
+        assert!(validate_version("1.0.0+local.build").is_ok());
+        assert!(validate_version("1.0.0.dev0").is_ok());
+        assert!(validate_version("1!2.0").is_ok());
+    }
+
+    #[test]
+    fn validate_version_rejects_path_traversal_and_control_chars() {
+        assert!(validate_version("../../etc/passwd").is_err());
+        assert!(validate_version("1.2.3/../evil").is_err());
+        assert!(validate_version("1.2.3?x=1").is_err());
+        assert!(validate_version("1.2.3#frag").is_err());
+        assert!(validate_version("1.2 3").is_err());
+        assert!(validate_version("1.2\n3").is_err());
+        assert!(validate_version("").is_err());
     }
 
     #[test]
