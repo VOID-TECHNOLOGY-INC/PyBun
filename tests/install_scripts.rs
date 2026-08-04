@@ -358,6 +358,67 @@ fn install_sh_rejects_manifest_asset_url_outside_allowlist() {
 
 #[cfg(not(windows))]
 #[test]
+fn install_sh_rejects_asset_url_with_userinfo_host_confusion() {
+    let temp = tempdir().unwrap();
+    let manifest_path = temp.path().join("pybun-release.json");
+    let target = current_release_target().expect("supported release target");
+    let asset_name = format!(
+        "pybun-{}.{}",
+        target,
+        if target.contains("windows") {
+            "zip"
+        } else {
+            "tar.gz"
+        }
+    );
+    // Userinfo syntax (user:pass@host) must not let the allowlist check see
+    // the trusted host while curl/wget actually connect to evil.com.
+    let manifest = json!({
+        "version": "9.9.9",
+        "channel": "stable",
+        "assets": [
+            {
+                "name": asset_name,
+                "target": target,
+                "url": format!("https://github.com:@evil.com/{asset_name}"),
+                "sha256": "deadbeef",
+                "signature": {
+                    "type": "minisign",
+                    "value": "ZHVtbXktc2lnbmF0dXJl",
+                    "public_key": "ZHVtbXktcHVibGljLWtleQ=="
+                }
+            }
+        ]
+    });
+    fs::write(
+        &manifest_path,
+        serde_json::to_string_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
+
+    let prefix = temp.path().join("prefix");
+    let output = Command::new("sh")
+        .arg("scripts/install.sh")
+        .arg("--dry-run")
+        .arg("--prefix")
+        .arg(&prefix)
+        .env("PYBUN_INSTALL_MANIFEST", &manifest_path)
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "installer should reject asset URL host outside allowlist via userinfo confusion"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("asset URL host not in allowlist"),
+        "unexpected stderr: {stderr}"
+    );
+}
+
+#[cfg(not(windows))]
+#[test]
 fn install_sh_manifest_field_injection_is_inert() {
     let temp = tempdir().unwrap();
     let manifest_path = temp.path().join("pybun-release.json");

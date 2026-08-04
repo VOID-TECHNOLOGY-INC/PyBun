@@ -148,22 +148,41 @@ sha256sum_file() {
 # manifest before it is used to download an artifact.
 validate_asset_url() {
   url="$1"
-  case "$url" in
-    https://*)
-      host="${url#https://}"
+  if ! command -v python3 >/dev/null 2>&1; then
+    die "python3 is required to validate asset URLs"
+  fi
+  parsed="$(python3 - "$url" <<'PY'
+import sys
+from urllib.parse import urlsplit
+
+url = sys.argv[1]
+parts = urlsplit(url)
+scheme = (parts.scheme or "").lower()
+host = (parts.hostname or "").lower()
+print(scheme)
+print(host)
+PY
+)"
+  scheme="$(printf '%s\n' "$parsed" | sed -n '1p')"
+  host="$(printf '%s\n' "$parsed" | sed -n '2p')"
+
+  case "$scheme" in
+    https)
       ;;
-    http://*)
+    http)
       if [ "$ASSET_URL_ALLOW_INSECURE" != "1" ]; then
         die "insecure asset URL rejected (must be https): $url"
       fi
-      host="${url#http://}"
       ;;
     *)
       die "insecure asset URL rejected (must be https): $url"
       ;;
   esac
-  host="${host%%/*}"
-  host="${host%%:*}"
+
+  if [ -z "$host" ]; then
+    die "asset URL missing host: $url"
+  fi
+
   old_ifs="$IFS"
   IFS=,
   matched=0
