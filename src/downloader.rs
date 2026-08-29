@@ -9,6 +9,7 @@ use std::time::Duration;
 use thiserror::Error;
 use tokio::fs::{self, File};
 use tokio::io::{AsyncWriteExt, BufWriter};
+use uuid::Uuid;
 
 /// Upper bound on a server-supplied `Retry-After` value, so a malicious or
 /// misconfigured index cannot stall a download indefinitely.
@@ -151,7 +152,8 @@ impl Downloader {
     /// Download a single file with retries, checksum, and optional signature verification.
     ///
     /// The `checksum` argument expects a SHA-256 hash string (hex).
-    /// If verification fails, the file is deleted.
+    /// If verification fails, `destination` is never written to (see
+    /// [`Downloader::download_file_with_signature`]).
     pub async fn download_file(
         &self,
         url: &str,
@@ -172,6 +174,13 @@ impl Downloader {
     /// different (or no) checksum/signature: deduplication must never let a
     /// weaker or unrelated request's success stand in for this caller's own
     /// verification (Issue #401).
+    ///
+    /// `destination` itself is only ever written by an atomic publish
+    /// (`Downloader::publish_verified`) once *this* caller's own
+    /// verification has fully succeeded — the shared transfer lands in a
+    /// private temp file first. This means a concurrent caller's failed
+    /// verification can never delete or truncate a `destination` that
+    /// another caller already returned `Ok` for (Issue #413).
     pub async fn download_file_with_signature(
         &self,
         url: &str,
@@ -182,7 +191,9 @@ impl Downloader {
         if let Some(expected) = checksum
             && crate::security::is_placeholder_hash(expected)
         {
-            let _ = tokio::fs::remove_file(destination).await;
+            // This caller asserts nothing meaningful, so it must not touch
+            // any file that may already be sitting at `destination` on
+            // behalf of another (already-verified) caller (Issue #413).
             return Err(DownloadError::MissingChecksum {
                 path: destination.to_path_buf(),
                 checksum: expected.to_string(),
@@ -203,60 +214,135 @@ impl Downloader {
             return Ok(destination.to_path_buf());
         }
 
-        self.ensure_transferred(url, destination).await?;
+        let temp_path = self.ensure_transferred(url, destination).await?;
 
         // Verify independently of whichever caller actually performed the
-        // shared transfer above.
+        // shared transfer above, against the private temp copy — never
+        // against `destination` directly, so a failure here can never
+        // disturb a `destination` another caller already published.
         if let Some(expected) = checksum {
-            self.verify_checksum(destination, expected).await?;
+            self.verify_checksum(&temp_path, expected).await?;
         }
         if let Some(sig) = signature {
-            self.verify_signature(destination, sig).await?;
+            self.verify_signature(&temp_path, sig).await?;
         }
+
+        self.publish_verified(&temp_path, destination).await?;
         Ok(destination.to_path_buf())
     }
 
-    /// Ensure `destination` holds a freshly transferred copy of `url`,
+    /// Ensure a private temp file holds a freshly transferred copy of `url`,
     /// de-duplicating the underlying network transfer across concurrent
-    /// callers that share the same `(url, destination)` key.
+    /// callers that share the same `(url, destination)` key. Returns the
+    /// path of that temp file — never `destination` itself.
     ///
     /// This function performs *only* the transfer (with retry/backoff on
-    /// transient errors) — it never applies checksum or signature policy.
-    /// Every caller of [`Downloader::download_file_with_signature`] verifies
-    /// the result independently after this returns, so a shared transfer can
-    /// never let one caller's weaker verification requirement satisfy
-    /// another's stronger one.
-    async fn ensure_transferred(&self, url: &str, destination: &Path) -> Result<(), DownloadError> {
+    /// transient errors) — it never applies checksum or signature policy,
+    /// and it never writes to `destination`. Every caller of
+    /// [`Downloader::download_file_with_signature`] verifies the result
+    /// independently after this returns and only then publishes it to
+    /// `destination` (see [`Downloader::publish_verified`]), so a shared
+    /// transfer can never let one caller's weaker verification requirement
+    /// satisfy another's stronger one, and a failed verification can never
+    /// truncate or delete a `destination` another caller already published
+    /// (Issue #413).
+    async fn ensure_transferred(
+        &self,
+        url: &str,
+        destination: &Path,
+    ) -> Result<PathBuf, DownloadError> {
         let key = DownloadKey {
             url: url.to_string(),
             destination: destination.to_path_buf(),
         };
+        let temp_path = Self::shared_transfer_path(destination, url);
         let url_owned = url.to_string();
-        let destination_owned = destination.to_path_buf();
+        let temp_owned = temp_path.clone();
         self.inflight
             .get_or_try_init(key, || async move {
-                self.transfer_with_retries(&url_owned, &destination_owned)
-                    .await
+                self.transfer_with_retries(&url_owned, &temp_owned).await
             })
             .await
-            .map(|_| ())
     }
 
-    /// Transfer `url` to `destination`, retrying transient failures with
+    /// Derive the private temp path a shared transfer for `(url,
+    /// destination)` lands in. Deterministic per key so every caller sharing
+    /// the transfer (deduplicated via `inflight`) agrees on the same path,
+    /// and namespaced with a short hash of `url` so two different URLs that
+    /// happen to target the same `destination` never collide.
+    ///
+    /// Deliberately not cleaned up by any individual caller: a caller that
+    /// finishes (successfully or not) cannot know whether another concurrent
+    /// caller is still reading this same temp file, and deleting it out from
+    /// under a peer would just relocate the Issue #413 race rather than fix
+    /// it. A subsequent transfer to the same key overwrites it (`File::create`
+    /// truncates), so this is bounded to at most one stray file per
+    /// `(url, destination)` pair rather than an unbounded leak.
+    fn shared_transfer_path(destination: &Path, url: &str) -> PathBuf {
+        let mut hasher = Sha256::new();
+        hasher.update(url.as_bytes());
+        let digest = hex::encode(hasher.finalize());
+        let file_name = destination
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "download".to_string());
+        destination.with_file_name(format!(".{file_name}.pybun-dl-{}", &digest[..16]))
+    }
+
+    /// Derive a unique-per-call staging path used to atomically publish a
+    /// verified transfer into `destination`.
+    fn staging_path(destination: &Path) -> PathBuf {
+        let file_name = destination
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "download".to_string());
+        destination.with_file_name(format!(
+            ".{file_name}.pybun-publish-{}",
+            Uuid::new_v4().simple()
+        ))
+    }
+
+    /// Publish a fully-verified temp file to `destination` via copy-to-
+    /// staging-then-rename, so `destination` only ever transitions between
+    /// complete, valid states — a reader can never observe a partially
+    /// written or deleted file, regardless of how many concurrent callers
+    /// (all of whom already verified identical bytes) race to publish it
+    /// (Issue #413).
+    async fn publish_verified(
+        &self,
+        temp_path: &Path,
+        destination: &Path,
+    ) -> Result<(), DownloadError> {
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent).await?;
+        }
+        let staging = Self::staging_path(destination);
+        if let Err(e) = fs::copy(temp_path, &staging).await {
+            let _ = fs::remove_file(&staging).await;
+            return Err(e.into());
+        }
+        if let Err(e) = fs::rename(&staging, destination).await {
+            let _ = fs::remove_file(&staging).await;
+            return Err(e.into());
+        }
+        Ok(())
+    }
+
+    /// Transfer `url` to `target_path`, retrying transient failures with
     /// exponential backoff (capped `Retry-After` on 429/503). Non-retryable
     /// errors (404/401/403, checksum/signature failures — though this
     /// function never checks those) fail immediately.
     async fn transfer_with_retries(
         &self,
         url: &str,
-        destination: &Path,
+        target_path: &Path,
     ) -> Result<PathBuf, DownloadError> {
         let max_retries = 3;
         let mut attempt = 0;
 
         loop {
-            match self.download_attempt(url, destination).await {
-                Ok(_) => return Ok(destination.to_path_buf()),
+            match self.download_attempt(url, target_path).await {
+                Ok(_) => return Ok(target_path.to_path_buf()),
                 Err(e) => {
                     // Fail fast on non-retryable errors (e.g. 404/401/403):
                     // retrying them just burns time waiting for a response
@@ -291,7 +377,7 @@ impl Downloader {
         }
     }
 
-    async fn download_attempt(&self, url: &str, destination: &Path) -> Result<(), DownloadError> {
+    async fn download_attempt(&self, url: &str, target_path: &Path) -> Result<(), DownloadError> {
         let response = self.client.get(url).send().await?;
 
         if let Err(status_err) = response.error_for_status_ref() {
@@ -309,11 +395,11 @@ impl Downloader {
             });
         }
 
-        if let Some(parent) = destination.parent() {
+        if let Some(parent) = target_path.parent() {
             fs::create_dir_all(parent).await?;
         }
 
-        let file = File::create(destination).await?;
+        let file = File::create(target_path).await?;
         let mut writer = BufWriter::new(file);
         let mut stream = response.bytes_stream();
 
@@ -326,9 +412,14 @@ impl Downloader {
         Ok(())
     }
 
+    /// Verify `path`'s contents against `expected` (a SHA-256 hash). Never
+    /// deletes `path` on failure — this may be `destination` itself (fast
+    /// path, re-verifying an existing file) or a private temp file (post-
+    /// transfer). Either way, a caller's own failed verification must never
+    /// remove a file another concurrent caller could be relying on
+    /// (Issue #413); the caller decides what to do with the failure.
     async fn verify_checksum(&self, path: &Path, expected: &str) -> Result<(), DownloadError> {
         if crate::security::is_placeholder_hash(expected) {
-            let _ = fs::remove_file(path).await;
             return Err(DownloadError::MissingChecksum {
                 path: path.to_path_buf(),
                 checksum: expected.to_string(),
@@ -354,7 +445,6 @@ impl Downloader {
         let actual = hex::encode(result);
 
         if actual != expected_clean {
-            let _ = fs::remove_file(path).await;
             return Err(DownloadError::ChecksumMismatch {
                 expected: expected_clean.to_string(),
                 actual,
@@ -365,6 +455,9 @@ impl Downloader {
         Ok(())
     }
 
+    /// Verify `path`'s contents against `signature`. Never deletes `path` on
+    /// failure, for the same reason as [`Downloader::verify_checksum`]
+    /// (Issue #413).
     async fn verify_signature(
         &self,
         path: &Path,
@@ -373,13 +466,10 @@ impl Downloader {
         let bytes = fs::read(path).await?;
         match verify_ed25519_signature(&signature.public_key, &signature.signature, &bytes) {
             Ok(_) => Ok(()),
-            Err(source) => {
-                let _ = fs::remove_file(path).await;
-                Err(DownloadError::SignatureVerificationFailed {
-                    path: path.to_path_buf(),
-                    message: source.to_string(),
-                })
-            }
+            Err(source) => Err(DownloadError::SignatureVerificationFailed {
+                path: path.to_path_buf(),
+                message: source.to_string(),
+            }),
         }
     }
 
@@ -739,5 +829,200 @@ mod tests {
         );
 
         mock.assert_calls(1);
+    }
+
+    /// Issue #413: a concurrent caller's verification failure must never
+    /// delete or truncate `destination` out from under a caller that already
+    /// reported success. Regardless of how `buffer_unordered` interleaves
+    /// the two verifications, the successful caller's read of `destination`
+    /// afterward must see the full, correct content.
+    #[tokio::test]
+    async fn concurrent_verification_failure_never_deletes_or_truncates_shared_destination() {
+        let server = MockServer::start();
+        let body = b"authoritative shared content for issue 413";
+        let mock = server.mock(|when, then| {
+            when.method(GET).path("/shared-413.whl");
+            then.status(200).body(body.as_slice());
+        });
+
+        let dir = tempdir().unwrap();
+        let dest = dir.path().join("shared-413.whl");
+        let downloader = Downloader::new();
+
+        let unconstrained = DownloadRequest {
+            url: server.url("/shared-413.whl"),
+            destination: dest.clone(),
+            checksum: None,
+            signature: None,
+        };
+        let wrong_checksum = DownloadRequest {
+            url: server.url("/shared-413.whl"),
+            destination: dest.clone(),
+            checksum: Some(
+                "sha256:1111111111111111111111111111111111111111111111111111111111111".to_string(),
+            ),
+            signature: None,
+        };
+
+        let results = downloader
+            .download_parallel(vec![unconstrained, wrong_checksum], 2)
+            .await;
+
+        let ok_path = results
+            .iter()
+            .find_map(|r| r.as_ref().ok())
+            .expect("the unconstrained request should succeed");
+
+        // The successful caller's file must be intact: present, with full
+        // content, never truncated or removed by the concurrent
+        // checksum-mismatch verification.
+        assert!(
+            ok_path.exists(),
+            "destination must still exist after a concurrent verification failure"
+        );
+        let on_disk = tokio::fs::read(ok_path).await.unwrap();
+        assert_eq!(
+            on_disk, body,
+            "destination content must be complete and unmodified by the failing verifier"
+        );
+
+        mock.assert_calls(1);
+    }
+
+    /// Issue #413: a solo caller whose verification fails must not leave a
+    /// partially-verified file at `destination` — `destination` is only ever
+    /// written via an atomic publish after this caller's own verification
+    /// succeeds, so a failed verification simply never creates it.
+    #[tokio::test]
+    async fn failed_verification_never_creates_destination() {
+        let server = MockServer::start();
+        let mock = server.mock(|when, then| {
+            when.method(GET).path("/bad-checksum.whl");
+            then.status(200).body("actual bytes");
+        });
+
+        let dir = tempdir().unwrap();
+        let dest = dir.path().join("bad-checksum.whl");
+        let downloader = Downloader::new();
+
+        let result = downloader
+            .download_file(
+                &server.url("/bad-checksum.whl"),
+                &dest,
+                Some("sha256:2222222222222222222222222222222222222222222222222222222222222222"),
+            )
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(DownloadError::ChecksumMismatch { .. })
+        ));
+        assert!(
+            !dest.exists(),
+            "destination should never be created for content that never passed verification"
+        );
+        mock.assert_calls(1);
+    }
+
+    /// Issue #413, signature variant: a concurrent caller's failed signature
+    /// verification must never delete or truncate `destination` out from
+    /// under a caller whose signature verified successfully.
+    #[tokio::test]
+    async fn concurrent_signature_failure_never_deletes_or_truncates_shared_destination() {
+        let server = MockServer::start();
+        let body = b"signed shared content for issue 413";
+        let mock = server.mock(|when, then| {
+            when.method(GET).path("/shared-413-signed.whl");
+            then.status(200).body(body.as_slice());
+        });
+
+        let signing_key = SigningKey::from_bytes(&[13u8; 32]);
+        let verifier = signing_key.verifying_key();
+        let signature = signing_key.sign(body);
+        let public_key_b64 = base64::engine::general_purpose::STANDARD.encode(verifier.to_bytes());
+        let valid_signature_b64 =
+            base64::engine::general_purpose::STANDARD.encode(signature.to_bytes());
+
+        let other_key = SigningKey::from_bytes(&[14u8; 32]);
+        let bogus_signature_b64 = base64::engine::general_purpose::STANDARD
+            .encode(other_key.sign(b"unrelated bytes").to_bytes());
+
+        let dir = tempdir().unwrap();
+        let dest = dir.path().join("shared-413-signed.whl");
+        let downloader = Downloader::new();
+
+        let valid = DownloadRequest {
+            url: server.url("/shared-413-signed.whl"),
+            destination: dest.clone(),
+            checksum: None,
+            signature: Some(SignatureSpec {
+                signature: valid_signature_b64,
+                public_key: public_key_b64.clone(),
+            }),
+        };
+        let invalid = DownloadRequest {
+            url: server.url("/shared-413-signed.whl"),
+            destination: dest.clone(),
+            checksum: None,
+            signature: Some(SignatureSpec {
+                signature: bogus_signature_b64,
+                public_key: public_key_b64,
+            }),
+        };
+
+        let results = downloader.download_parallel(vec![valid, invalid], 2).await;
+
+        let ok_path = results
+            .iter()
+            .find_map(|r| r.as_ref().ok())
+            .expect("the validly-signed request should succeed");
+
+        assert!(
+            ok_path.exists(),
+            "destination must still exist after a concurrent signature-verification failure"
+        );
+        let on_disk = tokio::fs::read(ok_path).await.unwrap();
+        assert_eq!(
+            on_disk, body,
+            "destination content must be complete and unmodified by the failing verifier"
+        );
+
+        mock.assert_calls(1);
+    }
+
+    /// The shared transfer path is namespaced by a hash of `url`, so two
+    /// different URLs that happen to target the same `destination` never
+    /// collide on the same temp file (Issue #413).
+    #[test]
+    fn shared_transfer_path_differs_for_different_urls_to_same_destination() {
+        let dest = PathBuf::from("/tmp/pybun-test/shared.whl");
+        let path_a = Downloader::shared_transfer_path(&dest, "https://example.com/a.whl");
+        let path_b = Downloader::shared_transfer_path(&dest, "https://example.com/b.whl");
+        assert_ne!(
+            path_a, path_b,
+            "different URLs to the same destination must use distinct temp paths"
+        );
+    }
+
+    /// The shared transfer path is deterministic for the same `(url,
+    /// destination)` pair, so every caller sharing a deduplicated transfer
+    /// agrees on where to find it.
+    #[test]
+    fn shared_transfer_path_is_deterministic_for_same_key() {
+        let dest = PathBuf::from("/tmp/pybun-test/shared.whl");
+        let path_a = Downloader::shared_transfer_path(&dest, "https://example.com/a.whl");
+        let path_b = Downloader::shared_transfer_path(&dest, "https://example.com/a.whl");
+        assert_eq!(path_a, path_b);
+    }
+
+    /// Staging paths must never collide across calls, even for the same
+    /// `destination`, since multiple verified callers may publish
+    /// concurrently.
+    #[test]
+    fn staging_path_is_unique_per_call() {
+        let dest = PathBuf::from("/tmp/pybun-test/shared.whl");
+        let staging_a = Downloader::staging_path(&dest);
+        let staging_b = Downloader::staging_path(&dest);
+        assert_ne!(staging_a, staging_b);
     }
 }
