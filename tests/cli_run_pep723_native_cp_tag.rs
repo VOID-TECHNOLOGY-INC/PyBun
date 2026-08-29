@@ -47,15 +47,27 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use tempfile::tempdir;
 
-/// Minimal but valid (openable-as-zip) wheel body — content doesn't matter,
-/// only that `installer::install_wheel` can extract it as a zip archive.
+/// Minimal but valid (openable-as-zip) wheel body — content doesn't matter
+/// beyond having the `cptagpkg-1.0.0.dist-info/WHEEL` metadata that
+/// `installer::install_wheel_with_scheme` requires to locate the wheel's
+/// `<distribution>-<version>` prefix (PEP 427).
 fn fake_wheel_bytes() -> Vec<u8> {
     let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
     let options = zip::write::SimpleFileOptions::default();
+    use std::io::Write;
     zip.start_file("dummy.txt", options)
         .expect("start wheel entry");
-    use std::io::Write;
     zip.write_all(b"ok").expect("write wheel entry");
+    zip.start_file("cptagpkg-1.0.0.dist-info/WHEEL", options)
+        .expect("start WHEEL entry");
+    zip.write_all(
+        b"Wheel-Version: 1.0\nGenerator: test\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+    )
+    .expect("write WHEEL entry");
+    zip.start_file("cptagpkg-1.0.0.dist-info/METADATA", options)
+        .expect("start METADATA entry");
+    zip.write_all(b"Metadata-Version: 2.1\nName: cptagpkg\nVersion: 1.0.0\n")
+        .expect("write METADATA entry");
     zip.finish().expect("finish wheel zip").into_inner()
 }
 

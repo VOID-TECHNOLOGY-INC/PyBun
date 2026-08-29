@@ -656,14 +656,10 @@ pub(crate) async fn run_script(
                             .take(2)
                             .collect::<Vec<_>>()
                             .join(".");
-                        let site_packages = if cfg!(windows) {
-                            venv_path.join("Lib").join("site-packages")
-                        } else {
-                            venv_path
-                                .join("lib")
-                                .join(format!("python{}", major_minor))
-                                .join("site-packages")
-                        };
+                        // Derived directly from the venv layout (no `sysconfig`
+                        // subprocess) so `.data/*` wheel entries (PEP 427) still
+                        // relocate correctly (Issue #402).
+                        let scheme = installer::InstallScheme::from_venv(&venv_path, &major_minor);
 
                         let wheel_cache = WheelCache::new()
                             .map_err(|e| eyre!("failed to init wheel cache: {}", e))?;
@@ -717,7 +713,7 @@ pub(crate) async fn run_script(
 
                         eprintln!("info: installing {} packages...", wheels_to_install.len());
                         for wheel in wheels_to_install {
-                            installer::install_wheel(&wheel, &site_packages)
+                            installer::install_wheel_with_scheme(&wheel, &scheme)
                                 .map_err(|e| eyre!("failed to install wheel: {}", e))?;
                         }
                     }
