@@ -342,16 +342,12 @@ impl ModuleFinder {
             // Resolve symlinks: `file_type()` returns the link's own type, not its
             // target's type. Follow the link so that symlinked .py files and
             // package directories (common in venvs and editable installs) are found.
-            let effective_is_dir;
-            let effective_is_file;
-            if raw_ft.is_symlink() {
+            let (effective_is_dir, effective_is_file) = if raw_ft.is_symlink() {
                 let Ok(meta) = path.metadata() else { continue };
-                effective_is_dir = meta.is_dir();
-                effective_is_file = meta.is_file();
+                (meta.is_dir(), meta.is_file())
             } else {
-                effective_is_dir = raw_ft.is_dir();
-                effective_is_file = raw_ft.is_file();
-            }
+                (raw_ft.is_dir(), raw_ft.is_file())
+            };
 
             if effective_is_dir {
                 let module_name = if prefix.is_empty() {
