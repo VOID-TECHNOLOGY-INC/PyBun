@@ -270,6 +270,14 @@ impl Downloader {
     /// the transfer (deduplicated via `inflight`) agrees on the same path,
     /// and namespaced with a short hash of `url` so two different URLs that
     /// happen to target the same `destination` never collide.
+    ///
+    /// Deliberately not cleaned up by any individual caller: a caller that
+    /// finishes (successfully or not) cannot know whether another concurrent
+    /// caller is still reading this same temp file, and deleting it out from
+    /// under a peer would just relocate the Issue #413 race rather than fix
+    /// it. A subsequent transfer to the same key overwrites it (`File::create`
+    /// truncates), so this is bounded to at most one stray file per
+    /// `(url, destination)` pair rather than an unbounded leak.
     fn shared_transfer_path(destination: &Path, url: &str) -> PathBuf {
         let mut hasher = Sha256::new();
         hasher.update(url.as_bytes());
@@ -309,7 +317,10 @@ impl Downloader {
             fs::create_dir_all(parent).await?;
         }
         let staging = Self::staging_path(destination);
-        fs::copy(temp_path, &staging).await?;
+        if let Err(e) = fs::copy(temp_path, &staging).await {
+            let _ = fs::remove_file(&staging).await;
+            return Err(e.into());
+        }
         if let Err(e) = fs::rename(&staging, destination).await {
             let _ = fs::remove_file(&staging).await;
             return Err(e.into());
