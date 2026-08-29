@@ -1,7 +1,7 @@
 # PyBun (Python Bundle) Product Specification
 **Version:** 1.0 (Draft)
 **Status:** Planning
-**Codename:** Python-Speed-Demon
+**Codename:** Python-Speed-Demon (歴史的名称。§0.3の通り、現在の重点は速度ではなく Agent Control Plane としての安全性・決定性・診断可能性)
 
 ---
 
@@ -48,12 +48,37 @@ CLI 記述は原則として到達仕様を示し、現状との差分や暫定�
 
 ---
 
+## 0.3 外部レビューによる方向性提言 (2026-08-29)
+
+外部レビュー（`temp/IMPROVE.md`）により、PyBun の位置づけと投資配分について次の提言を受け、本仕様に反映した。
+
+### 評価の要旨
+
+> PyBun の最大の価値は「速いpip」を作ることではなく、**AI Agent が Python を操作するときの曖昧さ・危険性・非決定性を消すこと**にある。一方、native wheel installer や custom ModuleFinder のようなフル再実装は、Python packaging/import エコシステムの再実装という極めて広いスコープを背負っており、現状の開発リソースに対して ROI が不透明。
+
+### 機能の優先度分類
+
+| 分類 | 機能 | 本仕様での扱い |
+| --- | --- | --- |
+| **最重要（維持・強化）** | JSON-first CLI, MCP, Structured diagnostics, Sandbox | §5, §10 で維持。README/CLIの前面に押し出す |
+| **重要（維持）** | Audit/provenance, 環境診断(`doctor`), 依存操作(uvバックエンド活用), pytest orchestration, drift detection | §4.7, §5, §10 で維持 |
+| **非常に有望（拡張候補）** | Agent向け `doctor --fix` 拡張、drift の自動修復連携 | §13 オープン質問に追加 |
+| **ROI再評価** | native ModuleFinder (`pybun module-find` の実行時 import 接続), native wheel installer | §3, §4.2, §4.3 に現状注記を追加。Issue #403 / #402 の解決状況を判断材料とする |
+| **優先度低下** | Builder の完全隔離実装、custom import runtime のフル互換化 | §4.3 に明記 |
+
+### 成熟度表記の是正
+
+Issue #400（並行処理のrace）、#401（整合性ポリシーの迂回可能性）、#402（wheelインストールのPEP 427セマンティクス欠落）、#405/#406（ModuleFinderのABI/namespace検出の不備）はいずれも本ドキュメント更新時点（2026-08-29）で **未解決 (OPEN)**。README の成熟度表記（Stable/Preview/stub）は、これらの native install/module-finder 関連コンポーネントについて実態より楽観的にならないよう、`docs/PLAN.md` の Audit Follow-up Tracks と合わせて定期的に見直す。
+
+---
+
 ## 1. プロダクト概要 (Executive Summary)
 
-**PyBun** は、Rustで記述された Python のための「オールインワン・ツールチェーン」である。
-Node.js エコシステムにおける **Bun** の哲学を踏襲し、Python 開発における**パッケージ管理、スクリプト実行、テスト、ビルド、環境構築**の全工程を、単一の高速なバイナリで提供する。
+**PyBun** は、**AIコーディングエージェントが Python 環境を安全かつ決定論的に操作するための Control Plane** である。
 
-既存のツール（pip, poetry, uv, conda, pytest）が抱える断片化とパフォーマンスの問題を解消し、特に **AIコーディングエージェント（Claude Code / Cursor）** が自律的にコードを生成・実行・修正しやすい環境を提供することを至上命題とする。
+`uv` や `pip` を置き換えることを目指すのではなく、それらが欠いている **agent-facing interface layer** — 構造化された JSON 出力、MCP 統合、サンドボックス実行、監査可能な provenance — を提供し、既存の高速なツール（uv, pytest）を実行バックエンドとして最大限活用する。単一の Rust バイナリとして配布することで、Claude Code / Cursor / Codex などの AI エージェントが、脆いテキストパースに頼らずに Python の依存解決・実行・テストを自律的に行える環境を提供することを至上命題とする。
+
+> PyBun は速度競合のためのツールチェーンではない。「何を再実装しないか」を明確にし、agentが判断するためのセマンティクス（構造化診断・sandbox・audit・drift検出）に集中する。詳細な方向性は [§0.3](#03-外部レビューによる方向性提言-2026-08-29) を参照。
 
 ---
 
@@ -61,49 +86,60 @@ Node.js エコシステムにおける **Bun** の哲学を踏襲し、Python �
 
 現在の Python エコシステムには以下の「痛み」が存在する：
 
-1.  **遅い実行開始 (Slow Startup):** `import` システムのボトルネックにより、大規模な ML/Web プロジェクトの起動に数秒〜数十秒かかる。
-2.  **環境管理の地獄 (Environment Hell):** venv, conda, poetry, pyenv などツールが乱立し、初学者や AI エージェントが環境構築で躓く。
-3.  **依存解決の遅さ:** pip の依存解決は遅く、C拡張のビルドは複雑で失敗しやすい。
-4.  **AI 親和性の欠如:** 既存ツールの出力は人間向け（テキスト）であり、AI がエラー原因（競合、ビルド失敗）を構造的に理解しにくい。
+1.  **AI 親和性の欠如 (最重要):** 既存ツールの出力は人間向け（テキスト）であり、AI がエラー原因（競合、ビルド失敗、非決定的な失敗）を構造的に理解しにくい。exit code・stdout・stderrをLLMが毎回推測する必要がある。
+2.  **非決定性と安全性の欠如:** AI が生成したコードや依存関係の変更を、どこまで安全に・再現可能に実行できるかを保証する仕組みが既存ツールにはない。
+3.  **環境管理の分散:** venv, conda, poetry, pyenv などツールが乱立し、AI エージェントが環境構築の文脈判断で躓く。
+4.  **遅い実行開始・依存解決:** `import` のボトルネックや pip の依存解決の遅さは実務上のペインだが、**この課題自体は `uv` 等の既存ツールがすでに大きく解決している**。PyBun はこれを再解決するのではなく、上位の制御層として活用する（§4.2/§4.3 の位置づけ変更を参照）。
 
 ---
 
 ## 3. アーキテクチャ (Architecture)
 
-PyBun は CPython インタプリタを内包（またはラップ）し、その周囲のツールチェーンとローディングプロセスを Rust で完全に置き換える。
+PyBun の中核は **Control Plane** である。AI エージェントは JSON/MCP 経由で PyBun に指示を出し、PyBun がポリシー適用・サンドボックス化・診断構造化・監査記録を行った上で、実際の解決・実行・テストは `uv` / `pytest` / CPython に委譲する。
 
 ```mermaid
 graph TD
-    User[Developer / AI Agent] --> CLI[PyBun CLI]
-    
-    subgraph "Rust Core (The Speed Layer)"
-        CLI --> Resolver[Fast Dependency Resolver (SAT)]
-        CLI --> Builder[Parallel Builder (Ninja/CMake wrapper)]
-        CLI --> Runner[Runtime Loader & Watcher]
+    Agent[AI Agent / Developer] -->|MCP / JSON| CLI[PyBun CLI / MCP Server]
+
+    subgraph "Control Plane (PyBun Core)"
+        CLI --> Policy[Policy / Sandbox]
+        CLI --> Schema[JSON Schema / Structured Diagnostics]
+        CLI --> Audit[Audit / Provenance / Lockfile Integrity]
+        CLI --> Orchestration[Orchestration: drift / doctor / affected-tests]
     end
-    
-    subgraph "Optimization Engine"
-        Runner --> ImportOpt[Import Graph Optimizer]
-        Runner --> HotReload[Hot Reload Manager]
-        ImportOpt --> Cache[Global Bytecode/Wheel Cache]
+
+    subgraph "Execution Backends (delegated)"
+        Policy --> Uv[uv: dependency resolution / installer]
+        Orchestration --> Pytest[pytest / unittest wrapper]
+        Policy --> CPython[CPython runtime]
     end
-    
-    subgraph "Integration Interface"
-        Runner --> CPython[CPython API / ABI]
-        Runner --> AgentInterface[JSON-RPC / MCP Server]
+
+    subgraph "Opportunistic Optimizations (ROI-gated, see §0.3)"
+        CLI -.-> ModuleFinder[Rust Module Finder]
+        CLI -.-> WheelInstaller[Native Wheel Installer]
     end
 ````
+
+上図の破線部分（Rust Module Finder / Native Wheel Installer）は、CPython の import 実行や PEP 427 セマンティクスへの完全な再実装を要する実験的機能であり、既定の実行パスには未接続（Issue #403）。ROI が実証されるまで control plane の中核機能とは切り離して扱う。
 
 -----
 
 ## 3.1 非機能要件 (Non-Functional)
 
-- **起動/実行速度:** `pybun run script.py` のコールドスタートを CPython 素の起動比で **10x 改善 (p50)**、重量ライブラリの Lazy Import 時に **1–2s → ≤300ms** を目標。
-- **インストール速度:** `pybun install` は `uv` 同等（p95 で 5%以内）を下回ること。
+Control Plane としての PyBun にとって、以下は速度指標より優先される最上位要件である：
+
 - **決定性:** 同一 lock + 同一プラットフォームで **完全再現性**（ハッシュ一致する wheel セット）を保証。
+- **診断の完全性:** `status == "error"` の応答は必ず機械可読な `code`/`message`/`suggestion` を含み、agent が推測に頼らず次のアクションを決定できること（§5.1.1）。
+- **監査可能性:** すべての実行・インストール操作が provenance/audit ログとして追跡可能であること（§10）。
+- **安全性:** sandbox モードでのファイル/ネットワークアクセス制御が既定でエージェント実行に適用されること。
+- **信頼性:** すべての CLI コマンドに `--format=json` 出力と `--verbose` を用意し、AI/人間どちらにも故障解析しやすい形を提供。
+
+以下は補助的な性能目標であり、達成手段（module finder 等）の ROI が実証された場合にのみ本格投資する（§0.3 参照）：
+
+- **起動/実行速度（参考値）:** `pybun run script.py` のコールドスタートを CPython 素の起動比で **10x 改善 (p50)**、重量ライブラリの Lazy Import 時に **1–2s → ≤300ms** を目標とするが、Rust Module Finder 経由の IPC オーバーヘッドが CPython 標準 PathFinder を上回らないことを事前に実証してから投資判断する。
+- **インストール速度:** `pybun install` は `uv` 同等（p95 で 5%以内）を下回ること。実体は uv へのデリゲートを優先し、native resolver/installer の再実装で速度を稼ぐことを目標にしない。
 - **ディスク効率:** グローバルキャッシュ + ハードリンクで、典型的 ML プロジェクト（3GB wheel）を **70% 以上節約**。
 - **並列度:** デフォルトで論理CPU数を検出し、I/O/CPU別スレッドプールを分離。環境変数で上書き可能。
-- **信頼性:** すべての CLI コマンドに `--format=json` 出力と `--verbose` を用意し、AI/人間どちらにも故障解析しやすい形を提供。
 
 -----
 
@@ -127,7 +163,9 @@ graph TD
 
 ### 4.2 高速実行ランタイム (The Runtime & Import Optimizer)
 
-`python` コマンドを代替する `pybun run`。ここが最大の差別化要因。
+`python` コマンドを代替する `pybun run`。
+
+> **現状注記 (2026-08):** 本節の Rust-based Module Finder は `pybun module-find` として独立に動作するが、CPython の実行時 import 解決（`sys.meta_path`）には未接続（Issue #403）。ROI（IPCオーバーヘッド vs. CPython標準PathFinderの速度）が実証されるまで、control plane の中核機能としては扱わない。Lazy Import と Hot Reload は独立して価値があり、優先度は維持する。
 
   * **Lazy Import Injection:** ユーザーコードを変更することなく、設定ベースで重量級ライブラリ（NumPy, Torch, Terraform-cdkなど）を遅延読み込み（Lazy Loading）し、CLI起動速度を10〜100倍高速化する。Pandas/Matplotlib は自身の import コストがフックのオーバーヘッドより小さいため、デフォルトの denylist で除外されている（Issue #136）。`--allow` で個別に上書き可能。
   * **Rust-based Module Finder:** `sys.meta_path` を Rust 実装に置き換え、ファイルシステム探索を並列化・最適化。
@@ -137,9 +175,11 @@ graph TD
 
 ### 4.3 C拡張ビルド最適化 (The Builder)
 
-  * **Isolation Build:** `setuptools`, `maturin`, `scikit-build` をラップし、ビルド環境をサンドボックス化（段階導入として `python -m build` ラッパー→本格隔離へ）。
+> **現状注記 (2026-08):** Wheel のインストール（`.data`/`entry_points`/`RECORD` 等 PEP 427 の完全なセマンティクス）を Rust でゼロから再実装する取り組みは優先度を下げる（Issue #402）。責任範囲が Python packaging エコシステム全体に及ぶ一方、control plane としての価値には直結しないため、`uv` への委譲を優先する。
+
+  * **Isolation Build:** `setuptools`, `maturin`, `scikit-build` をラップし、ビルド環境をサンドボックス化（段階導入として `python -m build` ラッパー→本格隔離へ。ただし本格隔離への投資は §4.3 の注記に従い優先度低）。
   * **Build Cache:** コンパイル成果物（`.o`, `.so`）をハッシュ管理し、再ビルド時間を短縮。
-  * **Pre-build Wheel Discovery:** OS/Arch に合致する最適な wheel を優先的に探索し、ローカルビルドを回避。
+  * **Pre-build Wheel Discovery:** OS/Arch に合致する最適な wheel を優先的に探索し、ローカルビルドを回避。実インストールは `uv` へ委譲することを優先し、native wheel installer の完全実装は追わない。
 
 ### 4.4 高速テストランナー (The Tester)
 
@@ -175,6 +215,8 @@ graph TD
 -----
 
 ## 5\. AI エージェント最適化 (AI Integration)
+
+> 本節は §1 で定義した Control Plane としての PyBun における**最優先領域**である。他のあらゆる機能（§4）は、本節のインターフェースを通じて agent から安全・構造的に利用できて初めて価値を持つ。
 
 Anthropic Claude Code や Cursor などの AI エージェントが、PyBun を通じて開発を行うための専用インターフェース。
 
@@ -277,18 +319,22 @@ Bun の UX を踏襲し、短く直感的なコマンド体系とする。
 
 ## 7\. 競合比較 (Competitive Landscape)
 
+PyBun は速度で uv と競合することを目指していない（§1, ベンチマークは `docs/BENCHMARK_UV_COMPARISON.md` 参照）。差別化の軸は Agent Control Plane としての機能にある。
+
 | 機能 | **PyBun** | uv (Astral) | Poetry | Conda | Standard (pip/venv) |
 | :--- | :---: | :---: | :---: | :---: | :---: |
 | **言語** | Rust | Rust | Python | Python | Python |
-| **速度** | **最速** | 最速級 | 遅い | 普通 | 普通 |
-| **Import最適化** | **あり (Runtime)** | なし | なし | なし | なし |
-| **テストランナー** | **内蔵 (高速)** | なし | なし | なし | なし (pytest別途) |
+| **速度（依存解決）** | uvに委譲時は同等 / native resolverは開発中 | 最速級 | 遅い | 普通 | 普通 |
+| **Import最適化（Runtime）** | 実験的・未接続 (Issue #403) | なし | なし | なし | なし |
+| **テストランナー** | 内蔵 (pytest互換ラッパー + nativeバックエンドはpreview) | なし | なし | なし | なし (pytest別途) |
 | **環境管理** | **完全自動** | 手動/自動 | 自動(venv) | 独自(conda) | 手動(venv) |
-| **AI API (JSON)** | **あり** | なし | なし | なし | なし |
+| **MCP / Agent Control Plane** | **あり (JSON, sandbox, audit, drift, provenance)** | なし | なし | なし | なし |
 
 -----
 
 ## 8\. ロードマップ (Roadmap)
+
+> 以下は初版仕様時点の Phase 分割（歴史的記述）。実際のマイルストーン進捗は README の Roadmap 節と `docs/PLAN.md` を正とする。Phase 2/3 で計画された Runtime Optimizer 系機能の一部（native ModuleFinder 完全統合、native wheel installer）は §0.3 の方向性提言により優先度を引き下げ、Agent Control Plane 機能（doctor拡張・drift・audit）を優先する。
 
 ### Phase 1: The Foundation (Month 1-3)
 
@@ -361,3 +407,5 @@ Bun の UX を踏襲し、短く直感的なコマンド体系とする。
 - `pybun test` のプラグイン互換度をどこまで担保するか（pytest 全プラグイン/fixture の 100% 互換を目指すか、非推奨 API の扱い）。
 - Windows でのファイル監視/ホットリロードを何で実装するか（`ReadDirectoryChangesW` vs クロスプラットフォームライブラリ）。
 - 内蔵 CPython の更新頻度と CVE 対応 SLA（例: 72h 以内リリース）をどう定義するか。
+- native ModuleFinder（Issue #403）と native wheel installer（Issue #402）の開発を継続する条件・撤退基準は何か。ベンチマークで CPython 標準 PathFinder 対比の実効速度改善が確認できない場合、機能をどう扱うか（stub化・削除・experimentalフラグ固定化）。
+- Agent-semantics 系コマンド（`doctor --fix` の拡張、`why`/`explain`/`repair`/`affected-tests` のような将来コマンド）をどの優先度でロードマップに組み込むか。

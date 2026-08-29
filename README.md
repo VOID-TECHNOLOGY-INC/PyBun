@@ -1,12 +1,12 @@
 # PyBun (Python Bundle)
 
 <p align="center">
-  <strong>🐍 The Agent-First Python Runtime 🤖</strong>
+  <strong>🐍 The Agent-Native Python Control Plane 🤖</strong>
 </p>
 
 <p align="center">
-  <em>pip + venv + test runner + MCP server — all in one Rust binary.<br>
-  Built for AI agents (JSON-first) and humans alike.</em>
+  <em>Safe, structured, deterministic Python execution for AI coding agents —<br>
+  powered by uv/pytest underneath, with JSON-first output and a built-in MCP server.</em>
 </p>
 
 <p align="center">
@@ -70,7 +70,27 @@ pybun run -c "import requests; print('Hello, PyBun!')"
 
 Existing Python tools are built for **humans**. PyBun is designed for **AI agents** — and humans who work alongside them.
 
-Tools like uv and pip are excellent at what they do. PyBun doesn't try to replace them. Instead, it adds the **agent-facing interface layer** that those tools lack: structured output, MCP integration, and safe execution primitives that AI systems can rely on without fragile text scraping.
+**PyBun is not a speed competitor to uv.** Tools like uv and pip are excellent at dependency resolution and installation — PyBun doesn't try to out-run them, and where uv is available PyBun delegates to it directly. What those tools lack is an **agent-facing control layer**: structured output, MCP integration, sandboxed execution, and audit/provenance that AI systems can rely on without fragile text scraping or unverifiable side effects.
+
+The value PyBun adds isn't "faster pip." It's removing the ambiguity, non-determinism, and risk an agent faces when it operates a Python environment on its own.
+
+### Design Philosophy
+
+```text
+           AI Agent
+              │  MCP / JSON
+              ▼
+        ┌───────────────┐
+        │     PyBun      │   Policy · Sandbox · Schema
+        │ Control Plane  │   Diagnostics · Audit · Provenance
+        └───────┬────────┘
+                │  delegates execution
+      ┌─────────┼─────────┐
+      ▼         ▼         ▼
+     uv       pytest    Python
+```
+
+PyBun stays a thin, structured control layer on top of proven execution backends rather than re-implementing the Python packaging/import ecosystem from scratch. See [`docs/SPECS.md`](docs/SPECS.md#03-外部レビューによる方向性提言-2026-08-29) for the reasoning behind this scope decision.
 
 ### ✨ What PyBun adds that other tools don't
 
@@ -98,12 +118,13 @@ The AI receives structured JSON — no parsing required, no ambiguity.
 ## Status
 
 - **Current:** M1 (Fast Installer), M2 (Runtime Optimization), M3 (Tester), and M4 (MCP/JSON) are stable or near-stable.
-  - `pybun install` / `pybun x` (with uv backend) / `pybun run` / `pybun test` (default pytest/unittest wrapper backend) are **Stable**.
+  - `pybun install` / `pybun x` (with uv backend) / `pybun run` / `pybun test` (default pytest/unittest wrapper backend) are **Stable** for the common case. The native wheel installer used by `pybun install` does not yet implement the full PEP 427 `.data` installation semantics (entry points/scripts/headers beyond the common paths) — see [Issue #402](https://github.com/VOID-TECHNOLOGY-INC/PyBun/issues/402). Packages relying on those payloads may need `pybun x uv -- pip install ...` as a fallback.
   - `pybun test --backend=pybun` (native executor, integrated per PR-A4) and `pybun watch` (native monitoring on macOS/Linux, polling fallback on standard builds) are **Preview** — the native test backend still surfaces `W_TEST_BACKEND_COMPAT_*` diagnostics for known pytest-plugin/fixture gaps.
+  - The Rust Module Finder (`pybun module-find`) is **Experimental / not wired into CPython's runtime import path** ([Issue #403](https://github.com/VOID-TECHNOLOGY-INC/PyBun/issues/403)). Treat it as an opportunistic optimization under ROI evaluation, not a core dependency.
   - Windows support is **Preview**.
 - **Platforms:** macOS/Linux (arm64/amd64), Windows (preview)
 
-> For feature maturity (stub/preview/stable) and phased rollout policy, see [`docs/SPECS.md`](docs/SPECS.md).
+> PyBun's priority is the agent-facing control layer (JSON/MCP/diagnostics/sandbox/audit/drift), not re-implementing Python packaging/import internals. See [`docs/SPECS.md`](docs/SPECS.md#03-外部レビューによる方向性提言-2026-08-29) for feature maturity, phased rollout policy, and the current scope decisions.
 
 ---
 
@@ -231,6 +252,8 @@ pybun python which 3.11
 ```
 
 ### Runtime Optimization
+
+> These commands (Module Finder, Lazy Import, Watch) are opportunistic performance optimizations, evaluated independently for ROI — they are not required for PyBun's core agent-control-plane value (JSON/MCP/diagnostics/sandbox). Module Finder in particular is not yet connected to CPython's runtime import resolution (Issue #403).
 
 #### Module Finder
 
@@ -588,10 +611,10 @@ Full numbers: [docs/BENCHMARK_UV_COMPARISON.md](docs/BENCHMARK_UV_COMPARISON.md)
 
 - [x] M0: Repository & CI scaffold
 - [x] M1: Fast installer (lockfile, resolver, PEP 723)
-- [x] M2: Runtime optimization (module finder, lazy import, hot reload)
+- [x] M2: Runtime optimization (module finder, lazy import, hot reload) — *opportunistic, ROI under evaluation; see [Issue #403](https://github.com/VOID-TECHNOLOGY-INC/PyBun/issues/403)*
 - [x] M3: Test runner (discovery, parallel execution, snapshots)
 - [x] M4: JSON/MCP & diagnostics
-- [ ] M5: Builder & security
+- [ ] M5: Agent control plane hardening (extended `doctor`/`drift`, audit/provenance depth) — reprioritized over a full native wheel installer; see [`docs/SPECS.md` §0.3](docs/SPECS.md#03-外部レビューによる方向性提言-2026-08-29)
 - [ ] M6: Release hardening (remote cache, workspaces, telemetry)
 
 See `docs/PLAN.md` for details.
