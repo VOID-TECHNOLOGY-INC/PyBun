@@ -923,4 +923,106 @@ mod tests {
         );
         mock.assert_calls(1);
     }
+
+    /// Issue #413, signature variant: a concurrent caller's failed signature
+    /// verification must never delete or truncate `destination` out from
+    /// under a caller whose signature verified successfully.
+    #[tokio::test]
+    async fn concurrent_signature_failure_never_deletes_or_truncates_shared_destination() {
+        let server = MockServer::start();
+        let body = b"signed shared content for issue 413";
+        let mock = server.mock(|when, then| {
+            when.method(GET).path("/shared-413-signed.whl");
+            then.status(200).body(body.as_slice());
+        });
+
+        let signing_key = SigningKey::from_bytes(&[13u8; 32]);
+        let verifier = signing_key.verifying_key();
+        let signature = signing_key.sign(body);
+        let public_key_b64 = base64::engine::general_purpose::STANDARD.encode(verifier.to_bytes());
+        let valid_signature_b64 =
+            base64::engine::general_purpose::STANDARD.encode(signature.to_bytes());
+
+        let other_key = SigningKey::from_bytes(&[14u8; 32]);
+        let bogus_signature_b64 = base64::engine::general_purpose::STANDARD
+            .encode(other_key.sign(b"unrelated bytes").to_bytes());
+
+        let dir = tempdir().unwrap();
+        let dest = dir.path().join("shared-413-signed.whl");
+        let downloader = Downloader::new();
+
+        let valid = DownloadRequest {
+            url: server.url("/shared-413-signed.whl"),
+            destination: dest.clone(),
+            checksum: None,
+            signature: Some(SignatureSpec {
+                signature: valid_signature_b64,
+                public_key: public_key_b64.clone(),
+            }),
+        };
+        let invalid = DownloadRequest {
+            url: server.url("/shared-413-signed.whl"),
+            destination: dest.clone(),
+            checksum: None,
+            signature: Some(SignatureSpec {
+                signature: bogus_signature_b64,
+                public_key: public_key_b64,
+            }),
+        };
+
+        let results = downloader.download_parallel(vec![valid, invalid], 2).await;
+
+        let ok_path = results
+            .iter()
+            .find_map(|r| r.as_ref().ok())
+            .expect("the validly-signed request should succeed");
+
+        assert!(
+            ok_path.exists(),
+            "destination must still exist after a concurrent signature-verification failure"
+        );
+        let on_disk = tokio::fs::read(ok_path).await.unwrap();
+        assert_eq!(
+            on_disk, body,
+            "destination content must be complete and unmodified by the failing verifier"
+        );
+
+        mock.assert_calls(1);
+    }
+
+    /// The shared transfer path is namespaced by a hash of `url`, so two
+    /// different URLs that happen to target the same `destination` never
+    /// collide on the same temp file (Issue #413).
+    #[test]
+    fn shared_transfer_path_differs_for_different_urls_to_same_destination() {
+        let dest = PathBuf::from("/tmp/pybun-test/shared.whl");
+        let path_a = Downloader::shared_transfer_path(&dest, "https://example.com/a.whl");
+        let path_b = Downloader::shared_transfer_path(&dest, "https://example.com/b.whl");
+        assert_ne!(
+            path_a, path_b,
+            "different URLs to the same destination must use distinct temp paths"
+        );
+    }
+
+    /// The shared transfer path is deterministic for the same `(url,
+    /// destination)` pair, so every caller sharing a deduplicated transfer
+    /// agrees on where to find it.
+    #[test]
+    fn shared_transfer_path_is_deterministic_for_same_key() {
+        let dest = PathBuf::from("/tmp/pybun-test/shared.whl");
+        let path_a = Downloader::shared_transfer_path(&dest, "https://example.com/a.whl");
+        let path_b = Downloader::shared_transfer_path(&dest, "https://example.com/a.whl");
+        assert_eq!(path_a, path_b);
+    }
+
+    /// Staging paths must never collide across calls, even for the same
+    /// `destination`, since multiple verified callers may publish
+    /// concurrently.
+    #[test]
+    fn staging_path_is_unique_per_call() {
+        let dest = PathBuf::from("/tmp/pybun-test/shared.whl");
+        let staging_a = Downloader::staging_path(&dest);
+        let staging_b = Downloader::staging_path(&dest);
+        assert_ne!(staging_a, staging_b);
+    }
 }
