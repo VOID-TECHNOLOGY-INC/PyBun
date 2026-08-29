@@ -690,13 +690,26 @@ fn mcp_tools_call_resolve_no_index() {
 // Issue #284: pybun_install must not report false "installed" success
 // =============================================================================
 
-/// Minimal wheel payload (a valid zip) shared by the pybun_install honesty tests.
+/// Minimal wheel payload (a valid zip) shared by the pybun_install honesty
+/// tests. Includes an `app-1.0.0.dist-info/WHEEL` entry so
+/// `installer::install_wheel_with_scheme` can locate the wheel's
+/// `<distribution>-<version>` prefix (PEP 427).
 fn issue284_wheel_bytes() -> Vec<u8> {
     let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
     let options = zip::write::SimpleFileOptions::default();
     zip.start_file("dummy.txt", options)
         .expect("start wheel entry");
     zip.write_all(b"ok").expect("write wheel entry");
+    zip.start_file("app-1.0.0.dist-info/WHEEL", options)
+        .expect("start WHEEL entry");
+    zip.write_all(
+        b"Wheel-Version: 1.0\nGenerator: test\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+    )
+    .expect("write WHEEL entry");
+    zip.start_file("app-1.0.0.dist-info/METADATA", options)
+        .expect("start METADATA entry");
+    zip.write_all(b"Metadata-Version: 2.1\nName: app\nVersion: 1.0.0\n")
+        .expect("write METADATA entry");
     let cursor = zip.finish().expect("finish wheel zip");
     cursor.into_inner()
 }

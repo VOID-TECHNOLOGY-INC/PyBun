@@ -28,12 +28,29 @@ fn ensure_venv(project_root: &Path) -> PathBuf {
     venv
 }
 
+/// Minimal wheel payload shared across all mocked downloads in this file
+/// (`app-1.0.0`, `app-2.0.0`, `dep-2.0.0`, ...). Includes a generic
+/// `pkg-0.0.0.dist-info/WHEEL` entry so
+/// `installer::install_wheel_with_scheme` can locate a `<distribution>-
+/// <version>.dist-info` prefix (PEP 427) — the installer never cross-checks
+/// that prefix against the downloaded wheel's filename, so one fixed prefix
+/// covers every package name used below.
 fn wheel_bytes() -> Vec<u8> {
     let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
     let options = zip::write::SimpleFileOptions::default();
     zip.start_file("dummy.txt", options)
         .expect("start wheel entry");
     zip.write_all(b"ok").expect("write wheel entry");
+    zip.start_file("pkg-0.0.0.dist-info/WHEEL", options)
+        .expect("start WHEEL entry");
+    zip.write_all(
+        b"Wheel-Version: 1.0\nGenerator: test\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+    )
+    .expect("write WHEEL entry");
+    zip.start_file("pkg-0.0.0.dist-info/METADATA", options)
+        .expect("start METADATA entry");
+    zip.write_all(b"Metadata-Version: 2.1\nName: pkg\nVersion: 0.0.0\n")
+        .expect("write METADATA entry");
     let cursor = zip.finish().expect("finish wheel zip");
     cursor.into_inner()
 }

@@ -585,25 +585,34 @@ pub(crate) async fn install(
             env.python_path.display()
         ));
 
-        // Determine site-packages path
+        // Determine the full install scheme (purelib/platlib/scripts/headers/data)
+        // so wheel `.data/*` entries (PEP 427) are relocated correctly instead of
+        // being left nested under site-packages (Issue #402).
         let output = std::process::Command::new(&env.python_path)
             .args([
                 "-c",
-                "import sysconfig; print(sysconfig.get_paths()['purelib'], end='')",
+                "import sysconfig, json; print(json.dumps(sysconfig.get_paths()))",
             ])
             .output()
-            .map_err(|e| eyre!("failed to determine site-packages path: {}", e))?;
+            .map_err(|e| eyre!("failed to determine install scheme: {}", e))?;
 
         if !output.status.success() {
             return Err(eyre!(
-                "failed to determine site-packages path (python execution failed)"
+                "failed to determine install scheme (python execution failed)"
             ));
         }
-        let site_packages_str = String::from_utf8(output.stdout)
-            .map_err(|e| eyre!("invalid utf8 in site-packages path: {}", e))?;
-        let site_packages = PathBuf::from(site_packages_str);
+        let paths_json: Value = serde_json::from_slice(&output.stdout)
+            .map_err(|e| eyre!("invalid sysconfig.get_paths() output: {}", e))?;
+        let scheme = crate::installer::InstallScheme::from_sysconfig_json(
+            &paths_json,
+            env.python_path.clone(),
+        )
+        .ok_or_else(|| eyre!("sysconfig.get_paths() is missing expected keys"))?;
 
-        collector.info(format!("Target site-packages: {}", site_packages.display()));
+        collector.info(format!(
+            "Target site-packages: {}",
+            scheme.purelib.display()
+        ));
 
         collector.event_with(EventType::InstallStart, |event| {
             event.message = Some(format!("Installing {} packages", wheels_to_install.len()));
@@ -612,7 +621,7 @@ pub(crate) async fn install(
 
         for wheel in wheels_to_install {
             if wheel.exists() {
-                crate::installer::install_wheel(&wheel, &site_packages)
+                crate::installer::install_wheel_with_scheme(&wheel, &scheme)
                     .map_err(|e| eyre!("failed to install wheel {}: {}", wheel.display(), e))?;
                 outcome.installed_count += 1;
             }
