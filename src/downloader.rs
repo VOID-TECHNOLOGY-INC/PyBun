@@ -163,6 +163,15 @@ impl Downloader {
     }
 
     /// Download a file and verify its checksum and signature.
+    ///
+    /// The raw network transfer is de-duplicated across concurrent callers
+    /// that target the same `(url, destination)` (see [`Downloader::ensure_transferred`]),
+    /// but checksum/signature verification below is always performed by
+    /// *this* caller against whatever bytes end up on disk. This matters
+    /// because a concurrent caller sharing the transfer may have requested a
+    /// different (or no) checksum/signature: deduplication must never let a
+    /// weaker or unrelated request's success stand in for this caller's own
+    /// verification (Issue #401).
     pub async fn download_file_with_signature(
         &self,
         url: &str,
@@ -180,44 +189,74 @@ impl Downloader {
             });
         }
 
+        // Fast path: an already-present file that satisfies this caller's
+        // own checksum requirement needs no transfer at all (shared or
+        // otherwise). A checksum-less caller can never take this path —
+        // matching prior behavior, it always requires a fresh transfer.
+        if let Some(expected) = checksum
+            && destination.exists()
+            && self.verify_checksum(destination, expected).await.is_ok()
+        {
+            if let Some(sig) = signature {
+                self.verify_signature(destination, sig).await?;
+            }
+            return Ok(destination.to_path_buf());
+        }
+
+        self.ensure_transferred(url, destination).await?;
+
+        // Verify independently of whichever caller actually performed the
+        // shared transfer above.
+        if let Some(expected) = checksum {
+            self.verify_checksum(destination, expected).await?;
+        }
+        if let Some(sig) = signature {
+            self.verify_signature(destination, sig).await?;
+        }
+        Ok(destination.to_path_buf())
+    }
+
+    /// Ensure `destination` holds a freshly transferred copy of `url`,
+    /// de-duplicating the underlying network transfer across concurrent
+    /// callers that share the same `(url, destination)` key.
+    ///
+    /// This function performs *only* the transfer (with retry/backoff on
+    /// transient errors) — it never applies checksum or signature policy.
+    /// Every caller of [`Downloader::download_file_with_signature`] verifies
+    /// the result independently after this returns, so a shared transfer can
+    /// never let one caller's weaker verification requirement satisfy
+    /// another's stronger one.
+    async fn ensure_transferred(&self, url: &str, destination: &Path) -> Result<(), DownloadError> {
+        let key = DownloadKey {
+            url: url.to_string(),
+            destination: destination.to_path_buf(),
+        };
+        let url_owned = url.to_string();
+        let destination_owned = destination.to_path_buf();
+        self.inflight
+            .get_or_try_init(key, || async move {
+                self.transfer_with_retries(&url_owned, &destination_owned)
+                    .await
+            })
+            .await
+            .map(|_| ())
+    }
+
+    /// Transfer `url` to `destination`, retrying transient failures with
+    /// exponential backoff (capped `Retry-After` on 429/503). Non-retryable
+    /// errors (404/401/403, checksum/signature failures — though this
+    /// function never checks those) fail immediately.
+    async fn transfer_with_retries(
+        &self,
+        url: &str,
+        destination: &Path,
+    ) -> Result<PathBuf, DownloadError> {
         let max_retries = 3;
         let mut attempt = 0;
 
         loop {
-            // Optimization: check if file exists and matches checksum
-            if destination.exists() {
-                if let Some(expected) = checksum {
-                    match self.verify_checksum(destination, expected).await {
-                        Ok(_) => {
-                            // Hash matches, skip download
-                            if let Some(sig) = signature {
-                                self.verify_signature(destination, sig).await?;
-                            }
-                            return Ok(destination.to_path_buf());
-                        }
-                        Err(_) => {
-                            // Hash mismatch, remove and re-download
-                            let _ = tokio::fs::remove_file(destination).await;
-                        }
-                    }
-                } else {
-                    // No checksum provided, default to overwrite for safety unless configured otherwise?
-                    // For now, let's just overwrite to be safe.
-                    // Or we could trust it if we want maximum speed.
-                    // But Standard behavior is usually overwrite if no hash.
-                }
-            }
-
             match self.download_attempt(url, destination).await {
-                Ok(_) => {
-                    if let Some(expected) = checksum {
-                        self.verify_checksum(destination, expected).await?;
-                    }
-                    if let Some(sig) = signature {
-                        self.verify_signature(destination, sig).await?;
-                    }
-                    return Ok(destination.to_path_buf());
-                }
+                Ok(_) => return Ok(destination.to_path_buf()),
                 Err(e) => {
                     // Fail fast on non-retryable errors (e.g. 404/401/403):
                     // retrying them just burns time waiting for a response
@@ -348,6 +387,13 @@ impl Downloader {
     ///
     /// items: Vec<(url, destination, checksum, signature)>
     /// concurrency: Maximum number of concurrent downloads
+    ///
+    /// Requests that share a `(url, destination)` still share a single
+    /// network transfer (see [`Downloader::ensure_transferred`]), but each
+    /// request's checksum/signature is verified independently — a request
+    /// with weaker or no verification can never make a concurrent, more
+    /// strictly verified request succeed without its own checks running
+    /// (Issue #401).
     pub async fn download_parallel(
         &self,
         items: Vec<DownloadRequest>,
@@ -356,22 +402,13 @@ impl Downloader {
         let stream = futures::stream::iter(items.into_iter().map(|req| {
             let client = self;
             async move {
-                let key = DownloadKey {
-                    url: req.url.clone(),
-                    destination: req.destination.clone(),
-                };
                 client
-                    .inflight
-                    .get_or_try_init(key, || async move {
-                        client
-                            .download_file_with_signature(
-                                &req.url,
-                                &req.destination,
-                                req.checksum.as_deref(),
-                                req.signature.as_ref(),
-                            )
-                            .await
-                    })
+                    .download_file_with_signature(
+                        &req.url,
+                        &req.destination,
+                        req.checksum.as_deref(),
+                        req.signature.as_ref(),
+                    )
                     .await
             }
         }));
@@ -383,6 +420,8 @@ impl Downloader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine;
+    use ed25519_dalek::{Signer, SigningKey};
     use httpmock::prelude::*;
     use std::time::Instant;
     use tempfile::tempdir;
@@ -571,5 +610,134 @@ mod tests {
             tokio::fs::read_to_string(&dest).await.unwrap(),
             "wheel-bytes"
         );
+    }
+
+    /// Issue #401: two concurrent requests for the same `(url, destination)`
+    /// share a single network transfer, but a caller with no checksum must
+    /// never let a concurrently-issued request with an incorrect checksum
+    /// succeed without its own verification running. The dedup benefit
+    /// (a single network fetch) must still hold.
+    #[tokio::test]
+    async fn concurrent_requests_enforce_independent_checksum_policy() {
+        let server = MockServer::start();
+        let body = b"authoritative shared content";
+        let mock = server.mock(|when, then| {
+            when.method(GET).path("/shared.whl");
+            then.status(200).body(body.as_slice());
+        });
+
+        let dir = tempdir().unwrap();
+        let dest = dir.path().join("shared.whl");
+        let downloader = Downloader::new();
+
+        let unconstrained = DownloadRequest {
+            url: server.url("/shared.whl"),
+            destination: dest.clone(),
+            checksum: None,
+            signature: None,
+        };
+        let wrong_checksum = DownloadRequest {
+            url: server.url("/shared.whl"),
+            destination: dest.clone(),
+            checksum: Some(
+                "sha256:0000000000000000000000000000000000000000000000000000000000000".to_string(),
+            ),
+            signature: None,
+        };
+
+        // `buffer_unordered` does not preserve request order, so identify
+        // each outcome by its shape rather than its index.
+        let results = downloader
+            .download_parallel(vec![unconstrained, wrong_checksum], 2)
+            .await;
+        assert_eq!(results.len(), 2);
+
+        let ok_count = results.iter().filter(|r| r.is_ok()).count();
+        let mismatch_count = results
+            .iter()
+            .filter(|r| matches!(r, Err(DownloadError::ChecksumMismatch { .. })))
+            .count();
+        assert_eq!(
+            ok_count, 1,
+            "the unconstrained request should succeed: {results:?}"
+        );
+        assert_eq!(
+            mismatch_count, 1,
+            "the stricter request must independently detect the mismatch: {results:?}"
+        );
+
+        // The transfer itself is still deduplicated: only one network fetch
+        // for the shared (url, destination) pair.
+        mock.assert_calls(1);
+    }
+
+    /// Same guarantee as above, but for signature policy: a request with a
+    /// valid signature and a request with an invalid one, sharing the same
+    /// transfer, must be verified independently.
+    #[tokio::test]
+    async fn concurrent_requests_enforce_independent_signature_policy() {
+        let server = MockServer::start();
+        let body = b"signed shared content";
+        let mock = server.mock(|when, then| {
+            when.method(GET).path("/shared-signed.whl");
+            then.status(200).body(body.as_slice());
+        });
+
+        let signing_key = SigningKey::from_bytes(&[11u8; 32]);
+        let verifier = signing_key.verifying_key();
+        let signature = signing_key.sign(body);
+        let public_key_b64 = base64::engine::general_purpose::STANDARD.encode(verifier.to_bytes());
+        let valid_signature_b64 =
+            base64::engine::general_purpose::STANDARD.encode(signature.to_bytes());
+
+        // A signature over unrelated bytes, so it never verifies against the
+        // shared payload above.
+        let other_key = SigningKey::from_bytes(&[22u8; 32]);
+        let bogus_signature_b64 = base64::engine::general_purpose::STANDARD
+            .encode(other_key.sign(b"unrelated bytes").to_bytes());
+
+        let dir = tempdir().unwrap();
+        let dest = dir.path().join("shared-signed.whl");
+        let downloader = Downloader::new();
+
+        let valid = DownloadRequest {
+            url: server.url("/shared-signed.whl"),
+            destination: dest.clone(),
+            checksum: None,
+            signature: Some(SignatureSpec {
+                signature: valid_signature_b64,
+                public_key: public_key_b64.clone(),
+            }),
+        };
+        let invalid = DownloadRequest {
+            url: server.url("/shared-signed.whl"),
+            destination: dest.clone(),
+            checksum: None,
+            signature: Some(SignatureSpec {
+                signature: bogus_signature_b64,
+                public_key: public_key_b64,
+            }),
+        };
+
+        // `buffer_unordered` does not preserve request order, so identify
+        // each outcome by its shape rather than its index.
+        let results = downloader.download_parallel(vec![valid, invalid], 2).await;
+        assert_eq!(results.len(), 2);
+
+        let ok_count = results.iter().filter(|r| r.is_ok()).count();
+        let failure_count = results
+            .iter()
+            .filter(|r| matches!(r, Err(DownloadError::SignatureVerificationFailed { .. })))
+            .count();
+        assert_eq!(
+            ok_count, 1,
+            "the validly-signed request should succeed: {results:?}"
+        );
+        assert_eq!(
+            failure_count, 1,
+            "the invalid-signature request must independently detect the failure: {results:?}"
+        );
+
+        mock.assert_calls(1);
     }
 }
