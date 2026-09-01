@@ -1,141 +1,161 @@
 # タスク実行プロンプト
 
-@docs/PLAN.md を参照して、指定されたPR（例: PR2.1）の実装を進めてください。
+このドキュメントは PyBun の実装作業をエージェントに依頼する際のテンプレートです。起点は2種類あります。
 
-## 実装フロー
+- **PR起点**: `@docs/PROMPT.md を参照して、指定されたPR（例: PR2.1）の実装を進めてください。`
+- **Issue起点**: `@docs/PROMPT.md に従って Issue #<番号> を実装する。`
 
-### 1. ブランチ作成
-- `feature/<pr番号>-<簡潔な説明>` の形式でブランチを作成
-  - 例: `feature/pr2.1-rust-module-finder`
-- `main` ブランチから分岐すること
-
-### 2. TDD（テスト駆動開発）で実装
-- **Red**: まず失敗するテストを書く
-- **Green**: テストが通る最小限のコードを実装
-- **Refactor**: コードを整理・改善
-- ユニットテストと統合テストの両方を作成
-
-### 3. E2Eテストの実行
-```bash
-just test-e2e  # または cargo test --test '*'
-```
-- 既存のE2Eテストが壊れていないことを確認
-- 新機能のE2Eテストを追加
-- ベンチマークスクリプトで性能を確認
-  - **Note**: 正確な計測のため、`cargo build --release` を完了させてから実行すること。
-  - **Cold Start計測**: キャッシュ (`~/.cache/pybun/pep723-envs`) をクリアして実行すること。
-  - **コマンド**: `PATH=$(pwd)/target/release:$PATH python3 scripts/benchmark/bench.py -s run --format markdown`
-
-### 4. コード品質の確認
-```bash
-just lint      # clippy + fmt check
-just fmt       # フォーマット適用
-cargo test     # 全テスト実行
-```
-
-### 5. PLAN.md の更新
-- 実装したPRのステータスを `[DONE]` に更新
-- 実装内容の要約を `Current:` セクションに追記
-- テストの詳細を `Tests:` セクションに追記
-
-### 6. コミット & プッシュ
-- コミットメッセージ形式: `<type>(<scope>): <description>`
-  - type: `feat`, `fix`, `test`, `docs`, `refactor`, `chore`
-  - 例: `feat(resolver): add SAT solver for dependency resolution`
-- 適切な粒度でコミットを分割
-
-### 7. Pull Request 作成
-```bash
-gh pr create --title "<PR番号>: <タイトル>" --body "<説明>"
-```
-- PRテンプレートに従って記述
-- 関連するIssueやPRをリンク
-
-### 8. CI結果の確認と対応
-```bash
-gh pr checks   # CIの状態確認
-gh run list    # ワークフロー一覧
-gh run view    # 詳細確認
-```
-- CIが失敗した場合は原因を特定して修正
-- 全てのチェックがパスするまで繰り返す
-
-## チェックリスト
-
-- [ ] ブランチを `main` から作成した
-- [ ] テストを先に書いた（TDD）
-- [ ] 全てのテストがパスする
-- [ ] `just lint` がエラーなし
-- [ ] E2Eテストを実行した
-- [ ] PLAN.md を更新した
-- [ ] コミットメッセージが適切
-- [ ] PRを作成した
-- [ ] CIが全てパス
-
-## 注意事項
-
-- 既存のテストを壊さないこと
-- 依存関係のあるPRがマージされていることを確認
-- `--format=json` オプションは全コマンドで対応すること（AI-friendly）
-- macOS/Linux を優先、Windows はスタブで対応
+どちらの起点でも、以下の「共通実装ステップ」を土台とし、起点ごとの差分（下記「PR起点フロー」「Issue起点フロー」）を追加で行ってください。
 
 ---
 
-# Issue 実装プロンプト
+## 共通実装ステップ
 
-@docs/PROMPT.md に従って Issue #<番号> を実装する。
-
-## 実装フロー（Issue番号指定）
-
-### 1. Issue 内容の確認
-```bash
-gh issue view <番号>
-```
-- Issue の要件・背景・受け入れ条件を把握する
-- 関連する既存コード・テスト・ドキュメントを調査する
-
-### 2. ブランチ作成
-- `feature/issue-<番号>-<簡潔な説明>` の形式でブランチを作成
-  - 例: `feature/issue-157-benchmark-hermetic`
+### 1. ブランチ作成
 - `main` ブランチから分岐すること
+- ブランチ名の形式は起点ごとに異なる（下記の各フロー参照）
 
-### 3. 適切な Skills の選択と TDD 実装
+### 2. 適切な Skills の選択と TDD 実装
 - タスクに応じて以下の Skills を選択して使うこと:
   - `/tdd-workflow` — 新機能・バグ修正・リファクタ全般（テストファースト）
   - `/rust-test` — Rust テスト TDD（cargo-llvm-cov でカバレッジ確認）
   - `/rust-review` — Rust コードレビュー
   - `/security-review` — セキュリティリスクがある変更
   - `/plan` — 複雑な実装の前に設計を整理
+- 変更内容に応じて、以下の Rust特化 Skills も追加で使うこと（該当する場合のみ）:
+  - `/rust-build` — `cargo build` / clippy がエラーになった場合、原因を特定して最小差分で修正する
+  - `/rust-async` — 非同期コードの実装・レビュー時。PyBunはtokio上で `async fn` を多用している（`src/commands/`, `src/downloader.rs`, `src/pypi.rs` など）
+  - `/rust-ownership-and-lifetimes` — 借用チェッカーエラー（E0502等）の解消、参照・所有権設計のレビュー
+  - `/rust-concurrency-sync` — 共有状態を扱う変更（例: `src/pypi.rs` の `Arc<Mutex<_>>` キャッシュ、`OnceMap` 等の並行制御）
+  - `/rust-unsafe-fundamentals` — `unsafe` ブロックを追加・変更する場合（既存箇所: `src/env.rs`, `src/entry.rs`, `src/sandbox.rs`, `src/proc_exec.rs`, `src/profiles.rs`, `src/mcp/audit.rs`, `src/mcp/tools/run.rs` 等）。safety commentの記述を必須とする
+  - `/rust-api-design` — CLI引数・MCP tool・公開struct（`Lockfile`, `Package` 等）の命名やトレイト実装（`Debug`/`Display`/`From` 等）を新規設計する場合
 - **Red → Green → Refactor** のサイクルを守る
+  - **Red**: まず失敗するテストを書く
+  - **Green**: テストが通る最小限のコードを実装
+  - **Refactor**: コードを整理・改善
 - ユニットテスト・統合テスト・E2Eテストをすべて作成する
 
-### 4. E2E テストの実施
+### 3. E2E テストと品質ゲート
 ```bash
-cargo test --test '*'          # 全統合テスト
-cargo test e2e_general         # E2E 試験
-just lint                      # clippy + fmt check
+cargo test --test '*'          # 全統合テスト（E2Eを含む）
+cargo test e2e_general         # E2E 試験のみ実行する場合
+just check                     # fmt-check + lint(clippy) + test をまとめて実行（CIと同一: justfile の `ci` と同義）
 ```
+- `just check` が失敗した場合、個別に `just fmt`（自動整形）→ `just lint`（clippy のみ）→ `cargo test` で切り分けて修正する
+- 既存のテストを壊していないことを確認する
+- 新機能のテストを追加する
+- 性能に関わる変更はベンチマークスクリプトで確認する
+  - **Note**: 正確な計測のため、`cargo build --release` を完了させてから実行すること。
+  - **Cold Start計測**: キャッシュ (`~/.cache/pybun/pep723-envs`) をクリアして実行すること。
+  - **コマンド**: `PATH=$(pwd)/target/release:$PATH python3 scripts/benchmark/bench.py -s run --format markdown`
 
-### 5. コミット & プッシュ & PR 作成
+### 4. 実装中に対象外のバグを見つけた場合の対応
+今取り組んでいるPR/Issueのスコープ外の既存バグを実装中に発見した場合、**その場で無関係な修正を混ぜ込まない**（スコープ外の変更が混ざるとレビューが困難になり、原因の切り分けもできなくなる）。代わりに以下の手順を踏む:
+
+1. **類似パターンの調査**: `grep` / `git grep` 等で同種のコードパターンが他の箇所にもないか確認し、影響範囲（他のコマンド・モジュール・過去の類似修正の有無）を把握する
+2. **バグ修正案のプランニング**: 原因・再現手順・影響範囲・修正方針を簡潔にまとめる（大掛かりな修正が必要なら `/plan` Skill を使う）
+3. **重複確認**: `gh issue list --search "<keyword>"` などで、既存Issueに同じ内容の報告がないか確認する
+4. **起票してよいかユーザーに確認**: 重複が無ければ、上記の調査結果・修正案を添えて「Issueとして起票してよいか」をプロンプトでユーザーに確認する。ユーザーの承認なしに起票しない
+5. **承認された場合のみ起票**:
+   ```bash
+   gh issue create --title "<簡潔なタイトル>" --body "<原因・再現手順・影響範囲・修正方針>"
+   ```
+   - 起票したIssue番号は、現在作業中のPR説明やコミットメッセージから参照してよい（例: `Related to #<番号>`）
+   - 起票を承認されなかった場合は、調査結果と修正案を作業ログやPR説明に書き添えるに留め、コードは変更しない
+
+### 5. コミット & プッシュ
+- コミットメッセージ形式: `<type>(<scope>): <description>`
+  - type: `feat`, `fix`, `test`, `docs`, `refactor`, `chore`
+  - 例: `feat(resolver): add SAT solver for dependency resolution`
+- 適切な粒度でコミットを分割
+- 新規ブランチは `git push -u origin <ブランチ名>` でプッシュ
+
+### 6. CI結果の確認と対応
 ```bash
-git push -u origin <ブランチ名>
+gh pr checks   # CIの状態確認
+gh run list    # ワークフロー一覧
+gh run view    # 詳細確認
+```
+- CIが失敗した場合は原因を特定して修正し、全てのチェックがパスするまで繰り返す
+
+### 共通の注意事項
+- 既存のテストを壊さないこと
+- 依存関係のあるPR/Issueがマージされていることを確認
+- `--format=json` オプションは全コマンドで対応すること（AI-friendly）
+- macOS/Linux を優先、Windows はスタブで対応
+
+---
+
+## PR起点フロー
+
+`docs/PLAN.md` を参照して、指定されたPR（例: PR2.1）を実装する場合の追加手順。
+
+### ブランチ作成
+- `feature/<pr番号>-<簡潔な説明>` の形式でブランチを作成
+  - 例: `feature/pr2.1-rust-module-finder`
+
+### PLAN.md の更新
+- 実装したPRのステータスを `[DONE]` に更新
+- 実装内容の要約を `Current:` セクションに追記
+- テストの詳細を `Tests:` セクションに追記
+
+### Pull Request 作成
+```bash
+gh pr create --title "<PR番号>: <タイトル>" --body "<説明>"
+```
+- PRテンプレートに従って記述
+- 関連するIssueやPRをリンク
+
+### PR起点チェックリスト
+- [ ] ブランチを `main` から作成した
+- [ ] テストを先に書いた（TDD）
+- [ ] 全てのテストがパスする
+- [ ] `just check` がエラーなし（fmt-check + lint + test）
+- [ ] E2Eテストを実行した
+- [ ] `docs/PLAN.md` を更新した
+- [ ] スコープ外のバグを見つけた場合、混ぜ込まず調査・起票判断を行った
+- [ ] コミットメッセージが適切
+- [ ] PRを作成した
+- [ ] CIが全てパス
+
+---
+
+## Issue起点フロー
+
+### Issue 内容の確認
+```bash
+gh issue view <番号>
+```
+- Issue の要件・背景・受け入れ条件を把握する
+- 関連する既存コード・テスト・ドキュメントを調査する
+
+### ブランチ作成
+- `feature/issue-<番号>-<簡潔な説明>` の形式でブランチを作成
+  - 例: `feature/issue-157-benchmark-hermetic`
+
+### PLAN.md の更新（対応する場合のみ）
+- 実装したIssueが `docs/PLAN.md` の追跡対象PRに対応する場合は、PR起点フローと同様にステータス・`Current:`・`Tests:` を更新する
+- 対応しないスタンドアロンのIssueであれば不要
+
+### PR 作成
+```bash
 gh pr create --title "fix/feat(<scope>): <説明> (Issue #<番号>)" \
   --body "Closes #<番号>\n\n## Summary\n...\n\n## Test plan\n- [ ] ..."
 ```
 
-### 6. サブエージェントによるコードレビュー & PR へのコメント投稿
+### サブエージェントによるコードレビュー & PR へのコメント投稿
 - `/code-review` または `code-review` サブエージェントでコードレビューを実施
 - 指摘内容を `gh pr comment` または `gh api` でインラインコメントとして PR に投稿
   ```bash
   gh pr comment <PR番号> --body "<レビュー内容>"
   ```
 
-### 7. 指摘事項への対処
+### 指摘事項への対処
 - CRITICAL / HIGH の指摘は必ず修正する
 - MEDIUM の指摘は可能な限り対処する
 - 修正後に再コミット & プッシュ
 
-### 8. CI がオールグリーンになるまで対処
+### CI がオールグリーンになるまで対処
 ```bash
 gh pr checks <PR番号>          # CI 状態確認（全グリーンまでポーリング）
 gh run view                    # 失敗時の詳細確認
@@ -143,7 +163,7 @@ gh run view                    # 失敗時の詳細確認
 - 失敗した場合は原因を特定して修正し、再プッシュ
 - 全チェックがパスするまで繰り返す
 
-### 9. 実装内容の最終検証 & マージ
+### 実装内容の最終検証 & マージ
 - Issue の受け入れ条件を一つずつ確認し、検証内容をまとめる
 - 検証結果を `/review` または `code-review` サブエージェントでレビュー
 - 問題がなければマージ:
@@ -152,29 +172,32 @@ gh run view                    # 失敗時の詳細確認
   ```
 - 問題があれば修正し、実装 → 検証 → レビューを正しい実装になるまで繰り返す
 
-## Issue 実装チェックリスト
-
+### Issue起点チェックリスト
 - [ ] Issue の要件・受け入れ条件を把握した
 - [ ] `main` からブランチを作成した
 - [ ] 適切な Skills を選択して使った
 - [ ] テストを先に書いた（TDD: Red → Green → Refactor）
 - [ ] ユニット・統合・E2E テストが全てパスする
-- [ ] `just lint` がエラーなし
+- [ ] `just check` がエラーなし（fmt-check + lint + test）
+- [ ] スコープ外のバグを見つけた場合、混ぜ込まず調査・起票判断を行った
 - [ ] コミット & プッシュ & PR を作成した
 - [ ] サブエージェントでコードレビューを実施し PR にコメントを投稿した
 - [ ] 指摘事項に対処した
 - [ ] CI が全てグリーン
 - [ ] Issue の受け入れ条件を検証し問題なし
+- [ ] （該当する場合）`docs/PLAN.md` を更新した
 - [ ] PR をマージした
+
+---
 
 ## サブエージェントへの委任時の注意（完了報告の自己申告を鵜呑みにしない）
 
-複数の Issue を並行して worktree + バックグラウンドサブエージェントに委任する際、サブエージェントが `status: completed` を返しても、それは自己申告に過ぎない。実際には `cargo test` の実行途中で応答を打ち切っており、変更はコミットされていなかった、というケースが発生した（Issue #294 対応時）。
+複数の Issue を並行して worktree + バックグラウンドサブエージェントに委任する際、サブエージェントが `status: completed` を返しても、それは自己申告に過ぎない。実際には `cargo test` の実行途中で応答を打ち切っており、変更はコミットされていなかった、というケースが発生した（Issue #294 対応時）。この注意はPR起点・Issue起点いずれのフローにも適用される。
 
 **必須の検証手順**（サブエージェントの完了報告を受け取ったら）:
 
 1. 該当 worktree で `git log --oneline -3` と `git status --short` を自分の Bash ツールで直接実行し、コミットが実在するか確認する。
-2. 未コミットの変更が残っている場合は、`cargo test` / `cargo clippy --all-targets --all-features -- -D warnings` / `cargo fmt -- --check` を自分で実行して結果を確認する（サブエージェントの報告文だけで判断しない）。
+2. 未コミットの変更が残っている場合は、`just check`（または `cargo test` / `cargo clippy --all-targets --all-features -- -D warnings` / `cargo fmt -- --check`）を自分で実行して結果を確認する（サブエージェントの報告文だけで判断しない）。
 3. 作業が中断されていた場合は、同じサブエージェント（同一 agentId）に `SendMessage` で再開を依頼するか、フルコンテキストを与えて再開させる。新しい `Agent` を素で立ち上げると worktree パスなどの前提知識を失い、二重作業や迷子になるリスクがある。
 4. 全チェックがグリーンであることを自分の目で確認してから、初めて push / PR 作成に進む。
 
