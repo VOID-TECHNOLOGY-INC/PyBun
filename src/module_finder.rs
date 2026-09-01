@@ -7,7 +7,7 @@
 //! The module finder is opt-in and guarded by a flag to allow fallback
 //! to CPython's native import system when needed.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread;
@@ -288,7 +288,14 @@ impl ModuleFinder {
         if !dir.is_dir() {
             return Vec::new();
         }
-        self.scan_directory_inner(dir, dir, "", true)
+        // Seed the cycle-detection ancestor set with the canonical root itself,
+        // so a top-level symlink that points back at `dir` (e.g. `dir/loop ->
+        // dir`) is caught immediately rather than after one extra descent.
+        let mut ancestors = HashSet::new();
+        if let Ok(canonical_root) = std::fs::canonicalize(dir) {
+            ancestors.insert(canonical_root);
+        }
+        self.scan_directory_inner(dir, dir, "", true, &ancestors)
     }
 
     /// Scan a directory and return modules with timing information.
@@ -309,12 +316,26 @@ impl ModuleFinder {
     /// `parallel`: when true and there are enough top-level subdirectories,
     /// spawn threads for that level only. Recursive calls always pass `false`
     /// to bound the total number of live threads.
+    ///
+    /// `ancestors`: canonical (symlink-resolved) paths of every directory
+    /// currently on the recursion stack from the scan root down to `dir`
+    /// (Issue #404). Directories are followed through symlinks, so a symlink
+    /// cycle (e.g. `pkg/loop -> pkg`, or `a/b/back -> a`) could otherwise
+    /// recurse indefinitely. Tracking ancestors *per recursion branch*
+    /// (rather than a single set shared across the whole scan, as
+    /// `drift.rs::collect_py_files` does) means two unrelated symlinks that
+    /// happen to point at the same real directory are each still fully
+    /// scanned — only an actual cycle back to one of *this path's own*
+    /// ancestors is suppressed. Each branch clones and extends its own set on
+    /// the way down, so this is race-free across the parallel dispatch below
+    /// without needing a shared/synchronized set.
     fn scan_directory_inner(
         &self,
         base_path: &Path,
         dir: &Path,
         prefix: &str,
         parallel: bool,
+        ancestors: &HashSet<PathBuf>,
     ) -> Vec<ModuleInfo> {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return Vec::new();
@@ -411,9 +432,14 @@ impl ModuleFinder {
             let sub_results: Vec<Vec<ModuleInfo>> = thread::scope(|s| {
                 let handles: Vec<_> = subdirs
                     .iter()
-                    .map(|(path, name)| {
+                    .filter_map(|(path, name)| {
+                        // Skip descent (but keep the module entry already recorded
+                        // above) on a symlink cycle or an unresolvable path.
+                        let next_ancestors = self.next_ancestors(path, ancestors)?;
                         // Recursive calls use parallel=false to prevent unbounded spawning.
-                        s.spawn(|| self.scan_directory_inner(base_path, path, name, false))
+                        Some(s.spawn(move || {
+                            self.scan_directory_inner(base_path, path, name, false, &next_ancestors)
+                        }))
                     })
                     .collect();
                 handles
@@ -426,11 +452,43 @@ impl ModuleFinder {
             }
         } else {
             for (path, name) in &subdirs {
-                modules.extend(self.scan_directory_inner(base_path, path, name, false));
+                let Some(next_ancestors) = self.next_ancestors(path, ancestors) else {
+                    continue;
+                };
+                modules.extend(self.scan_directory_inner(
+                    base_path,
+                    path,
+                    name,
+                    false,
+                    &next_ancestors,
+                ));
             }
         }
 
         modules
+    }
+
+    /// Canonicalize `path` and check it against the current recursion branch's
+    /// `ancestors` (Issue #404). Returns `None` — meaning "do not recurse into
+    /// this directory" — when `path` resolves to a directory already on this
+    /// branch's ancestor chain (a symlink cycle) or when canonicalization
+    /// fails (e.g. a dangling symlink, or a permission error); the directory's
+    /// own module entry is unaffected either way since it was already recorded
+    /// by the caller before this is consulted. Otherwise returns a new,
+    /// independent ancestor set (the branch's ancestors plus `path`'s
+    /// canonical form) for the recursive call to use.
+    fn next_ancestors(
+        &self,
+        path: &Path,
+        ancestors: &HashSet<PathBuf>,
+    ) -> Option<HashSet<PathBuf>> {
+        let canonical = std::fs::canonicalize(path).ok()?;
+        if ancestors.contains(&canonical) {
+            return None;
+        }
+        let mut next = ancestors.clone();
+        next.insert(canonical);
+        Some(next)
     }
 
     /// Clear the module cache.
@@ -1025,6 +1083,142 @@ mod tests {
             pkg.module_type,
             ModuleType::Package,
             "symlinked dir with __init__.py should be Package"
+        );
+    }
+
+    // =========================================================================
+    // Issue #404: directory symlink cycles must not cause unbounded recursion.
+    // =========================================================================
+
+    #[cfg(unix)]
+    #[test]
+    fn test_scan_terminates_on_self_symlink_cycle() {
+        use std::os::unix::fs::symlink;
+
+        let temp = TempDir::new().unwrap();
+        let pkg = temp.path().join("pkg");
+        fs::create_dir_all(&pkg).unwrap();
+        fs::write(pkg.join("__init__.py"), "").unwrap();
+        fs::write(pkg.join("mod.py"), "").unwrap();
+
+        // pkg/loop -> pkg (self-cycle)
+        symlink(&pkg, pkg.join("loop")).unwrap();
+
+        let config = ModuleFinderConfig {
+            enabled: true,
+            search_paths: vec![temp.path().to_path_buf()],
+            ..Default::default()
+        };
+        let finder = ModuleFinder::new(config);
+        // Terminating at all (rather than hanging/stack-overflowing) is the
+        // primary assertion here.
+        let modules = finder.scan_directory(temp.path());
+
+        let names: Vec<_> = modules.iter().map(|m| m.name.as_str()).collect();
+        assert!(names.contains(&"pkg"), "expected pkg: {names:?}");
+        assert!(names.contains(&"pkg.mod"), "expected pkg.mod: {names:?}");
+        // The `loop` entry itself is preserved (it's a real, discoverable
+        // namespace/package dir from the scanner's point of view)...
+        assert!(names.contains(&"pkg.loop"), "expected pkg.loop: {names:?}");
+        // ...but descent into it must not repeat pkg's own contents endlessly.
+        assert!(
+            !names.contains(&"pkg.loop.mod"),
+            "recursion into the self-cycle must be suppressed: {names:?}"
+        );
+        assert!(
+            modules.len() < 20,
+            "module count must stay bounded for a self-cycle, got {}: {:?}",
+            modules.len(),
+            names
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_scan_terminates_on_parent_symlink_cycle() {
+        use std::os::unix::fs::symlink;
+
+        let temp = TempDir::new().unwrap();
+        let a = temp.path().join("a");
+        let b = a.join("b");
+        fs::create_dir_all(&b).unwrap();
+        fs::write(a.join("__init__.py"), "").unwrap();
+        fs::write(b.join("__init__.py"), "").unwrap();
+        fs::write(b.join("mod.py"), "").unwrap();
+
+        // a/b/back -> a (cycle back to a grandparent, not a direct self-link)
+        symlink(&a, b.join("back")).unwrap();
+
+        let config = ModuleFinderConfig {
+            enabled: true,
+            search_paths: vec![temp.path().to_path_buf()],
+            ..Default::default()
+        };
+        let finder = ModuleFinder::new(config);
+        let modules = finder.scan_directory(temp.path());
+
+        let names: Vec<_> = modules.iter().map(|m| m.name.as_str()).collect();
+        assert!(names.contains(&"a"), "expected a: {names:?}");
+        assert!(names.contains(&"a.b"), "expected a.b: {names:?}");
+        assert!(names.contains(&"a.b.mod"), "expected a.b.mod: {names:?}");
+        assert!(names.contains(&"a.b.back"), "expected a.b.back: {names:?}");
+        // a.b.back would recurse back into `a` (its own ancestor); that
+        // descent must be suppressed rather than repeating a.b.mod forever.
+        assert!(
+            !names.contains(&"a.b.back.b"),
+            "recursion through the parent-cycle must be suppressed: {names:?}"
+        );
+        assert!(
+            modules.len() < 20,
+            "module count must stay bounded for a parent-cycle, got {}: {:?}",
+            modules.len(),
+            names
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_scan_handles_duplicate_symlink_aliases_to_same_target() {
+        use std::os::unix::fs::symlink;
+
+        let temp = TempDir::new().unwrap();
+
+        let real_pkg = temp.path().join("_real_pkg");
+        fs::create_dir_all(&real_pkg).unwrap();
+        fs::write(real_pkg.join("__init__.py"), "").unwrap();
+        fs::write(real_pkg.join("mod.py"), "").unwrap();
+
+        // Two independent (non-ancestor) symlinks pointing at the same target.
+        symlink(&real_pkg, temp.path().join("alias_one")).unwrap();
+        symlink(&real_pkg, temp.path().join("alias_two")).unwrap();
+
+        let config = ModuleFinderConfig {
+            enabled: true,
+            search_paths: vec![temp.path().to_path_buf()],
+            ..Default::default()
+        };
+        let finder = ModuleFinder::new(config);
+        let modules = finder.scan_directory(temp.path());
+
+        let names: Vec<_> = modules.iter().map(|m| m.name.as_str()).collect();
+        // Both aliases are represented, and since neither is an ancestor of
+        // the other, both are fully scanned (documented policy: ancestor-only
+        // cycle detection, not whole-scan canonical deduplication).
+        assert!(
+            names.contains(&"alias_one"),
+            "expected alias_one: {names:?}"
+        );
+        assert!(
+            names.contains(&"alias_two"),
+            "expected alias_two: {names:?}"
+        );
+        assert!(
+            names.contains(&"alias_one.mod"),
+            "alias_one's target should be fully scanned: {names:?}"
+        );
+        assert!(
+            names.contains(&"alias_two.mod"),
+            "alias_two's target should be fully scanned: {names:?}"
         );
     }
 }
