@@ -299,21 +299,6 @@ pub(crate) async fn install(
 
     warn_on_ignored_extras(&requirements, collector);
 
-    // If no requirements (empty pyproject dependencies), create empty lockfile
-    if requirements.is_empty() {
-        let lock = Lockfile::new(vec!["3.11".into()], vec!["unknown".into()]);
-        lock.save_to_path(&args.lock)?;
-        return Ok(InstallOutcome {
-            summary: format!("no dependencies to install -> {}", args.lock.display()),
-            packages: vec![],
-            lockfile: args.lock.clone(),
-            verified: true,
-            artifacts: Vec::new(),
-            workspace: workspace_detail.clone(),
-            installed_count: 0,
-        });
-    }
-
     // Detect the CPython tag of the actual install target (PYBUN_ENV / PYBUN_PYTHON /
     // project venv / system Python) *before* selecting wheels, so artifact selection
     // matches the Python interpreter packages will actually be installed into.
@@ -324,9 +309,12 @@ pub(crate) async fn install(
     // later "Install wheels" step below, so a resolve-only or failed install doesn't
     // have the side effect of mutating the filesystem.
     //
-    // Detection happens before resolution because the same interpreter version also
-    // drives `requires-python` candidate filtering (Issue #342). The interpreter is
-    // only spawned when no environment override makes it unnecessary.
+    // Detection happens before resolution (and before the empty-dependency early return
+    // below) because the same interpreter version also drives `requires-python` candidate
+    // filtering (Issue #342) and is the single source of truth recorded into the lockfile's
+    // `python_versions` (Issue #399) — it must never diverge from what wheel selection
+    // actually targeted. The interpreter is only spawned when no environment override makes
+    // it unnecessary.
     let working_dir = std::env::current_dir()?;
     let target_env_probe = crate::env::find_python_env(&working_dir)?;
     let python_version_override = python_version_env_override();
@@ -349,12 +337,41 @@ pub(crate) async fn install(
                 .and_then(python_version_to_cp_tag)
         })
         .unwrap_or_else(|| "cp311".to_string());
+    // Canonical target Python version for this install: the explicit
+    // PYBUN_PYPI_PYTHON_VERSION override wins, otherwise the detected interpreter version.
+    // Used both for resolver `requires-python` filtering and for the lockfile's
+    // `python_versions` metadata, so the two can never disagree (Issue #399).
+    let target_python_version = python_version_override
+        .clone()
+        .or_else(|| detected_python_version.clone());
+
+    // If no requirements (empty pyproject dependencies), create empty lockfile
+    if requirements.is_empty() {
+        let lock = Lockfile::new(
+            vec![
+                target_python_version
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string()),
+            ],
+            vec!["unknown".into()],
+        );
+        lock.save_to_path(&args.lock)?;
+        return Ok(InstallOutcome {
+            summary: format!("no dependencies to install -> {}", args.lock.display()),
+            packages: vec![],
+            lockfile: args.lock.clone(),
+            verified: true,
+            artifacts: Vec::new(),
+            workspace: workspace_detail.clone(),
+            installed_count: 0,
+        });
+    }
 
     let source_index_url: String;
     let offline = args.offline;
     let resolve_options = ResolveOptions {
         allow_prerelease: args.pre,
-        python_version: python_version_override.or(detected_python_version),
+        python_version: target_python_version.clone(),
     };
     let resolution = if let Some(index_path) = args.index.clone() {
         source_index_url = index_path.display().to_string();
@@ -400,7 +417,11 @@ pub(crate) async fn install(
 
     let platform_tags = current_platform_tags();
     let mut lock = Lockfile::new(
-        vec!["3.11".into()],
+        vec![
+            target_python_version
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string()),
+        ],
         vec![
             platform_tags
                 .first()
@@ -862,8 +883,22 @@ pub(super) async fn lock_dependencies(
         })
         .collect();
 
+    // Canonical target Python version for this lock: shared with `pybun install`
+    // (Issue #399) so `requires-python` filtering, resolution, and the lockfile's
+    // `python_versions` metadata always agree, for both project and PEP 723
+    // `--script` locking. Resolved before the empty-dependency early return below
+    // so that path records the real target instead of a hard-coded fallback too.
+    let target_python_version = resolve_target_python_version();
+
     if dep_specs.is_empty() {
-        let lock = Lockfile::new(vec!["3.11".into()], vec!["unknown".into()]);
+        let lock = Lockfile::new(
+            vec![
+                target_python_version
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string()),
+            ],
+            vec!["unknown".into()],
+        );
         lock.save_to_path(&lock_path)?;
         return Ok(LockOutcome {
             summary: format!("no dependencies to lock -> {}", lock_path.display()),
@@ -877,7 +912,7 @@ pub(super) async fn lock_dependencies(
     let source_index_url: String;
     let offline = args.offline;
     let resolve_options = ResolveOptions {
-        python_version: resolve_target_python_version(),
+        python_version: target_python_version.clone(),
         ..Default::default()
     };
     let resolution = if let Some(index_path) = args.index.clone() {
@@ -937,10 +972,18 @@ pub(super) async fn lock_dependencies(
     let target_env_probe = crate::env::find_python_env(&working_dir)?;
 
     // PYBUN_FORCE_CP_TAG lets tests (and users) pin the CPython tag deterministically,
-    // bypassing interpreter detection entirely.
+    // bypassing interpreter detection entirely. Falls back to the canonical
+    // `target_python_version` computed above (rather than re-probing the interpreter)
+    // so the CPython tag and the lockfile's `python_versions` are derived from the same
+    // detected value.
     let active_cp_tag = std::env::var("PYBUN_FORCE_CP_TAG")
         .ok()
         .filter(|v| !v.trim().is_empty())
+        .or_else(|| {
+            target_python_version
+                .as_deref()
+                .and_then(python_version_to_cp_tag)
+        })
         .or_else(|| {
             get_python_version(&target_env_probe.python_path)
                 .ok()
@@ -950,7 +993,11 @@ pub(super) async fn lock_dependencies(
 
     let platform_tags = current_platform_tags();
     let mut lock = Lockfile::new(
-        vec!["3.11".into()],
+        vec![
+            target_python_version
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string()),
+        ],
         vec![
             platform_tags
                 .first()
@@ -1572,9 +1619,16 @@ pub(super) async fn run_upgrade(
         })
         .unwrap_or_else(|| "cp311".to_string());
 
-    // Use an empty lockfile if none exists for comparison base
-    let base_lock =
-        current_lock.unwrap_or_else(|| Lockfile::new(vec!["3.12".into()], vec!["any".into()]));
+    // Use an empty lockfile if none exists for comparison base. The Python version
+    // recorded here mirrors `pybun install`/`pybun lock` policy (Issue #399): the
+    // detected target interpreter, or an explicit "unknown" rather than a hard-coded
+    // minor version presented as factual metadata.
+    let base_lock = current_lock.unwrap_or_else(|| {
+        Lockfile::new(
+            vec![resolve_target_python_version().unwrap_or_else(|| "unknown".to_string())],
+            vec!["any".into()],
+        )
+    });
 
     // Build new lockfile
     let mut new_lock = Lockfile::new(

@@ -330,3 +330,66 @@ fn lock_without_script_or_pyproject_fails_with_actionable_error() {
         "expected an actionable error diagnostic mentioning --script and pyproject.toml: {diagnostics:?}"
     );
 }
+
+// =============================================================================
+// Issue #399: `pybun lock`'s lockfile `python_versions` metadata must reflect
+// the detected/targeted interpreter instead of a hard-coded "3.11".
+// =============================================================================
+
+#[test]
+fn lock_script_records_detected_python_version_not_hardcoded_311() {
+    let temp = tempdir().unwrap();
+    let script = temp.path().join("example.py");
+    let content = r#"# /// script
+# dependencies = ["app==1.0.0"]
+# ///
+print("hello")
+"#;
+    fs::write(&script, content).unwrap();
+
+    let lock_path = script_lock_path(&script);
+
+    bin()
+        .env("PYBUN_PYPI_PYTHON_VERSION", "3.12.7")
+        .args([
+            "lock",
+            "--script",
+            script.to_str().unwrap(),
+            "--index",
+            index_path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let lock = Lockfile::load_from_path(&lock_path).expect("lock loads");
+    assert_eq!(
+        lock.python_versions,
+        vec!["3.12.7".to_string()],
+        "lockfile python_versions must reflect the detected/overridden target Python, \
+         not the previous hard-coded 3.11 fallback"
+    );
+}
+
+#[test]
+fn lock_script_empty_dependencies_records_detected_python_version() {
+    let temp = tempdir().unwrap();
+    let script = temp.path().join("empty.py");
+    let content = "# /// script\n# dependencies = []\n# ///\nprint(\"hello\")\n";
+    fs::write(&script, content).unwrap();
+
+    let lock_path = script_lock_path(&script);
+
+    bin()
+        .env("PYBUN_PYPI_PYTHON_VERSION", "3.13.0")
+        .args(["lock", "--script", script.to_str().unwrap()])
+        .assert()
+        .success();
+
+    let lock = Lockfile::load_from_path(&lock_path).expect("lock loads");
+    assert_eq!(
+        lock.python_versions,
+        vec!["3.13.0".to_string()],
+        "the empty-dependency script-lock path must record the detected target Python too, \
+         not the previous hard-coded 3.11 fallback"
+    );
+}

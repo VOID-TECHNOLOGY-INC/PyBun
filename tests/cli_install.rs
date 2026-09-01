@@ -1037,6 +1037,67 @@ fn install_selects_post_release_above_base() {
     );
 }
 
+// =============================================================================
+// Issue #399: the lockfile's `python_versions` metadata must reflect the
+// actually detected/targeted interpreter instead of a hard-coded "3.11".
+// =============================================================================
+
+#[test]
+fn install_records_detected_python_version_not_hardcoded_311() {
+    let temp = tempdir().unwrap();
+    let lock_path = temp.path().join("pybun.lockb");
+    let index = index_path();
+
+    bin()
+        .env("PYBUN_PYPI_PYTHON_VERSION", "3.12.7")
+        .args([
+            "install",
+            "--index",
+            index.to_str().unwrap(),
+            "--require",
+            "app==1.0.0",
+            "--lock",
+            lock_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let lock = Lockfile::load_from_path(&lock_path).expect("lock loads");
+    assert_eq!(
+        lock.python_versions,
+        vec!["3.12.7".to_string()],
+        "lockfile python_versions must reflect the detected/overridden target Python, \
+         not the previous hard-coded 3.11 fallback"
+    );
+}
+
+#[test]
+fn install_empty_dependencies_records_detected_python_version() {
+    let temp = tempdir().unwrap();
+    let pyproject = temp.path().join("pyproject.toml");
+    fs::write(
+        &pyproject,
+        "[project]\nname = \"empty-deps\"\nversion = \"0.1.0\"\ndependencies = []\n",
+    )
+    .unwrap();
+    let lock_path = temp.path().join("pybun.lockb");
+
+    bin()
+        .current_dir(temp.path())
+        .env("PYBUN_PYPI_PYTHON_VERSION", "3.13.0")
+        .args(["install", "--lock", lock_path.to_str().unwrap()])
+        .assert()
+        .success();
+
+    let lock = Lockfile::load_from_path(&lock_path).expect("lock loads");
+    assert_eq!(
+        lock.python_versions,
+        vec!["3.13.0".to_string()],
+        "the empty-dependency install path must record the detected target Python too, \
+         not the previous hard-coded 3.11 fallback"
+    );
+}
+
 #[test]
 fn install_rejects_post_release_for_exclusive_minimum_of_same_base() {
     // PEP 440: `>1.0.0` must not match `1.0.0.post1`, and `1.0.0` itself

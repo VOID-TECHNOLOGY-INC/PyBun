@@ -586,3 +586,64 @@ dependencies = [
          not whatever python3/python resolves to on PATH"
     );
 }
+
+// =============================================================================
+// Issue #399: when `pybun upgrade` falls back to a synthetic base lockfile
+// (existing lockfile present on disk but unreadable), the fallback's
+// `python_versions` must reflect the detected target Python rather than a
+// hard-coded "3.12" presented as factual metadata.
+// =============================================================================
+
+#[test]
+fn upgrade_with_unreadable_lockfile_records_detected_python_version() {
+    let temp = TempDir::new().unwrap();
+    let project_root = temp.path();
+
+    let pyproject = r#"
+[project]
+name = "test-project"
+version = "0.1.0"
+dependencies = [
+    "pkg-a>=1.0.0"
+]
+"#;
+    fs::write(project_root.join("pyproject.toml"), pyproject).unwrap();
+
+    let index = r#"[
+  {
+    "name": "pkg-a",
+    "version": "1.0.0",
+    "dependencies": [],
+    "wheels": [
+      {
+        "file": "pkg_a-1.0.0-py3-none-any.whl",
+        "hash": "sha256:hash1"
+      }
+    ]
+  }
+]"#;
+    let index_path = project_root.join("index.json");
+    fs::write(&index_path, index).unwrap();
+
+    // A lockfile that exists on disk but fails to decode (truncated/corrupt),
+    // exercising the `current_lock.unwrap_or_else(...)` synthetic-base-lock path.
+    let lock_path = project_root.join("pybun.lockb");
+    fs::write(&lock_path, b"not a valid lockfile").unwrap();
+
+    let mut cmd = bin();
+    cmd.current_dir(project_root)
+        .env("PYBUN_PYPI_PYTHON_VERSION", "3.12.9")
+        .arg("upgrade")
+        .arg("--index")
+        .arg(&index_path)
+        .assert()
+        .success();
+
+    let lock = Lockfile::load_from_path(&lock_path).expect("lock loads");
+    assert_eq!(
+        lock.python_versions,
+        vec!["3.12.9".to_string()],
+        "the synthetic base lockfile used when the existing lockfile can't be decoded \
+         must record the detected target Python, not a hard-coded 3.12 fallback"
+    );
+}
