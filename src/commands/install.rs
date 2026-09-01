@@ -972,18 +972,14 @@ pub(super) async fn lock_dependencies(
     let target_env_probe = crate::env::find_python_env(&working_dir)?;
 
     // PYBUN_FORCE_CP_TAG lets tests (and users) pin the CPython tag deterministically,
-    // bypassing interpreter detection entirely. Falls back to the canonical
-    // `target_python_version` computed above (rather than re-probing the interpreter)
-    // so the CPython tag and the lockfile's `python_versions` are derived from the same
-    // detected value.
+    // bypassing interpreter detection entirely. Deliberately probes the interpreter
+    // directly here rather than falling back through `target_python_version`: that value
+    // can come from the `PYBUN_PYPI_PYTHON_VERSION` resolution-target override, which must
+    // not silently redirect wheel-ABI selection away from the actual lock target's Python
+    // (matching `install()`'s `active_cp_tag`, which has the same property).
     let active_cp_tag = std::env::var("PYBUN_FORCE_CP_TAG")
         .ok()
         .filter(|v| !v.trim().is_empty())
-        .or_else(|| {
-            target_python_version
-                .as_deref()
-                .and_then(python_version_to_cp_tag)
-        })
         .or_else(|| {
             get_python_version(&target_env_probe.python_path)
                 .ok()
