@@ -3,6 +3,7 @@
 //! Phase 1: regex/token-based import scanning.
 //! Cross-references Python `import` statements with `pyproject.toml` declarations.
 
+use crate::project::Project;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -27,7 +28,11 @@ pub struct UndeclaredImport {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UnusedDeclaration {
     pub package: String,
-    pub declared_in: String,
+    /// Every declaration scope the package appears in (Issue #409), e.g.
+    /// `["project.dependencies"]`, `["project.optional-dependencies.ml"]`, or
+    /// `["dependency-groups.dev", "dependency-groups.test"]` when declared
+    /// (or reachable via `include-group`) in more than one place.
+    pub declared_in: Vec<String>,
     pub next_action: NextAction,
 }
 
@@ -106,24 +111,65 @@ pub fn analyze(root: &Path) -> DriftResult {
         }
     }
 
-    // Load declared dependencies from pyproject.toml (best-effort)
-    let (declared_raw, declared_in) = if pyproject_path.exists() {
-        match std::fs::read_to_string(&pyproject_path) {
-            Ok(content) => {
-                let names = parse_declared_deps(&content);
-                (names, pyproject_path.to_string_lossy().to_string())
+    // Load declared dependencies from pyproject.toml (best-effort), reusing
+    // Project's existing dependency model (Issue #409) instead of a narrower
+    // duplicate parser that only understood `[project.dependencies]`. This
+    // also picks up `[project.optional-dependencies]` and PEP 735
+    // `[dependency-groups]` (with `include-group` expansion already handled
+    // by `Project::dependency_groups()`), so packages declared in those
+    // scopes are no longer falsely reported as globally undeclared.
+    let declared_entries: Vec<(String, String)> = if pyproject_path.exists() {
+        match Project::load(&pyproject_path) {
+            Ok(project) => {
+                let mut entries: Vec<(String, String)> = project
+                    .dependencies()
+                    .into_iter()
+                    .map(|dep| (dep, "project.dependencies".to_string()))
+                    .collect();
+                for (group, deps) in project.optional_dependencies() {
+                    let scope = format!("project.optional-dependencies.{group}");
+                    entries.extend(deps.into_iter().map(|dep| (dep, scope.clone())));
+                }
+                for (group, deps) in project.dependency_groups() {
+                    let scope = format!("dependency-groups.{group}");
+                    entries.extend(deps.into_iter().map(|dep| (dep, scope.clone())));
+                }
+                entries
             }
-            Err(_) => (vec![], pyproject_path.to_string_lossy().to_string()),
+            Err(_) => Vec::new(),
         }
     } else {
-        (vec![], "pyproject.toml".to_string())
+        Vec::new()
     };
 
-    // Normalize declared names
-    let declared_normalized: HashSet<String> = declared_raw
-        .iter()
-        .map(|d| normalize_package_name(&extract_package_name_from_dep(d)))
-        .collect();
+    // Group declared entries by normalized package name: a package declared
+    // in more than one scope (e.g. both `dependency-groups.dev` and
+    // `dependency-groups.test` via `include-group`) is declared once, with
+    // every contributing scope recorded for JSON output.
+    struct DeclaredPackage {
+        display_name: String,
+        scopes: Vec<String>,
+    }
+    let mut declared_by_package: HashMap<String, DeclaredPackage> = HashMap::new();
+    for (spec, scope) in &declared_entries {
+        let display_name = extract_package_name_from_dep(spec);
+        let normalized = normalize_package_name(&display_name);
+        let entry = declared_by_package
+            .entry(normalized)
+            .or_insert_with(|| DeclaredPackage {
+                display_name: display_name.clone(),
+                scopes: Vec::new(),
+            });
+        if !entry.scopes.contains(scope) {
+            entry.scopes.push(scope.clone());
+        }
+    }
+
+    // A package declared in *any* recognized scope counts as declared for
+    // repository-wide undeclared-import detection (Phase 1 of #409 — scope
+    // mismatches, e.g. runtime code importing a dev-only dependency, are not
+    // yet distinguished from a globally valid declaration).
+    let declared_normalized: HashSet<String> = declared_by_package.keys().cloned().collect();
 
     // Find undeclared imports
     let mut undeclared_imports: Vec<UndeclaredImport> = imported_pypi
@@ -146,27 +192,25 @@ pub fn analyze(root: &Path) -> DriftResult {
 
     // Find unused declarations
     let import_aliases_rev = import_aliases_reverse(&aliases);
-    let mut unused_declarations: Vec<UnusedDeclaration> = declared_raw
-        .iter()
-        .filter(|dep| {
-            let name = normalize_package_name(&extract_package_name_from_dep(dep));
+    let mut unused_declarations: Vec<UnusedDeclaration> = declared_by_package
+        .into_iter()
+        .filter(|(name, _)| {
             // Check if this pypi name (or any of its import aliases) appears in imports
             let alt_import = import_aliases_rev.get(name.as_str());
             let is_used = resolved
                 .values()
-                .any(|(pypi, _)| normalize_package_name(pypi) == name)
+                .any(|(pypi, _)| &normalize_package_name(pypi) == name)
                 || alt_import.is_some_and(|aliases| {
                     aliases.iter().any(|alias| resolved.contains_key(*alias))
                 });
             !is_used
         })
-        .map(|dep| {
-            let name = extract_package_name_from_dep(dep);
+        .map(|(_, declared)| {
             let mut args = HashMap::new();
-            args.insert("package".to_string(), name.clone());
+            args.insert("package".to_string(), declared.display_name.clone());
             UnusedDeclaration {
-                package: name,
-                declared_in: declared_in.clone(),
+                package: declared.display_name,
+                declared_in: declared.scopes,
                 next_action: NextAction {
                     tool: "pybun_remove".to_string(),
                     args,
@@ -395,23 +439,6 @@ fn extract_package_name_from_dep(dep: &str) -> String {
         .unwrap_or(dep)
         .trim()
         .to_string()
-}
-
-/// Parse `[project.dependencies]` from pyproject.toml content.
-fn parse_declared_deps(content: &str) -> Vec<String> {
-    let Ok(value) = toml::from_str::<toml::Value>(content) else {
-        return vec![];
-    };
-    value
-        .get("project")
-        .and_then(|p| p.get("dependencies"))
-        .and_then(|d| d.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 /// Mapping from Python import name → PyPI package name for known aliases.
@@ -1051,5 +1078,174 @@ mod tests {
             !pkgs.iter().any(|p| p.contains('\\')),
             "must not register a spurious backslash package: {pkgs:?}"
         );
+    }
+
+    // =========================================================================
+    // Issue #409: declared-dependency parsing must reuse Project's dependency
+    // model (main deps, optional-dependencies, dependency-groups + PEP 735
+    // include-group expansion), not a narrower duplicate parser.
+    // =========================================================================
+
+    #[test]
+    fn analyze_optional_dependency_is_not_falsely_undeclared() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("pyproject.toml"),
+            "[project]\nname=\"t\"\nversion=\"0.1\"\ndependencies=[\"requests\"]\n\n\
+             [project.optional-dependencies]\nml = [\"numpy\", \"pandas\"]\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("ml.py"), "import numpy\nimport pandas\n").unwrap();
+
+        let result = analyze(dir.path());
+        let undeclared: Vec<&str> = result
+            .undeclared_imports
+            .iter()
+            .map(|u| u.package.as_str())
+            .collect();
+        assert!(
+            !undeclared.contains(&"numpy") && !undeclared.contains(&"pandas"),
+            "packages declared in [project.optional-dependencies] must not be \
+             reported as undeclared: {undeclared:?}"
+        );
+    }
+
+    #[test]
+    fn analyze_dependency_group_is_not_falsely_undeclared() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("pyproject.toml"),
+            "[project]\nname=\"t\"\nversion=\"0.1\"\ndependencies=[\"requests\"]\n\n\
+             [dependency-groups]\ndev = [\"pytest\", \"ruff\"]\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join("tests")).unwrap();
+        std::fs::write(
+            dir.path().join("tests").join("test_demo.py"),
+            "import pytest\n",
+        )
+        .unwrap();
+
+        let result = analyze(dir.path());
+        let undeclared: Vec<&str> = result
+            .undeclared_imports
+            .iter()
+            .map(|u| u.package.as_str())
+            .collect();
+        assert!(
+            !undeclared.contains(&"pytest"),
+            "packages declared in [dependency-groups] must not be reported as \
+             undeclared: {undeclared:?}"
+        );
+    }
+
+    #[test]
+    fn analyze_dependency_group_include_group_expansion_is_recognized() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("pyproject.toml"),
+            "[project]\nname=\"t\"\nversion=\"0.1\"\ndependencies=[]\n\n\
+             [dependency-groups]\n\
+             dev = [\"pytest\"]\n\
+             test = [{ include-group = \"dev\" }]\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("main.py"), "import pytest\n").unwrap();
+
+        let result = analyze(dir.path());
+        let undeclared: Vec<&str> = result
+            .undeclared_imports
+            .iter()
+            .map(|u| u.package.as_str())
+            .collect();
+        assert!(
+            !undeclared.contains(&"pytest"),
+            "a dependency reachable only via PEP 735 include-group expansion \
+             must still count as declared: {undeclared:?}"
+        );
+    }
+
+    #[test]
+    fn analyze_package_declared_in_two_groups_reports_both_scopes_when_unused() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("pyproject.toml"),
+            "[project]\nname=\"t\"\nversion=\"0.1\"\ndependencies=[]\n\n\
+             [dependency-groups]\n\
+             dev = [\"pytest\"]\n\
+             test = [\"pytest\"]\n",
+        )
+        .unwrap();
+        // No .py files import pytest -- it stays unused in both groups.
+        std::fs::write(dir.path().join("main.py"), "import requests\n").unwrap();
+
+        let result = analyze(dir.path());
+        let pytest_entry = result
+            .unused_declarations
+            .iter()
+            .find(|u| u.package == "pytest")
+            .expect("pytest should be reported as unused");
+        assert_eq!(
+            pytest_entry.declared_in.len(),
+            2,
+            "a package declared in two groups should list both scopes once each: {:?}",
+            pytest_entry.declared_in
+        );
+        assert!(
+            pytest_entry
+                .declared_in
+                .contains(&"dependency-groups.dev".to_string())
+        );
+        assert!(
+            pytest_entry
+                .declared_in
+                .contains(&"dependency-groups.test".to_string())
+        );
+    }
+
+    #[test]
+    fn analyze_truly_undeclared_package_still_recommends_pybun_add() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("pyproject.toml"),
+            "[project]\nname=\"t\"\nversion=\"0.1\"\ndependencies=[\"requests\"]\n\n\
+             [project.optional-dependencies]\nml = [\"numpy\"]\n\n\
+             [dependency-groups]\ndev = [\"pytest\"]\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("main.py"), "import flask\n").unwrap();
+
+        let result = analyze(dir.path());
+        let entry = result
+            .undeclared_imports
+            .iter()
+            .find(|u| u.package == "flask")
+            .expect("flask is genuinely undeclared in any recognized scope");
+        assert_eq!(entry.next_action.tool, "pybun_add");
+        assert_eq!(entry.next_action.args.get("package").unwrap(), "flask");
+    }
+
+    #[test]
+    fn analyze_unused_declaration_reports_optional_dependency_scope() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("pyproject.toml"),
+            "[project]\nname=\"t\"\nversion=\"0.1\"\ndependencies=[]\n\n\
+             [project.optional-dependencies]\nml = [\"numpy\"]\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("main.py"), "# no imports\n").unwrap();
+
+        let result = analyze(dir.path());
+        let entry = result
+            .unused_declarations
+            .iter()
+            .find(|u| u.package == "numpy")
+            .expect("numpy should be reported as unused");
+        assert_eq!(
+            entry.declared_in,
+            vec!["project.optional-dependencies.ml".to_string()]
+        );
+        assert_eq!(entry.next_action.tool, "pybun_remove");
     }
 }
