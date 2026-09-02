@@ -1,68 +1,67 @@
+use httpmock::prelude::*;
 use pybun::downloader::{DownloadRequest, Downloader};
 use tempfile::tempdir;
 use tokio::fs;
 
 #[tokio::test]
 async fn simple_download_test() {
-    // Ideally we'd spawn a local HTTP server here, but for a simple integration test
-    // without dev-dependencies like wiremock, we can try downloading a small known file
-    // or just rely on Unit tests for logic if we had mocked client.
-    // For now, let's use a public reliable URL or skip real network test if disallowed.
-    // Assuming network access is allowed for integration tests as per previous context (pip install).
-
-    // Let's use a tiny text file from a reliable CDN or similar, e.g., robot.txt from google or similar?
-    // Or better, let's trust our unit tests if we add them.
-    // Since we didn't add unit tests with mocks yet, let's add a basic test that fails gracefully if network is down
-    // or just verifies structure.
+    let server = MockServer::start();
+    let body = b"hello from mock server";
+    let mock = server.mock(|when, then| {
+        when.method(GET).path("/robots.txt");
+        then.status(200).body(body.as_slice());
+    });
 
     let temp = tempdir().unwrap();
     let dest = temp.path().join("robots.txt");
-    let url = "https://www.google.com/robots.txt";
 
     let downloader = Downloader::new();
-    let result = downloader.download_file(url, &dest, None).await;
+    let result = downloader
+        .download_file(&server.url("/robots.txt"), &dest, None)
+        .await;
 
-    match result {
-        Ok(path) => {
-            assert!(path.exists());
-            assert!(fs::metadata(path).await.unwrap().len() > 0);
-        }
-        Err(e) => {
-            eprintln!("Network test skipped/failed: {}", e);
-            // Don't fail the test suite just because of network in this environment if flaky
-        }
-    }
+    let path = result.expect("download should succeed against the mock server");
+    assert!(path.exists());
+    let contents = fs::read(&path).await.unwrap();
+    assert_eq!(contents, body);
+    mock.assert_calls(1);
 }
 
 #[tokio::test]
 async fn parallel_download_test() {
+    let server = MockServer::start();
+    let body1 = b"file one contents";
+    let body2 = b"file two contents";
+    let mock1 = server.mock(|when, then| {
+        when.method(GET).path("/file1.txt");
+        then.status(200).body(body1.as_slice());
+    });
+    let mock2 = server.mock(|when, then| {
+        when.method(GET).path("/file2.txt");
+        then.status(200).body(body2.as_slice());
+    });
+
     let temp = tempdir().unwrap();
     let downloader = Downloader::new();
 
+    let dest1 = temp.path().join("file1.txt");
+    let dest2 = temp.path().join("file2.txt");
+
     let items: Vec<DownloadRequest> = vec![
-        (
-            "https://www.google.com/robots.txt".to_string(),
-            temp.path().join("file1.txt"),
-            None,
-        )
-            .into(),
-        (
-            "https://www.github.com/robots.txt".to_string(),
-            temp.path().join("file2.txt"),
-            None,
-        )
-            .into(),
+        (server.url("/file1.txt"), dest1.clone(), None).into(),
+        (server.url("/file2.txt"), dest2.clone(), None).into(),
     ];
 
     let results = downloader.download_parallel(items, 2).await;
 
-    // We expect 2 results
     assert_eq!(results.len(), 2);
+    assert!(
+        results.iter().all(|r| r.is_ok()),
+        "expected both downloads to succeed against the mock server: {results:?}"
+    );
 
-    // If network works, files should exist
-    let success_count = results.iter().filter(|r| r.is_ok()).count();
-    if success_count > 0 {
-        let _files = fs::read_dir(temp.path()).await.unwrap();
-        // Count files
-    }
+    assert_eq!(fs::read(&dest1).await.unwrap(), body1);
+    assert_eq!(fs::read(&dest2).await.unwrap(), body2);
+    mock1.assert_calls(1);
+    mock2.assert_calls(1);
 }

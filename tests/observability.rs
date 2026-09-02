@@ -199,22 +199,11 @@ fn sensitive_env_vars_redacted() {
     );
 }
 
-#[test]
-fn log_level_via_pybun_log() {
-    let temp = tempdir().unwrap();
-
-    // Test with PYBUN_LOG=debug
-    let output = pybun_bin()
-        .env("PYBUN_HOME", temp.path())
-        .env("PYBUN_LOG", "debug")
-        .args(["gc"])
-        .output()
-        .unwrap();
-
-    assert!(output.status.success());
-    // Debug mode might produce more stderr output
-    // We just check it doesn't crash
-}
+// NOTE: `PYBUN_LOG` is not read anywhere in the runtime (see the removal
+// note in `src/profiles.rs`) — there is no log-level behavior to assert on,
+// so a test claiming to cover it would be vacuous by construction. If
+// `PYBUN_LOG` gains real behavior, add a test here that asserts on the
+// resulting output/verbosity difference rather than "doesn't crash".
 
 #[test]
 fn event_types_are_valid() {

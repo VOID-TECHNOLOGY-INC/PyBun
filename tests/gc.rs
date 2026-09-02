@@ -26,15 +26,20 @@ fn gc_without_args_runs_default_gc() {
     let temp = tempdir().unwrap();
     let output = pybun_bin()
         .env("PYBUN_HOME", temp.path())
-        .args(["gc"])
+        .args(["--format=json", "gc"])
         .output()
         .unwrap();
 
     assert!(output.status.success(), "gc should succeed");
     let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(json["status"], "ok");
+    // With no --max-size and an empty cache, nothing should be removed.
+    assert_eq!(json["detail"]["dry_run"], false);
+    assert_eq!(json["detail"]["files_removed"], 0);
     assert!(
-        stdout.contains("gc") || stdout.contains("cache"),
-        "output should mention gc or cache"
+        temp.path().join("packages").exists(),
+        "gc should have ensured the cache dirs exist"
     );
 }
 
@@ -59,13 +64,22 @@ fn gc_with_max_size_enforces_limit() {
 
     let output = pybun_bin()
         .env("PYBUN_HOME", temp.path())
-        .args(["gc", "--max-size", "1K"])
+        .args(["--format=json", "gc", "--max-size", "1K"])
         .output()
         .unwrap();
 
     assert!(output.status.success(), "gc should succeed with max-size");
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("gc") || stdout.contains("evicted") || stdout.contains("cleaned"));
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+
+    // 2KB of wheels against a 1K cap must evict the older-mtime file (wheel1)
+    // and keep total on-disk usage at or under the cap.
+    assert_eq!(
+        json["detail"]["files_removed"], 1,
+        "expected exactly one file evicted to respect the 1K cap: {json}"
+    );
+    assert!(!wheel1.exists(), "older wheel1 should have been evicted");
+    assert!(wheel2.exists(), "newer wheel2 should have been retained");
 }
 
 #[test]
@@ -96,9 +110,16 @@ fn gc_json_output_format() {
 fn gc_reports_freed_space() {
     let temp = tempdir().unwrap();
 
-    // Create cache structure
+    // Create a cache with a known amount of data, then force full eviction
+    // with --max-size 0.
     let packages_dir = temp.path().join("packages");
-    fs::create_dir_all(&packages_dir).unwrap();
+    let pkg_dir = packages_dir.join("test-package");
+    fs::create_dir_all(&pkg_dir).unwrap();
+    fs::write(
+        pkg_dir.join("test-package-1.0.0-py3-none-any.whl"),
+        vec![0u8; 2048],
+    )
+    .unwrap();
 
     let output = pybun_bin()
         .env("PYBUN_HOME", temp.path())
@@ -110,9 +131,13 @@ fn gc_reports_freed_space() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
 
-    // Detail should have some info about the GC operation
     let detail = &json["detail"];
-    assert!(detail.get("freed_bytes").is_some() || detail.get("status").is_some());
+    assert_eq!(
+        detail["freed_bytes"].as_u64(),
+        Some(2048),
+        "expected the 2KB wheel to be fully freed: {detail}"
+    );
+    assert_eq!(detail["files_removed"], 1);
 }
 
 #[test]
@@ -142,8 +167,22 @@ fn gc_parse_size_units() {
                 "gc with --max-size {} should succeed",
                 size_str
             );
+        } else {
+            assert!(
+                !output.status.success(),
+                "gc with --max-size {} should fail as an invalid size format",
+                size_str
+            );
+            let combined = format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                combined.contains("invalid size format"),
+                "expected an 'invalid size format' error for {size_str}: {combined}"
+            );
         }
-        // Invalid formats might fail or be handled gracefully
     }
 }
 
@@ -256,15 +295,29 @@ fn gc_dry_run_shows_what_would_be_deleted() {
 
     let output = pybun_bin()
         .env("PYBUN_HOME", temp.path())
-        .args(["gc", "--dry-run", "--max-size", "0"])
+        .args(["--format=json", "gc", "--dry-run", "--max-size", "0"])
         .output()
         .unwrap();
 
     assert!(output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout).to_lowercase();
-    assert!(
-        stdout.contains("would") || stdout.contains("dry") || stdout.contains("preview"),
-        "expected 'would', 'dry', or 'preview' in output: {}",
-        stdout
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+
+    assert_eq!(
+        json["detail"]["dry_run"], true,
+        "dry_run flag should be reflected in the detail: {json}"
     );
+    let would_remove = json["detail"]["would_remove"]
+        .as_array()
+        .expect("would_remove should be an array");
+    assert!(
+        would_remove.iter().any(|p| p
+            .as_str()
+            .unwrap()
+            .contains("old-package-1.0.0-py3-none-any.whl")),
+        "expected the wheel to be listed in would_remove: {would_remove:?}"
+    );
+
+    // Dry-run must not actually delete the file.
+    assert!(pkg_dir.join("old-package-1.0.0-py3-none-any.whl").exists());
 }
