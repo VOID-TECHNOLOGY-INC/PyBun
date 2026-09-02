@@ -177,6 +177,13 @@ function Detect-ExistingPybun {
                 $isBun = $true
             }
         } catch {
+            # Reading the first line can fail (e.g. a binary with no
+            # readable text encoding, or a permissions error). That just
+            # means the "is this a Bun shim" heuristic is inconclusive, not
+            # that detection itself failed - but note it rather than
+            # swallowing it silently, since it can help diagnose a
+            # mis-detected conflict.
+            Write-Log "note: could not inspect $path to detect Bun-provided pybun: $($_.Exception.Message)"
         }
     }
 
@@ -205,6 +212,11 @@ function New-PybunAlias {
         New-Item -ItemType SymbolicLink -Path $AliasPath -Target $Source -Force | Out-Null
         return
     } catch {
+        # Symlink creation commonly fails on Windows without Developer Mode
+        # or admin privileges. Falling back to a copy is the intended
+        # behavior, but note why so the fallback isn't mistaken for the
+        # normal path.
+        Write-Log "note: could not create symlink at $AliasPath ($($_.Exception.Message)); falling back to a file copy"
     }
     Copy-Item -Path $Source -Destination $AliasPath -Force
 }

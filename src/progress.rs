@@ -39,6 +39,14 @@ impl ProgressDriver {
         self.inner.as_ref().map(|inner| {
             let inner = inner.clone();
             Box::new(move |event: &Event| {
+                // `try_borrow_mut` only fails here if this listener is
+                // re-entered while already rendering (e.g. a nested event
+                // fired from within `handle_event`'s own I/O). That is a
+                // best-effort progress *display* skip, not a data-loss bug:
+                // the underlying event stream (used for `--format=json`,
+                // diagnostics, etc.) is unaffected, so dropping just this
+                // spinner frame rather than panicking or propagating an
+                // error is the correct, safe behavior.
                 if let Ok(mut renderer) = inner.try_borrow_mut() {
                     renderer.handle_event(event);
                 }
@@ -48,6 +56,9 @@ impl ProgressDriver {
 
     pub fn finish(&self) {
         if let Some(inner) = &self.inner
+            // Same reentrancy guard as `listener` above: a failed borrow
+            // here just means a render is already in flight, so skipping
+            // the final flush is safe (nothing else observes it).
             && let Ok(mut renderer) = inner.try_borrow_mut()
         {
             renderer.finish();

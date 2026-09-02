@@ -62,26 +62,36 @@ pub fn analyze(root: &Path) -> DriftResult {
 
     // Scan all imports
     let mut import_map: HashMap<String, Vec<ImportLocation>> = HashMap::new();
+    // Files that failed to read (e.g. bad permissions, invalid encoding,
+    // or a symlink race) are silently excluded from the scan below. Track
+    // them so the caller sees a diagnostic instead of a coverage gap that
+    // looks like "not imported anywhere" (Issue #386).
+    let mut unreadable_files: Vec<String> = Vec::new();
     for py_file in &py_files {
         let file_label = py_file
             .strip_prefix(root)
             .unwrap_or(py_file)
             .to_string_lossy()
             .to_string();
-        if let Ok(content) = std::fs::read_to_string(py_file) {
-            for (line_no, line) in logical_import_lines(&content) {
-                let line = line.trim();
-                let pkgs = parse_import_packages(line);
-                if !pkgs.is_empty() {
-                    let loc = ImportLocation {
-                        file: file_label.clone(),
-                        line: line_no,
-                        statement: line.to_string(),
-                    };
-                    for pkg in pkgs {
-                        import_map.entry(pkg).or_default().push(loc.clone());
+        match std::fs::read_to_string(py_file) {
+            Ok(content) => {
+                for (line_no, line) in logical_import_lines(&content) {
+                    let line = line.trim();
+                    let pkgs = parse_import_packages(line);
+                    if !pkgs.is_empty() {
+                        let loc = ImportLocation {
+                            file: file_label.clone(),
+                            line: line_no,
+                            statement: line.to_string(),
+                        };
+                        for pkg in pkgs {
+                            import_map.entry(pkg).or_default().push(loc.clone());
+                        }
                     }
                 }
+            }
+            Err(e) => {
+                unreadable_files.push(format!("{file_label} ({e})"));
             }
         }
     }
@@ -226,6 +236,13 @@ pub fn analyze(root: &Path) -> DriftResult {
     ];
     if files_scanned == 0 {
         analysis_notes.push("no Python files found in directory".to_string());
+    }
+    if !unreadable_files.is_empty() {
+        analysis_notes.push(format!(
+            "{} file(s) could not be read and were skipped: {}",
+            unreadable_files.len(),
+            unreadable_files.join(", ")
+        ));
     }
 
     DriftResult {
@@ -867,6 +884,39 @@ mod tests {
             .collect();
         assert!(pkgs.contains(&"numpy"));
         assert!(!pkgs.contains(&"requests"));
+    }
+
+    /// Regression test for Issue #386: a `.py` file that fails to read
+    /// (e.g. bad permissions) must be surfaced in `analysis_notes` rather
+    /// than being silently excluded from the scan with no diagnostic.
+    #[test]
+    #[cfg(unix)]
+    fn analyze_reports_unreadable_files_in_notes() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("pyproject.toml"),
+            "[project]\nname=\"t\"\nversion=\"0.1\"\ndependencies=[\"requests\"]\n",
+        )
+        .unwrap();
+        let locked = dir.path().join("locked.py");
+        std::fs::write(&locked, "import requests\n").unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let result = analyze(dir.path());
+
+        // Restore permissions so TempDir can clean up.
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        assert!(
+            result
+                .analysis_notes
+                .iter()
+                .any(|n| n.contains("could not be read") && n.contains("locked.py")),
+            "expected an unreadable-file note: {:?}",
+            result.analysis_notes
+        );
     }
 
     #[test]
