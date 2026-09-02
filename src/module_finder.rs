@@ -228,9 +228,25 @@ impl ModuleFinder {
     }
 
     /// Add a search path.
+    ///
+    /// Invalidates the lookup cache (Issue #407): `find_module` caches
+    /// negative results (`None`) as well as positive ones, keyed only by
+    /// module name — not by which search paths were in effect when the miss
+    /// was recorded. Without invalidation, a module that was absent under
+    /// the old path list stays permanently "not found" for this
+    /// `ModuleFinder` even after a path containing it is added, since the
+    /// stale cached `None` short-circuits the actual (now-successful)
+    /// filesystem search. Clearing the whole cache is coarser than strictly
+    /// necessary (it also drops still-valid positive entries from unrelated,
+    /// unchanged paths) but is the simplest invalidation that can't leave a
+    /// stale miss behind, and search-path mutation is expected to be rare
+    /// relative to lookups. No-op (and no invalidation) when `path` is
+    /// already present, since the effective configuration — and therefore
+    /// every cached result — is unchanged.
     pub fn add_search_path(&mut self, path: PathBuf) {
         if !self.config.search_paths.contains(&path) {
             self.config.search_paths.push(path);
+            self.clear_cache();
         }
     }
 
@@ -1650,5 +1666,118 @@ mod tests {
             .module
             .expect("should fall back to the namespace candidate");
         assert_eq!(module.module_type, ModuleType::NamespacePackage);
+    }
+
+    // =========================================================================
+    // Issue #407: adding a search path must not leave a previously cached
+    // negative (not-found) lookup stale.
+    // =========================================================================
+
+    #[test]
+    fn test_add_search_path_invalidates_cached_negative_lookup() {
+        let path_a = TempDir::new().unwrap();
+        let path_b = TempDir::new().unwrap();
+        fs::write(path_b.path().join("foo.py"), "# real module").unwrap();
+
+        let mut finder = ModuleFinder::new(ModuleFinderConfig {
+            enabled: true,
+            search_paths: vec![path_a.path().to_path_buf()],
+            cache_enabled: true,
+            ..Default::default()
+        });
+
+        // Miss under the initial search path list -- caches None.
+        let miss = finder.find_module("foo");
+        assert!(miss.module.is_none());
+        assert_eq!(
+            finder.cache_size(),
+            1,
+            "the negative result should be cached"
+        );
+
+        // path_b (which has foo.py) is added after the miss was cached.
+        finder.add_search_path(path_b.path().to_path_buf());
+
+        let hit = finder.find_module("foo");
+        assert!(
+            hit.module.is_some(),
+            "adding a search path must invalidate the stale cached miss so foo.py \
+             becomes discoverable, not stay permanently \"not found\""
+        );
+        assert_eq!(hit.module.unwrap().module_type, ModuleType::Module);
+    }
+
+    #[test]
+    fn test_add_search_path_invalidates_unrelated_cached_positive_lookups_too() {
+        let path_a = TempDir::new().unwrap();
+        let path_b = TempDir::new().unwrap();
+        fs::write(path_a.path().join("bar.py"), "# bar").unwrap();
+
+        let mut finder = ModuleFinder::new(ModuleFinderConfig {
+            enabled: true,
+            search_paths: vec![path_a.path().to_path_buf()],
+            cache_enabled: true,
+            ..Default::default()
+        });
+
+        let hit = finder.find_module("bar");
+        assert!(hit.module.is_some());
+        assert_eq!(finder.cache_size(), 1);
+
+        // Whole-cache invalidation (the documented policy) also clears
+        // still-valid unrelated positive entries; a fresh lookup still finds
+        // bar.py correctly afterward.
+        finder.add_search_path(path_b.path().to_path_buf());
+        assert_eq!(
+            finder.cache_size(),
+            0,
+            "add_search_path should clear the whole cache"
+        );
+
+        let hit_again = finder.find_module("bar");
+        assert!(hit_again.module.is_some());
+    }
+
+    #[test]
+    fn test_add_search_path_duplicate_does_not_invalidate_cache() {
+        let path_a = TempDir::new().unwrap();
+        fs::write(path_a.path().join("bar.py"), "# bar").unwrap();
+
+        let mut finder = ModuleFinder::new(ModuleFinderConfig {
+            enabled: true,
+            search_paths: vec![path_a.path().to_path_buf()],
+            cache_enabled: true,
+            ..Default::default()
+        });
+
+        finder.find_module("bar");
+        assert_eq!(finder.cache_size(), 1);
+
+        // Re-adding the same path changes nothing about the effective
+        // configuration, so the cache is left alone.
+        finder.add_search_path(path_a.path().to_path_buf());
+        assert_eq!(
+            finder.cache_size(),
+            1,
+            "a no-op add_search_path call must not clear still-valid cache entries"
+        );
+    }
+
+    #[test]
+    fn test_clear_cache_still_works_directly() {
+        let temp = TempDir::new().unwrap();
+        create_test_module_structure(temp.path());
+
+        let finder = ModuleFinder::new(ModuleFinderConfig {
+            enabled: true,
+            search_paths: vec![temp.path().to_path_buf()],
+            cache_enabled: true,
+            ..Default::default()
+        });
+
+        finder.find_module("foo");
+        assert_eq!(finder.cache_size(), 1);
+        finder.clear_cache();
+        assert_eq!(finder.cache_size(), 0);
     }
 }
