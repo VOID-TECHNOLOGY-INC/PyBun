@@ -158,26 +158,34 @@ fn python_which(args: &crate::cli::PythonWhichArgs) -> Result<(String, RenderDet
             ));
         }
 
-        // Check if we can find it via env discovery
+        // Check if we can find it via env discovery. Keep the discovery
+        // error (rather than discarding it) so a real failure - e.g. a
+        // malformed pyproject.toml or a permissions error - is surfaced
+        // instead of being indistinguishable from "no Python found at all".
         let working_dir = std::env::current_dir()?;
-        if let Ok(env) = find_python_env(&working_dir) {
-            let json = json!({
-                "version": env.version,
-                "path": env.python_path.display().to_string(),
-                "source": format!("{}", env.source),
-                "managed": false,
-            });
-            return Ok((
-                "which".to_string(),
-                RenderDetail::with_json(env.python_path.display().to_string(), json),
-            ));
+        match find_python_env(&working_dir) {
+            Ok(env) => {
+                let json = json!({
+                    "version": env.version,
+                    "path": env.python_path.display().to_string(),
+                    "source": format!("{}", env.source),
+                    "managed": false,
+                });
+                return Ok((
+                    "which".to_string(),
+                    RenderDetail::with_json(env.python_path.display().to_string(), json),
+                ));
+            }
+            Err(e) => {
+                return Err(eyre!(
+                    "Python {} is not installed and no environment Python could be found ({}). \
+                     Use 'pybun python install {}' to install it.",
+                    version,
+                    e,
+                    version
+                ));
+            }
         }
-
-        return Err(eyre!(
-            "Python {} is not installed. Use 'pybun python install {}' to install it.",
-            version,
-            version
-        ));
     }
 
     // No version specified - show the default Python that would be used

@@ -216,12 +216,21 @@ fn collect_inputs_recursive(
         let path = entry.path();
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
+        // `entry.file_type()` can fail (e.g. a symlink race where the target
+        // vanished between the readdir and stat). Silently treating that as
+        // "neither a dir nor a file" would drop the entry from the cache-key
+        // hash without any diagnostic, which could mask a real I/O problem
+        // or produce a stale cache key. Propagate the error instead.
+        let file_type = entry.file_type().map_err(|source| BuildCacheError::Read {
+            path: path.clone(),
+            source,
+        })?;
+        if file_type.is_dir() {
             if ignore.contains(name.as_ref()) {
                 continue;
             }
             collect_inputs_recursive(&path, ignore, inputs)?;
-        } else if entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
+        } else if file_type.is_file() {
             inputs.push(path);
         }
     }
@@ -321,5 +330,44 @@ mod tests {
         let restored = cache.restore_dist(cache_key, &dist_dir).unwrap();
         assert!(restored);
         assert!(dist_dir.join("demo.whl").exists());
+    }
+
+    /// Regression test for Issue #386: an unreadable subdirectory
+    /// encountered while walking the project tree must surface as an error
+    /// from `compute_cache_key` rather than being silently skipped (which
+    /// would drop it from the cache-key hash without any diagnostic and
+    /// potentially produce a stale cache key).
+    #[test]
+    #[cfg(unix)]
+    fn compute_cache_key_errors_on_unreadable_subdir() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+        fs::write(root.join("pyproject.toml"), "name = \"demo\"").unwrap();
+        let locked_dir = root.join("locked");
+        fs::create_dir(&locked_dir).unwrap();
+        fs::write(locked_dir.join("secret.c"), "int x() { return 1; }").unwrap();
+        // Remove read+execute permission so `fs::read_dir` on `locked_dir`
+        // fails with a permission error partway through the recursive scan.
+        fs::set_permissions(&locked_dir, fs::Permissions::from_mode(0o000)).unwrap();
+
+        let cache = BuildCache::with_root(temp.path().join("cache"));
+        let backend = BuildBackend {
+            name: "setuptools.build_meta".to_string(),
+            kind: BuildBackendKind::Setuptools,
+            requires: Vec::new(),
+            isolated: true,
+        };
+
+        let result = cache.compute_cache_key(root, Path::new("python"), &backend);
+
+        // Restore permissions so TempDir can clean up the directory.
+        fs::set_permissions(&locked_dir, fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert!(
+            result.is_err(),
+            "an unreadable subdirectory should surface as an error, not be silently skipped"
+        );
     }
 }
