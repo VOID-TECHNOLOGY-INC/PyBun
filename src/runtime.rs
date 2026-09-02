@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use uuid::Uuid;
 
 /// Base URL for python-build-standalone releases.
 const PBS_RELEASE_BASE: &str =
@@ -464,6 +465,17 @@ fn version_cmp(a: &str, b: &str) -> std::cmp::Ordering {
     parse(a).cmp(&parse(b))
 }
 
+/// Path to the Python binary within an install directory (an installed
+/// `version_dir(version)`, or a temporary extraction directory that will be
+/// published to one — see `RuntimeManager::finalize_extracted_install`).
+fn python_binary_in(install_dir: &Path) -> PathBuf {
+    if cfg!(windows) {
+        install_dir.join("python").join("python.exe")
+    } else {
+        install_dir.join("python").join("bin").join("python3")
+    }
+}
+
 /// CPython runtime manager.
 pub struct RuntimeManager {
     cache: Cache,
@@ -497,12 +509,7 @@ impl RuntimeManager {
 
     /// Get the Python binary path for an installed version.
     pub fn python_binary(&self, version: &str) -> PathBuf {
-        let base = self.version_dir(version);
-        if cfg!(windows) {
-            base.join("python").join("python.exe")
-        } else {
-            base.join("python").join("bin").join("python3")
-        }
+        python_binary_in(&self.version_dir(version))
     }
 
     /// Check if a version is installed.
@@ -565,6 +572,17 @@ impl RuntimeManager {
     }
 
     /// Download and install a Python version.
+    ///
+    /// Concurrent `pybun` processes racing to install the same version
+    /// (Issue #414) never share a mutable path: the downloaded archive and
+    /// the extraction working directory are both private, uniquely-named
+    /// per invocation, so one process's checksum-mismatch cleanup or
+    /// in-progress extraction can never delete or corrupt a file another
+    /// concurrent process is relying on. Only the final publish step
+    /// (`finalize_extracted_install`'s atomic rename into `dest_dir`)
+    /// touches the shared, version-tagged install location, and a loser of
+    /// that race detects the winner's already-installed binary rather than
+    /// erroring.
     fn download_and_install(&self, version_info: &PythonVersion) -> Result<()> {
         let platform = Platform::current().ok_or_else(|| eyre!("Unsupported platform"))?;
 
@@ -578,23 +596,54 @@ impl RuntimeManager {
         );
 
         let dest_dir = self.version_dir(&version_info.version);
-        fs::create_dir_all(&dest_dir)?;
+        let runtimes_dir = self.runtimes_dir();
+        fs::create_dir_all(&runtimes_dir)?;
 
-        let archive_path = dest_dir.join("python.tar.gz");
+        // Another concurrent process may have already completed installing
+        // this version between `ensure_version`'s is_installed() check and
+        // here.
+        let python_bin = self.python_binary(&version_info.version);
+        if python_bin.exists() {
+            return Ok(());
+        }
+
+        // Private, per-invocation temp archive path (Issue #414): a
+        // deterministic shared path (e.g. `dest_dir/python.tar.gz`) would let
+        // two concurrent processes' `curl` writes race on the same file, and
+        // let one's checksum-mismatch `fs::remove_file` delete a file the
+        // other is still downloading into or reading from.
+        let archive_path = runtimes_dir.join(format!(
+            ".{}.pybun-dl-{}.tar.gz",
+            version_info.version,
+            Uuid::new_v4().simple()
+        ));
 
         eprintln!("Downloading Python {}...", version_info.version);
         eprintln!("  URL: {}", url);
 
+        let cleanup_archive = || {
+            let _ = fs::remove_file(&archive_path);
+        };
+
         // Download the archive
-        download_file(&url, &archive_path)
-            .wrap_err_with(|| format!("Failed to download Python {}", version_info.version))?;
+        if let Err(e) = download_file(&url, &archive_path) {
+            cleanup_archive();
+            return Err(e)
+                .wrap_err_with(|| format!("Failed to download Python {}", version_info.version));
+        }
 
         // Verify checksum (if available)
         if let Some(expected) = version_info.checksums.get(platform.checksum_key()) {
             eprintln!("  Verifying checksum...");
-            let actual = compute_sha256(&archive_path)?;
+            let actual = match compute_sha256(&archive_path) {
+                Ok(actual) => actual,
+                Err(e) => {
+                    cleanup_archive();
+                    return Err(e);
+                }
+            };
             if actual != *expected {
-                fs::remove_file(&archive_path)?;
+                cleanup_archive();
                 return Err(eyre!(
                     "Checksum mismatch for Python {} (expected {}, got {})",
                     version_info.version,
@@ -604,30 +653,12 @@ impl RuntimeManager {
             }
         }
 
-        // Extract the archive
         eprintln!("  Extracting...");
-        extract_tar_gz(&archive_path, &dest_dir)?;
-
-        // Clean up archive
-        fs::remove_file(&archive_path)?;
-
-        // Verify installation
-        let python_bin = self.python_binary(&version_info.version);
-        if !python_bin.exists() {
-            return Err(eyre!(
-                "Installation failed: Python binary not found at {}",
-                python_bin.display()
-            ));
-        }
-
-        // Make binary executable on Unix
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = fs::metadata(&python_bin)?.permissions();
-            perms.set_mode(0o755);
-            fs::set_permissions(&python_bin, perms)?;
-        }
+        let result = self.finalize_extracted_install(&archive_path, &dest_dir);
+        // The temp archive is private to this call regardless of the
+        // extraction outcome, so it's always safe to remove here.
+        cleanup_archive();
+        result?;
 
         eprintln!(
             "  Installed Python {} to {}",
@@ -636,6 +667,87 @@ impl RuntimeManager {
         );
 
         Ok(())
+    }
+
+    /// Extract `archive_path` into a private, per-invocation temporary
+    /// directory, verify the resulting Python binary exists, then atomically
+    /// publish it to `dest_dir` (Issue #414).
+    ///
+    /// Two concurrent callers targeting the same `dest_dir` each extract
+    /// into their own uniquely-named temp directory (sibling of `dest_dir`)
+    /// and never observe or disturb each other's in-progress extraction.
+    /// Whichever wins the final `fs::rename` publishes first; a directory
+    /// rename onto an existing non-empty `dest_dir` fails, which the loser
+    /// interprets as "a peer already published" (verified by checking for
+    /// the peer's binary) rather than an error, discarding its own
+    /// redundant-but-harmless extraction instead.
+    fn finalize_extracted_install(&self, archive_path: &Path, dest_dir: &Path) -> Result<()> {
+        let runtimes_dir = dest_dir
+            .parent()
+            .ok_or_else(|| eyre!("invalid install directory: {}", dest_dir.display()))?;
+        let dest_name = dest_dir
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "python".to_string());
+        let temp_install_dir = runtimes_dir.join(format!(
+            ".{dest_name}.pybun-install-{}",
+            Uuid::new_v4().simple()
+        ));
+
+        let cleanup_temp = || {
+            let _ = fs::remove_dir_all(&temp_install_dir);
+        };
+
+        fs::create_dir_all(&temp_install_dir)
+            .wrap_err("Failed to create temporary install directory")?;
+
+        if let Err(e) = extract_tar_gz(archive_path, &temp_install_dir) {
+            cleanup_temp();
+            return Err(e);
+        }
+
+        let temp_python_bin = python_binary_in(&temp_install_dir);
+        if !temp_python_bin.exists() {
+            cleanup_temp();
+            return Err(eyre!(
+                "Installation failed: Python binary not found at {}",
+                temp_python_bin.display()
+            ));
+        }
+
+        // Make binary executable on Unix
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms_result = fs::metadata(&temp_python_bin).and_then(|meta| {
+                let mut perms = meta.permissions();
+                perms.set_mode(0o755);
+                fs::set_permissions(&temp_python_bin, perms)
+            });
+            if let Err(e) = perms_result {
+                cleanup_temp();
+                return Err(e.into());
+            }
+        }
+
+        match fs::rename(&temp_install_dir, dest_dir) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                // A peer may have already published a complete install at
+                // `dest_dir` first (dest_dir already exists and is
+                // non-empty, so a directory-to-directory rename fails). The
+                // version is genuinely installed either way, so treat that
+                // as success and discard our own now-redundant extraction
+                // rather than erroring.
+                let published_by_peer = python_binary_in(dest_dir).exists();
+                cleanup_temp();
+                if published_by_peer {
+                    Ok(())
+                } else {
+                    Err(e).wrap_err("Failed to finalize Python installation")
+                }
+            }
+        }
     }
 
     /// Remove an installed Python version.
@@ -1133,6 +1245,159 @@ mod tests {
         assert!(
             tags.iter().any(|t| t == "any"),
             "should always include 'any'"
+        );
+    }
+
+    // ====================================================================
+    // Issue #414: concurrent installs of the same Python version must
+    // never delete or corrupt a peer's in-progress or completed download,
+    // extraction, or published install directory.
+    // ====================================================================
+
+    /// Build a fixture `.tar.gz` (via the system `tar` binary, matching what
+    /// `extract_tar_gz` uses to extract) containing a minimal but valid
+    /// `python/bin/python3` stub, so `finalize_extracted_install` can be
+    /// exercised end-to-end without a real network download or a real
+    /// CPython distribution.
+    #[cfg(unix)]
+    fn build_fixture_archive(marker: &str) -> (TempDir, PathBuf) {
+        let staging = TempDir::new().unwrap();
+        let bin_dir = staging.path().join("python").join("bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+        fs::write(
+            bin_dir.join("python3"),
+            format!("#!/bin/sh\necho fixture-{marker}\n"),
+        )
+        .unwrap();
+
+        let archive_path = staging.path().join(format!("fixture-{marker}.tar.gz"));
+        let status = std::process::Command::new("tar")
+            .args(["-czf"])
+            .arg(&archive_path)
+            .args(["-C"])
+            .arg(staging.path())
+            .arg("python")
+            .status()
+            .expect("system tar must be available to build the test fixture");
+        assert!(status.success(), "failed to build fixture archive");
+
+        (staging, archive_path)
+    }
+
+    /// Two concurrent `finalize_extracted_install` calls for the *same*
+    /// `dest_dir` (simulating two OS processes racing to install the same
+    /// Python version, each having already independently downloaded and
+    /// checksum-verified their own private archive) must not corrupt one
+    /// another: exactly one publishes, the other detects the already-
+    /// installed peer and discards its own extraction, and in both cases
+    /// `dest_dir` ends up as a single, complete, valid install -- never a
+    /// missing/partial `python3` binary, and never an error surfaced to the
+    /// loser (Issue #414's core safety property).
+    #[cfg(unix)]
+    #[test]
+    fn concurrent_finalize_extracted_install_never_corrupts_shared_dest_dir() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let temp = TempDir::new().unwrap();
+        let cache = Cache::with_root(temp.path());
+        let manager = Arc::new(RuntimeManager::new(cache));
+        let dest_dir = manager.version_dir("3.11.5");
+
+        // Each "process" has already independently downloaded and verified
+        // its own private archive -- these are never shared, by construction
+        // (Issue #414's actual fix), but building two independent fixtures
+        // here also confirms the two extractions are never confused with
+        // each other even though they target the same dest_dir.
+        let (_staging_a, archive_a) = build_fixture_archive("a");
+        let (_staging_b, archive_b) = build_fixture_archive("b");
+
+        let manager_a = Arc::clone(&manager);
+        let dest_a = dest_dir.clone();
+        let handle_a =
+            thread::spawn(move || manager_a.finalize_extracted_install(&archive_a, &dest_a));
+
+        let manager_b = Arc::clone(&manager);
+        let dest_b = dest_dir.clone();
+        let handle_b =
+            thread::spawn(move || manager_b.finalize_extracted_install(&archive_b, &dest_b));
+
+        let result_a = handle_a.join().expect("thread a panicked");
+        let result_b = handle_b.join().expect("thread b panicked");
+
+        assert!(
+            result_a.is_ok(),
+            "the winner (or a peer-detecting loser) must not error: {result_a:?}"
+        );
+        assert!(
+            result_b.is_ok(),
+            "the winner (or a peer-detecting loser) must not error: {result_b:?}"
+        );
+
+        let python_bin = python_binary_in(&dest_dir);
+        assert!(
+            python_bin.exists(),
+            "dest_dir must end up with a complete, valid install: {}",
+            python_bin.display()
+        );
+        let content = fs::read_to_string(&python_bin).unwrap();
+        assert!(
+            content.contains("fixture-a") || content.contains("fixture-b"),
+            "published binary must be one complete fixture, not a mix: {content:?}"
+        );
+
+        // No leftover private temp install directories from either caller.
+        let runtimes_dir = manager.runtimes_dir();
+        let leftover_temp_dirs: Vec<_> = fs::read_dir(&runtimes_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().contains(".pybun-install-"))
+            .collect();
+        assert!(
+            leftover_temp_dirs.is_empty(),
+            "temp install directories must be cleaned up: {leftover_temp_dirs:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn finalize_extracted_install_cleans_up_temp_dir_on_missing_binary() {
+        let temp = TempDir::new().unwrap();
+        let cache = Cache::with_root(temp.path());
+        let manager = RuntimeManager::new(cache);
+        let dest_dir = manager.version_dir("3.11.5");
+
+        // A fixture archive that doesn't contain python/bin/python3 at all.
+        let staging = TempDir::new().unwrap();
+        fs::create_dir_all(staging.path().join("empty")).unwrap();
+        let archive_path = staging.path().join("broken.tar.gz");
+        let status = std::process::Command::new("tar")
+            .args(["-czf"])
+            .arg(&archive_path)
+            .args(["-C"])
+            .arg(staging.path())
+            .arg("empty")
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let result = manager.finalize_extracted_install(&archive_path, &dest_dir);
+        assert!(result.is_err(), "missing binary must be a hard error");
+        assert!(
+            !dest_dir.exists(),
+            "a failed install must not publish a partial dest_dir"
+        );
+
+        let runtimes_dir = manager.runtimes_dir();
+        let leftover: Vec<_> = fs::read_dir(&runtimes_dir)
+            .into_iter()
+            .flatten()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().contains(".pybun-install-"))
+            .collect();
+        assert!(
+            leftover.is_empty(),
+            "temp install directory must be cleaned up on failure: {leftover:?}"
         );
     }
 }
