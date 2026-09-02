@@ -183,6 +183,18 @@ fn find_extension_module_file(dir: &Path, name: &str, ext: &str) -> Option<PathB
     None
 }
 
+/// Outcome of resolving one module-name lookup within a single search path
+/// (Issue #406). A concrete package/module/extension always takes precedence
+/// over a namespace-package directory — both within one search path (a
+/// sibling `foo/` without `__init__.py` never shadows `foo.py`) and across
+/// multiple search paths (a namespace directory found in an earlier
+/// `sys.path` entry never shadows a concrete module found in a later one),
+/// mirroring CPython's path-based finder / PEP 420 semantics.
+enum FindResult {
+    Concrete(ModuleInfo),
+    Namespace(ModuleInfo),
+}
+
 /// The Rust-based module finder.
 #[derive(Debug)]
 pub struct ModuleFinder {
@@ -246,6 +258,18 @@ impl ModuleFinder {
 
         let mut searched_paths = Vec::new();
         let module_parts: Vec<&str> = module_name.split('.').collect();
+        // A namespace-package directory found in an earlier search path must
+        // not shadow a concrete module/package found in a later one (PEP 420;
+        // Issue #406) — CPython accumulates namespace portions and only falls
+        // back to them once no path entry yields a concrete candidate. Defer
+        // the first namespace hit here and keep scanning; return it only if
+        // no search path produces a concrete match. (This records just the
+        // first namespace portion's path, not the full merged portion list —
+        // `ModuleInfo` models one filesystem location, so exposing all
+        // contributing directories would need a richer result type; that's
+        // out of scope here and is fine for anything short of true multi-portion
+        // namespace package `__path__` semantics.)
+        let mut namespace_candidate: Option<ModuleInfo> = None;
 
         // Search in each path
         for search_path in &self.config.search_paths {
@@ -255,20 +279,40 @@ impl ModuleFinder {
 
             searched_paths.push(search_path.clone());
 
-            if let Some(module_info) = self.find_in_path(search_path, &module_parts) {
-                // Cache the result
-                if self.config.cache_enabled
-                    && let Ok(mut cache) = self.cache.write()
-                {
-                    cache.insert(module_name.to_string(), Some(module_info.clone()));
-                }
+            match self.find_in_path(search_path, &module_parts) {
+                Some(FindResult::Concrete(module_info)) => {
+                    // A concrete package/module/extension always wins immediately.
+                    if self.config.cache_enabled
+                        && let Ok(mut cache) = self.cache.write()
+                    {
+                        cache.insert(module_name.to_string(), Some(module_info.clone()));
+                    }
 
-                return ModuleSearchResult {
-                    module: Some(module_info),
-                    searched_paths,
-                    duration_us: start.elapsed().as_micros() as u64,
-                };
+                    return ModuleSearchResult {
+                        module: Some(module_info),
+                        searched_paths,
+                        duration_us: start.elapsed().as_micros() as u64,
+                    };
+                }
+                Some(FindResult::Namespace(module_info)) if namespace_candidate.is_none() => {
+                    namespace_candidate = Some(module_info);
+                }
+                _ => {}
             }
+        }
+
+        if let Some(module_info) = namespace_candidate {
+            if self.config.cache_enabled
+                && let Ok(mut cache) = self.cache.write()
+            {
+                cache.insert(module_name.to_string(), Some(module_info.clone()));
+            }
+
+            return ModuleSearchResult {
+                module: Some(module_info),
+                searched_paths,
+                duration_us: start.elapsed().as_micros() as u64,
+            };
         }
 
         // Cache the negative result
@@ -286,7 +330,17 @@ impl ModuleFinder {
     }
 
     /// Find a module within a specific search path.
-    fn find_in_path(&self, search_path: &Path, module_parts: &[&str]) -> Option<ModuleInfo> {
+    ///
+    /// Returns `FindResult::Concrete` for a regular package/module/extension,
+    /// `FindResult::Namespace` for a PEP 420 namespace-package directory (no
+    /// `__init__.py`), or `None` if nothing matches `module_parts` here at
+    /// all. A namespace directory is only ever a fallback: it's checked last,
+    /// after every concrete candidate, so `foo.py` (or `foo/__init__.py`,
+    /// or a `foo.<ext>` extension module) is never shadowed by a sibling
+    /// `foo/` directory that merely happens to exist without an `__init__.py`
+    /// (Issue #406 — this previously returned the namespace directory
+    /// immediately on sight, before checking for a concrete `foo.py`).
+    fn find_in_path(&self, search_path: &Path, module_parts: &[&str]) -> Option<FindResult> {
         if module_parts.is_empty() {
             return None;
         }
@@ -302,31 +356,22 @@ impl ModuleFinder {
 
         let last_part = module_parts.last()?;
         let module_name = module_parts.join(".");
-
-        // Check for package (directory with __init__.py)
         let package_dir = current_path.join(last_part);
+
+        // 1. Regular package: foo/__init__.py always wins outright.
         if package_dir.is_dir() {
             let init_py = package_dir.join("__init__.py");
             if init_py.exists() {
-                return Some(ModuleInfo {
+                return Some(FindResult::Concrete(ModuleInfo {
                     name: module_name,
                     path: init_py,
                     module_type: ModuleType::Package,
                     search_path: search_path.to_path_buf(),
-                });
+                }));
             }
-
-            // Check for namespace package (PEP 420)
-            // A directory without __init__.py is a namespace package
-            return Some(ModuleInfo {
-                name: module_name,
-                path: package_dir,
-                module_type: ModuleType::NamespacePackage,
-                search_path: search_path.to_path_buf(),
-            });
         }
 
-        // Check for module files
+        // 2. Regular module / extension files, in configured suffix order.
         for ext in &self.config.extensions {
             if ext == ".so" || ext == ".pyd" {
                 // ABI-tagged extension modules (Issue #405) don't have a
@@ -336,25 +381,36 @@ impl ModuleFinder {
                 // be listed and each entry's logical name compared instead.
                 if let Some(module_file) = find_extension_module_file(&current_path, last_part, ext)
                 {
-                    return Some(ModuleInfo {
+                    return Some(FindResult::Concrete(ModuleInfo {
                         name: module_name,
                         path: module_file,
                         module_type: ModuleType::Extension,
                         search_path: search_path.to_path_buf(),
-                    });
+                    }));
                 }
                 continue;
             }
 
             let module_file = current_path.join(format!("{}{}", last_part, ext));
             if module_file.is_file() {
-                return Some(ModuleInfo {
+                return Some(FindResult::Concrete(ModuleInfo {
                     name: module_name,
                     path: module_file,
                     module_type: ModuleType::Module,
                     search_path: search_path.to_path_buf(),
-                });
+                }));
             }
+        }
+
+        // 3. No concrete candidate: fall back to a namespace-package portion
+        // (PEP 420) if `foo/` exists without `__init__.py`.
+        if package_dir.is_dir() {
+            return Some(FindResult::Namespace(ModuleInfo {
+                name: module_name,
+                path: package_dir,
+                module_type: ModuleType::NamespacePackage,
+                search_path: search_path.to_path_buf(),
+            }));
         }
 
         None
@@ -1448,5 +1504,151 @@ mod tests {
             .module
             .expect("find_module should locate the abi3-tagged extension");
         assert_eq!(module.module_type, ModuleType::Extension);
+    }
+
+    // =========================================================================
+    // Issue #406: a concrete module/package must not be masked by a sibling
+    // namespace-package directory of the same name.
+    // =========================================================================
+
+    #[test]
+    fn test_find_module_prefers_regular_module_over_sibling_namespace_dir() {
+        let temp = TempDir::new().unwrap();
+
+        // foo/ (no __init__.py -- would-be namespace dir) AND foo.py side by side.
+        let foo_dir = temp.path().join("foo");
+        fs::create_dir_all(&foo_dir).unwrap();
+        fs::write(foo_dir.join("arbitrary_file.txt"), "").unwrap();
+        fs::write(temp.path().join("foo.py"), "# real module").unwrap();
+
+        let config = ModuleFinderConfig {
+            enabled: true,
+            search_paths: vec![temp.path().to_path_buf()],
+            ..Default::default()
+        };
+        let finder = ModuleFinder::new(config);
+        let result = finder.find_module("foo");
+
+        let module = result
+            .module
+            .expect("find_module should locate foo.py, matching CPython");
+        assert_eq!(
+            module.module_type,
+            ModuleType::Module,
+            "foo.py must win over the sibling foo/ namespace directory"
+        );
+        assert!(
+            module.path.ends_with("foo.py"),
+            "path was {:?}",
+            module.path
+        );
+    }
+
+    #[test]
+    fn test_find_module_prefers_regular_package_over_sibling_module() {
+        let temp = TempDir::new().unwrap();
+
+        // foo/__init__.py (regular package) AND foo.py side by side.
+        let foo_dir = temp.path().join("foo");
+        fs::create_dir_all(&foo_dir).unwrap();
+        fs::write(foo_dir.join("__init__.py"), "# pkg").unwrap();
+        fs::write(temp.path().join("foo.py"), "# shadowed module").unwrap();
+
+        let config = ModuleFinderConfig {
+            enabled: true,
+            search_paths: vec![temp.path().to_path_buf()],
+            ..Default::default()
+        };
+        let finder = ModuleFinder::new(config);
+        let result = finder.find_module("foo");
+
+        // CPython's FileFinder checks each loader in a fixed order per path
+        // entry; the package (directory) importer runs before the source
+        // (module) importer, so foo/__init__.py wins over foo.py here.
+        let module = result.module.expect("find_module should locate foo");
+        assert_eq!(
+            module.module_type,
+            ModuleType::Package,
+            "foo/__init__.py must win over a sibling foo.py"
+        );
+    }
+
+    #[test]
+    fn test_find_module_namespace_only_directory_still_discoverable() {
+        let temp = TempDir::new().unwrap();
+
+        let ns_dir = temp.path().join("foo");
+        fs::create_dir_all(&ns_dir).unwrap();
+        // No __init__.py, no sibling foo.py -- pure namespace package.
+
+        let config = ModuleFinderConfig {
+            enabled: true,
+            search_paths: vec![temp.path().to_path_buf()],
+            ..Default::default()
+        };
+        let finder = ModuleFinder::new(config);
+        let result = finder.find_module("foo");
+
+        let module = result
+            .module
+            .expect("namespace-only directory should still be discoverable");
+        assert_eq!(module.module_type, ModuleType::NamespacePackage);
+    }
+
+    #[test]
+    fn test_find_module_concrete_match_in_later_path_beats_earlier_namespace_dir() {
+        let path_a = TempDir::new().unwrap();
+        let path_b = TempDir::new().unwrap();
+
+        // path_a/foo/ is a namespace-only directory (checked first).
+        fs::create_dir_all(path_a.path().join("foo")).unwrap();
+        // path_b/foo.py is a concrete module (checked second).
+        fs::write(path_b.path().join("foo.py"), "# real module").unwrap();
+
+        let config = ModuleFinderConfig {
+            enabled: true,
+            search_paths: vec![path_a.path().to_path_buf(), path_b.path().to_path_buf()],
+            ..Default::default()
+        };
+        let finder = ModuleFinder::new(config);
+        let result = finder.find_module("foo");
+
+        let module = result.module.expect("find_module should locate foo");
+        assert_eq!(
+            module.module_type,
+            ModuleType::Module,
+            "a concrete module in a later search path must not be shadowed by \
+             a namespace directory found earlier (PEP 420 semantics): {:?}",
+            module
+        );
+        assert!(
+            module.path.ends_with("foo.py"),
+            "path was {:?}",
+            module.path
+        );
+    }
+
+    #[test]
+    fn test_find_module_falls_back_to_namespace_dir_when_no_search_path_has_concrete_match() {
+        let path_a = TempDir::new().unwrap();
+        let path_b = TempDir::new().unwrap();
+
+        // Both search paths only contribute namespace portions -- no path
+        // entry has a concrete foo.py/foo/__init__.py anywhere.
+        fs::create_dir_all(path_a.path().join("foo")).unwrap();
+        fs::create_dir_all(path_b.path().join("foo")).unwrap();
+
+        let config = ModuleFinderConfig {
+            enabled: true,
+            search_paths: vec![path_a.path().to_path_buf(), path_b.path().to_path_buf()],
+            ..Default::default()
+        };
+        let finder = ModuleFinder::new(config);
+        let result = finder.find_module("foo");
+
+        let module = result
+            .module
+            .expect("should fall back to the namespace candidate");
+        assert_eq!(module.module_type, ModuleType::NamespacePackage);
     }
 }
