@@ -121,6 +121,16 @@ impl From<std::io::Error> for DownloadError {
 pub struct Downloader {
     client: Client,
     inflight: Arc<OnceMap<DownloadKey, PathBuf>>,
+    /// Random ID generated once per `Downloader` instance, folded into
+    /// `shared_transfer_path` (Issue #416). Without this, the shared temp
+    /// path was derived only from `(url, destination)` and therefore
+    /// identical across independently-constructed `Downloader`s — including
+    /// ones in two entirely separate OS processes, which don't share
+    /// `inflight` and so have no way to dedup or coordinate a write to that
+    /// path. Scoping the path per instance means only callers that actually
+    /// share this `Downloader` (and therefore its `inflight` dedup) ever
+    /// target the same temp file.
+    instance_id: String,
 }
 
 impl Default for Downloader {
@@ -146,6 +156,7 @@ impl Downloader {
                 .build()
                 .unwrap_or_else(|_| Client::new()),
             inflight: Arc::new(OnceMap::new()),
+            instance_id: Uuid::new_v4().simple().to_string(),
         }
     }
 
@@ -255,7 +266,7 @@ impl Downloader {
             url: url.to_string(),
             destination: destination.to_path_buf(),
         };
-        let temp_path = Self::shared_transfer_path(destination, url);
+        let temp_path = self.shared_transfer_path(destination, url);
         let url_owned = url.to_string();
         let temp_owned = temp_path.clone();
         self.inflight
@@ -266,19 +277,30 @@ impl Downloader {
     }
 
     /// Derive the private temp path a shared transfer for `(url,
-    /// destination)` lands in. Deterministic per key so every caller sharing
-    /// the transfer (deduplicated via `inflight`) agrees on the same path,
-    /// and namespaced with a short hash of `url` so two different URLs that
-    /// happen to target the same `destination` never collide.
+    /// destination)` lands in. Deterministic per `(instance_id, url,
+    /// destination)` so every caller sharing *this* `Downloader` (and
+    /// therefore its `inflight` dedup) for the same transfer agrees on the
+    /// same path, namespaced with a short hash of `url` so two different
+    /// URLs that happen to target the same `destination` never collide.
+    ///
+    /// Scoped by `self.instance_id` (Issue #416): two independently-
+    /// constructed `Downloader`s — e.g. in two separate `pybun` OS
+    /// processes, which have no `inflight` to dedup across — must never
+    /// compute the same path here, or their concurrent, uncoordinated writes
+    /// to it could interleave/corrupt each other's transfer even though
+    /// neither ever touches a `destination` the other has published (that
+    /// core #413 guarantee holds regardless — this only affects a shared,
+    /// unpublished *temp* file).
     ///
     /// Deliberately not cleaned up by any individual caller: a caller that
     /// finishes (successfully or not) cannot know whether another concurrent
-    /// caller is still reading this same temp file, and deleting it out from
-    /// under a peer would just relocate the Issue #413 race rather than fix
-    /// it. A subsequent transfer to the same key overwrites it (`File::create`
-    /// truncates), so this is bounded to at most one stray file per
-    /// `(url, destination)` pair rather than an unbounded leak.
-    fn shared_transfer_path(destination: &Path, url: &str) -> PathBuf {
+    /// caller (sharing this same `Downloader` instance) is still reading
+    /// this same temp file, and deleting it out from under a peer would just
+    /// relocate the Issue #413 race rather than fix it. A subsequent
+    /// transfer to the same key overwrites it (`File::create` truncates), so
+    /// this is bounded to at most one stray file per `(url, destination)`
+    /// pair per `Downloader` instance rather than an unbounded leak.
+    fn shared_transfer_path(&self, destination: &Path, url: &str) -> PathBuf {
         let mut hasher = Sha256::new();
         hasher.update(url.as_bytes());
         let digest = hex::encode(hasher.finalize());
@@ -286,7 +308,11 @@ impl Downloader {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "download".to_string());
-        destination.with_file_name(format!(".{file_name}.pybun-dl-{}", &digest[..16]))
+        destination.with_file_name(format!(
+            ".{file_name}.pybun-dl-{}-{}",
+            self.instance_id,
+            &digest[..16]
+        ))
     }
 
     /// Derive a unique-per-call staging path used to atomically publish a
@@ -996,8 +1022,9 @@ mod tests {
     #[test]
     fn shared_transfer_path_differs_for_different_urls_to_same_destination() {
         let dest = PathBuf::from("/tmp/pybun-test/shared.whl");
-        let path_a = Downloader::shared_transfer_path(&dest, "https://example.com/a.whl");
-        let path_b = Downloader::shared_transfer_path(&dest, "https://example.com/b.whl");
+        let downloader = Downloader::new();
+        let path_a = downloader.shared_transfer_path(&dest, "https://example.com/a.whl");
+        let path_b = downloader.shared_transfer_path(&dest, "https://example.com/b.whl");
         assert_ne!(
             path_a, path_b,
             "different URLs to the same destination must use distinct temp paths"
@@ -1005,14 +1032,92 @@ mod tests {
     }
 
     /// The shared transfer path is deterministic for the same `(url,
-    /// destination)` pair, so every caller sharing a deduplicated transfer
-    /// agrees on where to find it.
+    /// destination)` pair on the *same* `Downloader` instance, so every
+    /// caller sharing a deduplicated transfer agrees on where to find it.
     #[test]
     fn shared_transfer_path_is_deterministic_for_same_key() {
         let dest = PathBuf::from("/tmp/pybun-test/shared.whl");
-        let path_a = Downloader::shared_transfer_path(&dest, "https://example.com/a.whl");
-        let path_b = Downloader::shared_transfer_path(&dest, "https://example.com/a.whl");
+        let downloader = Downloader::new();
+        let path_a = downloader.shared_transfer_path(&dest, "https://example.com/a.whl");
+        let path_b = downloader.shared_transfer_path(&dest, "https://example.com/a.whl");
         assert_eq!(path_a, path_b);
+    }
+
+    /// Issue #416: two independently-constructed `Downloader`s (simulating
+    /// two separate OS processes) racing to download the *same* `(url,
+    /// destination)` at the same time must each complete their own transfer
+    /// and checksum verification correctly — neither's shared-transfer temp
+    /// file may be corrupted by the other's concurrent, uncoordinated write,
+    /// since (unlike two callers sharing one `Downloader`) they have no
+    /// `inflight` dedup between them.
+    #[tokio::test]
+    async fn two_downloader_instances_racing_on_same_destination_do_not_corrupt_each_other() {
+        let server = MockServer::start();
+        let body = b"authoritative shared content for issue 416";
+        let mock = server.mock(|when, then| {
+            when.method(GET).path("/shared-416.whl");
+            then.status(200).body(body.as_slice());
+        });
+
+        let mut hasher = Sha256::new();
+        hasher.update(body.as_slice());
+        let checksum = format!("sha256:{}", hex::encode(hasher.finalize()));
+
+        let dir = tempdir().unwrap();
+        let dest = dir.path().join("shared-416.whl");
+        let url = server.url("/shared-416.whl");
+
+        // Two independently-constructed Downloader instances -- simulating
+        // two separate OS processes, which don't share `inflight` and
+        // therefore have no way to dedup or coordinate a shared-transfer
+        // write between them.
+        let downloader_a = Downloader::new();
+        let downloader_b = Downloader::new();
+
+        let (result_a, result_b) = tokio::join!(
+            downloader_a.download_file(&url, &dest, Some(&checksum)),
+            downloader_b.download_file(&url, &dest, Some(&checksum))
+        );
+
+        assert!(
+            result_a.is_ok(),
+            "downloader_a's transfer/checksum verification must not be corrupted \
+             by downloader_b's concurrent write: {result_a:?}"
+        );
+        assert!(
+            result_b.is_ok(),
+            "downloader_b's transfer/checksum verification must not be corrupted \
+             by downloader_a's concurrent write: {result_b:?}"
+        );
+
+        let on_disk = tokio::fs::read(&dest).await.unwrap();
+        assert_eq!(
+            on_disk, body,
+            "destination must hold the complete, uncorrupted content regardless \
+             of which instance published last"
+        );
+        mock.assert_calls(2);
+    }
+
+    /// Issue #416: two independently-constructed `Downloader`s (simulating
+    /// two separate OS processes, which don't share `inflight` and so have
+    /// no way to dedup or coordinate a shared-transfer write) must never
+    /// compute the same temp path for the same `(url, destination)` — or
+    /// their concurrent, uncoordinated writes could interleave/corrupt each
+    /// other's transfer.
+    #[test]
+    fn shared_transfer_path_differs_across_downloader_instances() {
+        let dest = PathBuf::from("/tmp/pybun-test/shared.whl");
+        let url = "https://example.com/a.whl";
+        let downloader_a = Downloader::new();
+        let downloader_b = Downloader::new();
+        let path_a = downloader_a.shared_transfer_path(&dest, url);
+        let path_b = downloader_b.shared_transfer_path(&dest, url);
+        assert_ne!(
+            path_a, path_b,
+            "two separate Downloader instances (simulating two OS processes) must never \
+             target the same shared-transfer temp path for the same (url, destination)"
+        );
     }
 
     /// Staging paths must never collide across calls, even for the same
