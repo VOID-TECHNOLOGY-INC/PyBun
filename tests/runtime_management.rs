@@ -66,22 +66,25 @@ fn python_list_json_output() {
 
 #[test]
 fn python_which_shows_default_python() {
-    // This test requires Python to be installed on the system
+    // CI and local dev environments for this repo always have a system
+    // Python on PATH (other suites, e.g. cli_install.rs, rely on the same
+    // assumption), so this must succeed rather than merely "fail gracefully".
     let mut cmd = pybun();
     cmd.args(["python", "which"]);
 
-    // Should either succeed with a path or fail gracefully
     let output = cmd.output().expect("command runs");
-
-    if output.status.success() {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        // Should contain "python" in the output (either path or command reference)
-        assert!(
-            stdout.contains("python") || stdout.contains("Python"),
-            "Expected Python path in output: {}",
-            stdout
-        );
-    }
+    assert!(
+        output.status.success(),
+        "pybun python which should find a system Python: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("python") || stdout.contains("Python"),
+        "Expected Python path in output: {}",
+        stdout
+    );
 }
 
 #[test]
@@ -90,13 +93,19 @@ fn python_which_json_output() {
     cmd.args(["--format=json", "python", "which"]);
 
     let output = cmd.output().expect("command runs");
+    assert!(
+        output.status.success(),
+        "pybun python which should find a system Python: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 
-    if output.status.success() {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
-        assert!(json.get("detail").is_some());
-        assert!(json["detail"].get("path").is_some());
-    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    let path = json["detail"]["path"]
+        .as_str()
+        .expect("detail.path should be a non-empty string");
+    assert!(!path.is_empty());
 }
 
 // ---------------------------------------------------------------------------

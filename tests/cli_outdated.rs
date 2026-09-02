@@ -1,6 +1,7 @@
 use assert_cmd::Command;
 use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
+use pybun::lockfile::{Lockfile, Package, PackageSource};
 use std::fs;
 use tempfile::TempDir;
 
@@ -21,60 +22,94 @@ fn outdated_fails_without_lockfile() {
 
 #[test]
 fn outdated_detects_updates() {
-    // We cannot easily mock PyPI in E2E unless we use a local index or mock server.
-    // We can use --index pointing to a local dir.
-    // Setup a fake project structure.
-
     let temp = TempDir::new().unwrap();
     let project_root = temp.path();
 
-    // 1. Create pyproject.toml
+    // 1. Create pyproject.toml declaring a constraint that excludes the
+    //    latest release, so "wanted" and "latest" diverge.
     let pyproject = r#"
 [project]
 name = "test-project"
 version = "0.1.0"
 dependencies = [
-    "foo>=1.0.0"
+    "foo<2.0.0"
 ]
 "#;
     fs::write(project_root.join("pyproject.toml"), pyproject).unwrap();
 
-    // 2. Create fake lockfile (simulating foo 1.0.0 installed)
-    // We need to create a valid binary lockfile.
-    // Or we can rely on `pybun install` first? But install needs index.
-    // Better: create dependencies on local file system index.
+    // 2. Local JSON index (`load_index_from_path`) with an older and a newer
+    //    release of "foo".
+    let index_path = project_root.join("index.json");
+    let index_json = serde_json::json!([
+        {"name": "foo", "version": "1.0.0", "dependencies": []},
+        {"name": "foo", "version": "1.5.0", "dependencies": []},
+        {"name": "foo", "version": "2.0.0", "dependencies": []},
+    ]);
+    fs::write(&index_path, serde_json::to_string(&index_json).unwrap()).unwrap();
 
-    // Instead of full E2E setup which is complex for caching/index,
-    // we can test "no updates" scenario easily if we mock index with only current version.
+    // 3. A real binary lockfile pinning "foo" at 1.0.0 (older than both the
+    //    constraint-satisfying 1.5.0 and the unconstrained latest 2.0.0).
+    let mut lockfile = Lockfile::new(vec![], vec![]);
+    lockfile.add_package(Package {
+        name: "foo".to_string(),
+        version: "1.0.0".to_string(),
+        source: PackageSource::Registry {
+            index: "local".to_string(),
+            url: "file:///index/foo".to_string(),
+        },
+        wheel: "foo-1.0.0-py3-none-any.whl".to_string(),
+        hash: "sha256:0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+        dependencies: vec![],
+    });
+    lockfile
+        .save_to_path(project_root.join("pybun.lockb"))
+        .unwrap();
 
-    // Actually, writing a binary lockfile manually in test is hard.
-    // We should rely on `pybun install` to generate it.
-    // But `pybun install` hits network.
-    // We can use `pybun install --offline` if cache exists? No.
-    // We can use `pybun install --index /path/to/local/index`.
+    let output = bin()
+        .current_dir(project_root)
+        .args([
+            "--format=json",
+            "outdated",
+            "--index",
+            index_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("pybun outdated runs");
 
-    // Let's defer full E2E of outdated if complexity is high.
-    // But wait, I added `load_index_from_path` support to `run_outdated`.
-    // So I can point to a local index dir!
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "pybun outdated should succeed against a local index: stdout={stdout}\nstderr={stderr}"
+    );
 
-    // Create local index
-    let index_dir = project_root.join("index");
-    fs::create_dir(&index_dir).unwrap();
-    let foo_dir = index_dir.join("foo");
-    fs::create_dir(&foo_dir).unwrap();
+    let json: serde_json::Value =
+        serde_json::from_str(&stdout).expect("valid JSON output from outdated");
+    assert_eq!(json["status"], "ok");
 
-    // Create "foo-1.0.0.tar.gz" and "foo-2.0.0.tar.gz" in index?
-    // `load_index_from_path` (SimpleIndex) expects directory structure or flat?
-    // Check `resolver.rs` or `index.rs` implementation of `load_index_from_path`.
-    // It likely parses HTML or file list.
-    // If it's a file path, it treats as PyPI Simple Index static page? OR directory layout?
-    // The implementation likely supports directory structure scanning.
-    // Assuming standard structure `project/ver/...`.
-    // Let's assume `SimpleIndex` supports reading from a local directory where each subdir is a package.
+    let outdated = json["detail"]["outdated"]
+        .as_array()
+        .expect("outdated array present");
+    assert_eq!(
+        outdated.len(),
+        1,
+        "expected exactly one outdated package: {outdated:?}"
+    );
 
-    // For now, testing "fails without lockfile" is good baseline.
-    // Testing logic works with mock index is better.
-    // I'll skip complex setup for now and focus on `fails_without_lockfile` and maybe JSON flag check.
+    let entry = &outdated[0];
+    assert_eq!(entry["package"], "foo");
+    assert_eq!(entry["current"], "1.0.0");
+    assert_eq!(
+        entry["wanted"], "1.5.0",
+        "wanted should respect the '<2.0.0' constraint: {entry:?}"
+    );
+    assert_eq!(
+        entry["latest"], "2.0.0",
+        "latest should ignore the constraint: {entry:?}"
+    );
+    // `type` classifies current vs. latest (unconstrained), so a 1.0.0 -> 2.0.0
+    // jump is a major update even though the constrained "wanted" is 1.5.0.
+    assert_eq!(entry["type"], "major");
 }
 
 /// Regression test for Issue #325 (same pattern as #301/#299/#262): a
