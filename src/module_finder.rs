@@ -113,6 +113,76 @@ pub struct ScanResult {
 /// subdirectories, process them across threads to amortize traversal cost.
 const PARALLEL_SUBDIR_THRESHOLD: usize = 10;
 
+/// Recognize an ABI/platform tag as used in CPython extension module
+/// filenames, e.g. the `cpython-312-x86_64-linux-gnu` in
+/// `foo.cpython-312-x86_64-linux-gnu.so`, the `abi3` in `foo.abi3.so`, or the
+/// `cp312-win_amd64` in `foo.cp312-win_amd64.pyd` (Issue #405).
+///
+/// This is a conservative filename-pattern parser, not a check against a
+/// specific target interpreter's actual `EXTENSION_SUFFIXES` — it accepts any
+/// well-formed CPython-style tag so standalone scanning (with no known target
+/// interpreter) still recognizes real extension modules. It does not attempt
+/// to validate ABI *compatibility* with a particular interpreter/platform.
+fn is_extension_abi_tag(tag: &str) -> bool {
+    if tag == "abi3" {
+        return true;
+    }
+    if let Some(rest) = tag.strip_prefix("cpython-") {
+        return rest.starts_with(|c: char| c.is_ascii_digit());
+    }
+    if let Some(rest) = tag.strip_prefix("cp") {
+        let digit_end = rest
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(rest.len());
+        if digit_end == 0 {
+            return false;
+        }
+        let remainder = &rest[digit_end..];
+        return remainder.is_empty() || remainder.starts_with('-');
+    }
+    false
+}
+
+/// Compute the logical module stem for a filename against a plain extension
+/// suffix (".so" or ".pyd"), stripping a recognized ABI/platform tag when
+/// present (Issue #405). Returns `None` when `file_name` doesn't end with
+/// `ext` at all.
+///
+/// Examples (`ext = ".so"`):
+/// - `foo.so` -> `foo` (no tag)
+/// - `foo.cpython-312-x86_64-linux-gnu.so` -> `foo`
+/// - `foo.abi3.so` -> `foo`
+/// - `foo.bar.so` -> `foo.bar` (`bar` isn't a recognized tag, so the whole
+///   remainder is treated as the stem, matching the pre-#405 plain-suffix
+///   behavior for anything that isn't ABI-tagged)
+fn extension_module_stem<'a>(file_name: &'a str, ext: &str) -> Option<&'a str> {
+    let without_ext = file_name.strip_suffix(ext)?;
+    if let Some(dot_idx) = without_ext.rfind('.') {
+        let tag = &without_ext[dot_idx + 1..];
+        if is_extension_abi_tag(tag) {
+            return Some(&without_ext[..dot_idx]);
+        }
+    }
+    Some(without_ext)
+}
+
+/// Search `dir` for an extension module file (`.so`/`.pyd`, optionally
+/// ABI-tagged) whose logical stem equals `name` (Issue #405). Unlike plain
+/// `.py`/`.pyc` lookup, the exact filename can't be constructed ahead of time
+/// when an ABI tag may be present, so the directory has to be listed.
+fn find_extension_module_file(dir: &Path, name: &str, ext: &str) -> Option<PathBuf> {
+    let entries = std::fs::read_dir(dir).ok()?;
+    for entry in entries.flatten() {
+        let Ok(file_name) = entry.file_name().into_string() else {
+            continue;
+        };
+        if extension_module_stem(&file_name, ext) == Some(name) {
+            return Some(entry.path());
+        }
+    }
+    None
+}
+
 /// The Rust-based module finder.
 #[derive(Debug)]
 pub struct ModuleFinder {
@@ -258,18 +328,30 @@ impl ModuleFinder {
 
         // Check for module files
         for ext in &self.config.extensions {
+            if ext == ".so" || ext == ".pyd" {
+                // ABI-tagged extension modules (Issue #405) don't have a
+                // predictable exact filename (`foo.cpython-312-...-gnu.so`),
+                // so unlike the plain-suffix case below they can't be found
+                // by constructing one candidate path — the directory has to
+                // be listed and each entry's logical name compared instead.
+                if let Some(module_file) = find_extension_module_file(&current_path, last_part, ext)
+                {
+                    return Some(ModuleInfo {
+                        name: module_name,
+                        path: module_file,
+                        module_type: ModuleType::Extension,
+                        search_path: search_path.to_path_buf(),
+                    });
+                }
+                continue;
+            }
+
             let module_file = current_path.join(format!("{}{}", last_part, ext));
             if module_file.is_file() {
-                let module_type = if ext == ".so" || ext == ".pyd" {
-                    ModuleType::Extension
-                } else {
-                    ModuleType::Module
-                };
-
                 return Some(ModuleInfo {
                     name: module_name,
                     path: module_file,
-                    module_type,
+                    module_type: ModuleType::Module,
                     search_path: search_path.to_path_buf(),
                 });
             }
@@ -399,28 +481,41 @@ impl ModuleFinder {
                 subdirs.push((path, module_name));
             } else if effective_is_file {
                 for ext in &self.config.extensions {
-                    if let Some(stem) = file_name.strip_suffix(ext.as_str()) {
-                        if stem == "__init__" {
-                            break; // already emitted as package above
-                        }
-                        let module_name = if prefix.is_empty() {
-                            stem.to_string()
-                        } else {
-                            format!("{}.{}", prefix, stem)
-                        };
-                        let module_type = if ext == ".so" || ext == ".pyd" {
-                            ModuleType::Extension
-                        } else {
-                            ModuleType::Module
-                        };
-                        modules.push(ModuleInfo {
-                            name: module_name,
-                            path: path.clone(),
-                            module_type,
-                            search_path: base_path.to_path_buf(),
-                        });
-                        break;
+                    let is_extension_ext = ext == ".so" || ext == ".pyd";
+                    // Extension modules (.so/.pyd) commonly carry an ABI/platform
+                    // tag between the logical name and the plain suffix (e.g.
+                    // `foo.cpython-312-x86_64-linux-gnu.so`, `foo.abi3.so`,
+                    // `foo.cp312-win_amd64.pyd`). A plain `strip_suffix` would
+                    // report the wrong logical module name, with the tag still
+                    // attached (Issue #405). `extension_module_stem` strips a
+                    // recognized tag too; plain `.py`/`.pyc` matching is
+                    // unaffected.
+                    let stem = if is_extension_ext {
+                        extension_module_stem(&file_name, ext.as_str())
+                    } else {
+                        file_name.strip_suffix(ext.as_str())
+                    };
+                    let Some(stem) = stem else { continue };
+                    if stem == "__init__" {
+                        break; // already emitted as package above
                     }
+                    let module_name = if prefix.is_empty() {
+                        stem.to_string()
+                    } else {
+                        format!("{}.{}", prefix, stem)
+                    };
+                    let module_type = if is_extension_ext {
+                        ModuleType::Extension
+                    } else {
+                        ModuleType::Module
+                    };
+                    modules.push(ModuleInfo {
+                        name: module_name,
+                        path: path.clone(),
+                        module_type,
+                        search_path: base_path.to_path_buf(),
+                    });
+                    break;
                 }
             }
         }
@@ -1220,5 +1315,138 @@ mod tests {
             names.contains(&"alias_two.mod"),
             "alias_two's target should be fully scanned: {names:?}"
         );
+    }
+
+    // =========================================================================
+    // Issue #405: ABI/platform-tagged .so/.pyd extension modules must be
+    // recognized by their logical import name, not just plain foo.so/foo.pyd.
+    // =========================================================================
+
+    #[test]
+    fn extension_module_stem_strips_recognized_abi_tags() {
+        assert_eq!(extension_module_stem("foo.so", ".so"), Some("foo"));
+        assert_eq!(
+            extension_module_stem("alpha.cpython-312-x86_64-linux-gnu.so", ".so"),
+            Some("alpha")
+        );
+        assert_eq!(extension_module_stem("beta.abi3.so", ".so"), Some("beta"));
+        assert_eq!(
+            extension_module_stem("gamma.cpython-312-darwin.so", ".so"),
+            Some("gamma")
+        );
+        assert_eq!(
+            extension_module_stem("delta.cp312-win_amd64.pyd", ".pyd"),
+            Some("delta")
+        );
+        assert_eq!(extension_module_stem("plain.pyd", ".pyd"), Some("plain"));
+        // Unrecognized "tag" (not a known ABI pattern) — the whole remainder
+        // is treated as the stem, same as before #405.
+        assert_eq!(extension_module_stem("foo.bar.so", ".so"), Some("foo.bar"));
+        // Wrong extension entirely.
+        assert_eq!(extension_module_stem("foo.py", ".so"), None);
+    }
+
+    #[test]
+    fn test_scan_reports_logical_name_for_abi_tagged_extensions() {
+        let temp = TempDir::new().unwrap();
+        fs::create_dir_all(temp.path().join("mods")).unwrap();
+        let mods = temp.path().join("mods");
+        fs::write(mods.join("alpha.cpython-312-x86_64-linux-gnu.so"), b"").unwrap();
+        fs::write(mods.join("beta.abi3.so"), b"").unwrap();
+
+        let config = ModuleFinderConfig {
+            enabled: true,
+            search_paths: vec![temp.path().to_path_buf()],
+            ..Default::default()
+        };
+        let finder = ModuleFinder::new(config);
+        let modules = finder.scan_directory(&mods);
+
+        let names: Vec<_> = modules.iter().map(|m| m.name.as_str()).collect();
+        assert!(
+            names.contains(&"alpha"),
+            "expected logical name 'alpha', not the ABI-tagged filename stem: {names:?}"
+        );
+        assert!(
+            names.contains(&"beta"),
+            "expected logical name 'beta': {names:?}"
+        );
+        assert!(
+            !names
+                .iter()
+                .any(|n| n.contains("cpython") || n.contains("abi3")),
+            "ABI tag must not leak into the reported module name: {names:?}"
+        );
+        let alpha = modules.iter().find(|m| m.name == "alpha").unwrap();
+        assert_eq!(alpha.module_type, ModuleType::Extension);
+    }
+
+    #[test]
+    fn test_scan_reports_logical_name_for_nested_package_extension() {
+        let temp = TempDir::new().unwrap();
+        let pkg = temp.path().join("pkg");
+        fs::create_dir_all(&pkg).unwrap();
+        fs::write(pkg.join("__init__.py"), "").unwrap();
+        fs::write(pkg.join("_core.cpython-312-darwin.so"), b"").unwrap();
+
+        let config = ModuleFinderConfig {
+            enabled: true,
+            search_paths: vec![temp.path().to_path_buf()],
+            ..Default::default()
+        };
+        let finder = ModuleFinder::new(config);
+        let modules = finder.scan_directory(temp.path());
+
+        let names: Vec<_> = modules.iter().map(|m| m.name.as_str()).collect();
+        assert!(
+            names.contains(&"pkg._core"),
+            "expected nested logical name 'pkg._core': {names:?}"
+        );
+    }
+
+    #[test]
+    fn test_find_module_locates_abi_tagged_extension() {
+        let temp = TempDir::new().unwrap();
+        fs::write(
+            temp.path().join("alpha.cpython-312-x86_64-linux-gnu.so"),
+            b"",
+        )
+        .unwrap();
+
+        let config = ModuleFinderConfig {
+            enabled: true,
+            search_paths: vec![temp.path().to_path_buf()],
+            ..Default::default()
+        };
+        let finder = ModuleFinder::new(config);
+        let result = finder.find_module("alpha");
+
+        let module = result
+            .module
+            .expect("find_module should locate the ABI-tagged extension");
+        assert_eq!(module.module_type, ModuleType::Extension);
+        assert_eq!(
+            module.path,
+            temp.path().join("alpha.cpython-312-x86_64-linux-gnu.so")
+        );
+    }
+
+    #[test]
+    fn test_find_module_locates_abi3_extension() {
+        let temp = TempDir::new().unwrap();
+        fs::write(temp.path().join("beta.abi3.so"), b"").unwrap();
+
+        let config = ModuleFinderConfig {
+            enabled: true,
+            search_paths: vec![temp.path().to_path_buf()],
+            ..Default::default()
+        };
+        let finder = ModuleFinder::new(config);
+        let result = finder.find_module("beta");
+
+        let module = result
+            .module
+            .expect("find_module should locate the abi3-tagged extension");
+        assert_eq!(module.module_type, ModuleType::Extension);
     }
 }
