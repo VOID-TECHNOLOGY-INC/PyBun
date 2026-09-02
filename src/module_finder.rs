@@ -294,12 +294,10 @@ impl ModuleFinder {
                         duration_us: start.elapsed().as_micros() as u64,
                     };
                 }
-                Some(FindResult::Namespace(module_info)) => {
-                    if namespace_candidate.is_none() {
-                        namespace_candidate = Some(module_info);
-                    }
+                Some(FindResult::Namespace(module_info)) if namespace_candidate.is_none() => {
+                    namespace_candidate = Some(module_info);
                 }
-                None => {}
+                _ => {}
             }
         }
 
