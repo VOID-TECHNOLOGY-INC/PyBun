@@ -1,5 +1,45 @@
 # Changelog
 
+## v0.1.24
+
+### Security
+- security(downloader): verify checksum/signature independently per caller (Issue #401) (#412)
+- fix(security): validate/escape external input before URL, command, and HTML interpolation (#395)
+- fix(install): close supply-chain signature-verification gaps (Issue #378) (#394)
+- fix(sandbox): close filesystem/network isolation escape vectors (Issue #376) (#389), and treat `os.O_TMPFILE` as a directory write in the same guard (follow-up) (#390)
+- fix(sandbox): kill the entire process group on exec timeout (Issue #383) (#392)
+- fix(mcp): gate `unsafe_no_sandbox` behind server opt-in and prevent script path traversal (Issue #377) (#388)
+
+### Fixes
+- fix: propagate/surface silently swallowed errors across `build.rs`, `commands/python.rs`, `drift.rs`, `progress.rs`, and `scripts/install.ps1` (Issue #386) (#428)
+- fix(downloader): make the shared transfer temp path deterministic across OS processes, not just in-process callers (#426)
+- fix(runtime): make `download_and_install` safe against concurrent OS-process races (#425)
+- fix(downloader): publish to destination atomically only after independent verification (Issue #413) (#415)
+- fix(concurrency): fix an `OnceMap` cleanup race that could evict a newer in-flight operation (Issue #400) (#411)
+- fix(drift): include optional dependencies and PEP 735 dependency groups in declared-package analysis (#424), and correct import-parsing bugs plus a symlink cycle guard (Issue #384) (#393)
+- fix(module-finder): invalidate negative cache entries when search paths change (#423)
+- fix(module-finder): namespace-package detection no longer masks a regular module (Issue #406) (#422)
+- fix(module-finder): support ABI-tagged CPython extension module filenames (#421)
+- fix(module-finder): guard recursive scans against symlink directory cycles (#420)
+- fix(lock): record the actual target Python version instead of hard-coding 3.11 (Issue #399) (#419)
+- fix(installer): implement the PEP 427 `.data` wheel install scheme (Issue #402) (#417)
+- fix(pypi): correct PEP 440/508 marker comparison and error propagation (Issue #381) (#391)
+
+### Tests
+- test: replace vacuous assertions and network-dependent tests across the integration suite (Issue #385) (#427)
+
+### Refactors
+- refactor(commands): split `commands/mod.rs` into `install.rs` (#371), `run.rs` (#372), and dedicated `python`/`project` modules (Issue #271) (#375)
+- refactor(mcp): decompose `src/mcp.rs` into `transport`/`schema`/`audit`/`tools` modules (Issue #344) (#373)
+- refactor: consolidate copy-paste constructor clusters (Issue #345) (#374)
+
+### Docs
+- docs: reframe PyBun as an agent control plane (#410)
+- docs(prompt): restructure the implementation workflow, fix broken commands, add bug-triage and Rust skill guidance (#418)
+
+### Chores
+- chore(deps): routine dependency bumps (`base64`, `toml`, cargo minor/patch group)
+
 ## v0.1.23
 
 ### Fixes
