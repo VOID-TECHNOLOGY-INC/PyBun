@@ -1,8 +1,17 @@
 [advisories]
-# Fail on unmaintained advisories only for workspace-direct deps (transitives are ignored here).
+version = 2
+# Unsoundness can cause undefined behavior even through transitive/dev dependencies.
+unsound = "all"
+# Unmaintained packages block when they are direct workspace dependencies.
 unmaintained = "workspace"
 yanked = "warn"
-ignore = []
+unused-ignored-advisory = "deny"
+ignore = [
+  # tracking: https://github.com/VOID-TECHNOLOGY-INC/PyBun/issues/434
+  # owner: release/security maintainers
+  # review-by: 2026-12-07
+  { id = "RUSTSEC-2025-0141", reason = "Temporary bincode 1.x compatibility exception; tracking #434; review by 2026-12-07" },
+]
 
 [licenses]
 allow = [
