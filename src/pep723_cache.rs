@@ -15,7 +15,6 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::fs::OpenOptions;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use thiserror::Error;
@@ -356,8 +355,7 @@ impl Pep723Cache {
 
         let info_path = root.join("deps.json");
         let json = serde_json::to_string_pretty(&info)?;
-        let mut file = fs::File::create(&info_path)?;
-        file.write_all(json.as_bytes())?;
+        crate::atomic_fs::atomic_write(&info_path, json.as_bytes())?;
 
         Ok(())
     }
@@ -454,8 +452,7 @@ impl Pep723Cache {
             info.last_used = now;
 
             let json = serde_json::to_string_pretty(&info)?;
-            let mut file = fs::File::create(&info_path)?;
-            file.write_all(json.as_bytes())?;
+            crate::atomic_fs::atomic_write(&info_path, json.as_bytes())?;
         }
 
         Ok(())
@@ -926,6 +923,51 @@ mod tests {
         cache.record_cache_entry_at(&root, &key).unwrap();
         let info = cache.read_cache_entry(&root).unwrap().unwrap();
         assert!(Pep723Cache::cache_entry_matches_key(&info, &key));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn record_cache_entry_atomically_replaces_read_only_metadata() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempdir().unwrap();
+        let cache = Pep723Cache::with_root(temp.path());
+        let root = temp.path().join("env-root");
+        fs::create_dir_all(&root).unwrap();
+        let info_path = root.join("deps.json");
+        fs::write(&info_path, b"previous metadata").unwrap();
+        fs::set_permissions(&info_path, fs::Permissions::from_mode(0o444)).unwrap();
+        let key = Pep723CacheKey::new(&["requests".to_string()], "3.11.0", &[], None);
+
+        cache.record_cache_entry_at(&root, &key).unwrap();
+
+        let info = cache.read_cache_entry(&root).unwrap().unwrap();
+        assert!(Pep723Cache::cache_entry_matches_key(&info, &key));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn update_last_used_atomically_replaces_read_only_metadata() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempdir().unwrap();
+        let cache = Pep723Cache::with_root(temp.path());
+        let root = temp.path().join("env-root");
+        let key = Pep723CacheKey::new(&["requests".to_string()], "3.11.0", &[], None);
+        cache.record_cache_entry_at(&root, &key).unwrap();
+        let info_path = root.join("deps.json");
+        let mut info = cache.read_cache_entry(&root).unwrap().unwrap();
+        info.last_used = 0;
+        fs::write(&info_path, serde_json::to_string_pretty(&info).unwrap()).unwrap();
+        let file = OpenOptions::new().write(true).open(&info_path).unwrap();
+        file.set_modified(SystemTime::UNIX_EPOCH).unwrap();
+        drop(file);
+        fs::set_permissions(&info_path, fs::Permissions::from_mode(0o444)).unwrap();
+
+        cache.update_last_used_at(&root).unwrap();
+
+        let info = cache.read_cache_entry(&root).unwrap().unwrap();
+        assert!(info.last_used > 0);
     }
 
     #[test]

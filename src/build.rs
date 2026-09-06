@@ -174,7 +174,7 @@ impl BuildCache {
         if !has_files(&cache_dist)? {
             return Ok(false);
         }
-        copy_dir_recursive(&cache_dist, dist_dir)?;
+        crate::atomic_fs::atomic_replace_dir_from(&cache_dist, dist_dir)?;
         Ok(true)
     }
 
@@ -183,10 +183,7 @@ impl BuildCache {
             return Ok(());
         }
         let cache_dist = self.cache_dir_for_key(cache_key).join("dist");
-        if cache_dist.exists() {
-            fs::remove_dir_all(&cache_dist)?;
-        }
-        copy_dir_recursive(dist_dir, &cache_dist)?;
+        crate::atomic_fs::atomic_replace_dir_from(dist_dir, &cache_dist)?;
         Ok(())
     }
 }
@@ -255,22 +252,6 @@ fn ignored_dirs() -> BTreeSet<&'static str> {
     .collect()
 }
 
-fn copy_dir_recursive(from: &Path, to: &Path) -> Result<()> {
-    fs::create_dir_all(to)?;
-    for entry in fs::read_dir(from)? {
-        let entry = entry?;
-        let path = entry.path();
-        let dest = to.join(entry.file_name());
-        if entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
-            copy_dir_recursive(&path, &dest)?;
-        } else if entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
-            fs::create_dir_all(dest.parent().unwrap_or_else(|| Path::new(".")))?;
-            fs::copy(&path, &dest)?;
-        }
-    }
-    Ok(())
-}
-
 fn has_files(dir: &Path) -> Result<bool> {
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
@@ -330,6 +311,32 @@ mod tests {
         let restored = cache.restore_dist(cache_key, &dist_dir).unwrap();
         assert!(restored);
         assert!(dist_dir.join("demo.whl").exists());
+    }
+
+    #[test]
+    fn restore_dist_replaces_existing_directory_without_stale_files() {
+        let temp = TempDir::new().unwrap();
+        let cache = BuildCache::with_root(temp.path().join("cache"));
+        let cache_key = "demo";
+
+        let source_dist = temp.path().join("source-dist");
+        fs::create_dir_all(&source_dist).unwrap();
+        fs::write(source_dist.join("fresh.whl"), "fresh").unwrap();
+        cache.store_dist(cache_key, &source_dist).unwrap();
+
+        let restored_dist = temp.path().join("restored-dist");
+        fs::create_dir_all(&restored_dist).unwrap();
+        fs::write(restored_dist.join("stale.whl"), "stale").unwrap();
+
+        assert!(cache.restore_dist(cache_key, &restored_dist).unwrap());
+        assert_eq!(
+            fs::read_to_string(restored_dist.join("fresh.whl")).unwrap(),
+            "fresh"
+        );
+        assert!(
+            !restored_dist.join("stale.whl").exists(),
+            "restoring a complete staged dist must not retain stale output"
+        );
     }
 
     /// Regression test for Issue #386: an unreadable subdirectory

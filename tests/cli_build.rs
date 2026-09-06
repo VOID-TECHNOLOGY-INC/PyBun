@@ -290,7 +290,7 @@ fn build_cache_reuses_artifacts_on_hit_and_misses_on_change() {
     cmd.assert().success();
     assert!(marker_path.exists(), "build should execute on first run");
 
-    fs::remove_dir_all(&dist_dir).unwrap();
+    fs::write(dist_dir.join("stale-from-interrupted-build.whl"), "stale").unwrap();
     fs::remove_file(&marker_path).unwrap();
 
     let mut cached = bin();
@@ -308,6 +308,10 @@ fn build_cache_reuses_artifacts_on_hit_and_misses_on_change() {
     assert!(
         dist_dir.join("demo-build-0.1.0.tar.gz").exists(),
         "cached artifacts should be restored"
+    );
+    assert!(
+        !dist_dir.join("stale-from-interrupted-build.whl").exists(),
+        "cache restore should atomically replace the complete dist directory"
     );
 
     fs::write(&source_path, "int demo() { return 2; }\n").unwrap();

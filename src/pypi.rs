@@ -1007,7 +1007,7 @@ fn save_cache_to_path(path: &Path, entry: &CacheEntry) -> Result<(), PyPiError> 
     }
     let data = bincode::serialize(entry)
         .map_err(|e| PyPiError::Parse(format!("cache encode error: {}", e)))?;
-    fs::write(path, data)?;
+    crate::atomic_fs::atomic_write(path, &data)?;
     Ok(())
 }
 
@@ -1265,6 +1265,35 @@ mod tests {
         assert_eq!(loaded.policy.etag, entry.policy.etag);
         assert_eq!(loaded.policy.max_age, entry.policy.max_age);
         assert_eq!(loaded.body, entry.body);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn binary_cache_save_atomically_replaces_read_only_entry() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("demo.bin");
+        fs::write(&path, b"previous cache entry").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o444)).unwrap();
+        let entry = CacheEntry {
+            policy: HttpCachePolicy {
+                etag: Some("\"v2\"".into()),
+                last_modified: None,
+                max_age: Some(30),
+                no_cache: false,
+                no_store: false,
+                fetched_at: 20,
+            },
+            body: b"replacement".to_vec(),
+            packages: Vec::new(),
+        };
+
+        save_cache_to_path(&path, &entry).unwrap();
+
+        let saved: CacheEntry = bincode::deserialize(&fs::read(path).unwrap()).unwrap();
+        assert_eq!(saved.policy.etag, entry.policy.etag);
+        assert_eq!(saved.body, entry.body);
     }
 
     #[tokio::test]
