@@ -25,6 +25,12 @@ use thiserror::Error;
 use zip::ZipArchive;
 use zip::read::ZipFile;
 
+#[derive(Debug)]
+struct StagedFile {
+    source: PathBuf,
+    destination: PathBuf,
+}
+
 #[derive(Debug, Error)]
 pub enum InstallError {
     #[error("io error: {0}")]
@@ -125,6 +131,8 @@ pub fn install_wheel_with_scheme(wheel_path: &Path, scheme: &InstallScheme) -> R
     } else {
         &scheme.platlib
     };
+    let staging = tempfile::tempdir()?;
+    let mut staged_files = Vec::new();
 
     for i in 0..archive.len() {
         let mut entry = archive.by_index(i)?;
@@ -166,18 +174,19 @@ pub fn install_wheel_with_scheme(wheel_path: &Path, scheme: &InstallScheme) -> R
         };
 
         if entry.is_dir() {
-            fs::create_dir_all(&outpath)?;
             continue;
         }
 
-        if let Some(p) = outpath.parent().filter(|p| !p.exists()) {
-            fs::create_dir_all(p)?;
-        }
+        let staged_path = staging.path().join(i.to_string());
 
         if is_script {
-            install_script_entry(&mut entry, &outpath, scheme.python_executable.as_deref())?;
+            install_script_entry(
+                &mut entry,
+                &staged_path,
+                scheme.python_executable.as_deref(),
+            )?;
         } else {
-            let mut outfile = fs::File::create(&outpath)?;
+            let mut outfile = fs::File::create(&staged_path)?;
             io::copy(&mut entry, &mut outfile)?;
         }
 
@@ -188,14 +197,21 @@ pub fn install_wheel_with_scheme(wheel_path: &Path, scheme: &InstallScheme) -> R
                 // Wheel builders don't reliably preserve the executable bit
                 // (or ship scripts with no unix metadata at all), so always
                 // force it on `.data/scripts` entries — matches pip/distlib.
-                Some(entry.unix_mode().unwrap_or(0o644) | 0o111)
+                entry.unix_mode().unwrap_or(0o644) | 0o111
             } else {
-                entry.unix_mode()
+                entry.unix_mode().unwrap_or(0o644)
             };
-            if let Some(mode) = mode {
-                fs::set_permissions(&outpath, fs::Permissions::from_mode(mode))?;
-            }
+            fs::set_permissions(&staged_path, fs::Permissions::from_mode(mode))?;
         }
+
+        staged_files.push(StagedFile {
+            source: staged_path,
+            destination: outpath,
+        });
+    }
+
+    for staged in staged_files {
+        crate::atomic_fs::atomic_copy(&staged.source, &staged.destination)?;
     }
 
     Ok(())
@@ -452,6 +468,38 @@ mod tests {
         match err {
             InstallError::InvalidWheel(msg) => assert!(msg.contains("nonsense")),
             other => panic!("expected InvalidWheel error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn late_invalid_entry_leaves_install_scheme_unchanged() {
+        let dir = tempdir().unwrap();
+        let scheme = test_scheme(dir.path());
+        let wheel = build_wheel(
+            "pkg-1.0",
+            None,
+            &[
+                ("pkg/__init__.py", b"installed too early"),
+                ("pkg-1.0.data/nonsense/whatever.txt", b"invalid"),
+            ],
+            &[],
+        );
+
+        let err = install_wheel_with_scheme(&wheel, &scheme).unwrap_err();
+
+        assert!(matches!(err, InstallError::InvalidWheel(_)));
+        for root in [
+            &scheme.purelib,
+            &scheme.platlib,
+            &scheme.scripts,
+            &scheme.headers,
+            &scheme.data,
+        ] {
+            assert!(
+                !root.exists(),
+                "failed extraction must not publish staged files to {}",
+                root.display()
+            );
         }
     }
 

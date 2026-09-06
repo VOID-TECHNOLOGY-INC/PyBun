@@ -92,7 +92,8 @@ impl SnapshotFile {
         let content = serde_json::to_string_pretty(self)
             .map_err(|e| SnapshotError::SerializeError(e.to_string()))?;
 
-        fs::write(path, content).map_err(|e| SnapshotError::IoError(e.to_string()))
+        crate::atomic_fs::atomic_write(path, content.as_bytes())
+            .map_err(|e| SnapshotError::IoError(e.to_string()))
     }
 
     /// Get a snapshot by test name
@@ -465,6 +466,24 @@ mod tests {
         assert_eq!(loaded.len(), 2);
         assert_eq!(loaded.get("test_one").unwrap().content, "content one");
         assert_eq!(loaded.get("test_two").unwrap().content, "content two");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn snapshot_save_atomically_replaces_read_only_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("test.snap.json");
+        fs::write(&path, "previous snapshot").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o444)).unwrap();
+
+        let mut file = SnapshotFile::new();
+        file.set("replacement", "new snapshot".into(), SnapshotFormat::Text);
+        file.save(&path).unwrap();
+
+        let loaded = SnapshotFile::load(&path).unwrap();
+        assert_eq!(loaded.get("replacement").unwrap().content, "new snapshot");
     }
 
     #[test]
