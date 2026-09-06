@@ -2,7 +2,8 @@
 //!
 //! Files are written to a sibling temporary file and synced before an atomic
 //! rename. Directory trees are fully copied to a sibling staging directory
-//! before the previous tree is moved aside and the staged tree is published.
+//! before the old and staged trees are atomically exchanged on supported
+//! platforms.
 
 use std::fs::{self, File, Permissions};
 use std::io::{self, Write};
@@ -33,7 +34,16 @@ where
     let existing_permissions = fs::metadata(path)
         .ok()
         .map(|metadata| metadata.permissions());
-    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    let mut builder = tempfile::Builder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // Match File::create/fs::write: tempfile applies the process umask to
+        // the requested 0666 mode. Existing files are restored to their exact
+        // previous mode below, and atomic_copy supplies its source mode.
+        builder.permissions(Permissions::from_mode(0o666));
+    }
+    let mut temporary = builder.tempfile_in(parent)?;
     write(temporary.as_file_mut())?;
     temporary.as_file_mut().flush()?;
     if let Some(permissions) = permissions.or(existing_permissions) {
@@ -46,10 +56,10 @@ where
 
 /// Replace a directory with a fully staged copy of `source`.
 ///
-/// The old destination remains untouched if staging fails. Portable filesystems
-/// do not provide a single operation that replaces a non-empty directory, so
-/// publication uses a short rename window and rolls the old tree back if the
-/// second rename fails.
+/// The old destination remains untouched if staging fails. Linux and macOS use
+/// their atomic directory-exchange operations, so there is no interval where
+/// the destination is missing. Other platforms retain a best-effort rollback
+/// fallback until they provide an equivalent primitive.
 pub(crate) fn atomic_replace_dir_from(source: &Path, destination: &Path) -> io::Result<()> {
     let parent = parent_dir(destination);
     fs::create_dir_all(parent)?;
@@ -66,23 +76,82 @@ pub(crate) fn atomic_replace_dir_from(source: &Path, destination: &Path) -> io::
         return Ok(());
     }
 
-    let backup = transaction.path().join("backup");
-    fs::rename(destination, &backup)?;
-    if let Err(publish_error) = fs::rename(&staged, destination) {
-        if let Err(rollback_error) = fs::rename(&backup, destination) {
-            return Err(io::Error::new(
-                publish_error.kind(),
-                format!(
-                    "failed to publish staged directory ({publish_error}); rollback also failed ({rollback_error})"
-                ),
-            ));
-        }
-        return Err(publish_error);
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        exchange_directories(&staged, destination)?;
+        sync_directory(parent)?;
+        remove_path(&staged)?;
     }
 
-    sync_directory(parent)?;
-    remove_path(&backup)?;
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let backup = transaction.path().join("backup");
+        fs::rename(destination, &backup)?;
+        if let Err(publish_error) = fs::rename(&staged, destination) {
+            if let Err(rollback_error) = fs::rename(&backup, destination) {
+                return Err(io::Error::new(
+                    publish_error.kind(),
+                    format!(
+                        "failed to publish staged directory ({publish_error}); rollback also failed ({rollback_error})"
+                    ),
+                ));
+            }
+            return Err(publish_error);
+        }
+        sync_directory(parent)?;
+        remove_path(&backup)?;
+    }
+
     sync_directory(parent)
+}
+
+#[cfg(target_os = "linux")]
+fn exchange_directories(first: &Path, second: &Path) -> io::Result<()> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let first = CString::new(first.as_os_str().as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path contains a NUL byte"))?;
+    let second = CString::new(second.as_os_str().as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path contains a NUL byte"))?;
+    // SAFETY: both C strings are NUL-terminated and remain alive for the
+    // syscall. AT_FDCWD makes both paths process-relative; the caller stages
+    // both directories under the same parent, satisfying renameat2's
+    // same-filesystem requirement.
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_renameat2,
+            libc::AT_FDCWD,
+            first.as_ptr(),
+            libc::AT_FDCWD,
+            second.as_ptr(),
+            libc::RENAME_EXCHANGE,
+        )
+    };
+    if result == -1 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn exchange_directories(first: &Path, second: &Path) -> io::Result<()> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let first = CString::new(first.as_os_str().as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path contains a NUL byte"))?;
+    let second = CString::new(second.as_os_str().as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path contains a NUL byte"))?;
+    // SAFETY: both pointers reference live, NUL-terminated C strings.
+    // RENAME_SWAP atomically exchanges the two same-filesystem directories.
+    let result = unsafe { libc::renamex_np(first.as_ptr(), second.as_ptr(), libc::RENAME_SWAP) };
+    if result == -1 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
 }
 
 fn copy_dir_recursive(source: &Path, destination: &Path) -> io::Result<()> {
@@ -168,6 +237,40 @@ mod tests {
             .map(|entry| entry.unwrap().path())
             .collect();
         assert_eq!(entries, vec![path]);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn new_atomic_file_uses_normal_creation_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempdir().unwrap();
+        let reference = temp.path().join("reference");
+        let atomic = temp.path().join("atomic");
+        fs::write(&reference, b"reference").unwrap();
+
+        atomic_write(&atomic, b"atomic").unwrap();
+
+        let reference_mode = fs::metadata(reference).unwrap().permissions().mode() & 0o777;
+        let atomic_mode = fs::metadata(atomic).unwrap().permissions().mode() & 0o777;
+        assert_eq!(atomic_mode, reference_mode);
+    }
+
+    #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn exchanges_existing_directories_in_one_operation() {
+        let temp = tempdir().unwrap();
+        let first = temp.path().join("first");
+        let second = temp.path().join("second");
+        fs::create_dir(&first).unwrap();
+        fs::create_dir(&second).unwrap();
+        fs::write(first.join("first.txt"), b"first").unwrap();
+        fs::write(second.join("second.txt"), b"second").unwrap();
+
+        exchange_directories(&first, &second).unwrap();
+
+        assert_eq!(fs::read(first.join("second.txt")).unwrap(), b"second");
+        assert_eq!(fs::read(second.join("first.txt")).unwrap(), b"first");
     }
 
     #[test]
