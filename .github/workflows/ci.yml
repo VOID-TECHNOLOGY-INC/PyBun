@@ -143,6 +143,8 @@ jobs:
           python -m pip install --upgrade pip pip-audit
       - name: Cargo audit
         run: cargo audit
+      - name: Cargo deny advisories
+        run: cargo deny check advisories
       - name: Cargo license scan
         run: cargo deny check licenses
       - name: Pip audit
