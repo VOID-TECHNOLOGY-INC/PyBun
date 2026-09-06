@@ -71,8 +71,8 @@ fn cargo_deny_blocks_all_unsound_advisories_and_stale_suppressions() {
 fn ci_enforces_both_advisory_scanners() {
     let workflow = fs::read_to_string(".github/workflows/ci.yml").unwrap();
 
-    assert!(workflow.contains("run: cargo audit"));
-    assert!(workflow.contains("run: cargo deny check advisories"));
+    assert!(workflow.contains("run: cargo audit --deny unsound"));
+    assert!(workflow.contains("run: cargo deny --all-features check advisories"));
 }
 
 #[test]
