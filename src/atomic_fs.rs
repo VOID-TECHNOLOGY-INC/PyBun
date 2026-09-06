@@ -34,15 +34,18 @@ where
     let existing_permissions = fs::metadata(path)
         .ok()
         .map(|metadata| metadata.permissions());
-    let mut builder = tempfile::Builder::new();
     #[cfg(unix)]
-    {
+    let builder = {
         use std::os::unix::fs::PermissionsExt;
         // Match File::create/fs::write: tempfile applies the process umask to
         // the requested 0666 mode. Existing files are restored to their exact
         // previous mode below, and atomic_copy supplies its source mode.
+        let mut builder = tempfile::Builder::new();
         builder.permissions(Permissions::from_mode(0o666));
-    }
+        builder
+    };
+    #[cfg(not(unix))]
+    let builder = tempfile::Builder::new();
     let mut temporary = builder.tempfile_in(parent)?;
     write(temporary.as_file_mut())?;
     temporary.as_file_mut().flush()?;
