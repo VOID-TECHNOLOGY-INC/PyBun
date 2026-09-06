@@ -18,8 +18,9 @@
 //! content shipped inside the wheel archive itself is installed. See Issue
 //! #402.
 
+use sha2::{Digest, Sha256};
 use std::collections::HashSet;
-use std::fs;
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -27,8 +28,10 @@ use zip::ZipArchive;
 use zip::read::ZipFile;
 
 const INSTALL_TRANSACTION_DIR: &str = ".pybun-install-transaction";
+const INSTALL_LOCK_FILE: &str = ".pybun-install.lock";
 const INSTALL_JOURNAL_FILE: &str = "journal.json";
 const INSTALL_COMMITTED_FILE: &str = "committed";
+const INSTALL_JOURNAL_VERSION: u32 = 1;
 
 #[derive(Debug)]
 struct StagedFile {
@@ -37,21 +40,47 @@ struct StagedFile {
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct InstallJournal {
+    version: u32,
     entries: Vec<InstallJournalEntry>,
-    created_dirs: Vec<PathBuf>,
+    created_dirs: Vec<InstallJournalDirectory>,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct InstallJournalEntry {
-    destination: PathBuf,
-    backup_name: Option<String>,
+    root: InstallRoot,
+    relative_path: PathBuf,
+    backup_index: Option<usize>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InstallJournalDirectory {
+    root: InstallRoot,
+    relative_path: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum InstallRoot {
+    Purelib,
+    Platlib,
+    Scripts,
+    Headers,
+    Data,
 }
 
 #[derive(Debug)]
 struct InstallTransaction {
     path: PathBuf,
     journal: InstallJournal,
+}
+
+#[derive(Debug)]
+struct InstallLock {
+    _file: File,
 }
 
 #[derive(Debug, Error)]
@@ -139,9 +168,10 @@ impl InstallScheme {
 
 /// Install a wheel into the target described by `scheme`.
 pub fn install_wheel_with_scheme(wheel_path: &Path, scheme: &InstallScheme) -> Result<()> {
+    let lock = InstallLock::acquire(scheme)?;
     // An interrupted previous install may have published only part of a wheel.
     // Restore its pre-install state before inspecting or publishing another one.
-    recover_install_transaction(scheme)?;
+    recover_install_transaction(scheme, &lock)?;
 
     let file = fs::File::open(wheel_path)?;
     let mut archive = ZipArchive::new(file)?;
@@ -237,16 +267,52 @@ pub fn install_wheel_with_scheme(wheel_path: &Path, scheme: &InstallScheme) -> R
         });
     }
 
-    publish_staged_files(&staged_files, scheme)
+    publish_staged_files(&staged_files, scheme, &lock)
 }
 
 fn install_transaction_path(scheme: &InstallScheme) -> PathBuf {
     scheme.data.join(INSTALL_TRANSACTION_DIR)
 }
 
+fn install_lock_path(scheme: &InstallScheme) -> PathBuf {
+    let digest = Sha256::digest(scheme.data.to_string_lossy().as_bytes());
+    parent_dir(&scheme.data).join(format!("{INSTALL_LOCK_FILE}-{}", hex::encode(&digest[..8])))
+}
+
+impl InstallLock {
+    fn acquire(scheme: &InstallScheme) -> io::Result<Self> {
+        Self::open(scheme, true)
+    }
+
+    #[cfg(test)]
+    fn try_acquire(scheme: &InstallScheme) -> io::Result<Self> {
+        Self::open(scheme, false)
+    }
+
+    fn open(scheme: &InstallScheme, blocking: bool) -> io::Result<Self> {
+        fs::create_dir_all(parent_dir(&scheme.data))?;
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(install_lock_path(scheme))?;
+        if blocking {
+            fs2::FileExt::lock_exclusive(&file)?;
+        } else {
+            fs2::FileExt::try_lock_exclusive(&file)?;
+        }
+        Ok(Self { _file: file })
+    }
+}
+
 impl InstallTransaction {
-    fn prepare(staged_files: &[StagedFile], scheme: &InstallScheme) -> io::Result<Self> {
-        recover_install_transaction(scheme)?;
+    fn prepare(
+        staged_files: &[StagedFile],
+        scheme: &InstallScheme,
+        lock: &InstallLock,
+    ) -> io::Result<Self> {
+        recover_install_transaction(scheme, lock)?;
 
         let path = install_transaction_path(scheme);
         let mut destinations = HashSet::new();
@@ -281,8 +347,21 @@ impl InstallTransaction {
                 ));
             }
         }
+        for (index, destination) in destinations.iter().enumerate() {
+            if destinations.iter().skip(index + 1).any(|other| {
+                destination.starts_with(other.as_path()) || other.starts_with(destination.as_path())
+            }) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "wheel contains conflicting file and directory destinations",
+                ));
+            }
+        }
 
-        let created_dirs = collect_missing_directories(staged_files, scheme);
+        let created_dirs = collect_missing_directories(staged_files, scheme)
+            .into_iter()
+            .map(|directory| encode_install_directory(&directory, scheme))
+            .collect::<io::Result<Vec<_>>>()?;
         fs::create_dir_all(&scheme.data)?;
         fs::create_dir(&path)?;
         sync_install_directory(&scheme.data)?;
@@ -292,20 +371,23 @@ impl InstallTransaction {
         let preparation = (|| {
             let mut entries = Vec::with_capacity(staged_files.len());
             for (index, staged) in staged_files.iter().enumerate() {
-                let backup_name = if staged.destination.is_file() {
+                let backup_index = if staged.destination.is_file() {
                     let name = index.to_string();
                     crate::atomic_fs::atomic_copy(&staged.destination, &backups.join(&name))?;
-                    Some(name)
+                    Some(index)
                 } else {
                     None
                 };
+                let (root, relative_path) = encode_install_file(&staged.destination, scheme)?;
                 entries.push(InstallJournalEntry {
-                    destination: staged.destination.clone(),
-                    backup_name,
+                    root,
+                    relative_path,
+                    backup_index,
                 });
             }
 
             let journal = InstallJournal {
+                version: INSTALL_JOURNAL_VERSION,
                 entries,
                 created_dirs,
             };
@@ -315,9 +397,11 @@ impl InstallTransaction {
             sync_install_directory(&path)?;
             sync_install_directory(&scheme.data)?;
             for directory in &journal.created_dirs {
-                fs::create_dir_all(directory)?;
-                sync_install_directory(directory)?;
-                sync_nearest_existing_directory(parent_dir(directory))?;
+                let directory =
+                    resolve_install_path(directory.root, &directory.relative_path, scheme);
+                fs::create_dir_all(&directory)?;
+                sync_install_directory(&directory)?;
+                sync_nearest_existing_directory(parent_dir(&directory))?;
             }
             Ok(journal)
         })();
@@ -326,7 +410,7 @@ impl InstallTransaction {
             Ok(journal) => Ok(Self { path, journal }),
             Err(error) => {
                 let cleanup = if path.join(INSTALL_JOURNAL_FILE).exists() {
-                    recover_install_transaction(scheme)
+                    recover_install_transaction(scheme, lock)
                 } else {
                     fs::remove_dir_all(&path)
                 };
@@ -347,26 +431,31 @@ impl InstallTransaction {
         crate::atomic_fs::atomic_copy(&staged.source, &staged.destination)
     }
 
-    fn rollback(&self) -> io::Result<()> {
-        rollback_install_transaction(&self.path, &self.journal)
+    fn rollback(&self, scheme: &InstallScheme) -> io::Result<()> {
+        rollback_install_transaction(&self.path, &self.journal, scheme)
     }
 
-    fn commit(self) -> io::Result<()> {
+    fn commit(self, scheme: &InstallScheme) -> io::Result<()> {
         crate::atomic_fs::atomic_write(&self.path.join(INSTALL_COMMITTED_FILE), b"")?;
         sync_install_directory(&self.path)?;
         fs::remove_dir_all(&self.path)?;
-        cleanup_created_directories(&self.journal.created_dirs);
+        cleanup_created_directories(&self.journal.created_dirs, scheme);
         sync_nearest_existing_directory(parent_dir(&self.path))
     }
 }
 
-fn publish_staged_files(staged_files: &[StagedFile], scheme: &InstallScheme) -> Result<()> {
-    publish_staged_files_with(staged_files, scheme, |_| Ok(()))
+fn publish_staged_files(
+    staged_files: &[StagedFile],
+    scheme: &InstallScheme,
+    lock: &InstallLock,
+) -> Result<()> {
+    publish_staged_files_with(staged_files, scheme, lock, |_| Ok(()))
 }
 
 fn publish_staged_files_with<F>(
     staged_files: &[StagedFile],
     scheme: &InstallScheme,
+    lock: &InstallLock,
     mut before_publish: F,
 ) -> Result<()>
 where
@@ -376,11 +465,11 @@ where
         return Ok(());
     }
 
-    let transaction = InstallTransaction::prepare(staged_files, scheme)?;
+    let transaction = InstallTransaction::prepare(staged_files, scheme, lock)?;
     for (index, staged) in staged_files.iter().enumerate() {
         let publish = before_publish(index).and_then(|()| transaction.publish(staged));
         if let Err(publish_error) = publish {
-            return match transaction.rollback() {
+            return match transaction.rollback(scheme) {
                 Ok(()) => Err(publish_error.into()),
                 Err(rollback_error) => Err(io::Error::new(
                     publish_error.kind(),
@@ -392,55 +481,80 @@ where
             };
         }
     }
-    transaction.commit()?;
+    transaction.commit(scheme)?;
     Ok(())
 }
 
-fn recover_install_transaction(scheme: &InstallScheme) -> io::Result<()> {
+fn recover_install_transaction(scheme: &InstallScheme, _lock: &InstallLock) -> io::Result<()> {
     let path = install_transaction_path(scheme);
     if !path.exists() {
         return Ok(());
     }
+    let transaction_metadata = fs::symlink_metadata(&path)?;
+    if !transaction_metadata.file_type().is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "installer transaction path is not a real directory: {}",
+                path.display()
+            ),
+        ));
+    }
 
     let journal_path = path.join(INSTALL_JOURNAL_FILE);
     if !journal_path.exists() {
-        // Publication starts only after the durable journal exists, so an
-        // unjournaled directory contains preparation debris only.
-        fs::remove_dir_all(&path)?;
-        return Ok(());
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "installer transaction at {} has no journal; refusing to delete unknown state",
+                path.display()
+            ),
+        ));
+    }
+    if !fs::symlink_metadata(&journal_path)?.file_type().is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "installer transaction journal is not a regular file",
+        ));
     }
 
     let journal: InstallJournal = serde_json::from_slice(&fs::read(&journal_path)?)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    validate_install_journal(&path, &journal, scheme)?;
     if path.join(INSTALL_COMMITTED_FILE).exists() {
         fs::remove_dir_all(&path)?;
-        cleanup_created_directories(&journal.created_dirs);
+        cleanup_created_directories(&journal.created_dirs, scheme);
         return sync_nearest_existing_directory(parent_dir(&path));
     }
 
-    rollback_install_transaction(&path, &journal)
+    rollback_install_transaction(&path, &journal, scheme)
 }
 
-fn rollback_install_transaction(path: &Path, journal: &InstallJournal) -> io::Result<()> {
+fn rollback_install_transaction(
+    path: &Path,
+    journal: &InstallJournal,
+    scheme: &InstallScheme,
+) -> io::Result<()> {
     for entry in journal.entries.iter().rev() {
-        if let Some(backup_name) = &entry.backup_name {
+        let destination = resolve_install_path(entry.root, &entry.relative_path, scheme);
+        if let Some(backup_index) = entry.backup_index {
             crate::atomic_fs::atomic_copy(
-                &path.join("backups").join(backup_name),
-                &entry.destination,
+                &path.join("backups").join(backup_index.to_string()),
+                &destination,
             )?;
         } else {
-            match fs::symlink_metadata(&entry.destination) {
+            match fs::symlink_metadata(&destination) {
                 Ok(metadata)
                     if metadata.file_type().is_file() || metadata.file_type().is_symlink() =>
                 {
-                    fs::remove_file(&entry.destination)?;
+                    fs::remove_file(&destination)?;
                 }
                 Ok(_) => {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
                         format!(
                             "cannot roll back non-file destination {}",
-                            entry.destination.display()
+                            destination.display()
                         ),
                     ));
                 }
@@ -451,8 +565,203 @@ fn rollback_install_transaction(path: &Path, journal: &InstallJournal) -> io::Re
     }
 
     fs::remove_dir_all(path)?;
-    cleanup_created_directories(&journal.created_dirs);
+    cleanup_created_directories(&journal.created_dirs, scheme);
     sync_nearest_existing_directory(parent_dir(path))
+}
+
+fn install_root_path(root: InstallRoot, scheme: &InstallScheme) -> &Path {
+    match root {
+        InstallRoot::Purelib => &scheme.purelib,
+        InstallRoot::Platlib => &scheme.platlib,
+        InstallRoot::Scripts => &scheme.scripts,
+        InstallRoot::Headers => &scheme.headers,
+        InstallRoot::Data => &scheme.data,
+    }
+}
+
+fn encode_install_file(path: &Path, scheme: &InstallScheme) -> io::Result<(InstallRoot, PathBuf)> {
+    let encoded = encode_install_path(path, scheme, false)?;
+    Ok((encoded.root, encoded.relative_path))
+}
+
+fn encode_install_directory(
+    path: &Path,
+    scheme: &InstallScheme,
+) -> io::Result<InstallJournalDirectory> {
+    encode_install_path(path, scheme, true)
+}
+
+fn encode_install_path(
+    path: &Path,
+    scheme: &InstallScheme,
+    allow_empty: bool,
+) -> io::Result<InstallJournalDirectory> {
+    let roots = [
+        InstallRoot::Purelib,
+        InstallRoot::Platlib,
+        InstallRoot::Scripts,
+        InstallRoot::Headers,
+        InstallRoot::Data,
+    ];
+    let (root, relative_path) = roots
+        .into_iter()
+        .filter_map(|root| {
+            path.strip_prefix(install_root_path(root, scheme))
+                .ok()
+                .map(|relative| (root, relative.to_path_buf()))
+        })
+        .max_by_key(|(root, _)| install_root_path(*root, scheme).components().count())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "install destination is outside the declared roots: {}",
+                    path.display()
+                ),
+            )
+        })?;
+    validate_relative_install_path(&relative_path, allow_empty)?;
+    Ok(InstallJournalDirectory {
+        root,
+        relative_path,
+    })
+}
+
+fn resolve_install_path(
+    root: InstallRoot,
+    relative_path: &Path,
+    scheme: &InstallScheme,
+) -> PathBuf {
+    install_root_path(root, scheme).join(relative_path)
+}
+
+fn validate_relative_install_path(path: &Path, allow_empty: bool) -> io::Result<()> {
+    let is_safe = !path.is_absolute()
+        && path
+            .components()
+            .all(|component| matches!(component, std::path::Component::Normal(_)));
+    if !is_safe || (!allow_empty && path.as_os_str().is_empty()) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "invalid relative install path in transaction journal: {}",
+                path.display()
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_install_journal(
+    transaction_path: &Path,
+    journal: &InstallJournal,
+    scheme: &InstallScheme,
+) -> io::Result<()> {
+    if journal.version != INSTALL_JOURNAL_VERSION {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("unsupported installer journal version {}", journal.version),
+        ));
+    }
+    let backups_path = transaction_path.join("backups");
+    if !fs::symlink_metadata(&backups_path)?.file_type().is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "installer transaction backups path is not a real directory",
+        ));
+    }
+    let committed_path = transaction_path.join(INSTALL_COMMITTED_FILE);
+    match fs::symlink_metadata(&committed_path) {
+        Ok(metadata) if !metadata.file_type().is_file() => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "installer transaction commit marker is not a regular file",
+            ));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    for item in fs::read_dir(transaction_path)? {
+        let item = item?;
+        let name = item.file_name();
+        if name != INSTALL_JOURNAL_FILE && name != INSTALL_COMMITTED_FILE && name != "backups" {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "installer transaction contains unknown state entry {}",
+                    item.path().display()
+                ),
+            ));
+        }
+    }
+
+    let declared_transaction_path = install_transaction_path(scheme);
+    let lock_path = install_lock_path(scheme);
+    let mut destinations = HashSet::new();
+    for (index, entry) in journal.entries.iter().enumerate() {
+        validate_relative_install_path(&entry.relative_path, false)?;
+        if let Some(backup_index) = entry.backup_index
+            && backup_index != index
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid backup index in installer transaction journal",
+            ));
+        }
+        if entry.backup_index.is_some()
+            && !fs::symlink_metadata(backups_path.join(index.to_string()))?
+                .file_type()
+                .is_file()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "installer transaction backup is not a regular file",
+            ));
+        }
+        let destination = resolve_install_path(entry.root, &entry.relative_path, scheme);
+        if destination.starts_with(&declared_transaction_path)
+            || destination == lock_path
+            || !destinations.insert(destination)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid or duplicate destination in installer transaction journal",
+            ));
+        }
+    }
+
+    let expected_backups: HashSet<_> = journal
+        .entries
+        .iter()
+        .enumerate()
+        .filter_map(|(index, entry)| entry.backup_index.map(|_| index.to_string()))
+        .collect();
+    for backup in fs::read_dir(&backups_path)? {
+        let backup = backup?;
+        if !expected_backups.contains(&backup.file_name().to_string_lossy().into_owned()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "installer transaction contains an unknown backup entry",
+            ));
+        }
+    }
+
+    for directory in &journal.created_dirs {
+        validate_relative_install_path(&directory.relative_path, true)?;
+        let directory = resolve_install_path(directory.root, &directory.relative_path, scheme);
+        if directory != scheme.data
+            && !destinations
+                .iter()
+                .any(|destination| destination.starts_with(&directory))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "created directory is unrelated to journaled destinations",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn collect_missing_directories(
@@ -479,9 +788,10 @@ fn collect_missing_directories(
     missing
 }
 
-fn cleanup_created_directories(created_dirs: &[PathBuf]) {
+fn cleanup_created_directories(created_dirs: &[InstallJournalDirectory], scheme: &InstallScheme) {
     for directory in created_dirs.iter().rev() {
-        match fs::remove_dir(directory) {
+        let directory = resolve_install_path(directory.root, &directory.relative_path, scheme);
+        match fs::remove_dir(&directory) {
             Ok(()) => {}
             Err(error)
                 if matches!(
@@ -829,7 +1139,8 @@ mod tests {
             },
         ];
 
-        let result = publish_staged_files_with(&staged_files, &scheme, |index| {
+        let lock = InstallLock::acquire(&scheme).unwrap();
+        let result = publish_staged_files_with(&staged_files, &scheme, &lock, |index| {
             if index == 1 {
                 Err(io::Error::other("injected second-publish failure"))
             } else {
@@ -869,12 +1180,13 @@ mod tests {
             },
         ];
 
-        let transaction = InstallTransaction::prepare(&staged_files, &scheme).unwrap();
+        let lock = InstallLock::acquire(&scheme).unwrap();
+        let transaction = InstallTransaction::prepare(&staged_files, &scheme, &lock).unwrap();
         transaction.publish(&staged_files[0]).unwrap();
         drop(transaction); // Simulate process termination before commit/rollback.
         assert_eq!(fs::read(&first).unwrap(), b"new first");
 
-        recover_install_transaction(&scheme).unwrap();
+        recover_install_transaction(&scheme, &lock).unwrap();
 
         assert_eq!(fs::read(first).unwrap(), b"old first");
         assert_eq!(fs::read(second).unwrap(), b"old second");
@@ -894,9 +1206,10 @@ mod tests {
             destination: destination.clone(),
         }];
 
-        let transaction = InstallTransaction::prepare(&staged_files, &scheme).unwrap();
+        let lock = InstallLock::acquire(&scheme).unwrap();
+        let transaction = InstallTransaction::prepare(&staged_files, &scheme, &lock).unwrap();
         transaction.publish(&staged_files[0]).unwrap();
-        transaction.rollback().unwrap();
+        transaction.rollback(&scheme).unwrap();
 
         assert!(!destination.exists());
         assert!(!scheme.purelib.exists());
@@ -918,16 +1231,84 @@ mod tests {
             destination: destination.clone(),
         }];
 
-        let transaction = InstallTransaction::prepare(&staged_files, &scheme).unwrap();
+        let lock = InstallLock::acquire(&scheme).unwrap();
+        let transaction = InstallTransaction::prepare(&staged_files, &scheme, &lock).unwrap();
         transaction.publish(&staged_files[0]).unwrap();
         crate::atomic_fs::atomic_write(&transaction.path.join(INSTALL_COMMITTED_FILE), b"")
             .unwrap();
         drop(transaction); // Simulate interruption after the durable commit marker.
 
-        recover_install_transaction(&scheme).unwrap();
+        recover_install_transaction(&scheme, &lock).unwrap();
 
         assert_eq!(fs::read(destination).unwrap(), b"new");
         assert!(!install_transaction_path(&scheme).exists());
+    }
+
+    #[test]
+    fn active_install_lock_prevents_concurrent_recovery() {
+        let dir = tempdir().unwrap();
+        let scheme = test_scheme(dir.path());
+        let first_lock = InstallLock::acquire(&scheme).unwrap();
+        let competing_scheme = scheme.clone();
+
+        let competing = std::thread::spawn(move || InstallLock::try_acquire(&competing_scheme))
+            .join()
+            .unwrap();
+
+        assert_eq!(competing.unwrap_err().kind(), io::ErrorKind::WouldBlock);
+        drop(first_lock);
+        InstallLock::try_acquire(&scheme).unwrap();
+    }
+
+    #[test]
+    fn crafted_recovery_journal_cannot_escape_install_roots() {
+        let dir = tempdir().unwrap();
+        let scheme = test_scheme(&dir.path().join("scheme"));
+        fs::create_dir_all(&scheme.data).unwrap();
+        let victim = dir.path().join("victim.txt");
+        fs::write(&victim, b"keep me").unwrap();
+        let transaction = install_transaction_path(&scheme);
+        fs::create_dir(&transaction).unwrap();
+        fs::create_dir(transaction.join("backups")).unwrap();
+        fs::write(
+            transaction.join(INSTALL_JOURNAL_FILE),
+            br#"{
+              "version": 1,
+              "entries": [{
+                "root": "data",
+                "relative_path": "../../victim.txt",
+                "backup_index": null
+              }],
+              "created_dirs": []
+            }"#,
+        )
+        .unwrap();
+        let lock = InstallLock::acquire(&scheme).unwrap();
+
+        let result = recover_install_transaction(&scheme, &lock);
+
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
+        assert_eq!(fs::read(victim).unwrap(), b"keep me");
+        assert!(
+            transaction.exists(),
+            "malformed state must be retained for diagnosis"
+        );
+    }
+
+    #[test]
+    fn unknown_transaction_state_is_rejected_without_deletion() {
+        let dir = tempdir().unwrap();
+        let scheme = test_scheme(dir.path());
+        fs::create_dir_all(&scheme.data).unwrap();
+        let transaction = install_transaction_path(&scheme);
+        fs::create_dir(&transaction).unwrap();
+        fs::write(transaction.join("unknown"), b"preserve").unwrap();
+        let lock = InstallLock::acquire(&scheme).unwrap();
+
+        let result = recover_install_transaction(&scheme, &lock);
+
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
+        assert_eq!(fs::read(transaction.join("unknown")).unwrap(), b"preserve");
     }
 
     #[test]

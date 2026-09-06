@@ -9,6 +9,11 @@ use std::fs::{self, File, Permissions};
 use std::io::{self, Write};
 use std::path::Path;
 
+#[cfg(any(test, not(any(target_os = "linux", target_os = "macos"))))]
+const DIRECTORY_TRANSACTION_PREPARED: &[u8] = b"prepared";
+#[cfg(any(test, not(any(target_os = "linux", target_os = "macos"))))]
+const DIRECTORY_TRANSACTION_COMMITTED: &[u8] = b"committed";
+
 /// Atomically replace `path` with `contents`.
 pub(crate) fn atomic_write(path: &Path, contents: &[u8]) -> io::Result<()> {
     atomic_write_with(path, None, |file| file.write_all(contents))
@@ -61,11 +66,15 @@ where
 ///
 /// The old destination remains untouched if staging fails. Linux and macOS use
 /// their atomic directory-exchange operations, so there is no interval where
-/// the destination is missing. Other platforms retain a best-effort rollback
-/// fallback until they provide an equivalent primitive.
+/// the destination is missing. Other platforms use a locked, deterministic
+/// transaction marker and recover an interrupted replacement on the next call.
 pub(crate) fn atomic_replace_dir_from(source: &Path, destination: &Path) -> io::Result<()> {
     let parent = parent_dir(destination);
     fs::create_dir_all(parent)?;
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let _lock = lock_directory_replacement(destination)?;
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    recover_directory_replacement(destination)?;
     let transaction = tempfile::Builder::new()
         .prefix(".pybun-dir-")
         .tempdir_in(parent)?;
@@ -88,24 +97,149 @@ pub(crate) fn atomic_replace_dir_from(source: &Path, destination: &Path) -> io::
 
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
-        let backup = transaction.path().join("backup");
-        fs::rename(destination, &backup)?;
-        if let Err(publish_error) = fs::rename(&staged, destination) {
-            if let Err(rollback_error) = fs::rename(&backup, destination) {
-                return Err(io::Error::new(
-                    publish_error.kind(),
-                    format!(
-                        "failed to publish staged directory ({publish_error}); rollback also failed ({rollback_error})"
-                    ),
-                ));
-            }
-            return Err(publish_error);
-        }
-        sync_directory(parent)?;
-        remove_path(&backup)?;
+        replace_directory_with_recovery(&staged, destination)?;
     }
 
     sync_directory(parent)
+}
+
+#[cfg(any(test, not(any(target_os = "linux", target_os = "macos"))))]
+fn directory_transaction_marker(destination: &Path) -> std::path::PathBuf {
+    sibling_with_suffix(destination, ".pybun-transaction")
+}
+
+#[cfg(any(test, not(any(target_os = "linux", target_os = "macos"))))]
+fn directory_transaction_backup(destination: &Path) -> std::path::PathBuf {
+    sibling_with_suffix(destination, ".pybun-backup")
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn directory_transaction_lock(destination: &Path) -> std::path::PathBuf {
+    sibling_with_suffix(destination, ".pybun-lock")
+}
+
+#[cfg(any(test, not(any(target_os = "linux", target_os = "macos"))))]
+fn sibling_with_suffix(path: &Path, suffix: &str) -> std::path::PathBuf {
+    let mut name = path
+        .file_name()
+        .unwrap_or_else(|| std::ffi::OsStr::new("destination"))
+        .to_os_string();
+    name.push(suffix);
+    parent_dir(path).join(name)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn replace_directory_with_recovery(staged: &Path, destination: &Path) -> io::Result<()> {
+    let marker = directory_transaction_marker(destination);
+    let backup = directory_transaction_backup(destination);
+    if backup.exists() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!(
+                "refusing to replace {} while an unjournaled backup exists at {}",
+                destination.display(),
+                backup.display()
+            ),
+        ));
+    }
+
+    atomic_write(&marker, DIRECTORY_TRANSACTION_PREPARED)?;
+    fs::rename(destination, &backup)?;
+    sync_directory(parent_dir(destination))?;
+    if let Err(publish_error) = fs::rename(staged, destination) {
+        return match recover_directory_replacement(destination) {
+            Ok(()) => Err(publish_error),
+            Err(recovery_error) => Err(io::Error::new(
+                publish_error.kind(),
+                format!(
+                    "failed to publish staged directory ({publish_error}); recovery also failed ({recovery_error})"
+                ),
+            )),
+        };
+    }
+    sync_directory(parent_dir(destination))?;
+    atomic_write(&marker, DIRECTORY_TRANSACTION_COMMITTED)?;
+    if backup.exists() {
+        remove_path(&backup)?;
+    }
+    fs::remove_file(&marker)?;
+    sync_directory(parent_dir(destination))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn lock_directory_replacement(destination: &Path) -> io::Result<File> {
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(directory_transaction_lock(destination))?;
+    fs2::FileExt::lock_exclusive(&file)?;
+    Ok(file)
+}
+
+#[cfg(any(test, not(any(target_os = "linux", target_os = "macos"))))]
+fn recover_directory_replacement(destination: &Path) -> io::Result<()> {
+    let marker = directory_transaction_marker(destination);
+    let backup = directory_transaction_backup(destination);
+    if !marker.exists() {
+        if backup.exists() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "found unjournaled directory backup at {}; refusing to delete it",
+                    backup.display()
+                ),
+            ));
+        }
+        return Ok(());
+    }
+
+    let state = fs::read(&marker)?;
+    match state.as_slice() {
+        DIRECTORY_TRANSACTION_PREPARED => {
+            if backup.exists() {
+                if destination.exists() {
+                    remove_path(destination)?;
+                }
+                fs::rename(&backup, destination)?;
+            } else if !destination.exists() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "directory transaction has neither destination nor backup",
+                ));
+            }
+        }
+        DIRECTORY_TRANSACTION_COMMITTED => {
+            if destination.exists() {
+                if backup.exists() {
+                    remove_path(&backup)?;
+                }
+            } else if backup.exists() {
+                // A committed destination should already be durable. Restore
+                // the old tree rather than leave the destination absent if
+                // external filesystem damage violates that invariant.
+                fs::rename(&backup, destination)?;
+            } else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "committed directory transaction lost both trees",
+                ));
+            }
+        }
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "invalid directory transaction marker at {}",
+                    marker.display()
+                ),
+            ));
+        }
+    }
+
+    fs::remove_file(marker)?;
+    sync_directory(parent_dir(destination))
 }
 
 #[cfg(target_os = "linux")]
@@ -274,6 +408,24 @@ mod tests {
 
         assert_eq!(fs::read(first.join("second.txt")).unwrap(), b"second");
         assert_eq!(fs::read(second.join("first.txt")).unwrap(), b"first");
+    }
+
+    #[test]
+    fn fallback_recovery_restores_destination_after_backup_rename() {
+        let temp = tempdir().unwrap();
+        let destination = temp.path().join("destination");
+        fs::create_dir(&destination).unwrap();
+        fs::write(destination.join("old.txt"), b"old").unwrap();
+        let marker = directory_transaction_marker(&destination);
+        let backup = directory_transaction_backup(&destination);
+        atomic_write(&marker, DIRECTORY_TRANSACTION_PREPARED).unwrap();
+        fs::rename(&destination, &backup).unwrap();
+
+        recover_directory_replacement(&destination).unwrap();
+
+        assert_eq!(fs::read(destination.join("old.txt")).unwrap(), b"old");
+        assert!(!marker.exists());
+        assert!(!backup.exists());
     }
 
     #[test]
