@@ -439,24 +439,78 @@ pub fn supported_versions() -> Vec<PythonVersion> {
 
 /// Find a supported version matching the request.
 pub fn find_version(requested: &str) -> Option<PythonVersion> {
-    let versions = supported_versions();
+    resolve_supported_version(requested).ok()
+}
 
-    // Exact match first
-    if let Some(v) = versions.iter().find(|v| v.version == requested) {
-        return Some(v.clone());
+fn parse_version_selector(selector: &str) -> Result<Vec<u32>> {
+    let parts: Vec<_> = selector.split('.').collect();
+    if parts.is_empty()
+        || parts.len() > 3
+        || parts
+            .iter()
+            .any(|part| part.is_empty() || !part.bytes().all(|byte| byte.is_ascii_digit()))
+    {
+        return Err(eyre!(
+            "Invalid Python version selector '{}'. Expected one to three numeric components, such as 3.11 or 3.11.10.",
+            selector
+        ));
     }
 
-    // Prefix match (e.g., "3.11" matches "3.11.10")
-    let matching: Vec<_> = versions
-        .iter()
-        .filter(|v| v.version.starts_with(requested))
-        .collect();
-
-    // Return the latest matching version
-    matching
+    parts
         .into_iter()
-        .max_by(|a, b| version_cmp(&a.version, &b.version))
-        .cloned()
+        .map(|part| {
+            part.parse::<u32>().map_err(|_| {
+                eyre!(
+                    "Invalid Python version selector '{}'. Version component '{}' is too large.",
+                    selector,
+                    part
+                )
+            })
+        })
+        .collect()
+}
+
+/// Check whether a concrete Python version satisfies a partial or exact selector.
+pub fn version_matches_selector(selector: &str, version: &str) -> Result<bool> {
+    let selector_parts = parse_version_selector(selector)?;
+    let version_parts = parse_version_selector(version)?;
+    Ok(selector_parts.len() <= version_parts.len()
+        && selector_parts
+            .iter()
+            .zip(version_parts.iter())
+            .all(|(requested, actual)| requested == actual))
+}
+
+fn resolve_supported_version(requested: &str) -> Result<PythonVersion> {
+    parse_version_selector(requested)?;
+    let versions = supported_versions();
+
+    if let Some(version) = versions.iter().find(|version| version.version == requested) {
+        return Ok(version.clone());
+    }
+
+    let mut matching: Vec<_> = versions
+        .into_iter()
+        .filter(|version| version_matches_selector(requested, &version.version).unwrap_or(false))
+        .collect();
+    matching.sort_by(|a, b| version_cmp(&b.version, &a.version));
+
+    match matching.as_slice() {
+        [] => Err(eyre!(
+            "Python {} is not supported. Supported versions: 3.9, 3.10, 3.11, 3.12",
+            requested
+        )),
+        [version] => Ok(version.clone()),
+        _ => Err(eyre!(
+            "Python version selector '{}' is ambiguous; it matches supported versions: {}. Specify a more precise version.",
+            requested,
+            matching
+                .iter()
+                .map(|version| version.version.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
 }
 
 /// Compare two version strings.
@@ -480,6 +534,28 @@ fn python_binary_in(install_dir: &Path) -> PathBuf {
 pub struct RuntimeManager {
     cache: Cache,
     offline: bool,
+}
+
+/// Whether ensuring a runtime installed it or reused an existing installation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeInstallStatus {
+    Installed,
+    AlreadyInstalled,
+}
+
+/// Canonical result of ensuring a requested Python runtime is installed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnsureVersionOutcome {
+    pub version: String,
+    pub path: PathBuf,
+    pub status: RuntimeInstallStatus,
+}
+
+/// Canonical result of removing an installed Python runtime.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoveVersionOutcome {
+    pub version: String,
+    pub path: PathBuf,
 }
 
 impl RuntimeManager {
@@ -540,20 +616,54 @@ impl RuntimeManager {
         Ok(versions)
     }
 
+    /// Resolve an exact or partial selector against complete managed installs.
+    ///
+    /// Exact matches win. A partial selector must identify exactly one installed
+    /// runtime; callers receive an actionable error instead of an arbitrary
+    /// choice when multiple patch releases are installed.
+    pub fn resolve_installed_version(&self, requested: &str) -> Result<Option<String>> {
+        parse_version_selector(requested)?;
+        let installed = self.list_installed()?;
+
+        if installed.iter().any(|version| version == requested) {
+            return Ok(Some(requested.to_string()));
+        }
+
+        let matching: Vec<_> = installed
+            .into_iter()
+            .filter(|version| version_matches_selector(requested, version).unwrap_or(false))
+            .collect();
+
+        match matching.as_slice() {
+            [] => Ok(None),
+            [version] => Ok(Some(version.clone())),
+            _ => Err(eyre!(
+                "Python version selector '{}' is ambiguous; it matches installed versions: {}. Specify an exact version.",
+                requested,
+                matching.join(", ")
+            )),
+        }
+    }
+
     /// Ensure a Python version is installed, downloading if necessary.
     pub fn ensure_version(&self, requested: &str) -> Result<PathBuf> {
-        let version_info = find_version(requested).ok_or_else(|| {
-            eyre!(
-                "Python {} is not supported. Supported versions: 3.9, 3.10, 3.11, 3.12",
-                requested
-            )
-        })?;
+        Ok(self.ensure_version_with_outcome(requested)?.path)
+    }
+
+    /// Ensure a Python version is installed and report the canonical outcome.
+    pub fn ensure_version_with_outcome(&self, requested: &str) -> Result<EnsureVersionOutcome> {
+        let version_info = resolve_supported_version(requested)?;
 
         let version = &version_info.version;
+        let path = self.python_binary(version);
 
         // Check if already installed
         if self.is_installed(version) {
-            return Ok(self.python_binary(version));
+            return Ok(EnsureVersionOutcome {
+                version: version.clone(),
+                path,
+                status: RuntimeInstallStatus::AlreadyInstalled,
+            });
         }
 
         // Check offline mode
@@ -566,9 +676,13 @@ impl RuntimeManager {
         }
 
         // Download and install
-        self.download_and_install(&version_info)?;
+        let status = self.download_and_install(&version_info)?;
 
-        Ok(self.python_binary(version))
+        Ok(EnsureVersionOutcome {
+            version: version.clone(),
+            path,
+            status,
+        })
     }
 
     /// Download and install a Python version.
@@ -583,7 +697,7 @@ impl RuntimeManager {
     /// touches the shared, version-tagged install location, and a loser of
     /// that race detects the winner's already-installed binary rather than
     /// erroring.
-    fn download_and_install(&self, version_info: &PythonVersion) -> Result<()> {
+    fn download_and_install(&self, version_info: &PythonVersion) -> Result<RuntimeInstallStatus> {
         let platform = Platform::current().ok_or_else(|| eyre!("Unsupported platform"))?;
 
         let url = format!(
@@ -604,7 +718,7 @@ impl RuntimeManager {
         // here.
         let python_bin = self.python_binary(&version_info.version);
         if python_bin.exists() {
-            return Ok(());
+            return Ok(RuntimeInstallStatus::AlreadyInstalled);
         }
 
         // Private, per-invocation temp archive path (Issue #414): a
@@ -658,15 +772,17 @@ impl RuntimeManager {
         // The temp archive is private to this call regardless of the
         // extraction outcome, so it's always safe to remove here.
         cleanup_archive();
-        result?;
+        let status = result?;
 
-        eprintln!(
-            "  Installed Python {} to {}",
-            version_info.version,
-            dest_dir.display()
-        );
+        if status == RuntimeInstallStatus::Installed {
+            eprintln!(
+                "  Installed Python {} to {}",
+                version_info.version,
+                dest_dir.display()
+            );
+        }
 
-        Ok(())
+        Ok(status)
     }
 
     /// Extract `archive_path` into a private, per-invocation temporary
@@ -681,7 +797,11 @@ impl RuntimeManager {
     /// interprets as "a peer already published" (verified by checking for
     /// the peer's binary) rather than an error, discarding its own
     /// redundant-but-harmless extraction instead.
-    fn finalize_extracted_install(&self, archive_path: &Path, dest_dir: &Path) -> Result<()> {
+    fn finalize_extracted_install(
+        &self,
+        archive_path: &Path,
+        dest_dir: &Path,
+    ) -> Result<RuntimeInstallStatus> {
         let runtimes_dir = dest_dir
             .parent()
             .ok_or_else(|| eyre!("invalid install directory: {}", dest_dir.display()))?;
@@ -731,7 +851,7 @@ impl RuntimeManager {
         }
 
         match fs::rename(&temp_install_dir, dest_dir) {
-            Ok(()) => Ok(()),
+            Ok(()) => Ok(RuntimeInstallStatus::Installed),
             Err(e) => {
                 // A peer may have already published a complete install at
                 // `dest_dir` first (dest_dir already exists and is
@@ -742,7 +862,7 @@ impl RuntimeManager {
                 let published_by_peer = python_binary_in(dest_dir).exists();
                 cleanup_temp();
                 if published_by_peer {
-                    Ok(())
+                    Ok(RuntimeInstallStatus::AlreadyInstalled)
                 } else {
                     Err(e).wrap_err("Failed to finalize Python installation")
                 }
@@ -752,14 +872,20 @@ impl RuntimeManager {
 
     /// Remove an installed Python version.
     pub fn remove_version(&self, version: &str) -> Result<()> {
-        let dir = self.version_dir(version);
-        if !dir.exists() {
-            return Err(eyre!("Python {} is not installed", version));
-        }
+        self.remove_version_with_outcome(version).map(|_| ())
+    }
+
+    /// Remove an installed Python selected by exact or unambiguous partial version.
+    pub fn remove_version_with_outcome(&self, requested: &str) -> Result<RemoveVersionOutcome> {
+        let version = self
+            .resolve_installed_version(requested)?
+            .ok_or_else(|| eyre!("Python {} is not installed", requested))?;
+        let dir = self.version_dir(&version);
+        let path = self.python_binary(&version);
 
         fs::remove_dir_all(&dir)?;
         eprintln!("Removed Python {}", version);
-        Ok(())
+        Ok(RemoveVersionOutcome { version, path })
     }
 
     /// Get version information for an installed Python.
@@ -789,6 +915,42 @@ impl RuntimeManager {
             managed: true,
         })
     }
+}
+
+/// Query the concrete version reported by a Python executable.
+pub fn python_executable_version(python: &Path) -> Result<String> {
+    let output = std::process::Command::new(python)
+        .arg("--version")
+        .output()
+        .wrap_err_with(|| format!("Failed to execute Python at {}", python.display()))?;
+    if !output.status.success() {
+        return Err(eyre!(
+            "Python at {} failed to report its version (exit status {})",
+            python.display(),
+            output.status
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let reported = if stdout.trim().is_empty() {
+        stderr.trim()
+    } else {
+        stdout.trim()
+    };
+    let version = reported
+        .strip_prefix("Python ")
+        .unwrap_or(reported)
+        .split_whitespace()
+        .next()
+        .unwrap_or_default();
+    parse_version_selector(version).wrap_err_with(|| {
+        format!(
+            "Python at {} did not report a valid numeric version",
+            python.display()
+        )
+    })?;
+    Ok(version.to_string())
 }
 
 /// Information about an installed Python interpreter.
@@ -933,6 +1095,73 @@ mod tests {
     fn test_find_version_not_found() {
         let v = find_version("2.7");
         assert!(v.is_none());
+    }
+
+    #[test]
+    fn test_find_version_matches_components_not_string_prefixes() {
+        assert!(find_version("3.1").is_none());
+    }
+
+    #[test]
+    fn test_version_matches_selector_by_numeric_component() {
+        assert!(version_matches_selector("3.11", "3.11.10").unwrap());
+        assert!(version_matches_selector("3.11.10", "3.11.10").unwrap());
+        assert!(!version_matches_selector("3.1", "3.11.10").unwrap());
+        assert!(version_matches_selector("3..11", "3.11.10").is_err());
+    }
+
+    #[test]
+    fn test_ensure_version_outcome_reports_canonical_reuse() {
+        let temp = TempDir::new().unwrap();
+        let cache = Cache::with_root(temp.path());
+        let manager = RuntimeManager::new(cache);
+        let python = manager.python_binary("3.11.10");
+        fs::create_dir_all(python.parent().unwrap()).unwrap();
+        fs::write(&python, []).unwrap();
+
+        let outcome = manager.ensure_version_with_outcome("3.11").unwrap();
+        assert_eq!(outcome.version, "3.11.10");
+        assert_eq!(outcome.path, python);
+        assert_eq!(outcome.status, RuntimeInstallStatus::AlreadyInstalled);
+    }
+
+    #[test]
+    fn test_resolve_installed_version_partial() {
+        let temp = TempDir::new().unwrap();
+        let cache = Cache::with_root(temp.path());
+        let manager = RuntimeManager::new(cache);
+        let python = manager.python_binary("3.11.10");
+        fs::create_dir_all(python.parent().unwrap()).unwrap();
+        fs::write(python, []).unwrap();
+
+        assert_eq!(
+            manager.resolve_installed_version("3.11").unwrap(),
+            Some("3.11.10".to_string())
+        );
+    }
+
+    #[test]
+    fn test_resolve_installed_version_rejects_ambiguous_selector() {
+        let temp = TempDir::new().unwrap();
+        let cache = Cache::with_root(temp.path());
+        let manager = RuntimeManager::new(cache);
+        for version in ["3.11.9", "3.11.10"] {
+            let python = manager.python_binary(version);
+            fs::create_dir_all(python.parent().unwrap()).unwrap();
+            fs::write(python, []).unwrap();
+        }
+
+        assert_eq!(
+            manager.resolve_installed_version("3.11.9").unwrap(),
+            Some("3.11.9".to_string()),
+            "an exact selector must win even when a partial selector is ambiguous"
+        );
+
+        let error = manager.resolve_installed_version("3.11").unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("ambiguous"), "error={message}");
+        assert!(message.contains("3.11.9"), "error={message}");
+        assert!(message.contains("3.11.10"), "error={message}");
     }
 
     #[test]
@@ -1332,6 +1561,19 @@ mod tests {
         assert!(
             result_b.is_ok(),
             "the winner (or a peer-detecting loser) must not error: {result_b:?}"
+        );
+        let mut statuses = [result_a.unwrap(), result_b.unwrap()];
+        statuses.sort_by_key(|status| match status {
+            RuntimeInstallStatus::Installed => 0,
+            RuntimeInstallStatus::AlreadyInstalled => 1,
+        });
+        assert_eq!(
+            statuses,
+            [
+                RuntimeInstallStatus::Installed,
+                RuntimeInstallStatus::AlreadyInstalled,
+            ],
+            "exactly one caller must publish and the peer must report reuse"
         );
 
         let python_bin = python_binary_in(&dest_dir);

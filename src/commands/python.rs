@@ -2,7 +2,10 @@ use super::RenderDetail;
 use crate::cache::Cache;
 use crate::cli::PythonCommands;
 use crate::env::find_python_env;
-use crate::runtime::{RuntimeManager, supported_versions};
+use crate::runtime::{
+    RuntimeInstallStatus, RuntimeManager, python_executable_version, supported_versions,
+    version_matches_selector,
+};
 use crate::schema::{EventCollector, EventType};
 use color_eyre::eyre::{Result, eyre};
 use serde_json::json;
@@ -85,37 +88,29 @@ fn python_install(args: &crate::cli::PythonInstallArgs) -> Result<(String, Rende
     let cache = Cache::new().map_err(|e| eyre!("failed to initialize cache: {}", e))?;
     let manager = RuntimeManager::new(cache);
 
-    // Check if already installed
-    if manager.is_installed(&args.version) {
-        let path = manager.python_binary(&args.version);
-        let summary = format!(
-            "Python {} is already installed at {}",
-            args.version,
-            path.display()
-        );
-        let json = json!({
-            "version": args.version,
-            "path": path.display().to_string(),
-            "status": "already_installed",
-        });
-        return Ok((
-            "install".to_string(),
-            RenderDetail::with_json(summary, json),
-        ));
-    }
-
-    // Install
-    let python_path = manager.ensure_version(&args.version)?;
-
-    let summary = format!(
-        "Installed Python {} at {}",
-        args.version,
-        python_path.display()
-    );
+    let outcome = manager.ensure_version_with_outcome(&args.version)?;
+    let (summary, status) = match outcome.status {
+        RuntimeInstallStatus::Installed => (
+            format!(
+                "Installed Python {} at {}",
+                outcome.version,
+                outcome.path.display()
+            ),
+            "installed",
+        ),
+        RuntimeInstallStatus::AlreadyInstalled => (
+            format!(
+                "Python {} is already installed at {}",
+                outcome.version,
+                outcome.path.display()
+            ),
+            "already_installed",
+        ),
+    };
     let json = json!({
-        "version": args.version,
-        "path": python_path.display().to_string(),
-        "status": "installed",
+        "version": outcome.version,
+        "path": outcome.path.display().to_string(),
+        "status": status,
     });
 
     Ok((
@@ -128,11 +123,12 @@ fn python_remove(args: &crate::cli::PythonRemoveArgs) -> Result<(String, RenderD
     let cache = Cache::new().map_err(|e| eyre!("failed to initialize cache: {}", e))?;
     let manager = RuntimeManager::new(cache);
 
-    manager.remove_version(&args.version)?;
+    let outcome = manager.remove_version_with_outcome(&args.version)?;
 
-    let summary = format!("Removed Python {}", args.version);
+    let summary = format!("Removed Python {}", outcome.version);
     let json = json!({
-        "version": args.version,
+        "version": outcome.version,
+        "path": outcome.path.display().to_string(),
         "status": "removed",
     });
 
@@ -145,10 +141,10 @@ fn python_which(args: &crate::cli::PythonWhichArgs) -> Result<(String, RenderDet
 
     if let Some(version) = &args.version {
         // Look up a specific version
-        if manager.is_installed(version) {
-            let path = manager.python_binary(version);
+        if let Some(resolved_version) = manager.resolve_installed_version(version)? {
+            let path = manager.python_binary(&resolved_version);
             let json = json!({
-                "version": version,
+                "version": resolved_version,
                 "path": path.display().to_string(),
                 "managed": true,
             });
@@ -165,8 +161,18 @@ fn python_which(args: &crate::cli::PythonWhichArgs) -> Result<(String, RenderDet
         let working_dir = std::env::current_dir()?;
         match find_python_env(&working_dir) {
             Ok(env) => {
+                let actual_version = python_executable_version(&env.python_path)?;
+                if !version_matches_selector(version, &actual_version)? {
+                    return Err(eyre!(
+                        "Python {} is not installed, and environment Python {} at {} does not match the requested version. Use 'pybun python install {}' to install it.",
+                        version,
+                        actual_version,
+                        env.python_path.display(),
+                        version
+                    ));
+                }
                 let json = json!({
-                    "version": env.version,
+                    "version": actual_version,
                     "path": env.python_path.display().to_string(),
                     "source": format!("{}", env.source),
                     "managed": false,
