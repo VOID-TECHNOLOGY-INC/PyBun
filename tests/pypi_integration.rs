@@ -61,6 +61,44 @@ fn wheel_sha256() -> String {
     hex::encode(hasher.finalize())
 }
 
+fn traversal_wheel_bytes() -> Vec<u8> {
+    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let options = zip::write::SimpleFileOptions::default();
+    zip.start_file("evil-1.0.0.dist-info/WHEEL", options)
+        .expect("start WHEEL entry");
+    zip.write_all(
+        b"Wheel-Version: 1.0\nGenerator: test\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+    )
+    .expect("write WHEEL entry");
+    zip.start_file("evil-1.0.0.dist-info/METADATA", options)
+        .expect("start METADATA entry");
+    zip.write_all(b"Metadata-Version: 2.1\nName: evil\nVersion: 1.0.0\n")
+        .expect("write METADATA entry");
+    zip.start_file("evil-1.0.0.data/purelib/../../escaped.txt", options)
+        .expect("start traversal entry");
+    zip.write_all(b"must not escape")
+        .expect("write traversal entry");
+    zip.finish().expect("finish traversal wheel").into_inner()
+}
+
+fn find_files_named(root: &Path, name: &str) -> Vec<PathBuf> {
+    fn visit(directory: &Path, name: &str, matches: &mut Vec<PathBuf>) {
+        for entry in fs::read_dir(directory).expect("read test directory") {
+            let entry = entry.expect("read test directory entry");
+            let file_type = entry.file_type().expect("read test entry type");
+            if file_type.is_dir() {
+                visit(&entry.path(), name, matches);
+            } else if entry.file_name() == name {
+                matches.push(entry.path());
+            }
+        }
+    }
+
+    let mut matches = Vec::new();
+    visit(root, name, &mut matches);
+    matches
+}
+
 fn mock_download(server: &MockServer, filename: &str) {
     let path = format!("/files/{}", filename);
     let body = wheel_bytes();
@@ -70,6 +108,97 @@ fn mock_download(server: &MockServer, filename: &str) {
             .header("Content-Type", "application/octet-stream")
             .body(body.clone());
     });
+}
+
+#[test]
+fn install_rejects_a_wheel_with_a_traversing_data_entry() {
+    let temp = tempdir().unwrap();
+    ensure_venv(temp.path());
+    let cache_dir = temp.path().join("pypi-cache");
+    let lock_path = temp.path().join("pybun.lockb");
+    let server = MockServer::start();
+    let base = server.base_url();
+    let wheel = traversal_wheel_bytes();
+    let digest = hex::encode(Sha256::digest(&wheel));
+
+    let project_body = json!({
+        "info": { "name": "evil", "version": "1.0.0" },
+        "releases": {
+            "1.0.0": [{
+                "filename": "evil-1.0.0-py3-none-any.whl",
+                "packagetype": "bdist_wheel",
+                "url": format!("{base}/files/evil-1.0.0-py3-none-any.whl"),
+                "yanked": false,
+                "digests": { "sha256": digest }
+            }]
+        }
+    })
+    .to_string();
+    server.mock(|when, then| {
+        when.method(GET).path("/pypi/evil/json");
+        then.status(200)
+            .header("Content-Type", "application/json")
+            .body(project_body.clone());
+    });
+    server.mock(|when, then| {
+        when.method(GET).path("/pypi/evil/1.0.0/json");
+        then.status(200)
+            .header("Content-Type", "application/json")
+            .body(
+                json!({
+                    "info": {
+                        "name": "evil",
+                        "version": "1.0.0",
+                        "requires_dist": []
+                    }
+                })
+                .to_string(),
+            );
+    });
+    server.mock(|when, then| {
+        when.method(GET).path("/files/evil-1.0.0-py3-none-any.whl");
+        then.status(200)
+            .header("Content-Type", "application/octet-stream")
+            .body(wheel.clone());
+    });
+
+    let output = bin()
+        .current_dir(temp.path())
+        .env("PYBUN_PYPI_BASE_URL", &base)
+        .env("PYBUN_PYPI_CACHE_DIR", &cache_dir)
+        .args([
+            "--format=json",
+            "install",
+            "--require",
+            "evil==1.0.0",
+            "--lock",
+            lock_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run pybun install");
+
+    assert!(
+        !output.status.success(),
+        "unsafe wheel must not be reported as installed: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let response: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("valid JSON error response");
+    assert_eq!(response["status"], "error");
+    let diagnostics = response["diagnostics"]
+        .as_array()
+        .expect("diagnostics array");
+    assert!(
+        diagnostics.iter().any(|diagnostic| diagnostic["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("unsafe wheel entry path"))),
+        "expected an actionable unsafe-path diagnostic: {diagnostics:?}"
+    );
+    let escaped_files = find_files_named(temp.path(), "escaped.txt");
+    assert!(
+        escaped_files.is_empty(),
+        "unsafe wheel wrote escaped files: {escaped_files:?}"
+    );
 }
 
 fn setup_package_mocks(server: &MockServer) -> String {
