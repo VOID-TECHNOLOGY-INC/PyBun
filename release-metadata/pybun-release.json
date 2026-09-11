@@ -2,15 +2,15 @@
   "assets": [
     {
       "name": "pybun-aarch64-apple-darwin.tar.gz",
-      "sha256": "534881ad0ce9c12d9ebbd2b183abad6617123efe5605c59f275bbb7f40b65a8d",
+      "sha256": "ede3be560bf2df1845d35c8609e224d2506de988bc658aa837a3474eec7b4de6",
       "signature": {
         "public_key": "untrusted comment: minisign public key 4DC0D9C844937D2D\nRWQtfZNEyNnATcgzxfwDB+iNwGwW8bwflfnjHMizq6H84B1VRXO92yZ5",
         "type": "minisign",
-        "url": "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.1.25/pybun-aarch64-apple-darwin.tar.gz.minisig",
-        "value": "untrusted comment: signature from minisign secret key\nRUQtfZNEyNnATXDNL8dkQD2XiSZC4xUI2y4+mI/dcnSHDGPQY6gkppMDebUwrLH2FIIBtrKXF75VLo9MMpm6msdk6NOvtLZzowk=\ntrusted comment: timestamp:1789091102\tfile:pybun-aarch64-apple-darwin.tar.gz\thashed\nctdpzAkPUjLW5dEkMxeDUwKBxYyCUUvi7llnj6b9kAcg8NeUNA3v0Sqf92eBM05X+zsZNtOGmONOFqkxBwgWCw=="
+        "url": "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.1.26/pybun-aarch64-apple-darwin.tar.gz.minisig",
+        "value": "untrusted comment: signature from minisign secret key\nRUQtfZNEyNnATe1jqZJ0wDBWImwwTgReOm6MpWaN75coYr6GJbcH+BKcgPSqiXoWQBGtaRRW5dYrDcAsbB1ix+dCtxHyGYGMWwg=\ntrusted comment: timestamp:1789130372\tfile:pybun-aarch64-apple-darwin.tar.gz\thashed\nu0k5qlhdgaCPlqaW3pwIAaue0Qp/jcpESOOAqC7fYDxIn5WUBkeAM0fTUNL0yYTeetZljkmnDh2pAJl6A6iVBg=="
       },
       "target": "aarch64-apple-darwin",
-      "url": "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.1.25/pybun-aarch64-apple-darwin.tar.gz"
+      "url": "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.1.26/pybun-aarch64-apple-darwin.tar.gz"
     },
     {
       "compat": {
@@ -18,39 +18,39 @@
         "min_glibc": "2.31"
       },
       "name": "pybun-aarch64-unknown-linux-gnu.tar.gz",
-      "sha256": "74d53a7951889366c0f7d3cc1c92cd9e630e3fb313c3c82c4f6a79382a0a65ac",
+      "sha256": "8f4f355c90b66f22dc3a9d8394cbbd6d57bc0626bebb7c540a379dda2ea8f1da",
       "signature": {
         "public_key": "untrusted comment: minisign public key 4DC0D9C844937D2D\nRWQtfZNEyNnATcgzxfwDB+iNwGwW8bwflfnjHMizq6H84B1VRXO92yZ5",
         "type": "minisign",
-        "url": "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.1.25/pybun-aarch64-unknown-linux-gnu.tar.gz.minisig",
-        "value": "untrusted comment: signature from minisign secret key\nRUQtfZNEyNnATXCzV5IllVqtOzQickcFzTHQl73wWigvFTrOtcPEeTGCv53k/sui/flYaZ3lDQ26eFDFg13Q+KR4o7phreCJlg8=\ntrusted comment: timestamp:1789091102\tfile:pybun-aarch64-unknown-linux-gnu.tar.gz\thashed\n84XkyDisnc+IaBx5/enDJ40Sy5uqfeaQBxkC+rjtI9BY5oFmN/V+tegU+7eXPR1ll8OPWSdD7OXiLxtS5GxtCw=="
+        "url": "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.1.26/pybun-aarch64-unknown-linux-gnu.tar.gz.minisig",
+        "value": "untrusted comment: signature from minisign secret key\nRUQtfZNEyNnATfiv1xnaGXK57LNiNP+cNdaydlr9CPJ4yOtQCQ7GGNY4Uvi5wAhQPNde8H9aE+uGUZueshEYQgussm6ySMlmhQo=\ntrusted comment: timestamp:1789130372\tfile:pybun-aarch64-unknown-linux-gnu.tar.gz\thashed\nv642jEKfWflzPHJxZQRRbjsML0dW6wQwDucVNSG09KKhV2BYStErpD9qTMTcpOmUjInFrZnDUo440fXF+sTYBw=="
       },
       "target": "aarch64-unknown-linux-gnu",
-      "url": "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.1.25/pybun-aarch64-unknown-linux-gnu.tar.gz"
+      "url": "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.1.26/pybun-aarch64-unknown-linux-gnu.tar.gz"
     },
     {
       "name": "pybun-x86_64-apple-darwin.tar.gz",
-      "sha256": "b7cf6ee61085ea496e27dfbfac5a8b186aba1a317851ec74bff09312db059256",
+      "sha256": "962757888b81f683eb130625ed9e217070e78556343924b7a03eab24fc3736ba",
       "signature": {
         "public_key": "untrusted comment: minisign public key 4DC0D9C844937D2D\nRWQtfZNEyNnATcgzxfwDB+iNwGwW8bwflfnjHMizq6H84B1VRXO92yZ5",
         "type": "minisign",
-        "url": "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.1.25/pybun-x86_64-apple-darwin.tar.gz.minisig",
-        "value": "untrusted comment: signature from minisign secret key\nRUQtfZNEyNnATXK1SPIAoDui2qQjucrwEqpW0Rt3V7mIe4U1XqlO/ViXxwl4Hrpt2D0yK7ZTlX10LmQeZGd9uw5+83pEOrIGOAk=\ntrusted comment: timestamp:1789091102\tfile:pybun-x86_64-apple-darwin.tar.gz\thashed\nh33TDRuN7PQON8yYI3ZWH/YKexzWokeJmR4Qzhbwx+N6IUKlEnyPhW7dC2i0PDKcSRinjmoiMhY5W5KrR8BJDQ=="
+        "url": "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.1.26/pybun-x86_64-apple-darwin.tar.gz.minisig",
+        "value": "untrusted comment: signature from minisign secret key\nRUQtfZNEyNnATZwm3kfK8NjgAVE5PT+jFNj8jg+KIAzSxq0EpJwEkGT0OL4ClA/oHIIbnsdnEJw2qS/zzxRIjh7xJkZml6ozxgg=\ntrusted comment: timestamp:1789130372\tfile:pybun-x86_64-apple-darwin.tar.gz\thashed\nDsISxXN0+u7fkzgJUveNiXhcP0/os7kY37zcdSNfpwci8ozBC+YUo0cVp+gdM8fpXTV2qxg+aFx6YKCX/ymWDQ=="
       },
       "target": "x86_64-apple-darwin",
-      "url": "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.1.25/pybun-x86_64-apple-darwin.tar.gz"
+      "url": "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.1.26/pybun-x86_64-apple-darwin.tar.gz"
     },
     {
       "name": "pybun-x86_64-pc-windows-msvc.zip",
-      "sha256": "2287175d3dd2fb70e782efab98047cd789f375917a4e766bbc5cbac291fbd530",
+      "sha256": "1cd8153e335e32ee3ff969dacbc0d3ee0e0197bd22ae6e69354d1f65df5257fe",
       "signature": {
         "public_key": "untrusted comment: minisign public key 4DC0D9C844937D2D\nRWQtfZNEyNnATcgzxfwDB+iNwGwW8bwflfnjHMizq6H84B1VRXO92yZ5",
         "type": "minisign",
-        "url": "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.1.25/pybun-x86_64-pc-windows-msvc.zip.minisig",
-        "value": "untrusted comment: signature from minisign secret key\nRUQtfZNEyNnATef45wAItyoISBulHZtYmrOCaWW8Qedu150qKt4OOQbZKkCHaqaxXp+zbHEVJYoVVxx8WxtJnVZCRdrg11TE0Qc=\ntrusted comment: timestamp:1789091102\tfile:pybun-x86_64-pc-windows-msvc.zip\thashed\n5hjYzqQozm0nHERkpgE0mfAPyCOxRPPzEcl6pEqfv1vYaRi9NS/Llv55q0u8lIJ891ED2BH43jJpByyyTMsrBg=="
+        "url": "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.1.26/pybun-x86_64-pc-windows-msvc.zip.minisig",
+        "value": "untrusted comment: signature from minisign secret key\nRUQtfZNEyNnATd8ASPizkH50ziaYUCgJocCOO8rME+2WLWDiKpQDb/wz04uKQ7N2NVhSgXYdtigpM6St3GdO1c1kGyeBKJQBmgg=\ntrusted comment: timestamp:1789130372\tfile:pybun-x86_64-pc-windows-msvc.zip\thashed\nX/et8knofXqhV3jMvCaHYUBhD93wScqAbbWLsbQb28jtS9kfLk6hht5ZHFDjpCmy1q8hN6/tMTtskMoHVo/aDg=="
       },
       "target": "x86_64-pc-windows-msvc",
-      "url": "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.1.25/pybun-x86_64-pc-windows-msvc.zip"
+      "url": "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.1.26/pybun-x86_64-pc-windows-msvc.zip"
     },
     {
       "compat": {
@@ -58,44 +58,44 @@
         "min_glibc": "2.31"
       },
       "name": "pybun-x86_64-unknown-linux-gnu.tar.gz",
-      "sha256": "1f0d0b328a5010e0bbf0a2dbed7ebf34e93d8977372891b92afe7fd5866e1dc7",
+      "sha256": "a924c3540403df219d1a0e65b9df24735516a8af5d011fdac87a0419608382df",
       "signature": {
         "public_key": "untrusted comment: minisign public key 4DC0D9C844937D2D\nRWQtfZNEyNnATcgzxfwDB+iNwGwW8bwflfnjHMizq6H84B1VRXO92yZ5",
         "type": "minisign",
-        "url": "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.1.25/pybun-x86_64-unknown-linux-gnu.tar.gz.minisig",
-        "value": "untrusted comment: signature from minisign secret key\nRUQtfZNEyNnATZTkF1ZS6cbB9KNx6IRlT9wYTGwbglnWLMFmN2D3CW2w/QfKsHyPG4sOsho2TbZ+Hw2DZsXhcsPExH515TzXGQs=\ntrusted comment: timestamp:1789091102\tfile:pybun-x86_64-unknown-linux-gnu.tar.gz\thashed\nu4CMCXvJOc0DI1q79o2Tya00SR8z3wiVdY2s4k8D7bdjGgTQ1UcFPOLu2/UHkqzByb/QJN/CuvRUp/6fkE4fAg=="
+        "url": "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.1.26/pybun-x86_64-unknown-linux-gnu.tar.gz.minisig",
+        "value": "untrusted comment: signature from minisign secret key\nRUQtfZNEyNnATWbRZNgaGMkuWnAq8xocjr3JqXRn/SJ1fa4IivnsxKD6fljfbsymhwWOhW61dWmFPsC8C7QGwgWNdQjg0p8F1A0=\ntrusted comment: timestamp:1789130372\tfile:pybun-x86_64-unknown-linux-gnu.tar.gz\thashed\ndPjwLgf2Dg0m4LuXzTOlXm7crlc5pwcF/0bIjjwIhLwkdT2qI7ow9xp9flLv5rhzw7JliyAmLsr1jTeuMewsCg=="
       },
       "target": "x86_64-unknown-linux-gnu",
-      "url": "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.1.25/pybun-x86_64-unknown-linux-gnu.tar.gz"
+      "url": "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.1.26/pybun-x86_64-unknown-linux-gnu.tar.gz"
     },
     {
       "compat": {
         "libc": "musl"
       },
       "name": "pybun-x86_64-unknown-linux-musl.tar.gz",
-      "sha256": "6de2c4df891e6bd39cd1f957984f1a48946a10c9f71925296a0298b2648a11a3",
+      "sha256": "f29fcecfb102479a6a223bb3667c229400ee9207f4e88c1de86aad290157ce8e",
       "signature": {
         "public_key": "untrusted comment: minisign public key 4DC0D9C844937D2D\nRWQtfZNEyNnATcgzxfwDB+iNwGwW8bwflfnjHMizq6H84B1VRXO92yZ5",
         "type": "minisign",
-        "url": "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.1.25/pybun-x86_64-unknown-linux-musl.tar.gz.minisig",
-        "value": "untrusted comment: signature from minisign secret key\nRUQtfZNEyNnATWHYrRvzxprrtnXjoHNZyvDY5i0D4eWD6troqYriYOL4OZwihM4KRUn3HR2+ewy9YStslr3jRnsVXhzMpFkqHwE=\ntrusted comment: timestamp:1789091102\tfile:pybun-x86_64-unknown-linux-musl.tar.gz\thashed\nSabpIeweCP/KSQC4DulctzoHPEGxRT/d+44MXC4XYu/4hHp6NqK8azLcpg+2rQXics7Tw3kveKGJe77ylhY+DQ=="
+        "url": "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.1.26/pybun-x86_64-unknown-linux-musl.tar.gz.minisig",
+        "value": "untrusted comment: signature from minisign secret key\nRUQtfZNEyNnATYYnoQeEqN5IJVAwIRqK9hg/bqCMmt3NusSJVHccvIx44Rb6NH4eQd569RiatLyU1YRX1WnPyNARwtcwQHX4TgU=\ntrusted comment: timestamp:1789130372\tfile:pybun-x86_64-unknown-linux-musl.tar.gz\thashed\nvJ0h7Nts3LeuJpMKDHpoCb1OyCQkE4L2xbEmSAohhngiQZyLn4Ld0bnAV3wgKGh1XkDNqshGzi04J27Mz9MeAw=="
       },
       "target": "x86_64-unknown-linux-musl",
-      "url": "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.1.25/pybun-x86_64-unknown-linux-musl.tar.gz"
+      "url": "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.1.26/pybun-x86_64-unknown-linux-musl.tar.gz"
     }
   ],
   "channel": "stable",
   "provenance": {
     "name": "pybun-provenance.json",
-    "sha256": "6f30d6d9b9259416d658c768623a78067febda660919615ca03c596587e7c968",
-    "url": "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.1.25/pybun-provenance.json"
+    "sha256": "81339ce57f7bc291390465fdb1946662d5ebbe4473de731d30bdea12471c1ba1",
+    "url": "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.1.26/pybun-provenance.json"
   },
-  "published_at": "2026-09-11T01:44:52Z",
-  "release_url": "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/tag/v0.1.25",
+  "published_at": "2026-09-11T12:39:22Z",
+  "release_url": "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/tag/v0.1.26",
   "sbom": {
     "name": "pybun-sbom.json",
-    "sha256": "f38650a07d82df4d28ededc1f79780c01b3219556c476e022104f06b57e4c28a",
-    "url": "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.1.25/pybun-sbom.json"
+    "sha256": "f13a20b73aea8fc387a4f79ebcf18ca60b092940e58f63499a699f262417b226",
+    "url": "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.1.26/pybun-sbom.json"
   },
-  "version": "0.1.25"
+  "version": "0.1.26"
 }
