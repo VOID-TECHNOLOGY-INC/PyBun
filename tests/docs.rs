@@ -48,6 +48,49 @@ fn readme_has_ga_docs_sections() {
 }
 
 #[test]
+fn readme_maturity_and_backend_claims_match_current_behavior() {
+    let readme = fs::read_to_string(project_root().join("README.md"))
+        .expect("README.md should exist at repo root");
+
+    assert!(
+        readme.contains("`pybun install` | **Preview**"),
+        "the native installer should be documented as Preview"
+    );
+    assert!(
+        readme.contains("`.data/{purelib,platlib,scripts,headers,data}` routing is implemented"),
+        "the closed Issue #402 work should be described as implemented"
+    );
+    assert!(
+        readme.contains("`pybun install`, `pybun lock`, and `pybun upgrade` use PyBun's native"),
+        "ordinary dependency commands should not be claimed to delegate to uv"
+    );
+    assert!(
+        readme.contains("Issue #239](https://github.com/VOID-TECHNOLOGY-INC/PyBun/issues/239)"),
+        "resolver performance should link to Issue #239"
+    );
+    assert!(
+        !readme.contains("where uv is available PyBun delegates to it directly"),
+        "README should not make a blanket uv-delegation claim"
+    );
+    assert!(
+        !readme.contains("does not yet implement the full PEP 427 `.data` installation semantics"),
+        "README should not describe closed Issue #402 as unimplemented"
+    );
+    assert!(
+        !readme.contains("automatic dependency installation, and isolated-environment execution are all implemented and stable"),
+        "PEP 723 maturity should distinguish direct uv and native fallback paths"
+    );
+    assert!(
+        !readme.contains("If `uv` is available, it is used for faster environment creation."),
+        "pybun x creates its environment with Python, not uv"
+    );
+    assert!(
+        readme.contains("PyBun-managed PEP 723 environments may still use `uv pip install`"),
+        "README should document uv package installation inside PyBun orchestration"
+    );
+}
+
+#[test]
 fn install_one_liner_reports_release_notes_from_manifest() {
     let target = current_release_target().expect("supported release target");
     let archive_ext = if target.contains("windows") {

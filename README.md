@@ -6,7 +6,7 @@
 
 <p align="center">
   <em>Safe, structured, deterministic Python execution for AI coding agents —<br>
-  powered by uv/pytest underneath, with JSON-first output and a built-in MCP server.</em>
+  orchestrating Python, pytest, and command-specific uv backends with JSON-first output and a built-in MCP server.</em>
 </p>
 
 <p align="center">
@@ -70,7 +70,7 @@ pybun run -c "import requests; print('Hello, PyBun!')"
 
 Existing Python tools are built for **humans**. PyBun is designed for **AI agents** — and humans who work alongside them.
 
-**PyBun is not a speed competitor to uv.** Tools like uv and pip are excellent at dependency resolution and installation — PyBun doesn't try to out-run them, and where uv is available PyBun delegates to it directly. What those tools lack is an **agent-facing control layer**: structured output, MCP integration, sandboxed execution, and audit/provenance that AI systems can rely on without fragile text scraping or unverifiable side effects.
+**PyBun is not a speed competitor to uv.** Tools like uv and pip are excellent at dependency resolution and installation. PyBun adds an **agent-facing control layer**: structured output, MCP integration, sandboxed execution, and audit/provenance that AI systems can rely on without fragile text scraping or unverifiable side effects. Delegation is currently command-specific: `pybun x` and eligible PEP 723 script runs use uv when it is available, while ordinary dependency commands still use PyBun's native path.
 
 The value PyBun adds isn't "faster pip." It's removing the ambiguity, non-determinism, and risk an agent faces when it operates a Python environment on its own.
 
@@ -90,7 +90,7 @@ The value PyBun adds isn't "faster pip." It's removing the ambiguity, non-determ
      uv       pytest    Python
 ```
 
-PyBun stays a thin, structured control layer on top of proven execution backends rather than re-implementing the Python packaging/import ecosystem from scratch. See [`docs/SPECS.md`](docs/SPECS.md#03-外部レビューによる方向性提言-2026-08-29) for the reasoning behind this scope decision.
+PyBun is moving toward a thin, structured control layer on top of proven execution backends rather than expanding its reimplementation of the Python packaging/import ecosystem. The v0.2.0 target architecture broadens uv delegation; it does not describe every current command path. See [`docs/SPECS.md`](docs/SPECS.md#03-外部レビューによる方向性提言-2026-08-29) for the reasoning behind this scope decision.
 
 ### ✨ What PyBun adds that other tools don't
 
@@ -117,11 +117,24 @@ The AI receives structured JSON — no parsing required, no ambiguity.
 
 ## Status
 
-- **Current:** M1 (Fast Installer), M2 (Runtime Optimization), M3 (Tester), and M4 (MCP/JSON) are stable or near-stable.
-  - `pybun install` / `pybun x` (with uv backend) / `pybun run` / `pybun test` (default pytest/unittest wrapper backend) are **Stable** for the common case. The native wheel installer used by `pybun install` does not yet implement the full PEP 427 `.data` installation semantics (entry points/scripts/headers beyond the common paths) — see [Issue #402](https://github.com/VOID-TECHNOLOGY-INC/PyBun/issues/402). Packages relying on those payloads may need `pybun x uv -- pip install ...` as a fallback.
-  - `pybun test --backend=pybun` (native executor, integrated per PR-A4) and `pybun watch` (native monitoring on macOS/Linux, polling fallback on standard builds) are **Preview** — the native test backend still surfaces `W_TEST_BACKEND_COMPAT_*` diagnostics for known pytest-plugin/fixture gaps.
-  - The Rust Module Finder (`pybun module-find`) is **Experimental / not wired into CPython's runtime import path** ([Issue #403](https://github.com/VOID-TECHNOLOGY-INC/PyBun/issues/403)). Treat it as an opportunistic optimization under ROI evaluation, not a core dependency.
-  - Windows support is **Preview**.
+Maturity is assigned per execution path rather than to an entire milestone:
+
+| Surface | Maturity | Current execution path |
+| --- | --- | --- |
+| `pybun install` | **Preview** | PyBun's native resolver, downloader, and wheel installer. Path containment is hardened by [Issue #431](https://github.com/VOID-TECHNOLOGY-INC/PyBun/issues/431), but this is not a claim of full Python packaging compatibility. |
+| `pybun x` | **Stable for common cases** | Creates a temporary environment and uses `uv pip install` when uv is available; otherwise it falls back to pip. |
+| `pybun run` | **Stable for common cases** | Runs ordinary scripts with Python. Eligible PEP 723 scripts use `uv run --script` automatically when uv is available. Other PEP 723 paths are orchestrated by PyBun and may still use `uv pip install` for dependencies. |
+| `pybun test` | **Stable for common cases** | The default backend wraps pytest/unittest. `--backend=pybun` is **Preview** and reports `W_TEST_BACKEND_COMPAT_*` diagnostics for known plugin/fixture gaps. |
+| `pybun watch` | **Preview** | Native monitoring on macOS/Linux, with polling fallback on standard builds. |
+| `pybun module-find` | **Experimental** | Standalone Rust Module Finder; it is not wired into CPython's runtime import path ([Issue #403](https://github.com/VOID-TECHNOLOGY-INC/PyBun/issues/403)). |
+| Windows support | **Preview** | CI compile coverage and selected cross-platform behavior; continue to validate command-specific behavior. |
+
+`pybun install`, `pybun lock`, and `pybun upgrade` use PyBun's native dependency path today; installing uv does not switch those commands to an uv backend. Broader dependency-operation delegation is a v0.2.0 target.
+
+PyBun-managed PEP 723 environments may still use `uv pip install` for dependency installation when uv is available, including sandboxed, no-cache, and PyBun-lockfile paths. Without uv, those paths fall back to native resolution/installation or pip depending on the environment mode. This is separate from direct `uv run --script` delegation.
+
+The native installer's `.data/{purelib,platlib,scripts,headers,data}` routing is implemented and tested by the work that closed [Issue #402](https://github.com/VOID-TECHNOLOGY-INC/PyBun/issues/402). That tested subset includes relocation, script permissions/shebang handling, and headers placement; it does not promise complete wheel compatibility such as console-entry-point generation, every platform scheme, source distributions, or arbitrary install hooks.
+
 - **Platforms:** macOS/Linux (arm64/amd64), Windows (preview)
 
 > PyBun's priority is the agent-facing control layer (JSON/MCP/diagnostics/sandbox/audit/drift), not re-implementing Python packaging/import internals. See [`docs/SPECS.md`](docs/SPECS.md#03-外部レビューによる方向性提言-2026-08-29) for feature maturity, phased rollout policy, and the current scope decisions.
@@ -212,12 +225,12 @@ PEP 723 inline metadata is also supported:
 # ///
 import requests
 ```
-※ Metadata parsing, automatic dependency installation, and isolated-environment execution are all implemented and stable (cached per script/dependency/Python-version key; see `docs/PLAN.md` for details).
+※ Metadata parsing and isolated-environment execution are supported. Direct `uv run --script` is Stable for common cases; PyBun-managed fallback paths inherit the native installer's Preview limitations. Environments are cached per script/dependency/Python-version key; see `docs/PLAN.md` for details.
 
 ### Ad-hoc Execution (`pybun x`)
 
 Install a package in a temporary environment and execute it (Python version of `npx`).
-If `uv` is available, it is used for faster environment creation.
+The environment is created with `python -m venv`. If `uv` is available, PyBun uses `uv pip install` for package installation; otherwise it uses pip.
 
 ```bash
 # Temporarily install and run cowsay
@@ -599,9 +612,9 @@ cargo test mcp
 
 ## Benchmarks
 
-PyBun is not a speed competitor to uv — it's an interface layer. PyBun uses uv as an optional execution backend for some operations (e.g. PEP 723 script runs). Where uv is available, PyBun delegates to it transparently — so warm-cache script execution is at parity with running uv directly.
+PyBun is not a speed competitor to uv — it is an interface layer. Current uv delegation is limited to command paths such as `pybun x` package installation and eligible PEP 723 script runs. Ordinary `pybun install`, `pybun lock`, and `pybun upgrade` still use native dependency code; the v0.2.0 architecture aims to delegate more of that work.
 
-The areas where PyBun intentionally differs from uv (JSON output, MCP, sandbox) are not speed-sensitive. For raw dependency resolution speed, uv's PubGrub solver is significantly faster than PyBun's current greedy resolver — this is a known roadmap item tracked in [Issue #117](https://github.com/VOID-TECHNOLOGY-INC/PyBun/issues/117).
+The areas where PyBun intentionally differs from uv (JSON output, MCP, sandbox) are evaluated for structured correctness and safety first. Native resolver performance work and measurements are tracked in [Issue #239](https://github.com/VOID-TECHNOLOGY-INC/PyBun/issues/239); they should not be read as a product goal to out-run uv.
 
 Full numbers: [docs/BENCHMARK_UV_COMPARISON.md](docs/BENCHMARK_UV_COMPARISON.md)
 
@@ -610,7 +623,7 @@ Full numbers: [docs/BENCHMARK_UV_COMPARISON.md](docs/BENCHMARK_UV_COMPARISON.md)
 ## Roadmap
 
 - [x] M0: Repository & CI scaffold
-- [x] M1: Fast installer (lockfile, resolver, PEP 723)
+- [x] M1: Installer foundation (lockfile, native resolver, PEP 723); native install remains Preview while the v0.2.0 backend transition is pending
 - [x] M2: Runtime optimization (module finder, lazy import, hot reload) — *opportunistic, ROI under evaluation; see [Issue #403](https://github.com/VOID-TECHNOLOGY-INC/PyBun/issues/403)*
 - [x] M3: Test runner (discovery, parallel execution, snapshots)
 - [x] M4: JSON/MCP & diagnostics
