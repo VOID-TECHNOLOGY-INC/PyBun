@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.1.25
+
+### Security
+- fix(ci): harden the GitHub Actions supply chain with least-privilege permissions, immutable action references, and safer workflow inputs (Issue #380) (#433)
+- fix(security): make Rust advisory suppressions accountable and enforce the advisory policy in CI (Issue #382) (#435)
+
+### Fixes
+- fix(storage): make cache, snapshot, installer, and build persistence writes atomic (Issue #379) (#432)
+- fix(runtime): resolve partial Python version selectors consistently across install, status, which, and remove operations (#440)
+
+### Chores
+- chore(deps): update `toml`, `dirs`, and `anchore/sbom-action`
+
 ## v0.1.24
 
 ### Security
