@@ -290,10 +290,10 @@ Milestones follow SPECS.md Phase roadmap. PR numbers are suggested grouping; par
 - [DONE] PR1.1: Lockfile spec + serializer (`pybun.lockb` binary format, read/write, schema tests).  
   - Depends on: M0.  
   - Tests: unit for encoding/decoding; golden tests for cross-platform entries.
-- [DONE] PR1.2: Resolver core (SAT solver, index client abstraction, offline cache hooks).  
-  - Current: Full version specifier support implemented (==, >=, >, <=, <, !=, ~= PEP 440 compatible release). Offline cache hooks added via `IndexCache` and `CachedIndexLoader` in `src/index.rs`. JSON fixture loading via CLI `install`. In-memory index with highest-version selection strategy.
+- [DONE] PR1.2: Resolver core (SAT solver and index client abstraction).
+  - Current: Full version specifier support implemented (==, >=, >, <=, <, !=, ~= PEP 440 compatible release). JSON fixture loading is available through an explicit CLI `--index` path, and network-backed PyPI metadata caching is owned separately by `PyPiClient`. The orphaned `IndexCache` / `CachedIndexLoader` subsystem was removed in Issue #408. In-memory indexes use the highest-version selection strategy.
   - Depends on: PR1.1.  
-  - Tests: 13 resolver unit tests including all specifier types; 8 CLI install E2E tests; index cache unit tests.
+  - Tests: resolver unit tests cover all specifier types; CLI install integration tests cover explicit custom JSON indexes; PyPI integration tests cover online and offline metadata caching.
 - [DONE] PR1.3: Installer CLI `pybun install/add/remove` with global cache + hardlink strategy.  
   - Current: `pybun install --require --index --lock` writes lockfile; `pybun add/remove` updates pyproject.toml; global cache module ready; hardlinks pending.  
   - Depends on: PR1.2.  
