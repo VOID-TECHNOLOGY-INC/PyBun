@@ -81,7 +81,7 @@ pybun --help
 
 **Python Environment (`src/env.rs`, `src/env_cache.rs`)**: Detects Python installations, manages virtual environments, caches environment metadata.
 
-**Package Index (`src/index.rs`, `src/pypi.rs`)**: Loads package indexes from JSON fixtures or PyPI. Supports offline caching via `IndexCache` and `CachedIndexLoader`.
+**Package Index (`src/index.rs`, `src/pypi.rs`)**: Loads custom package indexes from explicit JSON files or package metadata from PyPI. Network-backed PyPI metadata supports offline caching through `PyPiClient`; custom JSON indexes remain explicit file inputs.
 
 **Lockfile (`src/lockfile.rs`)**: Binary lockfile format (`pybun.lockb`) for reproducible installs. Contains package name, version, source (wheel/sdist), and hash.
 
