@@ -193,11 +193,7 @@ pub fn install_wheel_with_scheme(wheel_path: &Path, scheme: &InstallScheme) -> R
 
     for i in 0..archive.len() {
         let mut entry = archive.by_index(i)?;
-        let rel_path = match entry.enclosed_name() {
-            Some(path) => path,
-            None => continue,
-        };
-        let rel_str = rel_path.to_string_lossy().replace('\\', "/");
+        let (rel_str, rel_path) = validated_wheel_entry_path(entry.name())?;
 
         let (outpath, is_script) = if let Some(rest) = rel_str.strip_prefix(&data_prefix) {
             if rest.is_empty() {
@@ -268,6 +264,54 @@ pub fn install_wheel_with_scheme(wheel_path: &Path, scheme: &InstallScheme) -> R
     }
 
     publish_staged_files(&staged_files, scheme, &lock)
+}
+
+/// Normalize ZIP entry separators and validate the exact relative path that
+/// will later be joined to an installation-scheme root.
+///
+/// ZIP uses `/` as its canonical separator, but some wheels contain `\` and
+/// the installer historically accepted those entries. Validation must happen
+/// after normalizing both forms: on Unix, `ZipFile::enclosed_name()` treats a
+/// backslash as an ordinary character, allowing a later replacement to turn
+/// an already-approved name into a path containing `..` components.
+fn validated_wheel_entry_path(name: &str) -> Result<(String, PathBuf)> {
+    let normalized = name.replace('\\', "/");
+    let parts: Vec<_> = normalized.split('/').collect();
+    let trailing_separator = normalized.ends_with('/');
+    let mut relative = PathBuf::new();
+
+    if normalized.is_empty() || normalized.starts_with('/') {
+        return Err(unsafe_wheel_entry_path(name));
+    }
+
+    for (index, part) in parts.iter().enumerate() {
+        let is_trailing_empty = trailing_separator && index + 1 == parts.len();
+        let is_windows_drive_prefix = part.len() >= 2
+            && part.as_bytes()[0].is_ascii_alphabetic()
+            && part.as_bytes()[1] == b':';
+        if (part.is_empty() && !is_trailing_empty)
+            || *part == "."
+            || *part == ".."
+            || is_windows_drive_prefix
+        {
+            return Err(unsafe_wheel_entry_path(name));
+        }
+        if !part.is_empty() {
+            relative.push(part);
+        }
+    }
+
+    if relative.as_os_str().is_empty() {
+        return Err(unsafe_wheel_entry_path(name));
+    }
+    Ok((normalized, relative))
+}
+
+fn unsafe_wheel_entry_path(name: &str) -> InstallError {
+    InstallError::InvalidWheel(format!(
+        "unsafe wheel entry path '{}': expected a normalized relative path without root, parent, current-directory, empty, or platform-prefix components",
+        name.escape_default()
+    ))
 }
 
 fn install_transaction_path(scheme: &InstallScheme) -> PathBuf {
@@ -1078,6 +1122,127 @@ mod tests {
         match err {
             InstallError::InvalidWheel(msg) => assert!(msg.contains("nonsense")),
             other => panic!("expected InvalidWheel error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_data_traversal_for_every_scheme_category_and_separator() {
+        for category in ["purelib", "platlib", "scripts", "headers", "data"] {
+            for separator in ["/", "\\"] {
+                let dir = tempdir().unwrap();
+                let scheme_root = dir.path().join("scheme/nested");
+                let scheme = test_scheme(&scheme_root);
+                let target_base = match category {
+                    "purelib" => scheme.purelib.clone(),
+                    "platlib" => scheme.platlib.clone(),
+                    "scripts" => scheme.scripts.clone(),
+                    "headers" => scheme.headers.join("pkg"),
+                    "data" => scheme.data.clone(),
+                    _ => unreachable!(),
+                };
+                fs::create_dir_all(&target_base).unwrap();
+                let escaped_target = target_base.join("../../escaped.txt");
+                fs::write(&escaped_target, b"sentinel").unwrap();
+                let entry = format!(
+                    "pkg-1.0.data{separator}{category}{separator}..{separator}..{separator}escaped.txt"
+                );
+                let wheel = build_wheel(
+                    "pkg-1.0",
+                    None,
+                    &[(entry.as_str(), b"must not escape")],
+                    &[],
+                );
+
+                let err = install_wheel_with_scheme(&wheel, &scheme).unwrap_err();
+
+                match err {
+                    InstallError::InvalidWheel(message) => {
+                        assert!(
+                            message.contains("unsafe wheel entry path"),
+                            "unexpected rejection for {entry}: {message}"
+                        );
+                    }
+                    other => panic!("expected InvalidWheel for {entry}, got {other:?}"),
+                }
+                assert_eq!(
+                    fs::read(&escaped_target).unwrap(),
+                    b"sentinel",
+                    "unsafe entry modified the exact escaped destination: {entry}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_absolute_and_platform_prefixed_wheel_entry_paths() {
+        for entry in [
+            "../outside.txt",
+            "..\\outside.txt",
+            "./current-dir.txt",
+            ".\\current-dir.txt",
+            "/absolute.txt",
+            "\\absolute.txt",
+            "C:/windows-drive.txt",
+            "C:\\windows-drive.txt",
+            "C:windows-drive-relative.txt",
+            "pkg-1.0.data/purelib/C:/windows-drive.txt",
+            "pkg-1.0.data\\purelib\\C:\\windows-drive.txt",
+            "pkg-1.0.data/purelib/C:windows-drive-relative.txt",
+            "pkg-1.0.data\\purelib\\C:windows-drive-relative.txt",
+        ] {
+            let dir = tempdir().unwrap();
+            let scheme = test_scheme(dir.path());
+            let wheel = build_wheel("pkg-1.0", None, &[(entry, b"unsafe")], &[]);
+
+            let err = install_wheel_with_scheme(&wheel, &scheme).unwrap_err();
+
+            assert!(
+                matches!(err, InstallError::InvalidWheel(ref message) if message.contains("unsafe wheel entry path")),
+                "expected unsafe path rejection for {entry}, got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn safe_backslash_entries_are_normalized_before_data_routing() {
+        let dir = tempdir().unwrap();
+        let scheme = test_scheme(dir.path());
+        let wheel = build_wheel(
+            "pkg-1.0",
+            None,
+            &[("pkg-1.0.data\\purelib\\nested\\module.py", b"safe = True\n")],
+            &[],
+        );
+
+        install_wheel_with_scheme(&wheel, &scheme).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(scheme.purelib.join("nested/module.py")).unwrap(),
+            "safe = True\n"
+        );
+    }
+
+    #[test]
+    fn rejects_drive_relative_prefixes_for_every_data_scheme_category() {
+        for category in ["purelib", "platlib", "scripts", "headers", "data"] {
+            for separator in ["/", "\\"] {
+                let dir = tempdir().unwrap();
+                let scheme = test_scheme(dir.path());
+                let entry = format!("pkg-1.0.data{separator}{category}{separator}C:escaped.txt");
+                let wheel = build_wheel(
+                    "pkg-1.0",
+                    None,
+                    &[(entry.as_str(), b"must not escape")],
+                    &[],
+                );
+
+                let err = install_wheel_with_scheme(&wheel, &scheme).unwrap_err();
+
+                assert!(
+                    matches!(err, InstallError::InvalidWheel(ref message) if message.contains("unsafe wheel entry path")),
+                    "expected drive-relative prefix rejection for {entry}, got {err:?}"
+                );
+            }
         }
     }
 
