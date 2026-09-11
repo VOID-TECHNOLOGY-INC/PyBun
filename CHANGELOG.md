@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.1.26
+
+### Security
+- fix(installer): reject unsafe wheel entry paths after separator normalization, including traversal and Windows drive-prefixed paths (Issue #431) (#460)
+
+### Docs
+- docs(status): align installer maturity, uv delegation, PEP 427 coverage, and resolver roadmap references with current behavior (Issue #442) (#461)
+
+### Chores
+- chore(release): carry forward the generated package-manager manifests for v0.1.25 (#441)
+
 ## v0.1.25
 
 ### Security
