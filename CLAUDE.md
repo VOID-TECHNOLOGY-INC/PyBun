@@ -75,7 +75,7 @@ pybun --help
 
 **Commands (`src/commands/`)**: Main execution dispatcher, split into `mod.rs` (core dispatch) plus focused modules (`maintenance.rs`, `test.rs`, `tooling.rs`). Routes all CLI commands to their implementations and collects events/diagnostics for JSON output.
 
-**Resolver (`src/resolver.rs`)**: Dependency resolution engine. Implements PEP 440 version specifiers (==, >=, >, <=, <, !=, ~=). Uses in-memory index with highest-version selection.
+**Resolver (`src/resolver.rs`, `src/pep440.rs`, `src/specifier.rs`, `src/markers.rs`)**: Dependency resolution engine with focused PEP 440 version/specifier and PEP 508 marker parsers. Uses in-memory indexes with highest-version selection.
 
 **MCP Server (`src/mcp.rs`)**: Model Context Protocol server for AI agent integration. Implements JSON-RPC 2.0 protocol with tools: `pybun_resolve`, `pybun_install`, `pybun_run`, `pybun_gc`, `pybun_doctor`. Runs in stdio mode (`--stdio`).
 
