@@ -7,7 +7,8 @@ use std::path::PathBuf;
 
 pub(crate) async fn call_resolve(args: Value) -> Result<String, String> {
     use crate::index::load_index_from_path;
-    use crate::resolver::{Requirement, ResolveOptions, resolve_with_options};
+    use crate::resolve_service::{ResolveRequest, resolve as resolve_request};
+    use crate::resolver::{Requirement, ResolveOptions};
 
     let requirements: Vec<String> = args
         .get("requirements")
@@ -64,7 +65,12 @@ pub(crate) async fn call_resolve(args: Value) -> Result<String, String> {
 
     match index_result {
         Ok(index) => {
-            match resolve_with_options(parsed_reqs.clone(), &index, resolve_options).await {
+            match resolve_request(
+                ResolveRequest::new(parsed_reqs.clone(), resolve_options),
+                &index,
+            )
+            .await
+            {
                 Ok(resolution) => {
                     let packages: Vec<Value> = resolution
                     .packages
