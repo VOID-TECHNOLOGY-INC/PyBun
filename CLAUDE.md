@@ -73,7 +73,7 @@ pybun --help
 
 **CLI Layer (`src/cli.rs`)**: Defines all commands and arguments using Clap. All commands support `--format=json` for machine-readable output.
 
-**Commands (`src/commands/`)**: Main execution dispatcher, split into `mod.rs` (core dispatch) plus focused modules (`maintenance.rs`, `test.rs`, `tooling.rs`). Routes all CLI commands to their implementations and collects events/diagnostics for JSON output.
+**Commands (`src/commands/`)**: `mod.rs` owns shared render helpers, while `dispatch.rs` owns command lifecycle and focused per-group routing into implementation modules (`install.rs`, `run.rs`, `maintenance.rs`, `project.rs`, `python.rs`, `test.rs`, `tooling.rs`). Events and diagnostics remain shared across text and JSON output.
 
 **Resolver (`src/resolve_service.rs`, `src/resolver.rs`, `src/pep440.rs`, `src/specifier.rs`, `src/markers.rs`)**: Transport-independent CLI/MCP request boundary and dependency resolution engine with focused PEP 440 version/specifier and PEP 508 marker parsers. Uses in-memory indexes with highest-version selection.
 
