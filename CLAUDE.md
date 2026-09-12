@@ -75,7 +75,7 @@ pybun --help
 
 **Commands (`src/commands/`)**: Main execution dispatcher, split into `mod.rs` (core dispatch) plus focused modules (`maintenance.rs`, `test.rs`, `tooling.rs`). Routes all CLI commands to their implementations and collects events/diagnostics for JSON output.
 
-**Resolver (`src/resolver.rs`, `src/pep440.rs`, `src/specifier.rs`, `src/markers.rs`)**: Dependency resolution engine with focused PEP 440 version/specifier and PEP 508 marker parsers. Uses in-memory indexes with highest-version selection.
+**Resolver (`src/resolve_service.rs`, `src/resolver.rs`, `src/pep440.rs`, `src/specifier.rs`, `src/markers.rs`)**: Transport-independent CLI/MCP request boundary and dependency resolution engine with focused PEP 440 version/specifier and PEP 508 marker parsers. Uses in-memory indexes with highest-version selection.
 
 **MCP Server (`src/mcp.rs`)**: Model Context Protocol server for AI agent integration. Implements JSON-RPC 2.0 protocol with tools: `pybun_resolve`, `pybun_install`, `pybun_run`, `pybun_gc`, `pybun_doctor`. Runs in stdio mode (`--stdio`).
 
@@ -137,7 +137,7 @@ Events track progress (CommandStart, ResolveStart, InstallComplete). Diagnostics
 
 ### Dependency Resolution
 
-The resolver (`src/resolver.rs`) uses a greedy highest-version selection strategy. It:
+CLI and MCP adapters enter through `src/resolve_service.rs`; the resolver core (`src/resolver.rs`) uses a greedy highest-version selection strategy. It:
 1. Parses version specifiers (supports all PEP 440 operators)
 2. Fetches candidate versions from index
 3. Filters by version constraints

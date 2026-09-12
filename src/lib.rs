@@ -30,6 +30,7 @@ pub mod progress;
 pub mod project;
 pub mod pypi;
 pub mod release_manifest;
+pub mod resolve_service;
 pub mod resolver;
 pub mod runtime;
 pub mod sandbox;

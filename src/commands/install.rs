@@ -8,10 +8,11 @@ use crate::lockfile::{Lockfile, Package, PackageSource};
 use crate::pep723;
 use crate::project::Project;
 use crate::pypi::{PyPiClient, PyPiIndex};
+use crate::resolve_service::{ResolveRequest, resolve as resolve_request};
 use crate::resolver::parse_version_relaxed;
 use crate::resolver::{
     PackageIndex, Requirement, Resolution, ResolveOptions, compare_versions, current_platform_tags,
-    python_version_to_cp_tag, resolve_with_options, select_artifact_for_platform_with_cp,
+    python_version_to_cp_tag, select_artifact_for_platform_with_cp,
 };
 use crate::schema::{Diagnostic, EventCollector, EventType};
 use crate::workspace::Workspace;
@@ -376,7 +377,12 @@ pub(crate) async fn install(
     let resolution = if let Some(index_path) = args.index.clone() {
         source_index_url = index_path.display().to_string();
         let index = load_index_from_path(&index_path).map_err(|e| eyre!(e))?;
-        match resolve_with_options(requirements.clone(), &index, resolve_options).await {
+        match resolve_request(
+            ResolveRequest::new(requirements.clone(), resolve_options),
+            &index,
+        )
+        .await
+        {
             Ok(r) => r,
             Err(e) => {
                 for d in crate::self_heal::diagnostics_for_resolve_error(&requirements, &e) {
@@ -394,8 +400,11 @@ pub(crate) async fn install(
             source_index_url, offline
         ));
         let index = PyPiIndex::new(client);
-        let resolve_result =
-            resolve_with_options(requirements.clone(), &index, resolve_options).await;
+        let resolve_result = resolve_request(
+            ResolveRequest::new(requirements.clone(), resolve_options),
+            &index,
+        )
+        .await;
         for notice in index.take_stale_cache_notices() {
             collector.warning(notice);
         }
@@ -918,7 +927,12 @@ pub(super) async fn lock_dependencies(
     let resolution = if let Some(index_path) = args.index.clone() {
         source_index_url = index_path.display().to_string();
         let index = load_index_from_path(&index_path).map_err(|e| eyre!(e))?;
-        match resolve_with_options(requirements.clone(), &index, resolve_options).await {
+        match resolve_request(
+            ResolveRequest::new(requirements.clone(), resolve_options),
+            &index,
+        )
+        .await
+        {
             Ok(r) => r,
             Err(e) => {
                 for d in crate::self_heal::diagnostics_for_resolve_error(&requirements, &e) {
@@ -936,8 +950,11 @@ pub(super) async fn lock_dependencies(
             source_index_url, offline
         ));
         let index = PyPiIndex::new(client);
-        let resolve_result =
-            resolve_with_options(requirements.clone(), &index, resolve_options).await;
+        let resolve_result = resolve_request(
+            ResolveRequest::new(requirements.clone(), resolve_options),
+            &index,
+        )
+        .await;
         for notice in index.take_stale_cache_notices() {
             collector.warning(notice);
         }
@@ -1570,14 +1587,21 @@ pub(super) async fn run_upgrade(
     let resolution = if let Some(index_path) = &args.index {
         source_index_url = index_path.display().to_string();
         let index = load_index_from_path(index_path)?;
-        resolve_with_options(requirements.clone(), &index, resolve_options).await?
+        resolve_request(
+            ResolveRequest::new(requirements.clone(), resolve_options),
+            &index,
+        )
+        .await?
     } else {
         let pypi_client = PyPiClient::from_env(args.offline)
             .map_err(|e| eyre!("failed to create PyPI client: {}", e))?;
         source_index_url = pypi_client.index_url();
         let pypi_index = PyPiIndex::new(pypi_client);
-        let resolve_result =
-            resolve_with_options(requirements.clone(), &pypi_index, resolve_options).await;
+        let resolve_result = resolve_request(
+            ResolveRequest::new(requirements.clone(), resolve_options),
+            &pypi_index,
+        )
+        .await;
         for notice in pypi_index.take_stale_cache_notices() {
             collector.warning(notice);
         }

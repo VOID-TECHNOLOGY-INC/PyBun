@@ -12,9 +12,10 @@ use crate::pep723;
 use crate::pep723_cache::{Pep723Cache, Pep723CacheKey};
 use crate::project::Project;
 use crate::pypi::{PyPiClient, PyPiIndex};
+use crate::resolve_service::{ResolveRequest, resolve as resolve_request};
 use crate::resolver::{
     Requirement, ResolveOptions, cp_tag_to_dotted_version, is_wheel_python_compatible,
-    parse_wheel_tags, python_version_to_cp_tag, resolve_with_options,
+    parse_wheel_tags, python_version_to_cp_tag,
 };
 use crate::sandbox;
 use crate::schema::{Diagnostic, EventCollector};
@@ -633,14 +634,16 @@ pub(crate) async fn run_script(
                         // But PyPiClient::from_env handles env vars.
                         let client = PyPiClient::from_env(false).map_err(|e| eyre!(e))?;
                         let index = PyPiIndex::new(client);
-                        let resolution = resolve_with_options(
-                            requirements,
+                        let resolution = resolve_request(
+                            ResolveRequest::new(
+                                requirements,
+                                ResolveOptions {
+                                    python_version: python_version_env_override()
+                                        .or_else(|| Some(python_version.clone())),
+                                    ..Default::default()
+                                },
+                            ),
                             &index,
-                            ResolveOptions {
-                                python_version: python_version_env_override()
-                                    .or_else(|| Some(python_version.clone())),
-                                ..Default::default()
-                            },
                         )
                         .await;
                         for notice in index.take_stale_cache_notices() {
