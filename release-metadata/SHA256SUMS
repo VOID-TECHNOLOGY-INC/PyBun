@@ -1,6 +1,6 @@
-ede3be560bf2df1845d35c8609e224d2506de988bc658aa837a3474eec7b4de6  pybun-aarch64-apple-darwin.tar.gz
-8f4f355c90b66f22dc3a9d8394cbbd6d57bc0626bebb7c540a379dda2ea8f1da  pybun-aarch64-unknown-linux-gnu.tar.gz
-962757888b81f683eb130625ed9e217070e78556343924b7a03eab24fc3736ba  pybun-x86_64-apple-darwin.tar.gz
-1cd8153e335e32ee3ff969dacbc0d3ee0e0197bd22ae6e69354d1f65df5257fe  pybun-x86_64-pc-windows-msvc.zip
-a924c3540403df219d1a0e65b9df24735516a8af5d011fdac87a0419608382df  pybun-x86_64-unknown-linux-gnu.tar.gz
-f29fcecfb102479a6a223bb3667c229400ee9207f4e88c1de86aad290157ce8e  pybun-x86_64-unknown-linux-musl.tar.gz
+64aa19ae03ca2a7ba3ea69186ad6fe23dfb7f6e9a9c2ee90e881e3285d69d963  pybun-aarch64-apple-darwin.tar.gz
+b1f626aff33c5496e887cd5ba075f4ae7698a41e8553b5b753c753aeefeb09dc  pybun-aarch64-unknown-linux-gnu.tar.gz
+783b228c62289ec522425addb8074a586a9543911e666e7e9869443350ce2db1  pybun-x86_64-apple-darwin.tar.gz
+ca8ed231fe258985e80670b6db1613d51548c1a53cf4e5c1f948590da29cc91b  pybun-x86_64-pc-windows-msvc.zip
+464b6a411c2180167ea5d3b9aa3740d762ad1aa1268d235dc98fee8def272293  pybun-x86_64-unknown-linux-gnu.tar.gz
+f83c34f881253b448d818fb186fe9515fa9df42fa7dcdc6891d68bc35c547aa3  pybun-x86_64-unknown-linux-musl.tar.gz
