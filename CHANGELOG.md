@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.1.27
+
+### Security
+- fix(deps): update `rustls` to 0.23.45 to address RUSTSEC-2026-0285
+
+### Refactors
+- refactor(index): remove the orphaned custom-index cache subsystem while preserving explicit JSON index loading and PyPI cache ownership (Issue #408) (#463)
+- refactor(resolver): extract PEP 440 specifier and PEP 508 marker parsing into focused modules with compatibility re-exports (Issue #346) (#464)
+- refactor(resolve): route CLI and MCP dependency resolution through one transport-independent service boundary (Issue #346) (#465)
+- refactor(commands): split all command arms into focused dispatch groups and reduce `commands/mod.rs` to the shared routing/render shell (Issue #346) (#466)
+
+### Chores
+- chore(release): carry forward the generated package-manager manifests for v0.1.26 (#462)
+
 ## v0.1.26
 
 ### Security
