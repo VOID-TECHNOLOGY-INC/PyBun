@@ -22,6 +22,7 @@ Guidance for moving from the preview builds to the GA (stable) channel.
    ```
 
 ## Compatibility notes
+- v0.1.28 replaces the unmaintained `bincode` codec with `postcard`. `pybun.lockb` files written by earlier releases (envelope v1) are rejected with a "regenerate with `pybun install`" diagnostic; run `pybun install` (or `pybun lock`) once to rewrite them. Legacy PyPI metadata cache entries are discarded and re-fetched automatically.
 - Telemetry stays opt-in; `PYBUN_TELEMETRY=0|1` still overrides config.
 - The default profile is `dev`; use `--profile=prod` for optimized runs or `--profile=benchmark` for reproducible timing.
 - For untrusted code, prefer `pybun run --sandbox` (add `--allow-network` only when required).

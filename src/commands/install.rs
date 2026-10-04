@@ -1531,7 +1531,18 @@ pub(super) async fn run_upgrade(
     }
 
     // Load current lockfile if exists (for partial updates and comparison)
-    let current_lock = Lockfile::load_from_path(&lock_path).ok();
+    let current_lock = match Lockfile::load_from_path(&lock_path) {
+        Ok(lockfile) => Some(lockfile),
+        Err(crate::lockfile::LockfileError::Io(_)) => None,
+        Err(e) => {
+            collector.warning(format!(
+                "discarded unreadable pybun.lockb at {} ({}); treating as no current lock",
+                lock_path.display(),
+                e
+            ));
+            None
+        }
+    };
     if let Some(lockfile) = &current_lock {
         emit_lockfile_verification_drift(lockfile, collector);
     }

@@ -867,7 +867,7 @@ fn now_epoch_seconds() -> u64 {
 ///
 /// The same self-heal behavior applies to the legacy `.json` cache fallback
 /// (see issue #262, a recurrence of #202's failure mode): a `serde_json`
-/// decode failure there - e.g. a stale entry from a pre-bincode-era `pybun`,
+/// decode failure there - e.g. a stale entry from a pre-binary-cache-era `pybun`,
 /// or a truncated write from a crash - is also treated as a cache miss
 /// rather than propagating a fatal `PyPiError` that would block
 /// `add`/`install`/`lock`.
@@ -1313,6 +1313,31 @@ mod tests {
         let saved: CacheEntry = decode_cache_entry(&fs::read(path).unwrap()).unwrap();
         assert_eq!(saved.policy.etag, entry.policy.etag);
         assert_eq!(saved.body, entry.body);
+    }
+
+    #[test]
+    fn cache_entry_round_trips_and_rejects_garbage_body() {
+        let entry = CacheEntry {
+            policy: HttpCachePolicy {
+                etag: Some("abc".into()),
+                last_modified: None,
+                max_age: Some(60),
+                no_cache: false,
+                no_store: false,
+                fetched_at: 42,
+            },
+            body: b"{}".to_vec(),
+            packages: Vec::new(),
+        };
+        let data = encode_cache_entry(&entry).unwrap();
+        assert_eq!(&data[..CACHE_MAGIC.len()], CACHE_MAGIC);
+        let decoded = decode_cache_entry(&data).unwrap();
+        assert_eq!(decoded.body, entry.body);
+        assert_eq!(decoded.policy.etag, entry.policy.etag);
+
+        let mut garbage = CACHE_MAGIC.to_vec();
+        garbage.extend_from_slice(&[0xff; 16]);
+        assert!(decode_cache_entry(&garbage).is_err());
     }
 
     #[tokio::test]
