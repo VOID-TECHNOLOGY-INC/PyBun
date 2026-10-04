@@ -817,6 +817,9 @@ pub(crate) fn call_context(args: Value) -> Result<String, String> {
                     (status.to_string(), locked, Some(locked_names))
                 }
                 // Parse failure = lockfile exists but is unreadable/corrupt, distinct from drift.
+                Err(crate::lockfile::LockfileError::LegacyFormat) => {
+                    ("legacy_format".to_string(), vec![], None)
+                }
                 Err(_) => ("corrupt".to_string(), vec![], None),
             }
         } else {
@@ -851,6 +854,13 @@ pub(crate) fn call_context(args: Value) -> Result<String, String> {
             "code": "W_LOCKFILE_CORRUPT",
             "message": "pybun.lock exists but cannot be parsed. Run `pybun install` to regenerate.",
             "severity": "error"
+        }));
+    }
+    if lockfile_status == "legacy_format" {
+        doctor_warnings.push(json!({
+            "code": "W_LOCKFILE_LEGACY_FORMAT",
+            "message": "pybun.lock uses the legacy bincode format. Run `pybun install` to regenerate.",
+            "severity": "warning"
         }));
     }
     if lockfile_status == "drift" {

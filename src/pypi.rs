@@ -828,6 +828,25 @@ fn parse_cache_control(raw: &str) -> CacheControlDirectives {
     directives
 }
 
+/// Magic header identifying a postcard-encoded PyPI cache entry. Entries
+/// without it (e.g. legacy bincode 1.x payloads) are treated as cache misses.
+const CACHE_MAGIC: &[u8; 8] = b"PYBUNPC2";
+
+fn encode_cache_entry(entry: &CacheEntry) -> Result<Vec<u8>, postcard::Error> {
+    let body = postcard::to_allocvec(entry)?;
+    let mut data = Vec::with_capacity(CACHE_MAGIC.len() + body.len());
+    data.extend_from_slice(CACHE_MAGIC);
+    data.extend_from_slice(&body);
+    Ok(data)
+}
+
+fn decode_cache_entry(data: &[u8]) -> Result<CacheEntry, String> {
+    let body = data
+        .strip_prefix(CACHE_MAGIC.as_slice())
+        .ok_or_else(|| "missing cache format header (legacy or corrupt entry)".to_string())?;
+    postcard::from_bytes(body).map_err(|e| e.to_string())
+}
+
 fn now_epoch_seconds() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -837,7 +856,7 @@ fn now_epoch_seconds() -> u64 {
 
 /// Loads a cached package entry from disk.
 ///
-/// Returns `(entry, stale_notice)`. A `bincode` decode failure on an
+/// Returns `(entry, stale_notice)`. A cache decode failure on an
 /// existing `.bin` file is treated as a cache miss (`entry = None`) rather
 /// than a fatal error - most likely it is incompatible with the current
 /// `CacheEntry` layout (e.g. written by a pre-v0.1.19 `pybun`), but it could
@@ -848,7 +867,7 @@ fn now_epoch_seconds() -> u64 {
 ///
 /// The same self-heal behavior applies to the legacy `.json` cache fallback
 /// (see issue #262, a recurrence of #202's failure mode): a `serde_json`
-/// decode failure there - e.g. a stale entry from a pre-bincode-era `pybun`,
+/// decode failure there - e.g. a stale entry from a pre-binary-cache-era `pybun`,
 /// or a truncated write from a crash - is also treated as a cache miss
 /// rather than propagating a fatal `PyPiError` that would block
 /// `add`/`install`/`lock`.
@@ -859,7 +878,7 @@ fn load_cache_from_paths(
 ) -> Result<(Option<CacheEntry>, Option<String>), PyPiError> {
     if path.exists() {
         let data = fs::read(path)?;
-        return match bincode::deserialize::<CacheEntry>(&data) {
+        return match decode_cache_entry(&data) {
             Ok(entry) => Ok((Some(entry), None)),
             Err(e) => {
                 let notice = format!(
@@ -924,7 +943,7 @@ pub fn pypi_cache_dir() -> Option<PathBuf> {
 fn is_stale_pypi_cache_entry(path: &Path) -> bool {
     match path.extension().and_then(|e| e.to_str()) {
         Some("bin") => fs::read(path)
-            .map(|data| bincode::deserialize::<CacheEntry>(&data).is_err())
+            .map(|data| decode_cache_entry(&data).is_err())
             .unwrap_or(false),
         Some("json") => fs::read_to_string(path)
             .map(|data| serde_json::from_str::<LegacyCacheEntry>(&data).is_err())
@@ -1005,7 +1024,7 @@ fn save_cache_to_path(path: &Path, entry: &CacheEntry) -> Result<(), PyPiError> 
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let data = bincode::serialize(entry)
+    let data = encode_cache_entry(entry)
         .map_err(|e| PyPiError::Parse(format!("cache encode error: {}", e)))?;
     crate::atomic_fs::atomic_write(path, &data)?;
     Ok(())
@@ -1291,9 +1310,41 @@ mod tests {
 
         save_cache_to_path(&path, &entry).unwrap();
 
-        let saved: CacheEntry = bincode::deserialize(&fs::read(path).unwrap()).unwrap();
+        let saved: CacheEntry = decode_cache_entry(&fs::read(path).unwrap()).unwrap();
         assert_eq!(saved.policy.etag, entry.policy.etag);
         assert_eq!(saved.body, entry.body);
+    }
+
+    #[test]
+    fn cache_entry_round_trips_and_rejects_garbage_body() {
+        let entry = CacheEntry {
+            policy: HttpCachePolicy {
+                etag: Some("abc".into()),
+                last_modified: None,
+                max_age: Some(60),
+                no_cache: false,
+                no_store: false,
+                fetched_at: 42,
+            },
+            body: b"{}".to_vec(),
+            packages: Vec::new(),
+        };
+        let data = encode_cache_entry(&entry).unwrap();
+        assert_eq!(&data[..CACHE_MAGIC.len()], CACHE_MAGIC);
+        let decoded = decode_cache_entry(&data).unwrap();
+        assert_eq!(decoded.body, entry.body);
+        assert_eq!(decoded.policy.etag, entry.policy.etag);
+
+        let mut garbage = CACHE_MAGIC.to_vec();
+        garbage.extend_from_slice(&[0xff; 16]);
+        assert!(decode_cache_entry(&garbage).is_err());
+    }
+
+    #[tokio::test]
+    async fn legacy_headerless_cache_entry_is_not_decodable() {
+        // A payload without the postcard header (e.g. bincode 1.x output).
+        assert!(decode_cache_entry(b"\x01\x00\x00\x00\x00\x00\x00\x00legacy").is_err());
+        assert!(decode_cache_entry(CACHE_MAGIC).is_err());
     }
 
     #[tokio::test]

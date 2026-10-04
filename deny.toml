@@ -6,12 +6,7 @@ unsound = "all"
 unmaintained = "workspace"
 yanked = "warn"
 unused-ignored-advisory = "deny"
-ignore = [
-  # tracking: https://github.com/VOID-TECHNOLOGY-INC/PyBun/issues/434
-  # owner: release/security maintainers
-  # review-by: 2026-12-07
-  { id = "RUSTSEC-2025-0141", reason = "Temporary bincode 1.x compatibility exception; tracking #434; review by 2026-12-07" },
-]
+ignore = []
 
 [licenses]
 allow = [
