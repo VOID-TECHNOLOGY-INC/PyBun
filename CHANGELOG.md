@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.1.28
 
 ### Security
 - fix(deps): replace unmaintained `bincode` 1.x with `postcard` for lockfiles (envelope v2) and the PyPI metadata cache; legacy v1 lockfiles are rejected with a regenerate hint, legacy cache entries self-heal as cache misses, and the RUSTSEC-2025-0141 suppressions are removed (Issue #434)
