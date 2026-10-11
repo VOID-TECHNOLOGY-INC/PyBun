@@ -2,7 +2,7 @@
 class Pybun < Formula
   desc "Rust-based single-binary Python toolchain."
   homepage "https://github.com/VOID-TECHNOLOGY-INC/PyBun"
-  version "0.1.28"
+  version "0.2.0"
   license "MIT"
 
   if ENV["HOMEBREW_PYBUN_TEST_TARBALL"]
@@ -11,21 +11,21 @@ class Pybun < Formula
   else
     on_macos do
       if Hardware::CPU.arm?
-        url "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.1.28/pybun-aarch64-apple-darwin.tar.gz"
-        sha256 "49bdd361fddccb7f32d68be8ea2e308e4c1be9ae685e44c7edd7b60734c5a21c"
+        url "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.2.0/pybun-aarch64-apple-darwin.tar.gz"
+        sha256 "fbc944317e01e62e826673ebbae9673750ba1ce6b9ce4656dd8c7de1f1fcef93"
       else
-        url "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.1.28/pybun-x86_64-apple-darwin.tar.gz"
-        sha256 "b17c39bc55bbc51cac15f113b4ae9a7297de52a39e46fc707875161ba5c83d10"
+        url "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.2.0/pybun-x86_64-apple-darwin.tar.gz"
+        sha256 "dd9fdb62695bfa42f09db4054c5e77ad8ecd5a73b68ac7b5869a13dda8aa5b5b"
       end
     end
 
     on_linux do
       if Hardware::CPU.arm?
-        url "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.1.28/pybun-aarch64-unknown-linux-gnu.tar.gz"
-        sha256 "4a882ccbb518ecb1e21e4a8183e5697e225d0eaa532b669040c9486a76152d67"
+        url "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.2.0/pybun-aarch64-unknown-linux-gnu.tar.gz"
+        sha256 "633818564c6be65deb3651fe77e3f073b7b3bdbd8b7fb519cd0429af6fdb45c5"
       else
-        url "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.1.28/pybun-x86_64-unknown-linux-gnu.tar.gz"
-        sha256 "ef24a5c61891a66e50dd2a117a95fa7b154aa63a29af7eb9344cfe71f1080e2c"
+        url "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.2.0/pybun-x86_64-unknown-linux-gnu.tar.gz"
+        sha256 "330d9551658022306d12a007c8207ac78b6f3c1e28ca785b8e91c01cf7beb2d6"
       end
     end
   end
