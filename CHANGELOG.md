@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.2.0
+
+### Features
+- Delegate project install/add/remove/lock/upgrade and project/PEP 723 execution to a shared uv backend across CLI and MCP, with authoritative `uv.lock`, structured v2 results, and execution receipts (Issue #443) (#476).
+- Support authenticated private indexes through uv named indexes and authentication providers, with compatible PIP index environment aliases (Issue #154) (#477).
+
+### Security
+- Redact index credentials before CLI/MCP output and receipt/audit/support persistence, and prevent index authentication variables from reaching user Python, including sandbox allow-env requests (Issue #154) (#477).
+- Validate backend lock artifacts before publishing success receipts, suppress raw backend diagnostics, and initialize sandbox guards before Python startup hooks (Issue #443) (#476).
+
+### Compatibility
+- uv >=0.12,<0.13 is required by default; use `PYBUN_BACKEND=native` for explicit legacy behavior. Existing `pybun.lockb` files are preserved. See `docs/UV_BACKEND.md` and `docs/PRIVATE_INDEXES.md` for migration and authentication configuration.
+
+### Chores
+- Update Rust dependencies and GitHub Actions (#474, #473), and carry forward v0.1.28 package-manager manifests (#475).
+
 ## v0.1.28
 
 ### Security
