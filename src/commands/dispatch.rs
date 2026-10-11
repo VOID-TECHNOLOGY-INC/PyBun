@@ -105,6 +105,30 @@ async fn dispatch_package(
     command: &Commands,
     collector: &mut EventCollector,
 ) -> (String, RenderDetail) {
+    if !crate::backend::native_selected() && !matches!(command, Commands::Outdated(_)) {
+        let name = match command {
+            Commands::Install(_) => "install",
+            Commands::Add(_) => "add",
+            Commands::Remove(_) => "remove",
+            Commands::Lock(_) => "lock",
+            Commands::Upgrade(_) => "upgrade",
+            _ => unreachable!(),
+        };
+        let result = match crate::backend::BackendRequest::from_command(command) {
+            Ok(request) => crate::backend::execute(request).await,
+            Err(error) => Err(error),
+        };
+        return (
+            name.to_string(),
+            match result {
+                Ok(detail) => RenderDetail::with_json(format!("uv {name} completed"), detail),
+                Err(error) => {
+                    collector.error_with_code(error.code, error.message, "Check uv configuration or select PYBUN_BACKEND=native for explicit experimental compatibility.");
+                    RenderDetail::error(error.message, error.detail(name))
+                }
+            },
+        );
+    }
     match command {
         Commands::Install(args) => {
             collector.event(EventType::ResolveStart);
@@ -416,6 +440,34 @@ async fn dispatch_execution(
                 args.allow_network = std::env::var("PYBUN_SANDBOX_ALLOW_NETWORK")
                     .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                     .unwrap_or(false);
+            }
+            if crate::backend::run_applicable(&args) {
+                let detail = match crate::backend::run(&args).await {
+                    Ok(value) => {
+                        let code = value["exit_code"].as_i64().unwrap_or(1) as i32;
+                        if code != 0 {
+                            collector.error_with_code(
+                                "E_RUN_FAILED",
+                                "Python execution failed.",
+                                "Inspect the structured execution result.",
+                            );
+                        }
+                        if matches!(format, OutputFormat::Text) {
+                            eprint!("{}", value["stderr"].as_str().unwrap_or_default());
+                        }
+                        let text = value["stdout"].as_str().unwrap_or_default().to_string();
+                        RenderDetail::with_json_raw_text(text, value).with_process_exit_code(code)
+                    }
+                    Err(error) => {
+                        collector.error_with_code(
+                            error.code,
+                            error.message,
+                            "Check uv project configuration and effective sandbox policy.",
+                        );
+                        RenderDetail::error(error.message, error.detail("run"))
+                    }
+                };
+                return ("run".to_string(), detail);
             }
             let result = run_script(&args, collector, format).await;
             match result {
@@ -794,22 +846,30 @@ async fn dispatch_tooling(
         }
         Commands::Schema(SchemaArgs { command }) => match command {
             None | Some(SchemaCommands::Print(_)) => {
-                let schema_json = crate::schema::schema_v1_json();
-                let schema_text = crate::schema::schema_v1_pretty();
+                let version = match command {
+                    Some(SchemaCommands::Print(args)) => args.schema_version.as_str(),
+                    _ => "1",
+                };
+                let schema_json = if version == "2" {
+                    crate::schema::schema_v2_json()
+                } else {
+                    crate::schema::schema_v1_json()
+                };
+                let schema_text = serde_json::to_string_pretty(&schema_json).expect("valid schema");
                 let detail = if matches!(format, OutputFormat::Text) {
                     RenderDetail::with_json_raw_text(
                         schema_text,
                         json!({
                             "schema": schema_json,
-                            "version": crate::schema::SCHEMA_VERSION,
+                            "version": version,
                         }),
                     )
                 } else {
                     RenderDetail::with_json(
-                        format!("schema v{}", crate::schema::SCHEMA_VERSION),
+                        format!("schema v{}", version),
                         json!({
                             "schema": schema_json,
-                            "version": crate::schema::SCHEMA_VERSION,
+                            "version": version,
                         }),
                     )
                 };

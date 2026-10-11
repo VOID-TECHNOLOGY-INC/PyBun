@@ -6,7 +6,9 @@ use std::path::Path;
 use tempfile::tempdir;
 
 fn bin() -> Command {
-    cargo_bin_cmd!("pybun")
+    let mut command = cargo_bin_cmd!("pybun");
+    command.env("PYBUN_BACKEND", "native");
+    command
 }
 
 fn write_pyproject(path: &Path, deps: &[&str]) {

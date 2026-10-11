@@ -375,7 +375,11 @@ pub enum SchemaCommands {
 }
 
 #[derive(Args, Debug)]
-pub struct SchemaPrintArgs {}
+pub struct SchemaPrintArgs {
+    /// Contract version to print; v1 remains frozen for native compatibility.
+    #[arg(long = "schema-version", default_value = "1", value_parser = ["1", "2"])]
+    pub schema_version: String,
+}
 
 #[derive(Args, Debug)]
 pub struct SchemaCheckArgs {

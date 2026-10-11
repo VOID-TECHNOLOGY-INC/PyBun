@@ -6,6 +6,9 @@ use serde_json::{Value, json};
 use std::path::PathBuf;
 
 pub(crate) async fn call_resolve(args: Value) -> Result<String, String> {
+    if !crate::backend::native_selected() {
+        return Err("Standalone native resolution requires PYBUN_BACKEND=native. Use pybun_lock or pybun_install for uv project semantics.".to_string());
+    }
     use crate::index::load_index_from_path;
     use crate::resolve_service::{ResolveRequest, resolve as resolve_request};
     use crate::resolver::{Requirement, ResolveOptions};

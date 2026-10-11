@@ -1,4 +1,14 @@
 # PyBun (Python Bundle) Product Specification
+
+# v0.2 backend contract
+
+The uv path uses JSON contract v2 and owns project/workspace dependency
+semantics through a shared CLI/MCP adapter. `uv.lock` is authoritative; binary
+native locks remain available only in explicit compatibility mode. See
+[UV_BACKEND.md](UV_BACKEND.md) and [schema v2](../schema/schema_v2.json).
+The specifications below describe the retained native/v1 compatibility surface
+where they refer to native resolution or binary execution locks.
+
 **Version:** 1.0 (Draft)
 **Status:** Planning
 **Codename:** Python-Speed-Demon (歴史的名称。§0.3の通り、現在の重点は速度ではなく Agent Control Plane としての安全性・決定性・診断可能性)

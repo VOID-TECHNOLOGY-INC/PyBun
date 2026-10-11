@@ -9,7 +9,9 @@ fn run_sandbox(args: &[&str]) -> assert_cmd::assert::Assert {
 }
 
 fn bin() -> Command {
-    cargo_bin_cmd!("pybun")
+    let mut command = cargo_bin_cmd!("pybun");
+    command.env("PYBUN_BACKEND", "native");
+    command
 }
 
 #[test]

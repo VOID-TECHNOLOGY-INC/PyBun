@@ -1,5 +1,12 @@
 # PyBun (Python Bundle)
 
+# v0.2 backend transition
+
+Normal project install/add/remove/lock/upgrade and project/PEP 723 execution now
+delegate to uv. See [backend semantics and migration](docs/UV_BACKEND.md) for
+the supported uv version, lock ownership, JSON v2, MCP parity, and explicit
+native compatibility mode.
+
 <p align="center">
   <strong>🐍 The Agent-Native Python Control Plane 🤖</strong>
 </p>

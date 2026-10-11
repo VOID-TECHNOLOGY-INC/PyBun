@@ -1,0 +1,360 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pybun.dev/schema/cli-output/v2.json",
+  "title": "PyBun uv CLI JSON Envelope v2",
+  "type": "object",
+  "required": [
+    "version",
+    "command",
+    "status",
+    "duration_ms",
+    "detail",
+    "events",
+    "diagnostics"
+  ],
+  "properties": {
+    "version": {
+      "type": "string",
+      "const": "2"
+    },
+    "command": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "ok",
+        "error"
+      ]
+    },
+    "duration_ms": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "detail": {
+      "$ref": "#/$defs/backendResult"
+    },
+    "events": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/event"
+      }
+    },
+    "diagnostics": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/diagnostic"
+      }
+    },
+    "trace_id": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "event": {
+      "type": "object",
+      "required": [
+        "type",
+        "timestamp_ms"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "command_start",
+            "command_end",
+            "resolve_start",
+            "resolve_progress",
+            "resolve_complete",
+            "install_start",
+            "download_start",
+            "download_progress",
+            "download_complete",
+            "extract_start",
+            "extract_complete",
+            "install_complete",
+            "env_create",
+            "env_activate",
+            "script_start",
+            "script_end",
+            "cache_hit",
+            "cache_miss",
+            "cache_write",
+            "python_list_start",
+            "python_list_complete",
+            "python_install_start",
+            "python_install_complete",
+            "python_remove_start",
+            "python_remove_complete",
+            "module_find_start",
+            "module_find_complete",
+            "lazy_import_start",
+            "lazy_import_complete",
+            "watch_start",
+            "watch_stop",
+            "file_change",
+            "test_start",
+            "test_discovery",
+            "test_pass",
+            "test_fail",
+            "test_skip",
+            "test_complete",
+            "progress",
+            "custom"
+          ]
+        },
+        "timestamp_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "data": {
+          "type": [
+            "object",
+            "array",
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ]
+        },
+        "progress": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "diagnostic": {
+      "type": "object",
+      "required": [
+        "level",
+        "message"
+      ],
+      "properties": {
+        "level": {
+          "type": "string",
+          "enum": [
+            "error",
+            "warning",
+            "info",
+            "hint"
+          ]
+        },
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "file": {
+          "type": "string"
+        },
+        "line": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "suggestion": {
+          "type": "string"
+        },
+        "context": {
+          "type": [
+            "object",
+            "array",
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ]
+        },
+        "exception_type": {
+          "type": "string"
+        },
+        "location": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "properties": {
+            "file": {
+              "type": "string"
+            },
+            "line": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "function": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "next_action": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "required": [
+            "tool",
+            "args"
+          ],
+          "properties": {
+            "tool": {
+              "type": "string"
+            },
+            "args": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "additionalProperties": false
+        },
+        "fix_candidates": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/fix_candidate"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "fix_candidate": {
+      "type": "object",
+      "required": [
+        "command",
+        "description",
+        "risk",
+        "auto_applicable"
+      ],
+      "properties": {
+        "command": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "risk": {
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ]
+        },
+        "auto_applicable": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "backendResult": {
+      "type": "object",
+      "required": [
+        "contract_version"
+      ],
+      "properties": {
+        "contract_version": {
+          "const": "2"
+        },
+        "backend": {
+          "type": "object",
+          "required": [
+            "name",
+            "version",
+            "operation"
+          ],
+          "properties": {
+            "name": {
+              "const": "uv"
+            },
+            "version": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "operation": {
+              "enum": [
+                "sync",
+                "add",
+                "remove",
+                "lock",
+                "run"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        "lock": {
+          "type": "object",
+          "required": [
+            "source",
+            "digest"
+          ],
+          "properties": {
+            "source": {
+              "type": "string"
+            },
+            "digest": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          },
+          "additionalProperties": false
+        },
+        "environment": {
+          "type": "object"
+        },
+        "effective_policy": {
+          "type": "object"
+        },
+        "duration_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "receipt_id": {
+          "type": "string"
+        },
+        "diagnostics": {
+          "type": "array"
+        },
+        "error": {
+          "type": "string"
+        },
+        "code": {
+          "type": "string"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "error"
+            ]
+          },
+          "then": {
+            "required": [
+              "code"
+            ]
+          },
+          "else": {
+            "required": [
+              "backend",
+              "environment",
+              "lock",
+              "effective_policy",
+              "duration_ms",
+              "receipt_id",
+              "diagnostics"
+            ]
+          }
+        }
+      ],
+      "additionalProperties": true
+    }
+  }
+}

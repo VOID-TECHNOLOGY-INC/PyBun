@@ -2,6 +2,7 @@
 pub mod allocator;
 mod atomic_fs;
 pub mod audit;
+pub mod backend;
 pub mod build;
 pub mod cache;
 pub mod cli;

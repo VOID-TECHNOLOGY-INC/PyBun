@@ -21,6 +21,9 @@ use std::path::PathBuf;
 /// `"resolved"` status describing exactly what happened (dependency
 /// resolution and lockfile generation, without any wheel installation).
 pub(crate) async fn call_install(args: Value) -> Result<String, String> {
+    if !crate::backend::native_selected() {
+        return super::call_project("install", args).await;
+    }
     use crate::resolver::Requirement;
     use crate::schema::EventCollector;
 

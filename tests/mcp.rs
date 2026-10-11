@@ -14,7 +14,9 @@ use std::time::Duration;
 use tempfile::tempdir;
 
 fn pybun_bin() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_pybun"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_pybun"));
+    command.env("PYBUN_BACKEND", "native");
+    command
 }
 
 /// Helper: send requests to MCP server and collect stdout
@@ -1578,6 +1580,7 @@ fn run_mcp_pybun_run(code: &str) -> String {
     let temp = tempfile::tempdir().unwrap();
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_pybun"))
+        .env("PYBUN_BACKEND", "native")
         .env("PYBUN_HOME", temp.path())
         .args(["mcp", "serve", "--stdio"])
         .stdin(Stdio::piped())

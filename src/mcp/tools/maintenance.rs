@@ -789,42 +789,80 @@ pub(crate) fn call_context(args: Value) -> Result<String, String> {
         .collect();
 
     // ── Lockfile ──────────────────────────────────────────────────────────
-    let lockfile_path = working_dir.join("pybun.lock");
-    let (lockfile_status, locked_packages, locked_names) =
-        if let Ok(bytes) = std::fs::read(&lockfile_path) {
-            match Lockfile::from_bytes(&bytes) {
-                Ok(lf) => {
-                    let locked_names: HashSet<String> =
-                        lf.packages.keys().map(|k| normalize_pkg_name(k)).collect();
-                    let locked: Vec<Value> = lf
-                        .packages
-                        .values()
-                        .map(|pkg| {
-                            let norm = normalize_pkg_name(&pkg.name);
-                            let declared = declared_names.contains(&norm);
-                            json!({
-                                "name": pkg.name,
-                                "version": pkg.version,
-                                "declared": declared,
-                                "locked": true
-                            })
-                        })
-                        .collect();
-                    let has_drift = declared_names
-                        .iter()
-                        .any(|d| !locked_names.contains(d.as_str()));
-                    let status = if has_drift { "drift" } else { "in_sync" };
-                    (status.to_string(), locked, Some(locked_names))
-                }
-                // Parse failure = lockfile exists but is unreadable/corrupt, distinct from drift.
-                Err(crate::lockfile::LockfileError::LegacyFormat) => {
-                    ("legacy_format".to_string(), vec![], None)
-                }
-                Err(_) => ("corrupt".to_string(), vec![], None),
+    let uv_lock = (!crate::backend::native_selected())
+        .then(|| {
+            working_dir
+                .ancestors()
+                .find(|path| path.join("uv.lock").is_file())
+                .map(|path| path.join("uv.lock"))
+        })
+        .flatten();
+    let lockfile_path = uv_lock
+        .clone()
+        .unwrap_or_else(|| working_dir.join("pybun.lock"));
+    let (lockfile_status, locked_packages, locked_names) = if uv_lock.is_some() {
+        match crate::backend::read_lock(&lockfile_path) {
+            Ok((_, packages)) => {
+                let names: HashSet<String> = packages
+                    .iter()
+                    .filter_map(|p| p["name"].as_str())
+                    .map(normalize_pkg_name)
+                    .collect();
+                let status = if declared_names.iter().any(|name| !names.contains(name)) {
+                    "drift"
+                } else {
+                    "in_sync"
+                };
+                let packages = packages
+                    .into_iter()
+                    .map(|mut package| {
+                        package["declared"] = json!(
+                            package["name"]
+                                .as_str()
+                                .is_some_and(|n| declared_names.contains(&normalize_pkg_name(n)))
+                        );
+                        package["locked"] = json!(true);
+                        package
+                    })
+                    .collect();
+                (status.to_string(), packages, Some(names))
             }
-        } else {
-            ("missing".to_string(), vec![], None)
-        };
+            Err(_) => ("corrupt".to_string(), vec![], None),
+        }
+    } else if let Ok(bytes) = std::fs::read(&lockfile_path) {
+        match Lockfile::from_bytes(&bytes) {
+            Ok(lf) => {
+                let locked_names: HashSet<String> =
+                    lf.packages.keys().map(|k| normalize_pkg_name(k)).collect();
+                let locked: Vec<Value> = lf
+                    .packages
+                    .values()
+                    .map(|pkg| {
+                        let norm = normalize_pkg_name(&pkg.name);
+                        let declared = declared_names.contains(&norm);
+                        json!({
+                            "name": pkg.name,
+                            "version": pkg.version,
+                            "declared": declared,
+                            "locked": true
+                        })
+                    })
+                    .collect();
+                let has_drift = declared_names
+                    .iter()
+                    .any(|d| !locked_names.contains(d.as_str()));
+                let status = if has_drift { "drift" } else { "in_sync" };
+                (status.to_string(), locked, Some(locked_names))
+            }
+            // Parse failure = lockfile exists but is unreadable/corrupt, distinct from drift.
+            Err(crate::lockfile::LockfileError::LegacyFormat) => {
+                ("legacy_format".to_string(), vec![], None)
+            }
+            Err(_) => ("corrupt".to_string(), vec![], None),
+        }
+    } else {
+        ("missing".to_string(), vec![], None)
+    };
 
     // ── Doctor warnings ───────────────────────────────────────────────────
     let mut doctor_warnings: Vec<Value> = Vec::new();
@@ -888,7 +926,7 @@ pub(crate) fn call_context(args: Value) -> Result<String, String> {
     };
 
     // ── Assemble response ─────────────────────────────────────────────────
-    if summary_only {
+    let mut response = if summary_only {
         let declared_count = declared_names.len();
         let installed_count = locked_packages.len();
         let drift_count = locked_names.as_ref().map_or(0, |names| {
@@ -898,7 +936,7 @@ pub(crate) fn call_context(args: Value) -> Result<String, String> {
                 .count()
         });
 
-        Ok(json!({
+        json!({
             "python_version": python_version,
             "venv_path": venv_path,
             "venv_status": venv_status,
@@ -910,9 +948,8 @@ pub(crate) fn call_context(args: Value) -> Result<String, String> {
             "drift_summary": import_drift_summary,
             "snapshot_at_ms": snapshot_at_ms
         })
-        .to_string())
     } else {
-        Ok(json!({
+        json!({
             "python_version": python_version,
             "venv_path": venv_path,
             "venv_status": venv_status,
@@ -922,8 +959,12 @@ pub(crate) fn call_context(args: Value) -> Result<String, String> {
             "drift_summary": import_drift_summary,
             "snapshot_at_ms": snapshot_at_ms
         })
-        .to_string())
+    };
+    if let Some(path) = uv_lock {
+        response["contract_version"] = json!("2");
+        response["lock_source"] = json!(path.display().to_string());
     }
+    Ok(response.to_string())
 }
 
 pub(crate) fn call_drift(args: Value) -> Result<String, String> {

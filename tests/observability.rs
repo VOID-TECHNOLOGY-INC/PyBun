@@ -6,7 +6,9 @@ use std::process::Command;
 use tempfile::tempdir;
 
 fn pybun_bin() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_pybun"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_pybun"));
+    command.env("PYBUN_BACKEND", "native");
+    command
 }
 
 #[test]

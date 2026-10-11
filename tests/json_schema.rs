@@ -9,6 +9,7 @@ use std::process::Command;
 #[test]
 fn json_envelope_has_required_fields() {
     let output = Command::new(env!("CARGO_BIN_EXE_pybun"))
+        .env("PYBUN_BACKEND", "native")
         .args(["--format=json", "python", "list"])
         .output()
         .expect("failed to execute pybun");
@@ -36,6 +37,7 @@ fn json_envelope_has_required_fields() {
 #[test]
 fn json_version_field_is_valid() {
     let output = Command::new(env!("CARGO_BIN_EXE_pybun"))
+        .env("PYBUN_BACKEND", "native")
         .args(["--format=json", "python", "list"])
         .output()
         .expect("failed to execute pybun");
@@ -55,6 +57,7 @@ fn json_version_field_is_valid() {
 #[test]
 fn json_status_field_is_valid() {
     let output = Command::new(env!("CARGO_BIN_EXE_pybun"))
+        .env("PYBUN_BACKEND", "native")
         .args(["--format=json", "python", "list"])
         .output()
         .expect("failed to execute pybun");
@@ -75,6 +78,7 @@ fn json_status_field_is_valid() {
 #[test]
 fn json_duration_is_non_negative() {
     let output = Command::new(env!("CARGO_BIN_EXE_pybun"))
+        .env("PYBUN_BACKEND", "native")
         .args(["--format=json", "python", "list"])
         .output()
         .expect("failed to execute pybun");
@@ -92,6 +96,7 @@ fn json_duration_is_non_negative() {
 #[test]
 fn json_events_is_array() {
     let output = Command::new(env!("CARGO_BIN_EXE_pybun"))
+        .env("PYBUN_BACKEND", "native")
         .args(["--format=json", "python", "list"])
         .output()
         .expect("failed to execute pybun");
@@ -107,6 +112,7 @@ fn json_events_is_array() {
 #[test]
 fn json_diagnostics_is_array() {
     let output = Command::new(env!("CARGO_BIN_EXE_pybun"))
+        .env("PYBUN_BACKEND", "native")
         .args(["--format=json", "python", "list"])
         .output()
         .expect("failed to execute pybun");
@@ -123,6 +129,7 @@ fn json_diagnostics_is_array() {
 fn json_event_has_required_fields() {
     // Use install command which generates events
     let output = Command::new(env!("CARGO_BIN_EXE_pybun"))
+        .env("PYBUN_BACKEND", "native")
         .args([
             "--format=json",
             "install",
@@ -161,6 +168,7 @@ fn json_diagnostic_has_required_fields() {
     // This test verifies the structure when diagnostics are present
     // We'll trigger a diagnostic by providing an invalid configuration
     let output = Command::new(env!("CARGO_BIN_EXE_pybun"))
+        .env("PYBUN_BACKEND", "native")
         .args(["--format=json", "doctor"])
         .output()
         .expect("failed to execute pybun");
@@ -192,6 +200,7 @@ fn json_diagnostic_has_required_fields() {
 fn json_error_response_has_error_detail() {
     // Trigger an error by not providing required package argument
     let output = Command::new(env!("CARGO_BIN_EXE_pybun"))
+        .env("PYBUN_BACKEND", "native")
         .args(["--format=json", "add"])
         .output()
         .expect("failed to execute pybun");
@@ -219,6 +228,7 @@ fn json_error_response_has_error_detail() {
 fn json_trace_id_format_when_present() {
     // Run with PYBUN_TRACE env var set
     let output = Command::new(env!("CARGO_BIN_EXE_pybun"))
+        .env("PYBUN_BACKEND", "native")
         .args(["--format=json", "python", "list"])
         .env("PYBUN_TRACE", "1")
         .output()
@@ -294,6 +304,7 @@ if __name__ == "__main__":
     #[test]
     fn python_list_json() {
         let output = Command::new(env!("CARGO_BIN_EXE_pybun"))
+            .env("PYBUN_BACKEND", "native")
             .args(["--format=json", "python", "list"])
             .output()
             .expect("failed to execute pybun");
@@ -306,6 +317,7 @@ if __name__ == "__main__":
     #[test]
     fn python_list_all_json() {
         let output = Command::new(env!("CARGO_BIN_EXE_pybun"))
+            .env("PYBUN_BACKEND", "native")
             .args(["--format=json", "python", "list", "--all"])
             .output()
             .expect("failed to execute pybun");
@@ -318,6 +330,7 @@ if __name__ == "__main__":
     #[test]
     fn test_stub_json() {
         let output = Command::new(env!("CARGO_BIN_EXE_pybun"))
+            .env("PYBUN_BACKEND", "native")
             .args(["--format=json", "test"])
             .output()
             .expect("failed to execute pybun");
@@ -331,6 +344,7 @@ if __name__ == "__main__":
     fn build_json_envelope() {
         let (_temp, project_dir, pythonpath) = setup_build_schema_fixture();
         let output = Command::new(env!("CARGO_BIN_EXE_pybun"))
+            .env("PYBUN_BACKEND", "native")
             .current_dir(&project_dir)
             .env("PYTHONPATH", pythonpath)
             .args(["--format=json", "build"])
@@ -356,6 +370,7 @@ if __name__ == "__main__":
     #[test]
     fn doctor_json() {
         let output = Command::new(env!("CARGO_BIN_EXE_pybun"))
+            .env("PYBUN_BACKEND", "native")
             .args(["--format=json", "doctor"])
             .output()
             .expect("failed to execute pybun");
@@ -368,6 +383,7 @@ if __name__ == "__main__":
     #[test]
     fn gc_json() {
         let output = Command::new(env!("CARGO_BIN_EXE_pybun"))
+            .env("PYBUN_BACKEND", "native")
             .args(["--format=json", "gc"])
             .output()
             .expect("failed to execute pybun");
@@ -380,6 +396,7 @@ if __name__ == "__main__":
     #[test]
     fn self_update_stub_json() {
         let output = Command::new(env!("CARGO_BIN_EXE_pybun"))
+            .env("PYBUN_BACKEND", "native")
             .args(["--format=json", "self", "update", "--dry-run"])
             .output()
             .expect("failed to execute pybun");
@@ -392,6 +409,7 @@ if __name__ == "__main__":
     #[test]
     fn mcp_serve_stub_json() {
         let output = Command::new(env!("CARGO_BIN_EXE_pybun"))
+            .env("PYBUN_BACKEND", "native")
             .args(["--format=json", "mcp", "serve"])
             .output()
             .expect("failed to execute pybun");
@@ -409,6 +427,7 @@ mod schema_default {
     #[test]
     fn schema_without_subcommand_exits_zero() {
         let output = Command::new(env!("CARGO_BIN_EXE_pybun"))
+            .env("PYBUN_BACKEND", "native")
             .arg("schema")
             .output()
             .expect("failed to execute pybun");
@@ -423,6 +442,7 @@ mod schema_default {
     #[test]
     fn schema_without_subcommand_outputs_json_schema() {
         let output = Command::new(env!("CARGO_BIN_EXE_pybun"))
+            .env("PYBUN_BACKEND", "native")
             .arg("schema")
             .output()
             .expect("failed to execute pybun");
@@ -437,6 +457,7 @@ mod schema_default {
     #[test]
     fn schema_without_subcommand_json_format_is_parseable() {
         let output = Command::new(env!("CARGO_BIN_EXE_pybun"))
+            .env("PYBUN_BACKEND", "native")
             .args(["--format=json", "schema"])
             .output()
             .expect("failed to execute pybun");
@@ -457,10 +478,12 @@ mod schema_default {
     #[test]
     fn schema_without_subcommand_matches_schema_print() {
         let bare = Command::new(env!("CARGO_BIN_EXE_pybun"))
+            .env("PYBUN_BACKEND", "native")
             .arg("schema")
             .output()
             .expect("failed to execute pybun");
         let with_print = Command::new(env!("CARGO_BIN_EXE_pybun"))
+            .env("PYBUN_BACKEND", "native")
             .args(["schema", "print"])
             .output()
             .expect("failed to execute pybun");
@@ -479,6 +502,7 @@ mod schema_version {
     #[test]
     fn schema_version_is_1() {
         let output = Command::new(env!("CARGO_BIN_EXE_pybun"))
+            .env("PYBUN_BACKEND", "native")
             .args(["--format=json", "python", "list"])
             .output()
             .expect("failed to execute pybun");

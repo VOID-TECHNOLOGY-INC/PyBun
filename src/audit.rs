@@ -65,27 +65,38 @@ pub fn default_osv_url() -> String {
         .unwrap_or_else(|_| "https://api.osv.dev/v1/querybatch".to_string())
 }
 
-/// List installed packages in the given Python environment via
-/// `pip list --format=json`. Returns `Err` if pip could not be invoked, exited
+/// List installed packages via standard-library metadata for uv projects,
+/// or `pip list --format=json` for native compatibility. Returns `Err` if inspection exited
 /// non-zero, or produced output that isn't valid JSON, so callers doing
 /// CI-gated scans (`--fail-on`) can distinguish "verified zero packages"
 /// from "failed to inspect the environment" rather than silently treating
 /// both as a clean scan.
 pub fn list_installed_packages(python_path: &Path) -> Result<Vec<InstalledPackage>, String> {
-    let output = ProcessCommand::new(python_path)
-        .args([
+    let uv_environment = !crate::backend::native_selected()
+        && python_path.ancestors().any(|p| p.join("uv.lock").is_file());
+    let args = if uv_environment {
+        vec![
+            "-I",
+            "-c",
+            "import importlib.metadata as m, json; print(json.dumps([{'name': d.metadata['Name'], 'version': d.version} for d in m.distributions()]))",
+        ]
+    } else {
+        vec![
             "-m",
             "pip",
             "list",
             "--format=json",
             "--disable-pip-version-check",
-        ])
+        ]
+    };
+    let output = ProcessCommand::new(python_path)
+        .args(args)
         .output()
         .map_err(|e| format!("failed to run `{}`: {e}", python_path.display()))?;
 
     if !output.status.success() {
         return Err(format!(
-            "`{} -m pip list --format=json` exited with {}: {}",
+            "Package inventory using `{}` exited with {}: {}",
             python_path.display(),
             output.status,
             String::from_utf8_lossy(&output.stderr).trim()
@@ -93,7 +104,7 @@ pub fn list_installed_packages(python_path: &Path) -> Result<Vec<InstalledPackag
     }
 
     let raw: Vec<Value> = serde_json::from_slice(&output.stdout)
-        .map_err(|e| format!("failed to parse `pip list --format=json` output: {e}"))?;
+        .map_err(|e| format!("failed to parse package inventory output: {e}"))?;
 
     Ok(raw
         .into_iter()
@@ -366,6 +377,20 @@ fn extract_fix_version(vuln: &Value) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn inventory_supports_uv_environments_without_pip() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("uv.lock"), "version=1\n").unwrap();
+        let status = std::process::Command::new("python3")
+            .args(["-m", "venv", "--without-pip"])
+            .arg(temp.path())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let packages = super::list_installed_packages(&temp.path().join("bin/python")).unwrap();
+        assert!(packages.is_empty());
+    }
     use super::*;
 
     #[test]

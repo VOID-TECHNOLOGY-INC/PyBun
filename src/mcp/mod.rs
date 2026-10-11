@@ -200,6 +200,9 @@ impl McpServer {
             match tool_name {
                 "pybun_resolve" => tools::call_resolve(tool_args.clone()).await,
                 "pybun_install" => tools::call_install(tool_args.clone()).await,
+                "pybun_add" => tools::call_project("add", tool_args.clone()).await,
+                "pybun_remove" => tools::call_project("remove", tool_args.clone()).await,
+                "pybun_lock" => tools::call_project("lock", tool_args.clone()).await,
                 "pybun_run" => tools::call_run(tool_args.clone()).await,
                 "pybun_gc" => tools::call_gc(tool_args.clone()),
                 "pybun_doctor" => tools::call_doctor(tool_args.clone()),
@@ -211,7 +214,10 @@ impl McpServer {
                 "pybun_drift" => tools::call_drift(tool_args.clone()),
                 "pybun_test" => tools::call_test(tool_args.clone()),
                 "pybun_audit" => tools::call_audit(tool_args.clone()).await,
-                "pybun_upgrade" => tools::call_upgrade(tool_args.clone()),
+                "pybun_upgrade" if crate::backend::native_selected() => {
+                    tools::call_upgrade(tool_args.clone())
+                }
+                "pybun_upgrade" => tools::call_project("upgrade", tool_args.clone()).await,
                 _ => Err(format!("Unknown tool: {}", tool_name)),
             }
         };
@@ -245,7 +251,7 @@ impl McpServer {
                 json!({
                     "content": [{
                         "type": "text",
-                        "text": format!("Error: {}", e)
+                        "text": if serde_json::from_str::<Value>(&e).is_ok_and(|v| v["contract_version"] == "2") { e } else { format!("Error: {}", e) }
                     }],
                     "isError": true
                 }),

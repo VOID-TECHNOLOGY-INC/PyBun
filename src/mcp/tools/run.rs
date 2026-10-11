@@ -115,6 +115,16 @@ pub(crate) async fn call_run(args: Value) -> Result<String, String> {
         passthrough: run_args,
     };
 
+    if crate::backend::run_applicable(&run_args_struct) {
+        return crate::backend::run(&run_args_struct)
+            .await
+            .map(|mut value| {
+                value["warnings"] = json!(warnings);
+                value.to_string()
+            })
+            .map_err(|e| e.detail("run").to_string());
+    }
+
     // Reported for informational purposes only; `run_script` performs its own
     // (identical) interpreter discovery internally.
     let working_dir = std::env::current_dir().map_err(|e| e.to_string())?;

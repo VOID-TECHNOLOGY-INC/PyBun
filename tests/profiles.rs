@@ -6,7 +6,9 @@ use predicates::prelude::*;
 use tempfile::TempDir;
 
 fn pybun() -> Command {
-    cargo_bin_cmd!("pybun")
+    let mut command = cargo_bin_cmd!("pybun");
+    command.env("PYBUN_BACKEND", "native");
+    command
 }
 
 #[test]
