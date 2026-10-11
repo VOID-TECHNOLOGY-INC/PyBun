@@ -9,7 +9,7 @@ Options:
       --system                   Allow installing into the resolved system Python instead of creating a project-local `.pybun/venv`. Without this flag, PyBun refuses to fall back to system Python and creates an isolated environment instead
       --no-progress              Disable progress UI
       --require <NAME==VERSION>  Requirements to install (temporary M1 flag)
-      --index <INDEX>            Path to index JSON (temporary M1 flag)
+      --index <INDEX>            uv index URL or NAME=URL; a JSON fixture path requires the native backend
       --lock <LOCK>              Path to write lockfile [default: pybun.lockb]
       --workspace                Operate on the whole workspace, merging dependencies from the root and all members. Useful when run from inside a workspace member directory
       --member <NAME>            Operate on a single workspace member by its `[project.name]`

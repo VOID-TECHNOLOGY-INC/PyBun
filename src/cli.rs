@@ -156,7 +156,7 @@ pub struct InstallArgs {
     /// Requirements to install (temporary M1 flag).
     #[arg(long = "require", value_name = "NAME==VERSION")]
     pub requirements: Vec<crate::resolver::Requirement>,
-    /// Path to index JSON (temporary M1 flag).
+    /// uv index URL or NAME=URL; a JSON fixture path requires the native backend.
     #[arg(long)]
     pub index: Option<std::path::PathBuf>,
     /// Path to write lockfile.
@@ -187,13 +187,16 @@ pub struct LockArgs {
     /// Use offline mode when cache is sufficient.
     #[arg(long)]
     pub offline: bool,
-    /// Path to index JSON (temporary M1 flag).
+    /// uv index URL or NAME=URL; a JSON fixture path requires the native backend.
     #[arg(long)]
     pub index: Option<std::path::PathBuf>,
 }
 
 #[derive(Args, Debug)]
 pub struct PackageArgs {
+    /// uv index URL or NAME=URL; use named-index environment variables for authentication.
+    #[arg(long)]
+    pub index: Option<std::path::PathBuf>,
     /// Package name(s) (optionally with version). Multiple packages may be
     /// given in a single invocation.
     #[arg(value_name = "PACKAGE", required = true)]

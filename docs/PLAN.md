@@ -12,6 +12,16 @@
   pytest smoke/drift/audit with default uv groups disabled. Backend line coverage
   is 84% overall; local gates, independent review and CI gate delivery.
 
+## v0.2 private indexes (Issue #154)
+
+- Current: uv named-index/provider delegation, PIP environment compatibility,
+  HTTP(S) index selectors and shared credential redaction at output/persistence
+  boundaries. Index auth variables never reach executed user Python.
+- Tests: Hermetic alias precedence and argument error regressions; real uv
+  authenticated local-index downloads with isolated caches, bad credentials,
+  sandbox allow-env denial, lock/receipt/audit/support-bundle redaction.
+  See [PRIVATE_INDEXES.md](PRIVATE_INDEXES.md).
+
 ## Planning Principles
 - Ship in small, reviewable PRs with clear dependencies; prefer feature flags to unblock parallel work.
 - Keep JSON/text parity from day 1 (`--format=json`) to stay AI-friendly.

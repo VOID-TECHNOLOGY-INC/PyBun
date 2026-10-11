@@ -7,8 +7,9 @@ Arguments:
 
 Options:
       --format <FORMAT>      Output format for machine readability [default: text] [possible values: text, json]
+      --index <INDEX>        uv index URL or NAME=URL; use named-index environment variables for authentication
       --offline              Use offline mode when cache is sufficient
-      --pre                  Allow pre-release and dev versions when resolving (PEP 440 excludes them by default unless a specifier mentions one)
       --progress <PROGRESS>  Progress UI mode (auto hides on non-TTY) [env: PYBUN_PROGRESS=] [default: auto] [possible values: auto, always, never]
       --no-progress          Disable progress UI
+      --pre                  Allow pre-release and dev versions when resolving (PEP 440 excludes them by default unless a specifier mentions one)
   -h, --help                 Print help

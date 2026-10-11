@@ -224,6 +224,9 @@ impl McpServer {
         let after_snapshot = audit::snapshot_for_tool(tool_name, &tool_args);
         let file_writes = audit::diff_file_writes(&before_snapshot, &after_snapshot);
         let duration_ms = start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+        let result = result
+            .map(|value| crate::support_bundle::redact_response(&value))
+            .map_err(|value| crate::support_bundle::redact_response(&value));
 
         let audit_entry = audit::build_audit_entry(
             &self.session_id,
@@ -346,7 +349,10 @@ pub async fn run_stdio_server() -> Result<(), Box<dyn std::error::Error>> {
         let request: JsonRpcRequest = match serde_json::from_str(&line) {
             Ok(req) => req,
             Err(e) => {
-                eprintln!("Invalid JSON-RPC request: {}", e);
+                eprintln!(
+                    "Invalid JSON-RPC request: {}",
+                    crate::support_bundle::redact_text(&e.to_string())
+                );
                 let error_response = JsonRpcResponse::error(Value::Null, -32700, "Parse error");
                 let _ = stdout
                     .write_all(serde_json::to_string(&error_response)?.as_bytes())

@@ -592,7 +592,8 @@ fn sandbox_default_filters_sensitive_env_vars() {
         r#"
 import os
 val = os.environ.get("PYBUN_TEST_SECRET_KEY", "NOT_PRESENT")
-print("SECRET:", val)
+assert val == "NOT_PRESENT"
+print("ENV_NOT_PRESENT")
 "#,
     )
     .unwrap();
@@ -608,7 +609,7 @@ print("SECRET:", val)
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("SECRET: NOT_PRESENT"));
+        .stdout(predicate::str::contains("ENV_NOT_PRESENT"));
 }
 
 #[test]
@@ -673,7 +674,8 @@ fn sandbox_allow_env_rejects_credential_like_names() {
         r#"
 import os
 val = os.environ.get("MY_ALLOWED_KEY", "NOT_PRESENT")
-print("KEY:", val)
+assert val == "NOT_PRESENT"
+print("ENV_NOT_PRESENT")
 "#,
     )
     .unwrap();
@@ -689,7 +691,7 @@ print("KEY:", val)
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("KEY: NOT_PRESENT"));
+        .stdout(predicate::str::contains("ENV_NOT_PRESENT"));
 }
 
 #[test]
@@ -770,7 +772,9 @@ fn sandbox_non_sandbox_mode_does_not_filter_env() {
         r#"
 import os
 val = os.environ.get("PYBUN_TEST_SECRET_KEY", "NOT_PRESENT")
-print("SECRET:", val)
+assert val == "visible_value"
+print("ENV_AVAILABLE")
+print(val)
 "#,
     )
     .unwrap();
@@ -780,7 +784,9 @@ print("SECRET:", val)
         .args(["--format=json", "run", script.to_str().unwrap()])
         .assert()
         .success()
-        .stdout(predicate::str::contains("SECRET: visible_value"));
+        .stdout(predicate::str::contains("ENV_AVAILABLE"))
+        .stdout(predicate::str::contains("<redacted>"))
+        .stdout(predicate::str::contains("visible_value").not());
 }
 
 #[test]

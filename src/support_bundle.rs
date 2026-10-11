@@ -515,6 +515,26 @@ fn write_sanitized_file(
 #[derive(Debug)]
 struct RedactionRules {
     patterns: Vec<String>,
+    secret_values: Vec<String>,
+}
+
+pub fn redact_text(text: &str) -> String {
+    RedactionRules::default().redact_text(text).0
+}
+
+pub(crate) fn redact_json(value: &Value) -> Value {
+    RedactionRules::default().redact_json_value(value)
+}
+
+pub(crate) fn redact_protocol(value: &Value) -> Value {
+    RedactionRules::default().redact_json_field("", value, true)
+}
+
+pub fn redact_response(text: &str) -> String {
+    match serde_json::from_str::<Value>(text) {
+        Ok(value) => redact_protocol(&value).to_string(),
+        Err(_) => redact_text(text),
+    }
 }
 
 impl Default for RedactionRules {
@@ -528,8 +548,48 @@ impl Default for RedactionRules {
             "*PASSWORD*".to_string(),
             "*SECRET*".to_string(),
             "*KEY*".to_string(),
+            "*USERNAME*".to_string(),
         ]);
-        Self { patterns }
+        let mut secret_values = Vec::new();
+        for (name, value) in std::env::vars() {
+            if crate::sandbox::is_credential_env_name(&name) && !value.is_empty() {
+                if !crate::sandbox::is_index_env_name(&name)
+                    || name.to_ascii_uppercase().ends_with("_USERNAME")
+                    || name.to_ascii_uppercase().ends_with("_PASSWORD")
+                {
+                    secret_values.push(value.clone());
+                }
+                if crate::sandbox::is_index_env_name(&name) {
+                    for item in value.split_whitespace() {
+                        let parsed = reqwest::Url::parse(item).ok().or_else(|| {
+                            item.split_once('=')
+                                .and_then(|(_, url)| reqwest::Url::parse(url).ok())
+                        });
+                        if let Some(url) = parsed {
+                            for credential in [Some(url.username()), url.password()]
+                                .into_iter()
+                                .flatten()
+                                .filter(|v| !v.is_empty())
+                            {
+                                let mut decoder = url.clone();
+                                decoder.set_query(Some(&format!(
+                                    "v={}",
+                                    credential.replace('+', "%2B")
+                                )));
+                                let decoded = decoder.query_pairs().next().unwrap().1.into_owned();
+                                secret_values.push(decoded);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        secret_values.sort_by_key(|value| std::cmp::Reverse(value.len()));
+        secret_values.dedup();
+        Self {
+            patterns,
+            secret_values,
+        }
     }
 }
 
@@ -544,20 +604,34 @@ impl RedactionRules {
     fn redact_text(&self, text: &str) -> (String, usize) {
         let mut redactions = 0usize;
         let mut output = String::new();
-        for (idx, line) in text.lines().enumerate() {
-            if idx > 0 {
-                output.push('\n');
-            }
+        for line in text.split_inclusive('\n') {
+            let ending = if line.ends_with("\r\n") {
+                "\r\n"
+            } else if line.ends_with('\n') {
+                "\n"
+            } else {
+                ""
+            };
             let mut current = line.to_string();
             if let Some((key, delimiter)) = extract_key_delimiter(line)
                 && self.key_matches(&key)
+                && key
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "_-.".contains(c))
             {
-                current = format!("{}{} <redacted>", key, delimiter);
+                current = format!("{}{} <redacted>{ending}", key, delimiter);
                 redactions += 1;
             }
             let (url_redacted, count) = redact_url_credentials(&current);
             current = url_redacted;
             redactions += count;
+
+            for secret in &self.secret_values {
+                if current.contains(secret) {
+                    current = current.replace(secret, "<redacted>");
+                    redactions += 1;
+                }
+            }
 
             let (query_redacted, count) = redact_query_params(&current);
             current = query_redacted;
@@ -569,6 +643,10 @@ impl RedactionRules {
     }
 
     fn redact_json_value(&self, value: &Value) -> Value {
+        self.redact_json_field("", value, false)
+    }
+
+    fn redact_json_field(&self, field: &str, value: &Value, protocol: bool) -> Value {
         match value {
             Value::Object(map) => {
                 let mut redacted = serde_json::Map::new();
@@ -576,7 +654,7 @@ impl RedactionRules {
                     if self.key_matches(key) {
                         redacted.insert(key.clone(), Value::String("<redacted>".to_string()));
                     } else {
-                        redacted.insert(key.clone(), self.redact_json_value(value));
+                        redacted.insert(key.clone(), self.redact_json_field(key, value, protocol));
                     }
                 }
                 Value::Object(redacted)
@@ -584,10 +662,40 @@ impl RedactionRules {
             Value::Array(items) => Value::Array(
                 items
                     .iter()
-                    .map(|item| self.redact_json_value(item))
+                    .map(|item| self.redact_json_field(field, item, protocol))
                     .collect(),
             ),
             Value::String(text) => {
+                // Typed protocol fields describe execution identity, not authentication.
+                if protocol
+                    && matches!(
+                        field,
+                        "name"
+                            | "version"
+                            | "status"
+                            | "operation"
+                            | "contract_version"
+                            | "code"
+                            | "level"
+                            | "type"
+                            | "source"
+                            | "path"
+                            | "python"
+                            | "lock_source"
+                            | "fingerprint"
+                            | "digest"
+                            | "receipt_id"
+                            | "input_hash"
+                            | "session_id"
+                            | "timestamp"
+                            | "command"
+                            | "target"
+                            | "script"
+                    )
+                {
+                    let (text, _) = redact_url_credentials(text);
+                    return Value::String(redact_query_params(&text).0);
+                }
                 let (redacted, _) = self.redact_text(text);
                 Value::String(redacted)
             }
@@ -596,6 +704,9 @@ impl RedactionRules {
     }
 
     fn key_matches(&self, key: &str) -> bool {
+        if crate::sandbox::is_index_env_name(key) {
+            return true;
+        }
         let uppercase = key.to_ascii_uppercase();
         self.patterns
             .iter()
@@ -665,7 +776,10 @@ fn redact_url_credentials(input: &str) -> (String, usize) {
     while let Some(pos) = output[offset..].find("://") {
         let scheme_end = offset + pos + 3;
         let remainder = &output[scheme_end..];
-        if let Some(at_pos) = remainder.find('@') {
+        let authority_end = remainder
+            .find(['/', '?', '#', ' ', '\t', '\r', '\n', '"', '\''])
+            .unwrap_or(remainder.len());
+        if let Some(at_pos) = remainder[..authority_end].rfind('@') {
             let before_at = &remainder[..at_pos];
             if before_at.contains(':') || !before_at.is_empty() {
                 let replace_start = scheme_end;
@@ -692,7 +806,7 @@ fn redact_query_params(input: &str) -> (String, usize) {
             let abs = start + pos;
             let value_start = abs + key.len() + 1;
             let value_end = output[value_start..]
-                .find(&['&', ' ', '"'][..])
+                .find(&['&', ' ', '"', '\'', '\r', '\n'][..])
                 .map(|idx| value_start + idx)
                 .unwrap_or(output.len());
             output.replace_range(value_start..value_end, "<redacted>");
@@ -706,6 +820,38 @@ fn redact_query_params(input: &str) -> (String, usize) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn auth_values_do_not_corrupt_protocol_fields() {
+        let rules = super::RedactionRules {
+            secret_values: vec!["uv".into(), "success".into()],
+            ..Default::default()
+        };
+        let value = serde_json::json!({"status":"success", "backend":{"name":"uv"}, "lock":{"source":"/tmp/uv.lock"}, "stdout":"uv\n"});
+        let redacted = rules.redact_json_field("", &value, true);
+        assert_eq!(redacted["backend"]["name"], "uv");
+        assert_eq!(redacted["status"], "success");
+        assert_eq!(redacted["lock"]["source"], "/tmp/uv.lock");
+        assert_eq!(redacted["stdout"], "<redacted>\n");
+    }
+
+    #[test]
+    fn authenticated_urls_redact_passwords_with_at_signs() {
+        let (text, _) =
+            super::redact_url_credentials("https://user:prefix@secret-tail@example.org/simple");
+        assert_eq!(text, "https://<redacted>@example.org/simple");
+    }
+    #[test]
+    fn auth_redaction_preserves_output_whitespace() {
+        let rules = super::RedactionRules::default();
+        assert_eq!(rules.redact_text("hello\r\n\n").0, "hello\r\n\n");
+        let value = serde_json::json!({"UV_INDEX_PRIVATE_USERNAME": "secret-user"});
+        assert!(
+            !rules
+                .redact_json_value(&value)
+                .to_string()
+                .contains("secret-user")
+        );
+    }
     use super::*;
 
     #[test]
