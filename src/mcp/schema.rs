@@ -8,7 +8,7 @@ use super::Tool;
 use serde_json::json;
 
 pub(super) fn build_tools_list() -> Vec<Tool> {
-    let tools = vec![
+    let mut tools = vec![
         Tool {
             name: "pybun_resolve".to_string(),
             description: "Resolve Python package dependencies".to_string(),
@@ -30,7 +30,7 @@ pub(super) fn build_tools_list() -> Vec<Tool> {
         },
         Tool {
             name: "pybun_install".to_string(),
-            description: "Install Python packages. Delegates to the same real install path as CLI `pybun install`: resolves dependencies (falling back to PyPI when no `index` is given), verifies real sha256 hashes, downloads wheels, and installs them into the target environment. Reports \"installed\" only when wheels were actually downloaded and installed; otherwise reports an honest \"resolved\" status.".to_string(),
+            description: "Synchronize the current uv project exactly, matching CLI install. Returns backend contract v2. Native requirements/index/system/binary-lock arguments require explicit PYBUN_BACKEND=native.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -313,10 +313,13 @@ pub(super) fn build_tools_list() -> Vec<Tool> {
         },
         Tool {
             name: "pybun_upgrade".to_string(),
-            description: "Upgrade a single package to a specific version in the current environment. Intended to be called by agents acting on next_action entries from pybun_audit.".to_string(),
+            description: "Update uv.lock with uv lock --upgrade/--upgrade-package, matching CLI upgrade; run install to sync afterward. Optional package/version retains audit next_action compatibility.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
+                    "packages": { "type": "array", "items": { "type": "string" } },
+                    "offline": { "type": "boolean" },
+                    "pre": { "type": "boolean" },
                     "package": {
                         "type": "string",
                         "description": "Package name to upgrade"
@@ -326,9 +329,24 @@ pub(super) fn build_tools_list() -> Vec<Tool> {
                         "description": "Target version (e.g. '2.31.0')"
                     }
                 },
-                "required": ["package", "version"]
+                "required": []
             }),
         },
     ];
+    for operation in ["add", "remove", "lock"] {
+        tools.push(Tool {
+            name: format!("pybun_{operation}"),
+            description: format!("uv-backed project {operation}; returns backend contract version 2, matching CLI semantics."),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "packages": { "type": "array", "items": { "type": "string" } },
+                    "script": { "type": "string" },
+                    "offline": { "type": "boolean" },
+                    "pre": { "type": "boolean" }
+                }
+            }),
+        });
+    }
     tools
 }

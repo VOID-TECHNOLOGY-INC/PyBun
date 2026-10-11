@@ -5,7 +5,9 @@ use tempfile::tempdir;
 
 #[allow(deprecated)]
 fn pybun_cmd() -> Command {
-    Command::cargo_bin("pybun").unwrap()
+    let mut command = Command::cargo_bin("pybun").unwrap();
+    command.env("PYBUN_BACKEND", "native");
+    command
 }
 
 fn network_enabled() -> bool {

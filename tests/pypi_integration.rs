@@ -12,7 +12,9 @@ use std::path::{Path, PathBuf};
 use tempfile::tempdir;
 
 fn bin() -> Command {
-    cargo_bin_cmd!("pybun")
+    let mut command = cargo_bin_cmd!("pybun");
+    command.env("PYBUN_BACKEND", "native");
+    command
 }
 
 fn ensure_venv(project_root: &Path) -> PathBuf {

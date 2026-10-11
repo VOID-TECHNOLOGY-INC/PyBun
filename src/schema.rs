@@ -31,6 +31,11 @@ pub type EventListener = Box<dyn FnMut(&Event) + 'static>;
 /// Schema version - bump when breaking changes occur
 pub const SCHEMA_VERSION: &str = "1";
 pub const SCHEMA_V1_JSON: &str = include_str!("../schema/schema_v1.json");
+pub const SCHEMA_V2_JSON: &str = include_str!("../schema/schema_v2.json");
+
+pub fn schema_v2_json() -> Value {
+    serde_json::from_str(SCHEMA_V2_JSON).expect("schema v2 JSON must be valid")
+}
 
 pub fn schema_v1_json() -> Value {
     serde_json::from_str(SCHEMA_V1_JSON).expect("schema v1 JSON must be valid")

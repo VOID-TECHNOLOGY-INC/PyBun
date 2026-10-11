@@ -3,7 +3,9 @@ use assert_cmd::cargo::cargo_bin_cmd;
 use tempfile::tempdir;
 
 fn pybun() -> Command {
-    cargo_bin_cmd!("pybun")
+    let mut command = cargo_bin_cmd!("pybun");
+    command.env("PYBUN_BACKEND", "native");
+    command
 }
 
 fn index_path() -> std::path::PathBuf {

@@ -301,6 +301,7 @@ print("hello")
         .env("PYBUN_PYPI_BASE_URL", &base)
         .env("PYBUN_PYPI_CACHE_DIR", pypi_cache.path())
         .env("PYBUN_HOME", pybun_home.path())
+        .env("PYBUN_BACKEND", "native")
         .env(CHILD_SCRIPT_ENV, &script)
         .output()
         .expect("spawn child test process");

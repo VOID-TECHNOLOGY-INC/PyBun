@@ -17,3 +17,6 @@ ref/uv
 
 # Coverage reports (generated locally by `just coverage`)
 lcov.info
+
+# Validated local execution receipts
+.pybun/receipts/

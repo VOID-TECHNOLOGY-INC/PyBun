@@ -76,6 +76,7 @@ fn outdated_without_lockfile_has_coded_diagnostic() {
     let temp = TempDir::new().unwrap();
 
     let output = cargo_bin_cmd!("pybun")
+        .env("PYBUN_BACKEND", "native")
         .current_dir(&temp)
         .args(["--format=json", "outdated"])
         .output()
@@ -92,6 +93,7 @@ fn upgrade_without_lockfile_has_coded_diagnostic() {
     let temp = TempDir::new().unwrap();
 
     let output = cargo_bin_cmd!("pybun")
+        .env("PYBUN_BACKEND", "native")
         .current_dir(&temp)
         .args(["--format=json", "upgrade"])
         .output()
@@ -108,6 +110,7 @@ fn remove_without_project_has_coded_diagnostic() {
     let temp = TempDir::new().unwrap();
 
     let output = cargo_bin_cmd!("pybun")
+        .env("PYBUN_BACKEND", "native")
         .current_dir(&temp)
         .args(["--format=json", "remove", "somepkg"])
         .output()
@@ -122,6 +125,7 @@ fn remove_without_project_has_coded_diagnostic() {
 #[test]
 fn schema_check_with_unreadable_path_has_coded_diagnostic() {
     let output = cargo_bin_cmd!("pybun")
+        .env("PYBUN_BACKEND", "native")
         .args([
             "--format=json",
             "schema",

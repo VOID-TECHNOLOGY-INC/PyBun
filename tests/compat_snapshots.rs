@@ -7,7 +7,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 fn pybun() -> Command {
-    cargo_bin_cmd!("pybun")
+    let mut command = cargo_bin_cmd!("pybun");
+    command.env("PYBUN_BACKEND", "native");
+    command
 }
 
 fn snapshots_root() -> PathBuf {

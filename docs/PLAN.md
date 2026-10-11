@@ -1,5 +1,17 @@
 # PyBun Implementation Plan (SPECS.md → Execution)
 
+# v0.2 backend transition (Issue #443)
+
+- Current: Shared uv adapter for CLI/MCP project mutation, sync, locking,
+  upgrade and project/PEP 723 environment preparation; explicit native
+  compatibility opt-in, JSON v2, validated lock/environment artifacts and
+  persisted receipts. See [migration guidance](UV_BACKEND.md).
+- Tests: Hermetic backend failure/version/artifact/secret-output contracts,
+  CLI/MCP lock parity, real uv project/script execution and sandbox regressions.
+  Three existing repositories (Requests, Click, Flask) passed inspect/sync/run/
+  pytest smoke/drift/audit with default uv groups disabled. Backend line coverage
+  is 84% overall; local gates, independent review and CI gate delivery.
+
 ## Planning Principles
 - Ship in small, reviewable PRs with clear dependencies; prefer feature flags to unblock parallel work.
 - Keep JSON/text parity from day 1 (`--format=json`) to stay AI-friendly.

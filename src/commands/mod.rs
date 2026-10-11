@@ -154,6 +154,14 @@ fn render(
             };
             let mut envelope =
                 JsonEnvelope::new(format!("pybun {command}"), status, duration, detail.json);
+            if envelope
+                .detail
+                .get("contract_version")
+                .and_then(Value::as_str)
+                == Some("2")
+            {
+                envelope.version = "2".to_string();
+            }
             envelope.events = events;
             envelope.diagnostics = diagnostics;
             envelope.trace_id = trace_id;

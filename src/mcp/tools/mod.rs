@@ -2,7 +2,9 @@
 //!
 //! Extracted from `mcp.rs` (Issue #344).
 
+mod backend;
 mod install;
+pub(crate) use backend::call_project;
 mod maintenance;
 mod resolve;
 mod run;
