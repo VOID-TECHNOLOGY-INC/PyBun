@@ -133,6 +133,18 @@ pub fn is_credential_env_name(name: &str) -> bool {
         || upper.contains("_SECRET")
         || upper.ends_with("_TOKEN")
         || upper.ends_with("_KEY")
+        || upper.ends_with("_PASSWORD")
+        || upper.ends_with("_USERNAME")
+        || is_index_env_name(name)
+}
+
+pub fn is_index_env_name(name: &str) -> bool {
+    let upper = name.to_ascii_uppercase();
+    upper.starts_with("UV_INDEX")
+        || matches!(
+            upper.as_str(),
+            "UV_DEFAULT_INDEX" | "UV_EXTRA_INDEX_URL" | "PIP_INDEX_URL" | "PIP_EXTRA_INDEX_URL"
+        )
 }
 
 /// Returns the default system-critical paths that should be denied for writes
@@ -506,6 +518,15 @@ pub fn execute_with_optional_sandbox(
     sandbox_guard: Option<&SandboxGuard>,
     capture_output: bool,
 ) -> std::io::Result<SandboxedExecution> {
+    // Index authentication belongs to dependency preparation, not user code.
+    let names: Vec<_> = std::env::vars_os()
+        .map(|(name, _)| name)
+        .chain(cmd.get_envs().map(|(name, _)| name.to_os_string()))
+        .filter(|name| is_index_env_name(&name.to_string_lossy()))
+        .collect();
+    for name in names {
+        cmd.env_remove(name);
+    }
     let mut timed_out = false;
     let (status, stdout, stderr) = if let Some(guard) = sandbox_guard {
         match execute_sandboxed(cmd, guard.resource_limits.timeout_secs, capture_output)? {

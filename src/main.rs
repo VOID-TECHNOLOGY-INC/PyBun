@@ -8,11 +8,19 @@ fn main() -> Result<()> {
     // machine-readable help. Detect that combination up front and short-circuit.
     let raw_args: Vec<String> = std::env::args().skip(1).collect();
     if let Some(envelope) = pybun::cli::json_help_envelope(&raw_args) {
-        println!("{envelope}");
+        println!("{}", support_bundle::redact_response(&envelope));
         return Ok(());
     }
 
-    let cli = Cli::parse();
+    let cli = Cli::try_parse().unwrap_or_else(|error| {
+        let output = support_bundle::redact_text(&error.to_string());
+        if error.use_stderr() {
+            eprint!("{output}");
+        } else {
+            print!("{output}");
+        }
+        std::process::exit(error.exit_code());
+    });
     if entry::should_install_color_eyre(&cli) {
         color_eyre::install()?;
     }

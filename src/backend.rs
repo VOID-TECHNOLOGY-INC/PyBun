@@ -62,6 +62,27 @@ pub struct BackendRequest {
 }
 
 impl BackendRequest {
+    fn index(&mut self, index: Option<&Path>) -> Result<(), BackendError> {
+        if let Some(index) = index {
+            let value = index
+                .to_str()
+                .ok_or_else(|| error("E_BACKEND_ARGUMENT", "Invalid index URL."))?;
+            let parsed = reqwest::Url::parse(value).ok().or_else(|| {
+                value
+                    .split_once('=')
+                    .and_then(|(_, url)| reqwest::Url::parse(url).ok())
+            });
+            if !parsed.is_some_and(|url| matches!(url.scheme(), "http" | "https")) {
+                return Err(error(
+                    "E_BACKEND_ARGUMENT",
+                    "Use an HTTP(S) uv index URL or NAME=URL; JSON fixture indexes require PYBUN_BACKEND=native.",
+                ));
+            }
+            self.args.extend(["--index".into(), index.into()]);
+        }
+        Ok(())
+    }
+
     pub fn from_command(command: &Commands) -> Result<Self, BackendError> {
         let mut request = Self {
             operation: "lock",
@@ -72,16 +93,13 @@ impl BackendRequest {
         };
         let (offline, pre) = match command {
             Commands::Install(a) => {
-                if a.system
-                    || !a.requirements.is_empty()
-                    || a.index.is_some()
-                    || a.lock != Path::new("pybun.lockb")
-                {
+                if a.system || !a.requirements.is_empty() || a.lock != Path::new("pybun.lockb") {
                     return Err(error(
                         "E_BACKEND_ARGUMENT",
-                        "uv install uses project sync; legacy --system/--require/--index/--lock require PYBUN_BACKEND=native. Use pybun add to change dependencies.",
+                        "uv install uses project sync; legacy --system/--require/--lock require PYBUN_BACKEND=native. Use pybun add to change dependencies.",
                     ));
                 }
+                request.index(a.index.as_deref())?;
                 request.operation = "sync";
                 request.needs_env = true;
                 if a.workspace {
@@ -98,6 +116,7 @@ impl BackendRequest {
             Commands::Add(a) | Commands::Remove(a) => {
                 let add = matches!(command, Commands::Add(_));
                 request.operation = if add { "add" } else { "remove" };
+                request.index(a.index.as_deref())?;
                 request.needs_env = true;
                 request.mutation = Some((add, a.packages.clone()));
                 if a.packages.iter().any(|p| p.starts_with('-')) {
@@ -110,26 +129,18 @@ impl BackendRequest {
                 (a.offline, a.pre)
             }
             Commands::Lock(a) => {
-                if a.index.is_some() {
-                    return Err(error(
-                        "E_BACKEND_ARGUMENT",
-                        "JSON fixture indexes require PYBUN_BACKEND=native; configure uv indexes for project operations.",
-                    ));
-                }
+                request.index(a.index.as_deref())?;
                 request.script = a.script.clone();
                 (a.offline, false)
             }
             Commands::Upgrade(a) => {
-                if a.index.is_some()
-                    || a.lock != Path::new("pybun.lockb")
-                    || a.dry_run
-                    || a.member.is_some()
-                {
+                if a.lock != Path::new("pybun.lockb") || a.dry_run || a.member.is_some() {
                     return Err(error(
                         "E_BACKEND_ARGUMENT",
-                        "uv upgrade updates uv.lock; legacy --index/--lock/--dry-run/--member require PYBUN_BACKEND=native.",
+                        "uv upgrade updates uv.lock; legacy --lock/--dry-run/--member require PYBUN_BACKEND=native.",
                     ));
                 }
+                request.index(a.index.as_deref())?;
                 if let Some(group) = &a.group {
                     request
                         .args
@@ -254,6 +265,24 @@ impl UvBackend {
             .arg(operation)
             .arg("--no-progress")
             .current_dir(&self.root);
+        for (pip, uv, aliases) in [
+            (
+                "PIP_INDEX_URL",
+                "UV_DEFAULT_INDEX",
+                ["UV_DEFAULT_INDEX", "UV_INDEX_URL"],
+            ),
+            (
+                "PIP_EXTRA_INDEX_URL",
+                "UV_INDEX",
+                ["UV_INDEX", "UV_EXTRA_INDEX_URL"],
+            ),
+        ] {
+            if aliases.iter().all(|name| std::env::var_os(name).is_none())
+                && let Some(value) = std::env::var_os(pip)
+            {
+                command.env(uv, value);
+            }
+        }
         command
     }
 
@@ -535,6 +564,7 @@ fn fingerprint(root: &Path, python: &Path) -> String {
 }
 
 fn publish_receipt(root: &Path, result: Value) -> Result<Value, BackendError> {
+    let result = crate::support_bundle::redact_protocol(&result);
     let mut receipt = result.clone();
     if let Some(object) = receipt.as_object_mut() {
         object.remove("stdout");
@@ -616,6 +646,22 @@ fn requirement_name(spec: &str) -> String {
 mod tests {
     use super::*;
     use clap::Parser;
+
+    #[test]
+    fn index_urls_preserve_queries_and_delegate_named_indexes() {
+        for index in [
+            "https://user:pass@example.org/simple?token=value",
+            "HTTPS://user:prefix=httpsecret@example.org/simple",
+            "private=https://example.org/simple",
+        ] {
+            let cli = crate::cli::Cli::try_parse_from(["pybun", "lock", "--index", index]).unwrap();
+            let request = BackendRequest::from_command(&cli.command).unwrap();
+            assert_eq!(
+                request.args,
+                vec![OsString::from("--index"), OsString::from(index)]
+            );
+        }
+    }
 
     #[test]
     fn malformed_lock_sources_are_rejected() {

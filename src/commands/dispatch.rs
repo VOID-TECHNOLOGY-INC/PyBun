@@ -129,6 +129,24 @@ async fn dispatch_package(
             },
         );
     }
+    if let Commands::Add(args) | Commands::Remove(args) = command
+        && args.index.is_some()
+    {
+        let name = if matches!(command, Commands::Add(_)) {
+            "add"
+        } else {
+            "remove"
+        };
+        let message = "--index for add/remove requires the uv backend.";
+        collector.error_with_code("E_BACKEND_ARGUMENT", message, "Use the default uv backend.");
+        return (
+            name.to_string(),
+            RenderDetail::error(
+                message,
+                json!({"error": message, "code": "E_BACKEND_ARGUMENT"}),
+            ),
+        );
+    }
     match command {
         Commands::Install(args) => {
             collector.event(EventType::ResolveStart);

@@ -70,6 +70,8 @@ custom binary `--lock`, system installation, and legacy upgrade selectors/dry-ru
 belong to this compatibility mode. They produce actionable errors in uv mode.
 Standalone MCP native resolution also requires this opt-in.
 
+For private registries and index authentication, see [PRIVATE_INDEXES.md](PRIVATE_INDEXES.md).
+
 Native fixture/compatibility tests explicitly select native; uv contract tests
 select uv and use hermetic fake executables. Network E2E can be enabled with
 `PYBUN_E2E_NETWORK=1 cargo test --test cli_uv_backend`.

@@ -53,7 +53,7 @@ pub(super) fn build_tools_list() -> Vec<Tool> {
                     },
                     "index": {
                         "type": "string",
-                        "description": "Path to a local index JSON file. If omitted, falls back to PyPI (same as the CLI)."
+                        "description": "uv index URL or NAME=URL. Named-index credentials use UV_INDEX_<NAME>_USERNAME/PASSWORD; JSON fixture paths require native opt-in."
                     },
                     "lock": {
                         "type": "string",
@@ -318,6 +318,7 @@ pub(super) fn build_tools_list() -> Vec<Tool> {
                 "type": "object",
                 "properties": {
                     "packages": { "type": "array", "items": { "type": "string" } },
+                    "index": { "type": "string", "description": "uv index URL or NAME=URL; authenticate via named-index environment variables." },
                     "offline": { "type": "boolean" },
                     "pre": { "type": "boolean" },
                     "package": {
@@ -341,6 +342,7 @@ pub(super) fn build_tools_list() -> Vec<Tool> {
                 "type": "object",
                 "properties": {
                     "packages": { "type": "array", "items": { "type": "string" } },
+                    "index": { "type": "string", "description": "uv index URL or NAME=URL; authenticate via named-index environment variables." },
                     "script": { "type": "string" },
                     "offline": { "type": "boolean" },
                     "pre": { "type": "boolean" }

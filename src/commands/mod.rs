@@ -136,7 +136,7 @@ fn render(
     if detail.silent {
         return None;
     }
-    Some(match format {
+    let output = match format {
         OutputFormat::Text => {
             if detail.raw_text {
                 detail.text
@@ -167,6 +167,14 @@ fn render(
             envelope.trace_id = trace_id;
             envelope.to_json()
         }
+    };
+    // Schema print contains only bundled definitions, never user/authentication data.
+    if command == "schema print" {
+        return Some(output);
+    }
+    Some(match format {
+        OutputFormat::Json => crate::support_bundle::redact_response(&output),
+        OutputFormat::Text => crate::support_bundle::redact_text(&output),
     })
 }
 
