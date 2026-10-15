@@ -568,6 +568,7 @@ fn audit_help_documents_severity_threshold_and_fail_on() {
         .stdout(predicates::str::contains("--fail-on"));
 }
 
+#[cfg(unix)]
 fn osv_batch_with_details(server: &MockServer, mut body: serde_json::Value) -> serde_json::Value {
     for result in body["results"].as_array_mut().unwrap() {
         if let Some(vulns) = result.get_mut("vulns").and_then(|v| v.as_array_mut()) {
