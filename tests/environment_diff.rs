@@ -57,7 +57,13 @@ fn mcp(before: &Value, after: &Value) -> Value {
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
         .find(|value| value["id"] == 2)
         .unwrap();
-    serde_json::from_str(rpc["result"]["content"][0]["text"].as_str().unwrap()).unwrap()
+    {
+        let mut value: Value =
+            serde_json::from_str(rpc["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(value["policy_applied"]["authorized"], true);
+        value.as_object_mut().unwrap().remove("policy_applied");
+        value
+    }
 }
 #[test]
 fn cli_and_mcp_share_deterministic_complete_diffs() {

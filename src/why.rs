@@ -98,14 +98,21 @@ fn note(notes: &mut Vec<Value>, code: &str, message: &str) {
 }
 
 pub fn explain(root: &Path, package: &str) -> Result<Value, WhyError> {
+    explain_scoped(root, package, Vec::new())
+}
+fn explain_scoped(
+    root: &Path,
+    package: &str,
+    roots: Vec<std::path::PathBuf>,
+) -> Result<Value, WhyError> {
     let package = name(package).ok_or(WhyError {
         code: "E_WHY_ARGUMENT",
         message: "Provide one distribution name, without version specifiers or extras.",
     })?;
     let evidence = if crate::backend::native_selected() {
-        native::graph(root)?
+        native::graph(root, &roots)?
     } else {
-        crate::backend::provenance_graph(root)?
+        crate::backend::provenance_graph_scoped(root, roots)?
     };
     analyze(evidence, &package)
 }
@@ -446,7 +453,7 @@ pub fn text(result: &Value) -> String {
     lines.join("\n")
 }
 
-pub(crate) fn call(args: Value) -> Result<String, String> {
+pub(crate) fn call(args: Value, roots: Vec<std::path::PathBuf>) -> Result<String, String> {
     let result = args["package"]
         .as_str()
         .ok_or(WhyError {
@@ -459,7 +466,7 @@ pub(crate) fn call(args: Value) -> Result<String, String> {
                     code: "E_WHY_PROJECT",
                     message: "Cannot locate the current project.",
                 })
-                .and_then(|root| explain(&root, package))
+                .and_then(|root| explain_scoped(&root, package, roots))
         });
     result.map(|value|value.to_string()).map_err(|error|json!({"status":"error","diagnostics":[{"level":"error","code":error.code,"message":error.message}]}).to_string())
 }

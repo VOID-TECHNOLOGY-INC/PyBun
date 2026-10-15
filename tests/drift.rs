@@ -357,6 +357,11 @@ fn run_mcp(requests: &[String]) -> Vec<Value> {
     let input = requests.join("");
     let output = Command::cargo_bin("pybun")
         .unwrap()
+        .env(
+            "PYBUN_MCP_POLICY",
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/mcp-permissive-policy.toml"),
+        )
         .args(["mcp", "serve", "--stdio"])
         .write_stdin(input)
         .output()

@@ -6,7 +6,7 @@
 
 use serde::Serialize;
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs::{self, OpenOptions};
 use std::io::Write as IoWrite;
 use std::path::{Path, PathBuf};
@@ -71,6 +71,7 @@ pub(super) struct AuditEntry {
     output_summary: AuditOutputSummary,
     sandbox_events: Vec<AuditSandboxEvent>,
     file_writes: Vec<AuditFileWrite>,
+    file_snapshot_complete: bool,
     duration_ms: u64,
 }
 
@@ -80,7 +81,59 @@ pub(super) struct FileState {
     sha256: String,
 }
 
-pub(super) type FileSnapshot = BTreeMap<PathBuf, FileState>;
+pub(super) struct FileSnapshot {
+    files: BTreeMap<PathBuf, FileState>,
+    observed_paths: BTreeSet<PathBuf>,
+    listed_directories: BTreeSet<PathBuf>,
+    missing_paths: BTreeSet<PathBuf>,
+    complete: bool,
+    entries: usize,
+    bytes: u64,
+}
+impl FileSnapshot {
+    fn new() -> Self {
+        Self {
+            files: BTreeMap::new(),
+            observed_paths: BTreeSet::new(),
+            listed_directories: BTreeSet::new(),
+            missing_paths: BTreeSet::new(),
+            complete: true,
+            entries: 0,
+            bytes: 0,
+        }
+    }
+
+    fn proves_absent(&self, path: &Path) -> bool {
+        let mut candidate = path;
+        loop {
+            if self.observed_paths.contains(candidate) {
+                return false;
+            }
+            if self.missing_paths.contains(candidate) {
+                return true;
+            }
+            let Some(parent) = candidate.parent() else {
+                return false;
+            };
+            if self.listed_directories.contains(parent) {
+                return true;
+            }
+            candidate = parent;
+        }
+    }
+}
+pub(super) struct AuditDiff {
+    pub writes: Vec<AuditFileWrite>,
+    pub complete: bool,
+}
+impl Default for AuditDiff {
+    fn default() -> Self {
+        Self {
+            writes: vec![],
+            complete: true,
+        }
+    }
+}
 
 #[derive(Debug)]
 pub(super) struct McpAuditLog {
@@ -466,7 +519,7 @@ pub(super) fn build_audit_entry(
     tool_args: &Value,
     result: &Result<String, String>,
     hash_inputs: bool,
-    file_writes: Vec<AuditFileWrite>,
+    file_writes: AuditDiff,
     duration_ms: u64,
 ) -> AuditEntry {
     AuditEntry {
@@ -484,7 +537,8 @@ pub(super) fn build_audit_entry(
         },
         output_summary: summarize_tool_result(result),
         sandbox_events: sandbox_events_from_result(result),
-        file_writes,
+        file_writes: file_writes.writes,
+        file_snapshot_complete: file_writes.complete,
         duration_ms,
     }
 }
@@ -579,7 +633,10 @@ pub(super) fn snapshot_for_tool(tool_name: &str, tool_args: &Value) -> FileSnaps
     };
 
     let mut snapshot = FileSnapshot::new();
-    for path in paths.iter().filter_map(|v| v.as_str()) {
+    if paths.len() > 2000 {
+        snapshot.complete = false;
+    }
+    for path in paths.iter().take(2000).filter_map(|v| v.as_str()) {
         collect_file_snapshot(&normalized_absolute_path(Path::new(path)), &mut snapshot);
     }
     snapshot
@@ -613,6 +670,14 @@ pub(super) fn mcp_sandbox_config_from_policy(policy: &Value) -> crate::sandbox::
             .into_iter()
             .filter(|name| !crate::sandbox::is_credential_env_name(name))
             .collect(),
+        memory_limit_mb: policy
+            .get("memory_limit_mb")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+        cpu_limit_secs: policy
+            .get("cpu_limit_secs")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
         timeout_secs: policy
             .get("timeout_secs")
             .and_then(|v| v.as_u64())
@@ -720,41 +785,131 @@ pub(super) fn estimate_run_risk(
 }
 
 fn collect_file_snapshot(path: &Path, snapshot: &mut FileSnapshot) {
-    let Ok(metadata) = fs::metadata(path) else {
-        return;
-    };
-    if metadata.is_file() {
-        if let Ok(sha256) = crate::security::sha256_file(path) {
-            snapshot.insert(
-                normalized_absolute_path(path),
-                FileState {
-                    size_bytes: metadata.len(),
-                    sha256,
-                },
-            );
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    const MAX_ENTRIES: usize = 2000;
+    const MAX_FILE_BYTES: u64 = 4 * 1024 * 1024;
+    const MAX_TOTAL_BYTES: u64 = 16 * 1024 * 1024;
+    let mut pending = vec![(path.to_path_buf(), 0)];
+    while let Some((path, depth)) = pending.pop() {
+        if snapshot.entries >= MAX_ENTRIES || depth > 32 {
+            snapshot.complete = false;
+            break;
         }
-        return;
-    }
-
-    if metadata.is_dir()
-        && let Ok(entries) = fs::read_dir(path)
-    {
-        for entry in entries.flatten() {
-            collect_file_snapshot(&entry.path(), snapshot);
+        snapshot.entries += 1;
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                snapshot.missing_paths.insert(path);
+                continue;
+            }
+            Err(_) => {
+                snapshot.complete = false;
+                continue;
+            }
+        };
+        snapshot.observed_paths.insert(path.clone());
+        if metadata.file_type().is_symlink() {
+            snapshot.complete = false;
+            continue;
         }
+        if metadata.is_dir() {
+            if path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| {
+                    matches!(
+                        name,
+                        "target" | ".git" | ".venv" | "venv" | "__pycache__" | "node_modules"
+                    )
+                })
+            {
+                snapshot.complete = false;
+                continue;
+            }
+            let Ok(entries) = fs::read_dir(&path) else {
+                snapshot.complete = false;
+                continue;
+            };
+            let remaining = MAX_ENTRIES.saturating_sub(snapshot.entries + pending.len());
+            let mut children = Vec::new();
+            let mut fully_listed = true;
+            for entry in entries.take(remaining + 1) {
+                if children.len() == remaining {
+                    snapshot.complete = false;
+                    fully_listed = false;
+                    break;
+                }
+                match entry {
+                    Ok(entry) => children.push(entry.path()),
+                    Err(_) => {
+                        snapshot.complete = false;
+                        fully_listed = false;
+                    }
+                }
+            }
+            if fully_listed {
+                snapshot.listed_directories.insert(path);
+            }
+            snapshot.observed_paths.extend(children.iter().cloned());
+            children.sort();
+            pending.extend(children.into_iter().rev().map(|path| (path, depth + 1)));
+            continue;
+        }
+        if !metadata.is_file()
+            || metadata.len() > MAX_FILE_BYTES
+            || snapshot.bytes.saturating_add(metadata.len()) > MAX_TOTAL_BYTES
+        {
+            snapshot.complete = false;
+            continue;
+        }
+        let mut options = OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+        }
+        let Ok(file) = options.open(&path) else {
+            snapshot.complete = false;
+            continue;
+        };
+        if !file.metadata().is_ok_and(|metadata| metadata.is_file()) {
+            snapshot.complete = false;
+            continue;
+        }
+        let mut bytes = Vec::new();
+        let budget = MAX_FILE_BYTES.min(MAX_TOTAL_BYTES.saturating_sub(snapshot.bytes));
+        let read = file.take(budget + 1).read_to_end(&mut bytes);
+        snapshot.bytes = snapshot
+            .bytes
+            .saturating_add(bytes.len() as u64)
+            .min(MAX_TOTAL_BYTES);
+        if read.is_err() || bytes.len() as u64 > budget {
+            snapshot.complete = false;
+            continue;
+        }
+        snapshot.files.insert(
+            normalized_absolute_path(&path),
+            FileState {
+                size_bytes: bytes.len() as u64,
+                sha256: hex::encode(Sha256::digest(&bytes)),
+            },
+        );
     }
 }
 
-pub(super) fn diff_file_writes(before: &FileSnapshot, after: &FileSnapshot) -> Vec<AuditFileWrite> {
-    after
+pub(super) fn diff_file_writes(before: &FileSnapshot, after: &FileSnapshot) -> AuditDiff {
+    let writes = after
+        .files
         .iter()
         .filter_map(|(path, after_state)| {
-            let before_state = before.get(path);
+            let before_state = before.files.get(path);
             let changed = before_state
                 .map(|state| {
                     state.size_bytes != after_state.size_bytes || state.sha256 != after_state.sha256
                 })
-                .unwrap_or(true);
+                .unwrap_or_else(|| before.proves_absent(path));
             changed.then(|| AuditFileWrite {
                 path: path.display().to_string(),
                 size_bytes: after_state.size_bytes,
@@ -762,5 +917,112 @@ pub(super) fn diff_file_writes(before: &FileSnapshot, after: &FileSnapshot) -> V
                 sha256_after: Some(after_state.sha256.clone()),
             })
         })
-        .collect()
+        .collect();
+    AuditDiff {
+        writes,
+        complete: before.complete && after.complete,
+    }
+}
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+    #[test]
+    fn partial_baselines_do_not_claim_preexisting_unobserved_files_were_written() {
+        let temp = tempfile::tempdir().unwrap();
+        for name in ["a", "b", "c", "d", "e"] {
+            fs::File::create(temp.path().join(name))
+                .unwrap()
+                .set_len(4 * 1024 * 1024)
+                .unwrap();
+        }
+        let args = json!({"sandbox_policy":{"allow_write":[temp.path()]}});
+        let before = snapshot_for_tool("pybun_run", &args);
+        assert!(!before.complete);
+        fs::remove_file(temp.path().join("a")).unwrap();
+        fs::write(temp.path().join("b"), "changed").unwrap();
+        fs::write(temp.path().join("new"), "created").unwrap();
+        let after = snapshot_for_tool("pybun_run", &args);
+        let diff = diff_file_writes(&before, &after);
+        let names: Vec<_> = diff
+            .writes
+            .iter()
+            .map(|write| {
+                Path::new(&write.path)
+                    .file_name()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(names, ["b", "new"]);
+        assert!(!diff.complete);
+    }
+    #[test]
+    fn snapshots_exclude_generated_build_trees_and_bound_file_reads() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir(temp.path().join("target")).unwrap();
+        fs::write(temp.path().join("target/build-artifact"), "generated").unwrap();
+        let large = fs::File::create(temp.path().join("large-output")).unwrap();
+        large.set_len(5 * 1024 * 1024).unwrap();
+        fs::write(temp.path().join("source.py"), "print('source')").unwrap();
+        let snapshot = snapshot_for_tool(
+            "pybun_run",
+            &json!({"sandbox_policy":{"allow_write":[temp.path()]}}),
+        );
+        assert!(!snapshot.files.contains_key(&normalized_absolute_path(
+            &temp.path().join("target/build-artifact")
+        )));
+        assert!(
+            !snapshot
+                .files
+                .contains_key(&normalized_absolute_path(&temp.path().join("large-output")))
+        );
+        assert!(
+            snapshot
+                .files
+                .contains_key(&normalized_absolute_path(&temp.path().join("source.py")))
+        );
+    }
+    #[cfg(unix)]
+    #[test]
+    fn snapshots_do_not_follow_external_links_or_cycles() {
+        let temp = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("secret"), "private").unwrap();
+        std::os::unix::fs::symlink(outside.path(), temp.path().join("escape")).unwrap();
+        let snapshot = snapshot_for_tool(
+            "pybun_run",
+            &json!({"sandbox_policy":{"allow_write":[temp.path()]}}),
+        );
+        assert!(snapshot.files.is_empty());
+        assert!(!snapshot.complete);
+    }
+    #[test]
+    fn snapshot_entry_and_byte_budgets_are_global_across_roots() {
+        let temp = tempfile::tempdir().unwrap();
+        for index in 0..5 {
+            fs::File::create(temp.path().join(format!("data-{index}")))
+                .unwrap()
+                .set_len(4 * 1024 * 1024)
+                .unwrap();
+        }
+        let snapshot = snapshot_for_tool(
+            "pybun_run",
+            &json!({"sandbox_policy":{"allow_write":[temp.path(),temp.path()]}}),
+        );
+        assert!(!snapshot.complete);
+        assert!(snapshot.bytes <= 16 * 1024 * 1024);
+        assert!(snapshot.files.len() <= 4);
+        let entries = tempfile::tempdir().unwrap();
+        for index in 0..2001 {
+            fs::write(entries.path().join(format!("item-{index}")), "").unwrap();
+        }
+        let snapshot = snapshot_for_tool(
+            "pybun_run",
+            &json!({"sandbox_policy":{"allow_write":[entries.path()]}}),
+        );
+        assert!(!snapshot.complete);
+        assert!(snapshot.entries <= 2000);
+    }
 }

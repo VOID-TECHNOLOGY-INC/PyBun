@@ -1,0 +1,11 @@
+# Explicit operator policy for legacy business-behavior tests only.
+# New policy tests use their own restricted configs and never load this fixture.
+[tool.pybun.mcp.policy]
+default_sandbox = false
+require_sandbox = false
+allow_network = true
+max_execution_time_s = 0
+max_memory_mb = 0
+max_cpu_time_s = 0
+allowed_working_directories = ["/"]
+allowed_backends = ["uv", "native"]

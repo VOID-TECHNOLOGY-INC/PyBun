@@ -168,6 +168,11 @@ fn mcp_uses_the_same_granular_permissions() {
         .env("PYBUN_AUDIT_LOG", "/dev/null")
         .env("PYBUN_BACKEND", "native")
         .env("PYBUN_HISTORY", "0")
+        .env(
+            "PYBUN_MCP_POLICY",
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/mcp-permissive-policy.toml"),
+        )
         .args(["mcp", "serve", "--stdio"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

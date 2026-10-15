@@ -712,6 +712,66 @@ MIT
 
 ### Local execution history
 
+MCP execution requires an operator-owned security policy. Configure it before
+starting the server; requests cannot reload or override it. The server freezes
+one configuration at startup, with this precedence: `PYBUN_MCP_POLICY` file,
+then `.pybun/config.toml`, then `pyproject.toml`. A selected file with a missing
+or malformed policy fails closed; it does not fall back to another file.
+`pyproject.toml` and explicit files use `[tool.pybun.mcp.policy]`;
+`.pybun/config.toml` also accepts `[mcp.policy]`.
+
+For a restricted native execution server:
+
+```toml
+[tool.pybun.mcp.policy]
+default_sandbox = true
+require_sandbox = true
+allow_network = false
+max_execution_time_s = 30
+max_memory_mb = 0                 # Linux supports a nonzero memory cap
+max_cpu_time_s = 0
+allowed_working_directories = ["."]
+allowed_backends = ["native"]
+denied_tools = ["pybun_gc"]
+```
+
+Start it with `PYBUN_BACKEND=native pybun mcp serve --stdio`. Relative boundaries
+are resolved against the startup directory; start at the workspace root or
+explicitly authorize its ancestor workspace. Keep policy files under operator
+control, outside agent-writable paths for deployments. Audit logs must also be
+outside the effective writable project roots.
+
+Every tool and its resource aliases pass through authorization before audit
+setup, filesystem snapshots or execution. Responses expose `policy_applied` and
+stable `E_MCP_POLICY_*` denial codes. Requested limits may be stricter; zero
+(unlimited) cannot relax an operator cap. Required sandboxing and active caps
+prevent `unsafe_no_sandbox` from bypassing enforcement. Disallowed network
+permission also removes granular network and executable grants. Sandbox reads
+and writes default to the startup project boundary; explicit paths, symlinks,
+backend-derived workspaces and environment/lock outputs are checked against the
+operator's authorized directories. System-environment installation is denied.
+Write snapshots skip symlinks and generated trees (`target`, `.git`, `.venv`,
+`venv`, `__pycache__`, `node_modules`), and are bounded to 2,000 entries, depth
+32, 4 MiB per file and 16 MiB read per snapshot. Audit records expose
+`file_snapshot_complete=false` whenever evidence is skipped or bounded; their
+`file_writes` then describes only observed changes, not a complete write trace.
+Pure in-memory environment comparisons remain available without execution policy.
+
+Enforcement support is explicit: native inline code and ordinary scripts support
+these execution limits. Bounded uv preparation and native PEP 723 preparation
+cannot currently propagate all server limits, so incompatible calls return
+`E_MCP_POLICY_UNSUPPORTED` before preparation. Other tool handlers that cannot
+enforce a requested sandbox/network/resource restriction also return that code.
+Memory caps are unavailable on macOS/Windows; CPU caps require Unix. A dry run
+can preview a bounded uv call without starting the backend.
+
+Operators who authorize trusted uv project operations can set
+`require_sandbox=false`, `allow_network=true`, `max_execution_time_s=0`,
+`max_memory_mb=0`, and `max_cpu_time_s=0`; execution-time restrictions that a tool
+cannot enforce must be disabled explicitly. Its existing backend deadlines still
+apply. This does not grant requests permission to escape working-directory or
+backend boundaries. The Python guard's documented containment limits still apply.
+
 `pybun history --since 20m --format=json` queries CLI receipts for `run`, `test`,
 `install`, `add`, and `remove`, including failed invocations. Receipts are appended
 under `PYBUN_HOME/history.jsonl` (default `~/.cache/pybun/history.jsonl`), with a

@@ -9,7 +9,13 @@ pub struct GraphEvidence {
 }
 
 pub fn provenance_graph(root: &Path) -> Result<GraphEvidence, BackendError> {
-    let backend = UvBackend::discover(root)?;
+    provenance_graph_scoped(root, Vec::new())
+}
+pub(crate) fn provenance_graph_scoped(
+    root: &Path,
+    roots: Vec<PathBuf>,
+) -> Result<GraphEvidence, BackendError> {
+    let backend = UvBackend::discover(root)?.scoped(roots);
     let root = backend.workspace_root()?;
     let lock = root.join("uv.lock");
     let (digest, packages) = read_lock(&lock)?;
