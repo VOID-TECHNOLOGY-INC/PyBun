@@ -15,6 +15,31 @@ use serde_json::{Value, json};
 // pybun doctor
 // ---------------------------------------------------------------------------
 
+/// Shared doctor remediation entry for MCP; support-bundle upload is CLI-only.
+pub(crate) fn doctor_remediation(verbose: bool, apply: bool) -> Value {
+    let mut collector = EventCollector::new();
+    let args = crate::cli::DoctorArgs {
+        verbose,
+        fix: true,
+        apply,
+        bundle: None,
+        upload: false,
+        upload_url: None,
+    };
+    let mut detail = run_doctor(&args, &mut collector).json;
+    detail["diagnostics"] = json!(collector.into_diagnostics());
+    detail
+}
+
+fn remediation_cache_state(dir: &std::path::Path) -> Value {
+    if std::fs::read_dir(dir).is_err() {
+        return json!({"status": "unavailable"});
+    }
+    let mut state = json!(crate::pypi::pypi_cache_stats(dir));
+    state["status"] = json!("available");
+    state
+}
+
 pub(super) fn run_doctor(
     args: &crate::cli::DoctorArgs,
     collector: &mut EventCollector,
@@ -148,6 +173,7 @@ pub(super) fn run_doctor(
     }
 
     let mut applied_fixes: Vec<Value> = Vec::new();
+    let mut skipped_fixes: Vec<Value> = Vec::new();
     if args.apply {
         for diag in &fix_diagnostics {
             let Some(candidates) = &diag.fix_candidates else {
@@ -155,18 +181,27 @@ pub(super) fn run_doctor(
             };
             for candidate in candidates {
                 if !candidate.auto_applicable || candidate.risk != crate::schema::RiskLevel::Low {
+                    skipped_fixes.push(json!({
+                        "command": candidate.command,
+                        "risk": candidate.risk,
+                        "reason": "only low-risk auto-applicable fixes may be applied",
+                    }));
                     continue;
                 }
                 if candidate.command == "pybun gc" {
                     match crate::pypi::pypi_cache_dir() {
                         Some(dir) => {
+                            let before = remediation_cache_state(&dir);
                             let gc_outcome = crate::pypi::gc_stale_pypi_cache(&dir, false);
+                            let after = remediation_cache_state(&dir);
                             let applied = gc_outcome.files_removed > 0;
                             applied_fixes.push(json!({
                                 "command": candidate.command,
                                 "applied": applied,
                                 "files_removed": gc_outcome.files_removed,
                                 "freed_bytes": gc_outcome.freed_bytes,
+                                "before": before,
+                                "after": after,
                             }));
                             if applied {
                                 collector.info(format!("Applied fix: {}", candidate.command));
@@ -191,6 +226,11 @@ pub(super) fn run_doctor(
                             ));
                         }
                     }
+                } else {
+                    skipped_fixes.push(json!({
+                        "command": candidate.command,
+                        "reason": "no supported remediation executor",
+                    }));
                 }
             }
         }
@@ -317,6 +357,7 @@ pub(super) fn run_doctor(
         detail["fix_plan"] = json!(fix_plan);
         if args.apply {
             detail["applied_fixes"] = json!(applied_fixes);
+            detail["skipped_fixes"] = json!(skipped_fixes);
         }
     }
 

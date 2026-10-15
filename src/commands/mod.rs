@@ -22,6 +22,7 @@ use install::{AddOutcome, LockOutcome, RemoveOutcome};
 pub(crate) use install::{InstallOutcome, RunOutcome, install};
 mod dispatch;
 pub use dispatch::execute;
+pub(crate) use maintenance::doctor_remediation;
 mod maintenance;
 mod project;
 mod python;
