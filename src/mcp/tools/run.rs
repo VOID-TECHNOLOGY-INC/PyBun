@@ -86,6 +86,8 @@ pub(crate) async fn call_run(args: Value) -> Result<String, String> {
             "would_execute": describe_run_target(script, code),
             "sandboxed": use_sandbox,
             "sandbox_policy": use_sandbox.then(|| sandbox_policy_json(&effective_sandbox_config)),
+            "sandbox_policy_that_would_apply": use_sandbox.then(|| sandbox_policy_json(&effective_sandbox_config)),
+            "estimated_risk": risk_level,
             "risk_level": risk_level,
             "risk_reasons": risk_reasons,
             "warnings": warnings,

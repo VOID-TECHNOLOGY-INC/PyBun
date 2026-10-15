@@ -758,10 +758,10 @@ pub(super) fn unsafe_no_sandbox_denied_warning() -> Vec<Value> {
 }
 
 pub(super) fn describe_run_target(script: Option<&str>, code: Option<&str>) -> String {
-    if let Some(script) = script {
-        format!("Python script: {script}")
-    } else if let Some(code) = code {
+    if let Some(code) = code {
         format!("Python inline code ({} bytes)", code.len())
+    } else if let Some(script) = script {
+        format!("Python script: {script}")
     } else {
         "No Python target".to_string()
     }
@@ -773,7 +773,17 @@ pub(super) fn estimate_run_risk(
     sandboxed: bool,
 ) -> (String, Vec<String>) {
     let mut reasons = Vec::new();
-    let source = code.or(script).unwrap_or_default();
+    let script_source = if code.is_none() {
+        script.and_then(|path| super::policy::preparation_source(Path::new(path)).ok())
+    } else {
+        None
+    };
+    if code.is_none() && script.is_some() && script_source.is_none() {
+        reasons.push(
+            "script source not inspected: unavailable, non-text or exceeds 2 MiB".to_string(),
+        );
+    }
+    let source = code.or(script_source.as_deref()).unwrap_or_default();
     for (needle, reason) in [
         (
             "shutil.rmtree",
@@ -1048,5 +1058,30 @@ mod snapshot_tests {
         );
         assert!(!snapshot.complete);
         assert!(snapshot.entries <= 2000);
+    }
+}
+
+#[cfg(test)]
+mod risk_tests {
+    use super::*;
+
+    #[test]
+    fn non_text_script_is_uncertain_but_unused_script_does_not_override_inline_code() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("source.py");
+        fs::write(&path, [0xff, 0xfe]).unwrap();
+        let path = path.to_str().unwrap();
+        let (risk, reasons) = estimate_run_risk(Some(path), None, true);
+        assert_eq!(risk, "medium");
+        assert!(
+            reasons
+                .iter()
+                .any(|reason| reason.contains("not inspected"))
+        );
+        assert_eq!(
+            estimate_run_risk(Some(path), Some("print('inline')"), true),
+            ("low".to_string(), vec![])
+        );
+        assert_eq!(estimate_run_risk(Some(path), None, false).0, "high");
     }
 }

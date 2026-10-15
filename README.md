@@ -598,6 +598,23 @@ cannot enforce must be disabled explicitly. Its existing backend deadlines still
 apply. This does not grant requests permission to escape working-directory or
 backend boundaries. The Python guard's documented containment limits still apply.
 
+### Previewing execution
+
+Call `pybun_run` with `dry_run: true` to return `would_execute`,
+`estimated_risk` (`low`, `medium`, or `high`), `risk_reasons`, and
+`sandbox_policy_that_would_apply` without executing code or preparing a backend.
+The existing `risk_level` and `sandbox_policy` fields remain equivalent aliases.
+The response also includes server policy and admission limits; previews consume
+normal tool quota. Previewing an unsupported bounded backend reports
+`policy_applied.execution_supported=false` and its denial code.
+
+Risk is a substring heuristic over inline code or at most 2 MiB of regular UTF-8
+script source. Missing script targets are rejected. Non-text, oversized or unreadable source reports
+uncertainty as `medium`; filenames are not treated as source. If both are supplied,
+inline code takes precedence, matching execution. `low` is not proof of safety:
+dynamic imports, called code and later file changes can alter behavior. A preview
+does not grant execution permission; the actual call is authorized independently.
+
 ### Tool rate limits
 
 The same frozen configuration accepts `[tool.pybun.mcp.rate_limit]` (or
