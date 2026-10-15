@@ -191,3 +191,41 @@ fn history_storage_is_private_and_rejects_symlinks() {
             .success()
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn text_runs_record_receipts_and_propagate_child_codes() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    fs::write(
+        temp.path().join("script.py"),
+        "print('script')\nraise SystemExit(5)\n",
+    )
+    .unwrap();
+    for args in [
+        vec!["run", "-c", "print('inline'); raise SystemExit(7)"],
+        vec!["run", "script.py"],
+    ] {
+        let output = cargo_bin_cmd!("pybun")
+            .current_dir(temp.path())
+            .env("PYBUN_HOME", home.path())
+            .env("PYBUN_HISTORY", "1")
+            .env("PYBUN_BACKEND", "native")
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(matches!(output.status.code(), Some(5 | 7)));
+        let expected = if output.status.code() == Some(7) {
+            "inline\n"
+        } else {
+            "script\n"
+        };
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), expected);
+    }
+    let output = command(temp.path(), home.path(), &["history"]);
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let records = value["detail"]["records"].as_array().unwrap();
+    assert_eq!(records.len(), 2, "{value}");
+    assert_eq!(records[0]["exit_code"], 7);
+    assert_eq!(records[1]["exit_code"], 5);
+}

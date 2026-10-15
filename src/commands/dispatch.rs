@@ -82,6 +82,9 @@ pub async fn execute(cli: Cli) -> Result<()> {
         match history.finish(&command, &detail.json, collector.elapsed(), exit_code) {
             Ok(receipt_id) => detail.json["history_receipt_id"] = json!(receipt_id),
             Err(message) => {
+                if matches!(cli.format, OutputFormat::Text) {
+                    eprintln!("warning: execution history was not recorded: {message}");
+                }
                 collector.warning(format!("Execution history was not recorded: {message}"))
             }
         }
@@ -609,7 +612,12 @@ async fn dispatch_execution(
                         "lazy_imports_injected": profile.lazy_imports_injected,
                         "timing": profile.timing,
                     });
-                    let detail = RenderDetail::with_json(
+                    let silent_text = cfg!(unix)
+                        && format == OutputFormat::Text
+                        && sandbox.is_none()
+                        && !cleanup
+                        && crate::history::enabled();
+                    let mut detail = RenderDetail::with_json(
                         summary,
                         json!({
                             "target": target,
@@ -627,6 +635,8 @@ async fn dispatch_execution(
                         }),
                     )
                     .with_process_exit_code(exit_code);
+                    // Preserve the streamed text output of the former exec path.
+                    detail.silent = silent_text;
                     ("run".to_string(), detail)
                 }
                 Err(e) => {
