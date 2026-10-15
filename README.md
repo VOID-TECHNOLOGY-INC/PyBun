@@ -750,6 +750,11 @@ permission also removes granular network and executable grants. Sandbox reads
 and writes default to the startup project boundary; explicit paths, symlinks,
 backend-derived workspaces and environment/lock outputs are checked against the
 operator's authorized directories. System-environment installation is denied.
+Write snapshots skip symlinks and generated trees (`target`, `.git`, `.venv`,
+`venv`, `__pycache__`, `node_modules`), and are bounded to 2,000 entries, depth
+32, 4 MiB per file and 16 MiB read per snapshot. Audit records expose
+`file_snapshot_complete=false` whenever evidence is skipped or bounded; their
+`file_writes` then describes only observed changes, not a complete write trace.
 Pure in-memory environment comparisons remain available without execution policy.
 
 Enforcement support is explicit: native inline code and ordinary scripts support

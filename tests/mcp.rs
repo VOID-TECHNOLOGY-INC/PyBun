@@ -1584,8 +1584,11 @@ fn run_mcp_pybun_run(code: &str) -> String {
     use std::io::Write;
     use std::process::Stdio;
     let temp = tempfile::tempdir().unwrap();
+    let project = temp.path().join("project");
+    fs::create_dir(&project).unwrap();
 
     let mut child = pybun_bin()
+        .current_dir(&project)
         .env("PYBUN_BACKEND", "native")
         .env("PYBUN_HOME", temp.path())
         .args(["mcp", "serve", "--stdio"])
@@ -2876,5 +2879,44 @@ fn mcp_doctor_advertises_safe_remediation_flags() {
     assert_eq!(
         doctor["inputSchema"]["properties"]["apply"]["type"],
         "boolean"
+    );
+}
+
+#[test]
+fn default_root_write_audit_skips_build_artifacts_and_reports_partial_evidence() {
+    let project = tempdir().unwrap();
+    let audit = tempdir().unwrap();
+    let log = audit.path().join("audit.jsonl");
+    fs::create_dir(project.path().join("target")).unwrap();
+    fs::File::create(project.path().join("target/large-build-output"))
+        .unwrap()
+        .set_len(1024 * 1024 * 1024)
+        .unwrap();
+    let request = r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"pybun_run","arguments":{"code":"open('observed.txt','w').write('changed'); print('bounded audit')"}}}"#;
+    let stdout = mcp_call_in(
+        &[request],
+        project.path(),
+        &[("PYBUN_AUDIT_LOG", log.as_os_str().to_os_string())],
+    );
+    assert!(stdout.contains("bounded audit"), "{stdout}");
+    let entries = audit_log_entries(&log);
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["file_snapshot_complete"], false);
+    assert!(
+        entries[0]["file_writes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["path"].as_str().unwrap().ends_with("observed.txt"))
+    );
+    assert!(
+        !entries[0]["file_writes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["path"]
+                .as_str()
+                .unwrap()
+                .contains("large-build-output"))
     );
 }
