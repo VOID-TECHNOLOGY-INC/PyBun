@@ -105,6 +105,8 @@ mod tests {
             progress: ProgressMode::Auto,
             no_progress: false,
             command: Commands::Test(TestArgs {
+                affected: false,
+                since: None,
                 paths: Vec::new(),
                 member: None,
                 shard: None,

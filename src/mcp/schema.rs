@@ -273,9 +273,13 @@ pub(super) fn build_tools_list() -> Vec<Tool> {
                         "type": "string",
                         "description": "Test file or directory to run (default: auto-discover from current directory)"
                     },
+                    "since": {
+                        "type": "string",
+                        "description": "Git base reference for changed=true (default HEAD)"
+                    },
                     "changed": {
                         "type": "boolean",
-                        "description": "Run only tests in files changed since last git commit (new untracked test files are also included)"
+                        "description": "Select affected tests from git changes and transitive AST imports; uncertain evidence selects all tests"
                     },
                     "fail_fast": {
                         "type": "boolean",

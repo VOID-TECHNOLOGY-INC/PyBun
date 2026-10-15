@@ -10,14 +10,14 @@ Arguments:
           Additional arguments to pass to the test runner
 
 Options:
+      --affected
+          Select tests affected by tracked/untracked changes and transitive imports
+
       --format <FORMAT>
           Output format for machine readability
           
           [default: text]
           [possible values: text, json]
-
-      --member <NAME>
-          Run tests scoped to a single workspace member by its `[project.name]`. Used as the search root when no PATH is given
 
       --progress <PROGRESS>
           Progress UI mode (auto hides on non-TTY)
@@ -26,11 +26,17 @@ Options:
           [default: auto]
           [possible values: auto, always, never]
 
-      --shard <SHARD>
-          Shard identifier (N/M) for distributed testing
+      --since <GIT_REF>
+          Git base for affected-test selection (default: HEAD)
+
+      --member <NAME>
+          Run tests scoped to a single workspace member by its `[project.name]`. Used as the search root when no PATH is given
 
       --no-progress
           Disable progress UI
+
+      --shard <SHARD>
+          Shard identifier (N/M) for distributed testing
 
   -x, --fail-fast
           Stop on first failure

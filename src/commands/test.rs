@@ -296,6 +296,42 @@ pub(crate) fn run_tests(
     args: &crate::cli::TestArgs,
     collector: &mut EventCollector,
 ) -> Result<RenderDetail> {
+    if !args.affected {
+        return run_tests_selected(args, collector);
+    }
+    let working_dir = std::env::current_dir()?;
+    let selection = match crate::test_selection::select(&working_dir, args.since.as_deref()) {
+        Ok(selection) => selection,
+        Err(error) => {
+            collector.error_with_code(
+                "E_TEST_SELECTION",
+                &error,
+                "Check git and --since, then retry affected-test selection.",
+            );
+            return Ok(RenderDetail::error(
+                error,
+                json!({"selection_available": false}),
+            ));
+        }
+    };
+    let mut effective = args.clone();
+    effective.paths = selection.paths.clone();
+    let mut result = if effective.paths.is_empty() {
+        RenderDetail::with_json(
+            "No affected tests selected".to_string(),
+            json!({"tests": [], "results": [], "summary": {"total": 0, "passed": 0, "failed": 0, "skipped": 0, "errors": 0}}),
+        )
+    } else {
+        run_tests_selected(&effective, collector)?
+    };
+    selection.annotate(&mut result.json);
+    Ok(result)
+}
+
+fn run_tests_selected(
+    args: &crate::cli::TestArgs,
+    collector: &mut EventCollector,
+) -> Result<RenderDetail> {
     // Check for dry-run mode (for testing)
     let dry_run = std::env::var("PYBUN_TEST_DRY_RUN").is_ok();
 
