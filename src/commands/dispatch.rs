@@ -637,6 +637,8 @@ async fn dispatch_execution(
                         json!({
                             "enabled": s.enabled,
                             "allow_network": s.allow_network,
+                            "allow_net": s.allow_net,
+                            "allow_run": s.allow_run,
                             "allow_read": s.allow_read,
                             "allow_write": s.allow_write,
                             "allow_env": s.allow_env,

@@ -441,7 +441,34 @@ Use the sandbox for untrusted scripts or PEP 723 snippets:
 pybun --format=json run --sandbox examples/hello.py
 pybun --format=json run --sandbox --allow-network -c "print('net ok')"
 ```
-The sandbox isolates file and network access; add `--allow-network` only when required. Combine with `--profile=prod` for production-like runs.
+Use repeatable `--allow-net=host[:port]` to permit selected network destinations
+and `--allow-run=executable-name-or-path` to permit trusted executables. For example:
+
+```bash
+pybun --format=json run --sandbox --allow-net=pypi.org:443 script.py
+pybun --format=json run --sandbox --allow-run=/usr/bin/git script.py
+```
+
+`--allow-network` retains unrestricted network access. Hostnames are resolved
+once at startup; permission includes those IP addresses (and hosts sharing them).
+Ports are exact when provided; omit the port to allow all ports for that host.
+Use brackets for IPv6, for example `[::1]:8080`. TCP and UDP sends, direct
+connects, and DNS lookups are checked. Denials identify the target with
+`E_SANDBOX_NET_DENIED` or `E_SANDBOX_RUN_DENIED` and a permission hint.
+MCP `sandbox_policy` supports matching `allow_net` and `allow_run` arrays.
+
+Executable names are resolved from the initial PATH and pinned to their real
+paths. Subprocess PATH/cwd overrides cannot authorize a different executable.
+Use explicit paths for direct exec/posix_spawn calls; raw fork and shell-command
+APIs remain denied. An allowed executable is trusted: it can launch children and
+access the host independently of Python guards. When `allow_run` is nonempty,
+the blanket zero-child OS process limit is not applied; `resource_limits.unsupported`
+reports `process`. Existing parent OS limits still apply.
+
+These are Python runtime guards plus supported resource limits, not a kernel
+containment boundary. Native extensions and trusted external programs require
+an OS/container sandbox when hostile code containment is needed. Combine with
+`--profile=prod` for production-like runs.
 
 ## Profiles
 

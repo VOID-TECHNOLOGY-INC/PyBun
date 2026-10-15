@@ -231,6 +231,12 @@ pub struct RunArgs {
     /// Allow network access inside the sandbox (escape hatch).
     #[arg(long)]
     pub allow_network: bool,
+    /// Allow a sandbox network destination: host[:port] (repeatable).
+    #[arg(long = "allow-net", action = clap::ArgAction::Append)]
+    pub allow_net: Vec<String>,
+    /// Allow a trusted executable name or path in the sandbox (repeatable).
+    #[arg(long = "allow-run", action = clap::ArgAction::Append)]
+    pub allow_run: Vec<String>,
     /// Allow reading from a path inside the sandbox (can be specified multiple times).
     /// When set, reads outside these paths are blocked. Python stdlib is always allowed.
     #[arg(long, value_name = "PATH")]

@@ -107,6 +107,8 @@ pub(super) fn build_tools_list() -> Vec<Tool> {
                                 "type": "boolean",
                                 "description": "Allow network access (default: false)"
                             },
+                            "allow_net": {"type":"array", "items":{"type":"string"}, "description":"Allowed host[:port] destinations"},
+                            "allow_run": {"type":"array", "items":{"type":"string"}, "description":"Trusted executable names or paths"},
                             "allow_read": {
                                 "type": "array",
                                 "items": {"type": "string"},

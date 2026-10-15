@@ -32,6 +32,8 @@ use std::process::Command as ProcessCommand;
 pub(crate) struct SandboxInfo {
     pub(crate) enabled: bool,
     pub(crate) allow_network: bool,
+    pub(crate) allow_net: Vec<String>,
+    pub(crate) allow_run: Vec<String>,
     pub(crate) allow_read: Vec<String>,
     pub(crate) allow_write: Vec<String>,
     /// Env var *names* (never values) that were explicitly allowed through the env filter.
@@ -912,6 +914,8 @@ pub(crate) async fn run_script(
             &mut cmd,
             sandbox::SandboxConfig {
                 allow_network,
+                allow_net: args.allow_net.clone(),
+                allow_run: args.allow_run.clone(),
                 allow_read: args.allow_read.clone(),
                 allow_write: args.allow_write.clone(),
                 allow_env: args.allow_env.clone(),
@@ -926,6 +930,8 @@ pub(crate) async fn run_script(
         sandbox_info = Some(SandboxInfo {
             enabled: true,
             allow_network,
+            allow_net: args.allow_net.clone(),
+            allow_run: args.allow_run.clone(),
             allow_read: args.allow_read.clone(),
             allow_write: args.allow_write.clone(),
             allow_env: guard.allow_env.clone(),
@@ -1202,6 +1208,8 @@ fn run_python_code(
             &mut cmd,
             sandbox::SandboxConfig {
                 allow_network,
+                allow_net: args.allow_net.clone(),
+                allow_run: args.allow_run.clone(),
                 allow_read: args.allow_read.clone(),
                 allow_write: args.allow_write.clone(),
                 allow_env: args.allow_env.clone(),
@@ -1216,6 +1224,8 @@ fn run_python_code(
         sandbox_info = Some(SandboxInfo {
             enabled: true,
             allow_network,
+            allow_net: args.allow_net.clone(),
+            allow_run: args.allow_run.clone(),
             allow_read: args.allow_read.clone(),
             allow_write: args.allow_write.clone(),
             allow_env: guard.allow_env.clone(),

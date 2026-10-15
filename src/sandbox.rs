@@ -1,3 +1,4 @@
+mod permissions;
 use color_eyre::eyre::{Result, eyre};
 use std::fs;
 #[cfg(unix)]
@@ -22,6 +23,8 @@ fn serialize_policy_paths(paths: &[String]) -> Result<String> {
 pub struct SandboxConfig {
     /// Whether network access should be allowed inside the sandbox.
     pub allow_network: bool,
+    pub allow_net: Vec<String>,
+    pub allow_run: Vec<String>,
     /// Paths allowed for reading. Empty = no read restriction.
     pub allow_read: Vec<String>,
     /// Paths allowed for writing. Empty = no write restriction (default deny applies).
@@ -46,6 +49,8 @@ impl Default for SandboxConfig {
     fn default() -> Self {
         Self {
             allow_network: false,
+            allow_net: Vec::new(),
+            allow_run: Vec::new(),
             allow_read: Vec::new(),
             allow_write: Vec::new(),
             allow_env: Vec::new(),
@@ -226,6 +231,7 @@ impl SandboxGuard {
 /// module that blocks subprocess creation, network access, and enforces
 /// filesystem read/write policies.
 pub fn apply_python_sandbox(cmd: &mut Command, config: SandboxConfig) -> Result<SandboxGuard> {
+    permissions::validate(&config)?;
     let tempdir = tempfile::tempdir()?;
     let audit_tempdir = tempfile::Builder::new()
         .prefix("pybun-sandbox-audit-")
@@ -235,8 +241,11 @@ pub fn apply_python_sandbox(cmd: &mut Command, config: SandboxConfig) -> Result<
         .map_err(|e| eyre!("failed to initialize sandbox audit file: {e}"))?;
 
     let sitecustomize_path: PathBuf = tempdir.path().join("sitecustomize.py");
-    fs::write(&sitecustomize_path, SITECUSTOMIZE_PY)
-        .map_err(|e| eyre!("failed to write sandbox shim: {e}"))?;
+    fs::write(
+        &sitecustomize_path,
+        SITECUSTOMIZE_PY.replace("# GRANULAR_PERMISSIONS", permissions::PY),
+    )
+    .map_err(|e| eyre!("failed to write sandbox shim: {e}"))?;
 
     // --- Environment variable filtering ---
     // Clear all inherited env vars so the sandbox child doesn't inherit secrets.
@@ -287,6 +296,12 @@ pub fn apply_python_sandbox(cmd: &mut Command, config: SandboxConfig) -> Result<
     // (see `commands/mod.rs`'s CLI dispatcher) resolve it themselves before
     // building the config, where the decision is explicit and auditable.
     let allow_network = config.allow_network;
+    for (key, values) in [
+        ("PYBUN_SANDBOX_ALLOW_NET", &config.allow_net),
+        ("PYBUN_SANDBOX_ALLOW_RUN", &config.allow_run),
+    ] {
+        cmd.env(key, serialize_policy_paths(values)?);
+    }
 
     cmd.env("PYBUN_SANDBOX", "1");
     if allow_network {
@@ -324,6 +339,9 @@ pub fn apply_python_sandbox(cmd: &mut Command, config: SandboxConfig) -> Result<
 
     // --- Resource limits ---
     let mut unsupported = Vec::new();
+    if !config.allow_run.is_empty() {
+        unsupported.push("process".to_string());
+    }
     if config.memory_limit_mb > 0 && !memory_limit_supported() {
         unsupported.push("memory".to_string());
     }
@@ -343,7 +361,7 @@ pub fn apply_python_sandbox(cmd: &mut Command, config: SandboxConfig) -> Result<
     {
         let apply_memory = config.memory_limit_mb > 0 && memory_limit_supported();
         let apply_cpu = config.cpu_limit_secs > 0 && cpu_limit_supported();
-        let apply_process = true;
+        let apply_process = config.allow_run.is_empty();
         let apply_file_size = config.file_size_limit_mb > 0;
         let memory_limit_mb = config.memory_limit_mb;
         let cpu_limit_secs = config.cpu_limit_secs;
@@ -701,10 +719,10 @@ def _mode_needs_write(mode):
 
 def _block_subprocesses():
     def _blocked(*_a, **_kw):
-        _deny("process creation", "blocked_subprocesses")
+        _deny("process creation E_SANDBOX_RUN_DENIED " + str(_a[0] if _a else "process creation") + "; use --allow-run", "blocked_subprocesses")
 
     def _blocked_popen_init(_self, *_a, **_kw):
-        _deny("process creation", "blocked_subprocesses")
+        _deny("process creation E_SANDBOX_RUN_DENIED " + str(_a[0] if _a else "process creation") + "; use --allow-run", "blocked_subprocesses")
 
     # Deny at the point of the actual spawn (Popen.__init__, which is what
     # invokes _execute_child) instead of replacing subprocess.Popen itself.
@@ -748,15 +766,15 @@ def _block_subprocesses():
         "startfile",
     ):
         if hasattr(os, _name):
-            setattr(os, _name, lambda *_a, **_kw: _deny("process creation", "blocked_subprocesses"))
+            setattr(os, _name, lambda *_a, **_kw: _deny("process creation E_SANDBOX_RUN_DENIED " + str(_a[0] if _a else "process creation") + "; use --allow-run", "blocked_subprocesses"))
 
 
 def _block_network():
     def _blocked(*_a, **_kw):
-        _deny("network access", "blocked_network")
+        _deny("network access E_SANDBOX_NET_DENIED " + str(_a[0] if _a else "network access") + "; use --allow-net", "blocked_network")
 
     def _blocked_connect(_self, *_a, **_kw):
-        _deny("network access", "blocked_network")
+        _deny("network access E_SANDBOX_NET_DENIED " + str(_a[0] if _a else "network access") + "; use --allow-net", "blocked_network")
 
     # Deny at the point of the actual network operation (connect) instead of
     # replacing socket.socket itself. Reassigning socket.socket to a plain
@@ -899,10 +917,14 @@ def _write_audit():
             pass
 
 
+# GRANULAR_PERMISSIONS
+
 try:
     atexit.register(_write_audit)
-    _block_subprocesses()
-    if not ALLOW_NETWORK:
+    _install_permissions()
+    if not _ALLOW_RUN:
+        _block_subprocesses()
+    if not ALLOW_NETWORK and not _ALLOW_NET:
         _block_network()
     if _HAS_READ_POLICY or _HAS_WRITE_POLICY or _HAS_DEFAULT_DENY_WRITE:
         _patch_filesystem()
@@ -913,7 +935,7 @@ try:
     )
 except Exception as exc:  # pragma: no cover - defensive, should not happen
     sys.stderr.write("[pybun] sandbox init failed: {}\n".format(exc))
-    raise
+    os._exit(126)
 "#;
 
 #[cfg(test)]

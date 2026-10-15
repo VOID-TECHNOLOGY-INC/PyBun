@@ -257,6 +257,8 @@ mod tests {
                 code: None,
                 sandbox: false,
                 allow_network: false,
+                allow_net: Vec::new(),
+                allow_run: Vec::new(),
                 allow_read: Vec::new(),
                 allow_write: Vec::new(),
                 allow_env: Vec::new(),

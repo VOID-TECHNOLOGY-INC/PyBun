@@ -105,6 +105,8 @@ pub(crate) async fn call_run(args: Value) -> Result<String, String> {
         code: code.map(|s| s.to_string()),
         sandbox: use_sandbox,
         allow_network: effective_sandbox_config.allow_network,
+        allow_net: effective_sandbox_config.allow_net.clone(),
+        allow_run: effective_sandbox_config.allow_run.clone(),
         allow_read: effective_sandbox_config.allow_read.clone(),
         allow_write: effective_sandbox_config.allow_write.clone(),
         allow_env: effective_sandbox_config.allow_env.clone(),
