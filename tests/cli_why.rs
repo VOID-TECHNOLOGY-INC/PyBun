@@ -68,6 +68,11 @@ fn mcp(root: &Path, package: &str) -> Value {
         .env("PYBUN_HISTORY", "0")
         .env("PYBUN_BACKEND", "uv")
         .env("PYBUN_UV", root.join("uv"))
+        .env(
+            "PYBUN_MCP_POLICY",
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/mcp-permissive-policy.toml"),
+        )
         .args(["mcp", "serve", "--stdio"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -89,7 +94,13 @@ fn mcp(root: &Path, package: &str) -> Value {
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
         .find(|value| value["id"] == 2)
         .unwrap();
-    serde_json::from_str(rpc["result"]["content"][0]["text"].as_str().unwrap()).unwrap()
+    {
+        let mut value: Value =
+            serde_json::from_str(rpc["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(value["policy_applied"]["authorized"], true);
+        value.as_object_mut().unwrap().remove("policy_applied");
+        value
+    }
 }
 #[test]
 fn why_shares_every_path_and_provenance_without_mutating_the_lock() {

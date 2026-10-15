@@ -138,6 +138,11 @@ fn cli_and_mcp_use_the_same_lock_contract() {
         .current_dir(dir.path())
         .env("PYBUN_BACKEND", "uv")
         .env("PYBUN_UV", dir.path().join("uv"))
+        .env(
+            "PYBUN_MCP_POLICY",
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/mcp-permissive-policy.toml"),
+        )
         .args(["mcp", "serve", "--stdio"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -249,6 +254,11 @@ fn mcp_context_inspects_uv_lock_without_binary_conversion() {
     let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_pybun"))
         .current_dir(dir.path())
         .env("PYBUN_BACKEND", "uv")
+        .env(
+            "PYBUN_MCP_POLICY",
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/mcp-permissive-policy.toml"),
+        )
         .args(["mcp", "serve", "--stdio"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

@@ -613,6 +613,14 @@ pub(super) fn mcp_sandbox_config_from_policy(policy: &Value) -> crate::sandbox::
             .into_iter()
             .filter(|name| !crate::sandbox::is_credential_env_name(name))
             .collect(),
+        memory_limit_mb: policy
+            .get("memory_limit_mb")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+        cpu_limit_secs: policy
+            .get("cpu_limit_secs")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
         timeout_secs: policy
             .get("timeout_secs")
             .and_then(|v| v.as_u64())

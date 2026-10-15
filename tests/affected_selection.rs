@@ -70,6 +70,11 @@ fn mcp(root: &Path) -> Value {
         .current_dir(root)
         .env("PYBUN_BACKEND", "native")
         .env("PYBUN_PYTHON", "python3")
+        .env(
+            "PYBUN_MCP_POLICY",
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/mcp-permissive-policy.toml"),
+        )
         .args(["mcp", "serve", "--stdio"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

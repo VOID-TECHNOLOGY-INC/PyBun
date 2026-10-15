@@ -25,7 +25,7 @@ fn links(
     Ok(edges)
 }
 
-pub(super) fn graph(start: &Path) -> Result<GraphEvidence, WhyError> {
+pub(super) fn graph(start: &Path, roots: &[std::path::PathBuf]) -> Result<GraphEvidence, WhyError> {
     let (root, projects) = if let Some(workspace) =
         crate::workspace::Workspace::discover_root(start).map_err(|_| invalid())?
     {
@@ -40,7 +40,9 @@ pub(super) fn graph(start: &Path) -> Result<GraphEvidence, WhyError> {
             Err(_) => return Err(invalid()),
         }
     };
+    crate::backend::check_scope(&root, roots)?;
     let path = root.join("pybun.lockb");
+    crate::backend::check_scope(&path, roots)?;
     let bytes=std::fs::read(&path).map_err(|_|WhyError{code:"E_WHY_LOCK_MISSING",message:"The native lock is unavailable. Run native install or select the uv backend for uv.lock projects."})?;
     let lock = crate::lockfile::Lockfile::from_bytes(&bytes).map_err(|_| invalid())?;
     let mut packages = BTreeMap::new();

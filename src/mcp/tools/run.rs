@@ -118,13 +118,16 @@ pub(crate) async fn call_run(args: Value) -> Result<String, String> {
     };
 
     if crate::backend::run_applicable(&run_args_struct) {
-        return crate::backend::run(&run_args_struct)
-            .await
-            .map(|mut value| {
-                value["warnings"] = json!(warnings);
-                value.to_string()
-            })
-            .map_err(|e| e.detail("run").to_string());
+        return crate::backend::run_scoped(
+            &run_args_struct,
+            super::super::policy::authorized_roots(&args),
+        )
+        .await
+        .map(|mut value| {
+            value["warnings"] = json!(warnings);
+            value.to_string()
+        })
+        .map_err(|e| e.detail("run").to_string());
     }
 
     // Reported for informational purposes only; `run_script` performs its own

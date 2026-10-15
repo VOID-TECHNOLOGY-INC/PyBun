@@ -233,6 +233,11 @@ fn mcp_audit_and_support_bundle_redact_index_credentials() {
         .env("PYBUN_AUDIT_LOG", &log)
         .env("UV_INDEX_PRIVATE_USERNAME", "sentinel-user")
         .env("UV_INDEX_PRIVATE_PASSWORD", "sentinel-password")
+        .env(
+            "PYBUN_MCP_POLICY",
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/mcp-permissive-policy.toml"),
+        )
         .args(["mcp", "serve", "--stdio"]);
     let mut child = command
         .stdin(Stdio::piped())

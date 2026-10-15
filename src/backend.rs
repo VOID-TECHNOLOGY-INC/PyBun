@@ -9,9 +9,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Instant;
+mod scope;
+pub(crate) use scope::check_scope;
 mod graph;
+pub(crate) use graph::provenance_graph_scoped;
 pub use graph::{GraphEvidence, provenance_graph};
 mod run;
+pub(crate) use run::run_scoped;
 pub use run::{applicable as run_applicable, run};
 
 #[derive(Debug, thiserror::Error)]
@@ -182,6 +186,7 @@ pub struct UvBackend {
     root: PathBuf,
     timeout_secs: u64,
     version: String,
+    authorized_roots: Vec<PathBuf>,
 }
 
 impl UvBackend {
@@ -200,6 +205,7 @@ impl UvBackend {
             root: root.to_path_buf(),
             timeout_secs: 300,
             version: String::new(),
+            authorized_roots: Vec::new(),
         };
         let mut command = Command::new(&backend.executable);
         command.arg("--version").current_dir(root);
@@ -311,6 +317,7 @@ impl UvBackend {
                 "uv returned an invalid workspace root.",
             ));
         }
+        self.check_project_scope(&root)?;
         Ok(root)
     }
 
@@ -332,6 +339,7 @@ impl UvBackend {
         } else {
             self.root.clone()
         };
+        self.check_project_scope(&root)?;
         let lock_path = if let Some(script) = &request.script {
             let mut lock = self.root.join(script).into_os_string();
             lock.push(".lock");
@@ -375,24 +383,38 @@ impl UvBackend {
 }
 
 pub async fn execute(request: BackendRequest) -> Result<Value, BackendError> {
+    execute_scoped(request, Vec::new()).await
+}
+pub(crate) async fn execute_scoped(
+    request: BackendRequest,
+    roots: Vec<PathBuf>,
+) -> Result<Value, BackendError> {
     let root = std::env::current_dir().map_err(|_| {
         error(
             "E_BACKEND_PROJECT",
             "Cannot locate the current project directory.",
         )
     })?;
+    if let Some(script) = &request.script {
+        check_scope(&root.join(script), &roots)?;
+        let mut lock = root.join(script).into_os_string();
+        lock.push(".lock");
+        check_scope(Path::new(&lock), &roots)?;
+    }
     // The CLI also uses futures::executor for lightweight commands.
     if tokio::runtime::Handle::try_current().is_ok() {
-        tokio::task::spawn_blocking(move || UvBackend::discover(&root)?.execute(request))
-            .await
-            .map_err(|_| {
-                error(
-                    "E_BACKEND_FAILED",
-                    "Backend worker terminated unexpectedly.",
-                )
-            })?
+        tokio::task::spawn_blocking(move || {
+            UvBackend::discover(&root)?.scoped(roots).execute(request)
+        })
+        .await
+        .map_err(|_| {
+            error(
+                "E_BACKEND_FAILED",
+                "Backend worker terminated unexpectedly.",
+            )
+        })?
     } else {
-        UvBackend::discover(&root)?.execute(request)
+        UvBackend::discover(&root)?.scoped(roots).execute(request)
     }
 }
 
@@ -772,6 +794,7 @@ mod tests {
             executable: "/bin/sh".into(),
             root: temp.path().into(),
             timeout_secs: 0,
+            authorized_roots: Vec::new(),
             version: "0.12.0".into(),
         };
         let mut command = Command::new("/bin/sh");

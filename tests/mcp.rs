@@ -16,6 +16,10 @@ use tempfile::tempdir;
 fn pybun_bin() -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_pybun"));
     command.env("PYBUN_BACKEND", "native");
+    command.env(
+        "PYBUN_MCP_POLICY",
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mcp-permissive-policy.toml"),
+    );
     command
 }
 
@@ -1393,7 +1397,8 @@ print("test")
 #[test]
 fn mcp_tool_calls_write_jsonl_audit_entries() {
     let project = tempdir().unwrap();
-    let audit_path = project.path().join("mcp-audit.jsonl");
+    let audit_storage = tempdir().unwrap();
+    let audit_path = audit_storage.path().join("mcp-audit.jsonl");
     let audit_env = audit_path.as_os_str().to_os_string();
     let requests = [
         r#"{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_doctor","arguments":{"verbose":true}}}"#,
@@ -1436,7 +1441,8 @@ fn mcp_tool_calls_write_jsonl_audit_entries() {
 #[test]
 fn mcp_audit_hash_inputs_config_omits_raw_input() {
     let project = tempdir().unwrap();
-    let audit_path = project.path().join("hashed-audit.jsonl");
+    let audit_storage = tempdir().unwrap();
+    let audit_path = audit_storage.path().join("hashed-audit.jsonl");
     fs::write(
         project.path().join("pyproject.toml"),
         format!(
@@ -1579,7 +1585,7 @@ fn run_mcp_pybun_run(code: &str) -> String {
     use std::process::Stdio;
     let temp = tempfile::tempdir().unwrap();
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_pybun"))
+    let mut child = pybun_bin()
         .env("PYBUN_BACKEND", "native")
         .env("PYBUN_HOME", temp.path())
         .args(["mcp", "serve", "--stdio"])

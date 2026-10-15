@@ -24,6 +24,7 @@
 //! (tools/list definitions), and `tools` (per-tool handlers).
 
 mod audit;
+mod policy;
 mod schema;
 mod tools;
 
@@ -120,6 +121,7 @@ pub struct McpServer {
     initialized: bool,
     session_id: String,
     audit_log: McpAuditLog,
+    policy: policy::ServerPolicy,
 }
 
 impl McpServer {
@@ -128,6 +130,12 @@ impl McpServer {
             initialized: false,
             session_id: Uuid::new_v4().to_string(),
             audit_log: McpAuditLog::new(),
+            policy: policy::ServerPolicy::load(
+                &std::env::current_dir().unwrap_or_default(),
+                std::env::var_os("PYBUN_MCP_POLICY")
+                    .as_deref()
+                    .map(std::path::Path::new),
+            ),
         }
     }
 
@@ -192,13 +200,31 @@ impl McpServer {
         let tool_name = params.get("name").and_then(|n| n.as_str()).unwrap_or("");
         let tool_args = params.get("arguments").cloned().unwrap_or(json!({}));
 
+        let backend = if crate::backend::native_selected() {
+            "native"
+        } else {
+            "uv"
+        };
+        let requested_args = tool_args.clone();
+        let authorized = match self.policy.authorize(tool_name, tool_args, backend) {
+            Ok(authorized) => authorized,
+            Err(denied) => {
+                return JsonRpcResponse::success(
+                    id,
+                    json!({"content":[{"type":"text","text":self.policy.denial_value(&denied).to_string()}],"isError":true}),
+                );
+            }
+        };
+        let tool_args = &authorized.args;
         let start = Instant::now();
-        let before_snapshot = audit::snapshot_for_tool(tool_name, &tool_args);
-        let result = if let Err(err) = self.audit_log.prepare_for_call(&tool_args) {
+        let before_snapshot = audit::snapshot_for_tool(tool_name, tool_args);
+        let result = if let Err(err) = self.audit_log.prepare_for_call(tool_args) {
             Err(err)
         } else {
             match tool_name {
-                "pybun_why" => crate::why::call(tool_args.clone()),
+                "pybun_why" => {
+                    crate::why::call(tool_args.clone(), policy::authorized_roots(tool_args))
+                }
                 "pybun_environment_diff" => crate::environment_diff::call(tool_args.clone()),
                 "pybun_resolve" => tools::call_resolve(tool_args.clone()).await,
                 "pybun_install" => tools::call_install(tool_args.clone()).await,
@@ -223,7 +249,8 @@ impl McpServer {
                 _ => Err(format!("Unknown tool: {}", tool_name)),
             }
         };
-        let after_snapshot = audit::snapshot_for_tool(tool_name, &tool_args);
+        let result = authorized.decorate(result);
+        let after_snapshot = audit::snapshot_for_tool(tool_name, tool_args);
         let file_writes = audit::diff_file_writes(&before_snapshot, &after_snapshot);
         let duration_ms = start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
         let result = result
@@ -233,7 +260,7 @@ impl McpServer {
         let audit_entry = audit::build_audit_entry(
             &self.session_id,
             tool_name,
-            &tool_args,
+            &requested_args,
             &result,
             self.audit_log.config.hash_inputs,
             file_writes,
@@ -298,6 +325,34 @@ impl McpServer {
     fn handle_resources_read(&self, id: Value, params: Value) -> JsonRpcResponse {
         let uri = params.get("uri").and_then(|u| u.as_str()).unwrap_or("");
 
+        let capability = match uri {
+            "pybun://project/snapshot" => Some("pybun_context"),
+            "pybun://env/info" => Some("pybun_doctor"),
+            "pybun://cache/info" => Some("pybun_gc"),
+            _ => None,
+        };
+        let authorized = if let Some(tool) = capability {
+            match self.policy.authorize(
+                tool,
+                json!({}),
+                if crate::backend::native_selected() {
+                    "native"
+                } else {
+                    "uv"
+                },
+            ) {
+                Ok(call) => Some(call),
+                Err(denied) => {
+                    return JsonRpcResponse::error(
+                        id,
+                        -32602,
+                        self.policy.denial_value(&denied).to_string(),
+                    );
+                }
+            }
+        } else {
+            None
+        };
         let content = match uri {
             "pybun://cache/info" => tools::read_cache_info(),
             "pybun://env/info" => tools::read_env_info(),
@@ -306,6 +361,11 @@ impl McpServer {
             _ => Err(format!("Unknown resource: {}", uri)),
         };
 
+        let content = if let Some(call) = authorized {
+            call.decorate(content)
+        } else {
+            content
+        };
         match content {
             Ok(text) => JsonRpcResponse::success(
                 id,

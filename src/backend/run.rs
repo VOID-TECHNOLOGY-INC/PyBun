@@ -21,6 +21,9 @@ fn script_metadata_or_lock(target: &str) -> bool {
 }
 
 pub async fn run(args: &RunArgs) -> Result<Value, BackendError> {
+    run_scoped(args, Vec::new()).await
+}
+pub(crate) async fn run_scoped(args: &RunArgs, roots: Vec<PathBuf>) -> Result<Value, BackendError> {
     let args = args.clone();
     let root = std::env::current_dir().map_err(|_| {
         error(
@@ -29,16 +32,18 @@ pub async fn run(args: &RunArgs) -> Result<Value, BackendError> {
         )
     })?;
     if tokio::runtime::Handle::try_current().is_ok() {
-        tokio::task::spawn_blocking(move || UvBackend::discover(&root)?.run_python(&args))
-            .await
-            .map_err(|_| {
-                error(
-                    "E_BACKEND_FAILED",
-                    "Backend worker terminated unexpectedly.",
-                )
-            })?
+        tokio::task::spawn_blocking(move || {
+            UvBackend::discover(&root)?.scoped(roots).run_python(&args)
+        })
+        .await
+        .map_err(|_| {
+            error(
+                "E_BACKEND_FAILED",
+                "Backend worker terminated unexpectedly.",
+            )
+        })?
     } else {
-        UvBackend::discover(&root)?.run_python(&args)
+        UvBackend::discover(&root)?.scoped(roots).run_python(&args)
     }
 }
 
@@ -83,6 +88,7 @@ impl UvBackend {
         } else {
             self.root.clone()
         };
+        self.check_project_scope(&root)?;
         let offline = args.sandbox && !args.allow_network;
         let lock_path = if let Some(script) = &script {
             let mut path = self.root.join(script).into_os_string();

@@ -6,6 +6,54 @@ pub(crate) async fn call_project(operation: &str, args: Value) -> Result<String,
     if crate::backend::native_selected() {
         return Err("New project tools require the uv backend.".to_string());
     }
+    let allowed: &[&str] = match operation {
+        "install" => &[
+            "offline",
+            "pre",
+            "system",
+            "requirements",
+            "index",
+            "lock",
+            "workspace",
+            "member",
+            "group",
+        ],
+        "add" => &[
+            "offline",
+            "pre",
+            "workspace",
+            "member",
+            "group",
+            "index",
+            "package",
+            "version",
+            "packages",
+        ],
+        "remove" => &[
+            "index",
+            "pre",
+            "offline",
+            "workspace",
+            "member",
+            "group",
+            "package",
+            "version",
+            "packages",
+        ],
+        "lock" => &["offline", "index", "script"],
+        "upgrade" => &[
+            "offline", "pre", "index", "package", "version", "packages", "member", "group", "lock",
+            "dry_run",
+        ],
+        _ => return Err("Unsupported project operation".into()),
+    };
+    if args.as_object().is_none_or(|object| {
+        object
+            .keys()
+            .any(|key| key != "_authorized_roots" && !allowed.contains(&key.as_str()))
+    }) {
+        return Err("Unsupported project operation arguments".into());
+    }
     let mut argv = vec!["pybun".to_string(), operation.to_string()];
     for key in ["offline", "pre", "workspace", "system", "dry_run"] {
         if let Some(value) = args.get(key) {
@@ -62,7 +110,7 @@ pub(crate) async fn call_project(operation: &str, args: Value) -> Result<String,
         .map_err(|_| "Invalid project operation arguments".to_string())?;
     let request = crate::backend::BackendRequest::from_command(&cli.command)
         .map_err(|e| e.detail(operation).to_string())?;
-    crate::backend::execute(request)
+    crate::backend::execute_scoped(request, super::super::policy::authorized_roots(&args))
         .await
         .map(|v| v.to_string())
         .map_err(|e| e.detail(operation).to_string())
