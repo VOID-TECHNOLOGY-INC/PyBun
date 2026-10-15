@@ -251,6 +251,18 @@ pybun x cowsay==6.1
 pybun x black -- --check .
 ```
 
+### Affected Tests
+
+```bash
+pybun test --affected
+pybun test --affected --since main --format=json
+pybun test --affected --discover --format=json
+```
+
+`--changed` is an alias for `--affected`. Selection is repository-wide and cannot be combined with explicit paths or `--member`. MCP `pybun_test` uses the same service with `{"changed": true, "since": "main"}`.
+
+JSON includes `selection` with `direct`, `transitive`, or `conservative` reasons and import chains. The target Python's standard AST parser reads project source without executing it. Imports and ancestor `conftest.py` dependencies are modeled; uncertain parsing, known dynamic imports, or non-Python/configuration changes conservatively select all tests. Import-root ambiguity may select extra tests. Arbitrary runtime file dependencies are not inferred. Unavailable git/runtime evidence returns an error rather than a verified empty selection.
+
 ### Python Version Management
 
 ```bash

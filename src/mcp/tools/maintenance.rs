@@ -4,8 +4,8 @@
 //! Extracted from `mcp.rs` (Issue #344).
 
 use super::super::audit::{
-    GitAvailability, current_working_dir, get_changed_test_files, parse_ruff_violations,
-    resolve_ruff_runner, ruff_failure_message, valid_ruff_status,
+    current_working_dir, parse_ruff_violations, resolve_ruff_runner, ruff_failure_message,
+    valid_ruff_status,
 };
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -1014,16 +1014,48 @@ pub(crate) fn call_drift(args: Value) -> Result<String, String> {
 }
 
 pub(crate) fn call_test(args: Value) -> Result<String, String> {
+    let changed = match args.get("changed") {
+        None => false,
+        Some(value) => value.as_bool().ok_or("changed must be a boolean")?,
+    };
+    if changed && args.get("path").is_some() {
+        return Err("'path' and 'changed' are mutually exclusive".into());
+    }
+    let since = args
+        .get("since")
+        .map(|value| value.as_str().ok_or("since must be a string"))
+        .transpose()?;
+    if since.is_some() && !changed {
+        return Err("since requires changed=true".into());
+    }
+    let selection = if changed {
+        Some(crate::test_selection::select(
+            &current_working_dir()?,
+            since,
+        )?)
+    } else {
+        None
+    };
+    let result = call_test_selected(args, selection.as_ref())?;
+    if let Some(selection) = selection {
+        let mut value: Value = serde_json::from_str(&result).map_err(|_| "Invalid test result")?;
+        selection.annotate(&mut value);
+        Ok(value.to_string())
+    } else {
+        Ok(result)
+    }
+}
+
+fn call_test_selected(
+    args: Value,
+    selection: Option<&crate::test_selection::AffectedSelection>,
+) -> Result<String, String> {
     use crate::test_discovery::{TestDiscovery, TestItemType};
     use crate::test_executor::{ExecutorConfig, TestExecutor, TestOutcome};
 
     let working_dir = current_working_dir()?;
 
     let path = args.get("path").and_then(|p| p.as_str()).map(String::from);
-    let changed = args
-        .get("changed")
-        .and_then(|c| c.as_bool())
-        .unwrap_or(false);
     let fail_fast = args
         .get("fail_fast")
         .and_then(|f| f.as_bool())
@@ -1033,64 +1065,25 @@ pub(crate) fn call_test(args: Value) -> Result<String, String> {
         .and_then(|f| f.as_str())
         .map(String::from);
 
-    // `path` and `changed` are mutually exclusive
-    if changed && path.is_some() {
-        return Err(
-            "'path' and 'changed' are mutually exclusive: use 'changed' to run tests in \
-             git-modified files, or 'path' to target a specific file or directory"
-                .to_string(),
-        );
-    }
-
-    let (search_paths, analysis_notes): (Vec<std::path::PathBuf>, Vec<&str>) = if changed {
-        let (paths, git_status) = get_changed_test_files(&working_dir)?;
-        let note = match git_status {
-            GitAvailability::NotARepo => {
-                return Ok(json!({
-                    "summary": {
-                        "total": 0, "passed": 0, "failed": 0,
-                        "skipped": 0, "errors": 0, "duration_ms": 0
-                    },
-                    "failures": [],
-                    "passed": [],
-                    "analysis_notes": [
-                        "git is not available or this directory is not a git repository; \
-                         cannot determine changed files"
-                    ]
-                })
-                .to_string());
+    let (search_paths, analysis_notes): (Vec<std::path::PathBuf>, Vec<&str>) =
+        if let Some(selection) = selection {
+            (selection.paths.clone(), vec![])
+        } else if let Some(p) = path {
+            // Guard against path traversal: reject paths that escape working_dir
+            let joined = working_dir.join(&p);
+            let canonical = joined
+                .canonicalize()
+                .map_err(|e| format!("path '{}' does not exist or cannot be resolved: {}", p, e))?;
+            if !canonical.starts_with(&working_dir) {
+                return Err(format!(
+                    "path '{}' is outside the working directory and is not allowed",
+                    p
+                ));
             }
-            GitAvailability::Available if paths.is_empty() => {
-                return Ok(json!({
-                    "summary": {
-                        "total": 0, "passed": 0, "failed": 0,
-                        "skipped": 0, "errors": 0, "duration_ms": 0
-                    },
-                    "failures": [],
-                    "passed": [],
-                    "analysis_notes": ["No changed test files detected since last commit"]
-                })
-                .to_string());
-            }
-            GitAvailability::Available => "running tests from git-changed files only",
+            (vec![canonical], vec![])
+        } else {
+            (vec![working_dir.clone()], vec![])
         };
-        (paths, vec![note])
-    } else if let Some(p) = path {
-        // Guard against path traversal: reject paths that escape working_dir
-        let joined = working_dir.join(&p);
-        let canonical = joined
-            .canonicalize()
-            .map_err(|e| format!("path '{}' does not exist or cannot be resolved: {}", p, e))?;
-        if !canonical.starts_with(&working_dir) {
-            return Err(format!(
-                "path '{}' is outside the working directory and is not allowed",
-                p
-            ));
-        }
-        (vec![canonical], vec![])
-    } else {
-        (vec![working_dir.clone()], vec![])
-    };
 
     if search_paths.is_empty() {
         return Ok(json!({

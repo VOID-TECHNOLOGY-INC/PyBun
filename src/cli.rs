@@ -264,8 +264,14 @@ pub struct ToolArgs {
     pub passthrough: Vec<String>,
 }
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Clone)]
 pub struct TestArgs {
+    /// Select tests affected by tracked/untracked changes and transitive imports.
+    #[arg(long, alias = "changed", conflicts_with_all = ["paths", "member"])]
+    pub affected: bool,
+    /// Git base for affected-test selection (default: HEAD).
+    #[arg(long, requires = "affected", value_name = "GIT_REF")]
+    pub since: Option<String>,
     /// Test file(s) or directory to run. Defaults to current directory.
     #[arg(value_name = "PATH")]
     pub paths: Vec<std::path::PathBuf>,
