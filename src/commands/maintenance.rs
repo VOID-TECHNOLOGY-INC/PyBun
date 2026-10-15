@@ -659,6 +659,7 @@ pub(super) async fn run_audit(args: &AuditArgs, collector: &mut EventCollector) 
             "high": count_at("high"),
             "medium": count_at("medium"),
             "low": count_at("low"),
+            "unknown": count_at("unknown"),
             "unscanned": report.unscanned,
         },
         "vulnerabilities": vulnerabilities,
