@@ -326,3 +326,73 @@ dependencies = ["requests>=2.28.0"]
     let content = fs::read_to_string(temp.path().join("pyproject.toml")).unwrap();
     assert!(!content.contains("requests"), "requests should be removed");
 }
+
+// Regression for #450: discovery failures must never become project creation.
+#[test]
+fn add_preserves_invalid_projects_and_ancestors() {
+    for json in [false, true] {
+        for ancestor in [false, true] {
+            let temp = tempdir().unwrap();
+            let original = b"[project\nname = \"valuable-project\"\n";
+            let project = temp.path().join("pyproject.toml");
+            fs::write(&project, original).unwrap();
+            let child = temp.path().join("child");
+            fs::create_dir(&child).unwrap();
+            let cwd = if ancestor { &child } else { temp.path() };
+            let mut command = bin();
+            command.current_dir(cwd);
+            if json {
+                command.arg("--format=json");
+            }
+            let output = command
+                .args(["add", "demo-audit-package", "--offline"])
+                .output()
+                .unwrap();
+            assert!(!output.status.success(), "must reject invalid TOML");
+            assert_eq!(fs::read(&project).unwrap(), original, "must preserve bytes");
+            assert!(
+                !child.join("pyproject.toml").exists(),
+                "must not shadow invalid ancestor"
+            );
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                format!("{stdout}{stderr}").to_lowercase().contains("pars"),
+                "expected parse diagnostic: {stdout}{stderr}"
+            );
+            if json {
+                let value: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+                assert_eq!(value["status"], "error");
+            }
+        }
+    }
+}
+
+#[test]
+fn add_reports_read_errors_without_creating_shadow_project() {
+    let temp = tempdir().unwrap();
+    // A directory is a portable, deterministic read failure even as root.
+    fs::create_dir(temp.path().join("pyproject.toml")).unwrap();
+    let child = temp.path().join("child");
+    fs::create_dir(&child).unwrap();
+    bin()
+        .current_dir(&child)
+        .args(["--format=json", "add", "demo", "--offline"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("failed to read"));
+    assert!(!child.join("pyproject.toml").exists());
+    assert!(temp.path().join("pyproject.toml").is_dir());
+}
+
+#[test]
+fn add_creates_missing_project_offline_before_install_failure() {
+    let temp = tempdir().unwrap();
+    bin()
+        .current_dir(temp.path())
+        .args(["add", "demo-audit-package", "--offline"])
+        .assert()
+        .failure();
+    let content = fs::read_to_string(temp.path().join("pyproject.toml")).unwrap();
+    assert!(content.contains("demo-audit-package"));
+}

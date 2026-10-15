@@ -93,8 +93,10 @@ impl Project {
 
         loop {
             let candidate = current.join(PYPROJECT_FILENAME);
-            if candidate.exists() {
-                return Self::load(&candidate);
+            match Self::load(&candidate) {
+                Err(ProjectError::Read { source, .. })
+                    if source.kind() == std::io::ErrorKind::NotFound => {}
+                result => return result,
             }
 
             if !current.pop() {
@@ -383,6 +385,28 @@ pub(crate) fn extract_package_name(dep: &str) -> &str {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn discover_propagates_invalid_ancestor() {
+        let temp = tempdir().unwrap();
+        let child = temp.path().join("child");
+        fs::create_dir(&child).unwrap();
+        fs::write(temp.path().join("pyproject.toml"), "[project").unwrap();
+        assert!(matches!(
+            Project::discover(&child),
+            Err(ProjectError::Parse(_))
+        ));
+    }
+
+    #[test]
+    fn discover_propagates_read_failure() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("pyproject.toml");
+        fs::write(&path, [0xff]).unwrap();
+        assert!(
+            matches!(Project::discover(temp.path()), Err(ProjectError::Read { path: failed, .. }) if failed == path)
+        );
+    }
 
     #[test]
     fn extract_package_name_works() {

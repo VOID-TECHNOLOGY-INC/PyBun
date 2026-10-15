@@ -6,7 +6,7 @@ use crate::cli::{LockArgs, OutdatedArgs, UpgradeArgs};
 use crate::index::load_index_from_path;
 use crate::lockfile::{Lockfile, Package, PackageSource};
 use crate::pep723;
-use crate::project::Project;
+use crate::project::{Project, ProjectError};
 use crate::pypi::{PyPiClient, PyPiIndex};
 use crate::resolve_service::{ResolveRequest, resolve as resolve_request};
 use crate::resolver::parse_version_relaxed;
@@ -1086,11 +1086,12 @@ pub(super) fn add_package(args: &crate::cli::PackageArgs) -> Result<AddOutcome> 
     let current_dir = std::env::current_dir()?;
     let mut project = match Project::discover(&current_dir) {
         Ok(p) => p,
-        Err(_) => {
+        Err(ProjectError::NotFound(_)) => {
             // Create new pyproject.toml in current directory
             let path = current_dir.join("pyproject.toml");
             Project::new(&path)
         }
+        Err(error) => return Err(error.into()),
     };
 
     let mut packages = Vec::with_capacity(args.packages.len());
