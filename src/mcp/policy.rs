@@ -58,7 +58,7 @@ fn capability() -> Denied {
 
 // Authorization runs before rate admission, so this probe must be bounded and
 // must never wait for a FIFO/device or read a file that grows past the limit.
-fn preparation_source(path: &Path) -> Result<String, Denied> {
+pub(super) fn preparation_source(path: &Path) -> Result<String, Denied> {
     const LIMIT: u64 = 2 * 1024 * 1024;
     let metadata = std::fs::symlink_metadata(path).map_err(|_| invalid())?;
     if !metadata.is_file() || metadata.len() > LIMIT {
