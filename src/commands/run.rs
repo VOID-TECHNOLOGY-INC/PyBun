@@ -983,9 +983,13 @@ pub(crate) async fn run_script(
 
     // Execute
     // On Unix, use exec to replace the process if cleanup is not needed AND not in JSON mode
-    // (JSON mode requires wrapping to emit final summary)
+    // (JSON mode and execution history require waiting for the final status)
     #[cfg(unix)]
-    if !cleanup && format != OutputFormat::Json && sandbox_guard.is_none() {
+    if !cleanup
+        && format != OutputFormat::Json
+        && sandbox_guard.is_none()
+        && !crate::history::enabled()
+    {
         // leak lazy_import_tempdir intentionally: exec replaces the process before Rust
         // drop runs, so the directory remains accessible to the spawned Python process.
         std::mem::forget(lazy_import_tempdir);
@@ -1260,7 +1264,7 @@ fn run_python_code(
     }
 
     #[cfg(unix)]
-    if format != OutputFormat::Json && sandbox_guard.is_none() {
+    if format != OutputFormat::Json && sandbox_guard.is_none() && !crate::history::enabled() {
         std::mem::forget(lazy_import_tempdir);
         let err = cmd.exec();
         return Err(eyre!("failed to exec Python: {}", err));
