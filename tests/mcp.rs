@@ -2737,3 +2737,26 @@ fn mcp_pybun_audit_keeps_unknown_and_rejects_unavailable_details() {
         }
     }
 }
+
+#[test]
+fn mcp_pybun_test_false_skip_condition_cannot_succeed() {
+    if !std::process::Command::new("python3")
+        .args(["-c", "import pytest"])
+        .status()
+        .is_ok_and(|s| s.success())
+    {
+        eprintln!("Skipping runtime marker test: pytest unavailable");
+        return;
+    }
+    let project = tempdir().unwrap();
+    std::fs::write(project.path().join("test_skip_false.py"), "import pytest\n@pytest.mark.skipif(False, reason='must execute')\ndef test_failure():\n    assert False\n").unwrap();
+    let req = r#"{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_test","arguments":{"paths":["test_skip_false.py"]}}}"#;
+    let stdout = mcp_call_in(
+        &[req],
+        project.path(),
+        &[("PYBUN_PYTHON", OsString::from("python3"))],
+    );
+    let result = tool_result_json(&stdout, 2);
+    assert_eq!(result["summary"]["failed"], 1, "{result}");
+    assert_eq!(result["summary"]["skipped"], 0, "{result}");
+}

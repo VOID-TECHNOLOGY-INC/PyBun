@@ -36,6 +36,12 @@ jobs:
           else
             brew install minisign
           fi
+      - name: Set up Python for pytest marker regressions
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      - name: Install pytest for runtime marker evaluation
+        run: python -m pip install pytest==9.0.2
       - name: Install Rust
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
@@ -161,6 +167,12 @@ jobs:
       - name: Install minisign
         # Required so self_update integration tests cover the minisign verification path
         run: sudo apt-get update && sudo apt-get install -y minisign
+      - name: Set up Python for pytest marker regressions
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      - name: Install pytest for runtime marker evaluation
+        run: python -m pip install pytest==9.0.2
       - name: Install Rust
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:

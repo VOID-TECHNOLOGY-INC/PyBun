@@ -2294,3 +2294,95 @@ def test_addition():
         diagnostics
     );
 }
+
+#[test]
+fn conditional_skip_uses_pytest_runtime_conditions_and_reasons() {
+    if !std::process::Command::new("python3")
+        .args(["-c", "import pytest"])
+        .status()
+        .is_ok_and(|s| s.success())
+    {
+        eprintln!("Skipping runtime marker tests: pytest unavailable");
+        return;
+    }
+    for (condition, skips) in [
+        ("False", false),
+        ("True", true),
+        ("sys.platform == sys.platform", true),
+        ("sys.platform != sys.platform", false),
+        ("condition=False", false),
+        ("condition=True", true),
+        ("'False'", false),
+        ("'True'", true),
+    ] {
+        let temp = TempDir::new().unwrap();
+        fs::write(temp.path().join("test_conditional.py"), format!(
+            "import sys, pytest\n@pytest.mark.skipif({condition}, reason='actual reason')\ndef test_failure():\n    assert False\n"
+        )).unwrap();
+        let output = pybun()
+            .current_dir(temp.path())
+            .env("PYBUN_BACKEND", "native")
+            .env_remove("PYBUN_ENV")
+            .env("PYBUN_PYTHON", "python3")
+            .args([
+                "--format=json",
+                "test",
+                "--backend=pybun",
+                "test_conditional.py",
+            ])
+            .output()
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(
+            output.status.success(),
+            skips,
+            "condition {condition}: {value}"
+        );
+        assert_eq!(value["detail"]["summary"]["skipped"], usize::from(skips));
+        assert_eq!(value["detail"]["summary"]["failed"], usize::from(!skips));
+        if skips {
+            assert_eq!(
+                value["detail"]["results"][0]["skip_reason"],
+                "actual reason"
+            );
+        }
+    }
+}
+
+#[test]
+fn conditional_skip_inherits_class_conditions() {
+    if !std::process::Command::new("python3")
+        .args(["-c", "import pytest"])
+        .status()
+        .is_ok_and(|s| s.success())
+    {
+        return;
+    }
+    for (condition, skips) in [("False", false), ("True", true)] {
+        let temp = TempDir::new().unwrap();
+        fs::write(temp.path().join("test_class_skip.py"), format!("import pytest\n@pytest.mark.skipif({condition}, reason='class reason')\nclass TestConditional:\n    def test_failure(self):\n        assert False\n")).unwrap();
+        let output = pybun()
+            .current_dir(temp.path())
+            .env("PYBUN_BACKEND", "native")
+            .env_remove("PYBUN_ENV")
+            .env("PYBUN_PYTHON", "python3")
+            .args([
+                "--format=json",
+                "test",
+                "--backend=pybun",
+                "test_class_skip.py",
+            ])
+            .output()
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(output.status.success(), skips, "{value}");
+        assert_eq!(
+            value["detail"]["summary"]["skipped"],
+            usize::from(skips),
+            "{value}"
+        );
+        if skips {
+            assert_eq!(value["detail"]["results"][0]["skip_reason"], "class reason");
+        }
+    }
+}
