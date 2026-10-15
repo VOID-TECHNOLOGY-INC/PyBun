@@ -245,3 +245,33 @@ fn backend_derived_roots_and_flag_injection_cannot_escape_policy() {
     assert!(!outside.path().join("uv.lock").exists());
     assert!(!temp.path().join(".pybun/receipts").exists());
 }
+
+#[cfg(unix)]
+#[test]
+fn authorization_rejects_fifo_before_reading_script_source() {
+    let temp = tempfile::tempdir().unwrap();
+    configure(temp.path(), "max_execution_time_s=1");
+    assert!(
+        Command::new("mkfifo")
+            .arg(temp.path().join("blocked.py"))
+            .status()
+            .unwrap()
+            .success()
+    );
+    let request = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"pybun_run","arguments":{"script":"blocked.py"}}});
+    let mut command = assert_cmd::Command::new(env!("CARGO_BIN_EXE_pybun"));
+    command
+        .current_dir(temp.path())
+        .env_remove("PYBUN_MCP_POLICY")
+        .env("PYBUN_BACKEND", "native")
+        .env("PYBUN_HISTORY", "0")
+        .env("PYBUN_HOME", temp.path().join("home"))
+        .env("PYBUN_AUDIT_LOG", "/dev/null")
+        .args(["mcp", "serve", "--stdio"])
+        .write_stdin(format!("{request}\n"))
+        .timeout(std::time::Duration::from_secs(3));
+    command
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("E_MCP_POLICY_UNSUPPORTED"));
+}

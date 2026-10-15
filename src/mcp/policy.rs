@@ -56,6 +56,35 @@ fn capability() -> Denied {
     )
 }
 
+// Authorization runs before rate admission, so this probe must be bounded and
+// must never wait for a FIFO/device or read a file that grows past the limit.
+fn preparation_source(path: &Path) -> Result<String, Denied> {
+    const LIMIT: u64 = 2 * 1024 * 1024;
+    let metadata = std::fs::symlink_metadata(path).map_err(|_| invalid())?;
+    if !metadata.is_file() || metadata.len() > LIMIT {
+        return Err(capability());
+    }
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let file = options.open(path).map_err(|_| invalid())?;
+    if !file.metadata().map_err(|_| invalid())?.is_file() {
+        return Err(capability());
+    }
+    let mut bytes = Vec::new();
+    file.take(LIMIT + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| invalid())?;
+    if bytes.len() as u64 > LIMIT {
+        return Err(capability());
+    }
+    String::from_utf8(bytes).map_err(|_| invalid())
+}
+
 pub(super) struct ServerPolicy {
     pub root: PathBuf,
     pub effective: Result<Policy, Denied>,
@@ -331,10 +360,7 @@ impl ServerPolicy {
                         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                         Err(_) => return Err(invalid()),
                     }
-                    if std::fs::metadata(&path).map_err(|_| invalid())?.len() > 2 * 1024 * 1024 {
-                        return Err(capability());
-                    }
-                    std::fs::read_to_string(path).map_err(|_| invalid())?
+                    preparation_source(&path)?
                 } else {
                     args["code"].as_str().unwrap_or("").to_string()
                 };
