@@ -3,6 +3,7 @@
 use super::*;
 
 pub async fn execute(cli: Cli) -> Result<()> {
+    let history = crate::history::Pending::begin(&cli.command);
     let mut collector = EventCollector::new();
 
     let requested_progress = if cli.no_progress {
@@ -26,7 +27,24 @@ pub async fn execute(cli: Cli) -> Result<()> {
     // Record command start
     collector.event(EventType::CommandStart);
 
-    let (command, detail) = match &cli.command {
+    let (command, mut detail) = match &cli.command {
+        Commands::History(args) => (
+            "history".into(),
+            match crate::history::query(args.since.as_deref()) {
+                Ok(value) => RenderDetail::with_json(
+                    serde_json::to_string_pretty(&value).unwrap_or_default(),
+                    value,
+                ),
+                Err(message) => {
+                    collector.error_with_code(
+                        "E_HISTORY_QUERY",
+                        &message,
+                        "Check --since and local history storage.",
+                    );
+                    RenderDetail::error(&message, json!({"error": message}))
+                }
+            },
+        ),
         Commands::Install(_)
         | Commands::Add(_)
         | Commands::Remove(_)
@@ -54,6 +72,20 @@ pub async fn execute(cli: Cli) -> Result<()> {
             dispatch_project(&cli.command, &mut collector).await
         }
     };
+
+    if let Some(history) = history {
+        let exit_code = if detail.is_error {
+            1
+        } else {
+            detail.process_exit_code.unwrap_or(0)
+        };
+        match history.finish(&command, &detail.json, collector.elapsed(), exit_code) {
+            Ok(receipt_id) => detail.json["history_receipt_id"] = json!(receipt_id),
+            Err(message) => {
+                collector.warning(format!("Execution history was not recorded: {message}"))
+            }
+        }
+    }
 
     // Record command end
     collector.event(EventType::CommandEnd);
@@ -502,6 +534,7 @@ async fn dispatch_execution(
                     stderr,
                     sandbox,
                     profile,
+                    history_python,
                 }) => {
                     collector.event(EventType::ScriptEnd);
 
@@ -580,6 +613,7 @@ async fn dispatch_execution(
                         summary,
                         json!({
                             "target": target,
+                            "execution_python": history_python,
                             "exit_code": exit_code,
                             "pep723_dependencies": pep723_deps,
                             "pep723_backend": pep723_backend,

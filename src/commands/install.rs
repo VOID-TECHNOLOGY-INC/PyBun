@@ -1250,6 +1250,7 @@ pub(super) struct ScriptLockInfo {
 
 #[derive(Debug)]
 pub(crate) struct RunOutcome {
+    pub(crate) history_python: Value,
     pub(crate) summary: String,
     pub(crate) target: Option<String>,
     pub(crate) exit_code: i32,

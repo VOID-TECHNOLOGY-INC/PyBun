@@ -856,6 +856,10 @@ pub(crate) async fn run_script(
     };
 
     // Build command
+    let history_python = match &runner {
+        RunProgram::Python(python) => crate::history::python_state(Path::new(python)),
+        RunProgram::Uv { .. } => serde_json::Value::Null,
+    };
     let (mut cmd, is_uv_runner) = match runner {
         RunProgram::Python(python) => {
             let mut cmd = ProcessCommand::new(python);
@@ -1044,6 +1048,7 @@ pub(crate) async fn run_script(
     drop(lazy_import_tempdir);
 
     Ok(RunOutcome {
+        history_python,
         summary,
         target: Some(target.clone()),
         exit_code,
@@ -1169,6 +1174,7 @@ fn run_python_code(
     let (python, env_source) = find_python_interpreter()?;
     eprintln!("info: using Python from {}", env_source);
 
+    let history_python = crate::history::python_state(Path::new(&python));
     let mut cmd = ProcessCommand::new(&python);
     cmd.arg("-c").arg(code);
 
@@ -1314,6 +1320,7 @@ fn run_python_code(
     drop(lazy_import_tempdir);
 
     Ok(RunOutcome {
+        history_python,
         summary,
         target: Some("-c".to_string()),
         exit_code,

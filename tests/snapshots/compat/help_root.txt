@@ -3,6 +3,7 @@ PyBun CLI: fast installer/runtime/tester for Python projects (use --sandbox for 
 Usage: pybun [OPTIONS] <COMMAND>
 
 Commands:
+  history      Query local CLI execution receipts
   init         Initialize a new Python project
   install      Install dependencies from lock or project metadata
   add          Add a package and update lockfile

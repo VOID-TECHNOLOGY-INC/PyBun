@@ -682,3 +682,25 @@ Environment override: `PYBUN_TELEMETRY=0|1`
 ## License
 
 MIT
+
+### Local execution history
+
+`pybun history --since 20m --format=json` queries CLI receipts for `run`, `test`,
+`install`, `add`, and `remove`, including failed invocations. Receipts are appended
+under `PYBUN_HOME/history.jsonl` (default `~/.cache/pybun/history.jsonl`), with a
+private file mode on Unix and a file lock for concurrent writers. Existing files
+with group/other permissions are rejected for appends; restrict them to mode 600. Set
+`PYBUN_HISTORY=0` to disable recording. History queries never record themselves;
+recording failures warn without changing the command's exit code.
+
+Records contain timestamps, duration, exit code, lock digest when available,
+backend identity, Python version/ABI, and known cache/policy/profile evidence.
+Python observations identify whether they describe the execution interpreter or
+the selected environment observed after the command; unavailable evidence is
+`null`. Daemon use is false for the current direct execution paths. Inline code
+and credential option values are removed, and the existing output redaction rules
+apply before persistence and on reads. Program output and environment variables
+are never stored. Arbitrary positional secrets cannot be inferred; disable
+history when arguments contain such values. Queries accept positive `s`, `m`,
+`h`, or `d` durations, report corrupt/partial lines without echoing them, and
+reject files over 32 MiB; archive the local log when needed.

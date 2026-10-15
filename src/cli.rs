@@ -47,6 +47,8 @@ pub enum ProgressMode {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
+    /// Query local CLI execution receipts.
+    History(HistoryArgs),
     /// Initialize a new Python project.
     Init(InitArgs),
     /// Install dependencies from lock or project metadata.
@@ -920,4 +922,11 @@ mod help_tests {
         assert_eq!(value["command"], "pybun lock --help");
         assert_eq!(value["detail"]["name"], "lock");
     }
+}
+
+#[derive(Args, Debug)]
+pub struct HistoryArgs {
+    /// Show receipts from the last duration (e.g. 20m, 2h, 1d).
+    #[arg(long)]
+    pub since: Option<String>,
 }
