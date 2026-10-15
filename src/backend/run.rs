@@ -160,6 +160,8 @@ impl UvBackend {
                     &mut command,
                     SandboxConfig {
                         allow_network: args.allow_network,
+                        allow_net: args.allow_net.clone(),
+                        allow_run: args.allow_run.clone(),
                         allow_read: args.allow_read.clone(),
                         allow_write: args.allow_write.clone(),
                         allow_env: args.allow_env.clone(),
@@ -219,10 +221,12 @@ impl UvBackend {
         let stderr =
             String::from_utf8_lossy(result.stderr.as_deref().unwrap_or_default()).to_string();
         let diagnostics = if exit_code != 0 {
-            vec![
-                crate::schema::Diagnostic::error("Python execution failed.")
+            let diagnostic = match crate::traceback::parse(&stderr) {
+                Some(tb) => crate::schema::Diagnostic::error(tb.message).with_code(tb.code),
+                None => crate::schema::Diagnostic::error("Python execution failed.")
                     .with_code("E_RUN_FAILED"),
-            ]
+            };
+            vec![diagnostic]
         } else {
             Vec::new()
         };
@@ -237,7 +241,7 @@ impl UvBackend {
             "audit": guard.as_ref().map(|g| g.read_audit()),
             "resource_limits": guard.as_ref().map(|g| &g.resource_limits), "timed_out": result.timed_out,
             "effective_policy": { "native_fallback": false, "sandboxed": args.sandbox,
-                "allow_network": args.allow_network, "preparation_offline": offline,
+                "allow_network": args.allow_network, "allow_net": args.allow_net, "allow_run": args.allow_run, "preparation_offline": offline,
                 "preparation_builds_allowed": !args.sandbox, "backend_timeout_secs": self.timeout_secs,
                 "execution_enforcement": guard.as_ref().map(|g| g.enforcement()) },
             "duration_ms": start.elapsed().as_millis().min(u64::MAX as u128) as u64,

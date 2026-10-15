@@ -204,6 +204,16 @@ fn map_exception_to_code(exception_type: &str, message: &str) -> String {
         "SyntaxError" | "IndentationError" | "TabError" => "E_RUNTIME_SYNTAX_ERROR".to_string(),
         "TypeError" => "E_RUNTIME_TYPE_ERROR".to_string(),
         "AttributeError" => "E_RUNTIME_ATTRIBUTE_ERROR".to_string(),
+        "PermissionError"
+            if message.contains("pybun sandbox:") && message.contains("E_SANDBOX_RUN_DENIED") =>
+        {
+            "E_SANDBOX_RUN_DENIED".to_string()
+        }
+        "PermissionError"
+            if message.contains("pybun sandbox:") && message.contains("E_SANDBOX_NET_DENIED") =>
+        {
+            "E_SANDBOX_NET_DENIED".to_string()
+        }
         "PermissionError" => "E_RUNTIME_PERMISSION_DENIED".to_string(),
         "FileNotFoundError" => "E_RUNTIME_FILE_NOT_FOUND".to_string(),
         "ValueError" => "E_RUNTIME_VALUE_ERROR".to_string(),

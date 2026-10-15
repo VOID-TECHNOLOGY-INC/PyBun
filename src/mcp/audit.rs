@@ -605,6 +605,8 @@ pub(super) fn mcp_sandbox_config_from_policy(policy: &Value) -> crate::sandbox::
             .get("allow_network")
             .and_then(|v| v.as_bool())
             .unwrap_or(false),
+        allow_net: string_array_arg(policy, "allow_net"),
+        allow_run: string_array_arg(policy, "allow_run"),
         allow_read: string_array_arg(policy, "allow_read"),
         allow_write: string_array_arg(policy, "allow_write"),
         allow_env: string_array_arg(policy, "allow_env")
@@ -622,6 +624,8 @@ pub(super) fn mcp_sandbox_config_from_policy(policy: &Value) -> crate::sandbox::
 pub(super) fn sandbox_policy_json(config: &crate::sandbox::SandboxConfig) -> Value {
     json!({
         "allow_network": config.allow_network,
+        "allow_net": config.allow_net,
+        "allow_run": config.allow_run,
         "allow_read": config.allow_read,
         "allow_write": config.allow_write,
         "allow_env": config.allow_env,

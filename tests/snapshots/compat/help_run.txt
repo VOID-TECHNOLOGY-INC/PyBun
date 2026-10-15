@@ -13,6 +13,8 @@ Options:
       --sandbox                    Run in sandboxed mode for untrusted code
       --allow-network              Allow network access inside the sandbox (escape hatch)
       --no-progress                Disable progress UI
+      --allow-net <ALLOW_NET>      Allow a sandbox network destination: host[:port] (repeatable)
+      --allow-run <ALLOW_RUN>      Allow a trusted executable name or path in the sandbox (repeatable)
       --allow-read <PATH>          Allow reading from a path inside the sandbox (can be specified multiple times). When set, reads outside these paths are blocked. Python stdlib is always allowed
       --allow-write <PATH>         Allow writing to a path inside the sandbox (can be specified multiple times). When set, writes outside these paths are blocked
       --allow-env <VAR>            Allow an environment variable through the sandbox filter (can be specified multiple times). By default the sandbox strips all env vars except a minimal safe set; use this to pass non-secret config values (e.g. --allow-env=PYBUN_PROFILE)

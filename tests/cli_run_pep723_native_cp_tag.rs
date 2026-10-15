@@ -151,6 +151,8 @@ async fn run_pep723_native_cp_tag_child() {
             code: None,
             sandbox: false,
             allow_network: false,
+            allow_net: Vec::new(),
+            allow_run: Vec::new(),
             allow_read: Vec::new(),
             allow_write: Vec::new(),
             allow_env: Vec::new(),
