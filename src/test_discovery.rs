@@ -500,6 +500,14 @@ impl TestDiscovery {
                         // Extract fixture dependencies from function signature
                         let fixture_deps = self.extract_fixture_dependencies(trimmed);
 
+                        let mut markers = self.extract_markers(&pending_decorators);
+                        if is_method && let Some(class_ctx) = &current_class {
+                            markers.extend(
+                                self.extract_markers(&class_ctx.decorators)
+                                    .into_iter()
+                                    .filter(|marker| marker.name == "skipif"),
+                            );
+                        }
                         tests.push(TestItem {
                             name: full_name,
                             short_name: func_name.clone(),
@@ -510,7 +518,7 @@ impl TestDiscovery {
                             } else {
                                 TestItemType::Function
                             },
-                            markers: self.extract_markers(&pending_decorators),
+                            markers,
                             fixtures: fixture_deps,
                             class_name,
                             skipped: self.is_skipped(&pending_decorators),
@@ -659,8 +667,6 @@ impl TestDiscovery {
         decorators.iter().any(|d| {
             d.name == "pytest.mark.skip"
                 || d.name == "mark.skip"
-                || d.name == "pytest.mark.skipif"
-                || d.name == "mark.skipif"
                 || d.name == "skip"
                 || d.name == "unittest.skip"
         })
@@ -669,7 +675,7 @@ impl TestDiscovery {
     /// Get skip reason if available
     fn get_skip_reason(&self, decorators: &[DecoratorInfo]) -> Option<String> {
         for dec in decorators {
-            if dec.name.contains("skip")
+            if self.is_skipped(std::slice::from_ref(dec))
                 && let Some(ref args) = dec.args
             {
                 // Look for reason= argument
@@ -1037,6 +1043,16 @@ class TestExample:
             .filter(|t| t.item_type == TestItemType::Method)
             .collect();
         assert_eq!(methods.len(), 2);
+    }
+
+    #[test]
+    fn conditional_skip_is_left_for_the_target_runtime() {
+        let discovery = TestDiscovery::new();
+        let (tests, _, _) = discovery.parse_file(Path::new("test_skip.py"),
+            "@pytest.mark.skipif(False, reason=\"must run\")\ndef test_failure():\n    assert False\n");
+        assert!(!tests[0].skipped);
+        assert_eq!(tests[0].skip_reason, None);
+        assert_eq!(tests[0].markers[0].name, "skipif");
     }
 
     #[test]

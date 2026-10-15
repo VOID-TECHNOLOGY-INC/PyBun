@@ -90,6 +90,67 @@ fn run_with_timeout(
     }
 }
 
+// Conditional markers must be evaluated in the target runtime. The sidecar
+// keeps skip outcomes/reasons separate from arbitrary captured test output.
+const CONDITIONAL_MARKER_RUNNER: &str = r#"
+import json, sys, pytest
+class Result:
+    value = None
+    def pytest_runtest_logreport(self, report):
+        if report.failed:
+            self.value = {"outcome": "failed" if report.when == "call" else "error", "skip_reason": None}
+        elif report.skipped:
+            reason = report.longrepr[-1] if isinstance(report.longrepr, tuple) else str(report.longrepr)
+            self.value = {"outcome": "xfail" if hasattr(report, "wasxfail") else "skipped", "skip_reason": reason[len("Skipped: "):] if reason.startswith("Skipped: ") else reason}
+        elif report.when == "call":
+            self.value = {"outcome": "xpass" if hasattr(report, "wasxfail") else "passed", "skip_reason": None}
+result = Result()
+code = pytest.main(["-xvs", sys.argv[1]], plugins=[result])
+with open(sys.argv[2], "w", encoding="utf-8") as stream:
+    json.dump(result.value, stream)
+sys.exit(code)
+"#;
+
+#[derive(Deserialize)]
+struct ConditionalMarkerResult {
+    outcome: TestOutcome,
+    skip_reason: Option<String>,
+}
+
+fn run_test_process(
+    config: &ExecutorConfig,
+    test: &TestItem,
+) -> std::io::Result<(RunOutcome, Option<ConditionalMarkerResult>)> {
+    let test_spec = format!("{}::{}", test.path.display(), test.name);
+    let mut command = Command::new(&config.python);
+    if !test.markers.iter().any(|marker| marker.name == "skipif") {
+        command.args(["-m", "pytest", "-xvs", &test_spec]);
+        return run_with_timeout(command, config.timeout).map(|outcome| (outcome, None));
+    }
+    let report = tempfile::NamedTempFile::new()?;
+    command
+        .args(["-c", CONDITIONAL_MARKER_RUNNER, &test_spec])
+        .arg(report.path());
+    let outcome = run_with_timeout(command, config.timeout)?;
+    let result = if let RunOutcome::Completed(output) = &outcome {
+        let result: ConditionalMarkerResult =
+            serde_json::from_reader(report.reopen()?).map_err(|_| {
+                std::io::Error::other("pytest did not return a conditional-marker result")
+            })?;
+        if !output.status.success()
+            && !matches!(result.outcome, TestOutcome::Failed | TestOutcome::Error)
+        {
+            return Err(std::io::Error::other(
+                "pytest failed after conditional-marker evaluation",
+            ));
+        }
+        Some(result)
+    } else {
+        None
+    };
+    Ok((outcome, result))
+}
+
 /// Result of executing a single test
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TestResult {
@@ -461,18 +522,17 @@ impl TestExecutor {
     fn run_test_attempt(config: &ExecutorConfig, test: &TestItem, worker_id: usize) -> TestResult {
         let start = Instant::now();
 
-        // Build the pytest command to run this specific test
-        let test_spec = format!("{}::{}", test.path.display(), test.name);
-
-        let mut command = Command::new(&config.python);
-        command.args(["-m", "pytest", "-xvs", &test_spec]);
-
-        match run_with_timeout(command, config.timeout) {
-            Ok(RunOutcome::Completed(output)) => {
+        match run_test_process(config, test) {
+            Ok((RunOutcome::Completed(output), marker)) => {
                 let duration_ms = start.elapsed().as_millis() as u64;
-                Self::parse_test_output(test, output, duration_ms, worker_id)
+                let mut result = Self::parse_test_output(test, output, duration_ms, worker_id);
+                if let Some(marker) = marker {
+                    result.outcome = marker.outcome;
+                    result.skip_reason = marker.skip_reason;
+                }
+                result
             }
-            Ok(RunOutcome::TimedOut) => TestResult {
+            Ok((RunOutcome::TimedOut, _)) => TestResult {
                 name: test.name.clone(),
                 path: test.path.clone(),
                 line: test.line,
@@ -862,6 +922,33 @@ mod tests {
             .status()
             .map(|s| s.success())
             .unwrap_or(false)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn conditional_marker_requires_a_valid_runtime_report() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let python = temp.path().join("python");
+        std::fs::write(&python, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&python, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let executor = TestExecutor::new(ExecutorConfig {
+            python: python.display().to_string(),
+            ..Default::default()
+        });
+        let mut test = make_test("test_conditional");
+        test.markers.push(crate::test_discovery::PytestMarker {
+            name: "skipif".into(),
+            args: vec!["False".into()],
+            kwargs: Default::default(),
+        });
+        let result = executor.execute(vec![test]);
+        assert_eq!(result.results[0].outcome, TestOutcome::Error);
+        assert!(
+            result.results[0]
+                .stderr
+                .contains("conditional-marker result")
+        );
     }
 
     #[test]
