@@ -348,6 +348,8 @@ pybun audit --severity-threshold=medium
 pybun audit --fail-on=high
 ```
 
+The scanner follows OSV batch pagination and fetches advisory details before filtering or suggesting fixes. Missing severity is reported as `unknown`, remains visible at every threshold, and fails any `--fail-on` gate. Failed advisory lookups fail the scan. `PYBUN_OSV_URL` can point to a mirror's batch endpoint; its sibling `vulns/<id>` endpoint must serve full advisories.
+
 ### Profile Management
 
 ```bash

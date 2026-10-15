@@ -257,6 +257,7 @@ fn audit_json_reports_vulnerability_from_mocked_osv() {
             }
         ]
     });
+    let osv_body = osv_batch_with_details(&server, osv_body);
     let _mock = server.mock(|when, then| {
         when.method(POST).path("/v1/querybatch");
         then.status(200)
@@ -347,6 +348,7 @@ fn audit_fail_on_threshold_exits_nonzero_when_matched() {
             }
         ]
     });
+    let osv_body = osv_batch_with_details(&server, osv_body);
     let _mock = server.mock(|when, then| {
         when.method(POST).path("/v1/querybatch");
         then.status(200)
@@ -397,6 +399,7 @@ fn audit_fail_on_threshold_does_not_trigger_below_severity() {
             }
         ]
     });
+    let osv_body = osv_batch_with_details(&server, osv_body);
     let _mock = server.mock(|when, then| {
         when.method(POST).path("/v1/querybatch");
         then.status(200)
@@ -447,6 +450,7 @@ fn audit_fail_on_still_triggers_when_below_severity_threshold() {
             }
         ]
     });
+    let osv_body = osv_batch_with_details(&server, osv_body);
     let _mock = server.mock(|when, then| {
         when.method(POST).path("/v1/querybatch");
         then.status(200)
@@ -562,4 +566,63 @@ fn audit_help_documents_severity_threshold_and_fail_on() {
         .success()
         .stdout(predicates::str::contains("--severity-threshold"))
         .stdout(predicates::str::contains("--fail-on"));
+}
+
+fn osv_batch_with_details(server: &MockServer, mut body: serde_json::Value) -> serde_json::Value {
+    for result in body["results"].as_array_mut().unwrap() {
+        if let Some(vulns) = result.get_mut("vulns").and_then(|v| v.as_array_mut()) {
+            for vuln in vulns {
+                let id = vuln["id"].as_str().unwrap().to_string();
+                server.mock(|when, then| {
+                    when.method(GET).path(format!("/v1/vulns/{id}"));
+                    then.status(200).json_body(vuln.clone());
+                });
+                *vuln = serde_json::json!({"id": id, "modified": "2026-09-01T00:00:00Z"});
+            }
+        }
+    }
+    body
+}
+
+#[cfg(unix)]
+#[test]
+fn audit_unknown_or_unavailable_advisories_cannot_pass_gates() {
+    for unavailable in [false, true] {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/v1/querybatch");
+            then.status(200)
+                .json_body(serde_json::json!({"results": [{"vulns": [{"id": "GHSA-unknown"}]}]}));
+        });
+        server.mock(|when, then| {
+            when.method(GET).path("/v1/vulns/GHSA-unknown");
+            if unavailable { then.status(503); } else {
+                then.status(200).json_body(serde_json::json!({"id": "GHSA-unknown", "summary": "No severity available", "affected": []}));
+            }
+        });
+        let project = tempdir().unwrap();
+        let env = make_fake_pip_venv(project.path(), r#"[{"name":"demo","version":"1"}]"#);
+        let output = bin()
+            .current_dir(project.path())
+            .env("PYBUN_ENV", env)
+            .env(
+                "PYBUN_OSV_URL",
+                format!("{}/v1/querybatch", server.base_url()),
+            )
+            .args([
+                "--format=json",
+                "audit",
+                "--fail-on=high",
+                "--severity-threshold=critical",
+            ])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["status"], "error");
+        if !unavailable {
+            assert_eq!(value["detail"]["vulnerabilities"][0]["severity"], "unknown");
+            assert_eq!(value["detail"]["summary"]["unknown"], 1);
+        }
+    }
 }

@@ -1280,6 +1280,7 @@ pub(crate) async fn call_audit(args: Value) -> Result<String, String> {
             "high": report.count_at_severity("high"),
             "medium": report.count_at_severity("medium"),
             "low": report.count_at_severity("low"),
+            "unknown": report.count_at_severity("unknown"),
             "unscanned": report.unscanned
         },
         "vulnerabilities": vulnerabilities,

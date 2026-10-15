@@ -7,6 +7,7 @@
 //! unification goal).
 
 use serde_json::{Value, json};
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::process::Command as ProcessCommand;
 
@@ -159,83 +160,138 @@ pub async fn scan_for_vulnerabilities(
         .build()
         .map_err(|e| e.to_string())?;
 
-    let response = client
-        .post(osv_url)
-        .json(&json!({"queries": queries}))
-        .send()
-        .await
-        .map_err(|e| format!("OSV API request failed: {}", e))?;
+    let mut active: Vec<(usize, Value)> = queries.into_iter().enumerate().collect();
+    let mut seen_tokens = vec![BTreeSet::new(); packages.len()];
+    let mut package_ids = vec![BTreeSet::new(); packages.len()];
+    let mut details = BTreeMap::new();
+    let mut unscanned = BTreeSet::new();
+    let mut vulnerabilities = Vec::new();
+    let mut detail_base =
+        reqwest::Url::parse(osv_url).map_err(|_| "Invalid OSV endpoint".to_string())?;
+    detail_base.set_query(None);
+    detail_base.set_fragment(None);
+    detail_base
+        .path_segments_mut()
+        .map_err(|_| "Invalid OSV endpoint".to_string())?
+        .pop()
+        .push("vulns");
 
-    let status = response.status();
-    if !status.is_success() {
-        return Err(format!(
-            "OSV API returned HTTP {}: scan results unavailable",
-            status
-        ));
-    }
-
-    let osv_data: Value = response
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse OSV response: {}", e))?;
-
-    // Process OSV results — one result entry per queried package (same order).
-    // Per OSV spec, results.len() == queries.len(); we use zip so mismatches
-    // (e.g., partial error responses or mock servers) are handled gracefully.
-    let empty_vec = vec![];
-    let results = osv_data
-        .get("results")
-        .and_then(|r| r.as_array())
-        .unwrap_or(&empty_vec);
-
-    let unscanned = packages.len().saturating_sub(results.len());
-
-    let mut vulnerabilities: Vec<Vulnerability> = Vec::new();
-
-    for (pkg, result) in packages.iter().zip(results.iter()) {
-        let empty_vulns = vec![];
-        let vulns = result
-            .get("vulns")
-            .and_then(|v| v.as_array())
-            .unwrap_or(&empty_vulns);
-
-        for vuln in vulns {
-            let severity = extract_severity(vuln);
-            if severity_level(&severity) < threshold_level {
-                continue;
-            }
-
-            let vulnerability_id = vuln
-                .get("id")
-                .and_then(|i| i.as_str())
-                .unwrap_or("")
-                .to_string();
-            let description = vuln
-                .get("summary")
-                .and_then(|s| s.as_str())
-                .unwrap_or("")
-                .to_string();
-
-            vulnerabilities.push(Vulnerability {
-                package: pkg.name.clone(),
-                installed_version: pkg.version.clone(),
-                vulnerability_id,
-                severity,
-                description,
-                fix_version: extract_fix_version(vuln),
-            });
+    while !active.is_empty() {
+        let batch: Vec<&Value> = active.iter().map(|(_, query)| query).collect();
+        let response = client
+            .post(osv_url)
+            .json(&json!({"queries": batch}))
+            .send()
+            .await
+            .map_err(|_| "OSV batch request failed".to_string())?;
+        if !response.status().is_success() {
+            return Err(format!(
+                "OSV API returned HTTP {}: scan results unavailable",
+                response.status()
+            ));
         }
+        let data: Value = response
+            .json()
+            .await
+            .map_err(|_| "Failed to parse OSV response".to_string())?;
+        let results = data
+            .get("results")
+            .and_then(Value::as_array)
+            .ok_or("OSV response is missing results")?;
+        if results.len() > active.len() {
+            return Err("OSV response contains excess package results".into());
+        }
+        for (index, _) in active.iter().skip(results.len()) {
+            unscanned.insert(*index);
+        }
+        let mut next = Vec::new();
+        for ((index, mut query), result) in active.into_iter().zip(results) {
+            if !result.is_object() || result.get("error").is_some() {
+                return Err("OSV returned an invalid package result".into());
+            }
+            if let Some(vulns) = result.get("vulns") {
+                for stub in vulns.as_array().ok_or("Invalid OSV vulnerability list")? {
+                    let id = stub
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .filter(|id| {
+                            !id.is_empty()
+                                && id
+                                    .bytes()
+                                    .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+                        })
+                        .ok_or("OSV returned an invalid advisory ID")?;
+                    if !package_ids[index].insert(id.to_string()) {
+                        continue;
+                    }
+                    if !details.contains_key(id) {
+                        let mut url = detail_base.clone();
+                        url.path_segments_mut()
+                            .map_err(|_| "Invalid OSV endpoint")?
+                            .push(id);
+                        let response = client
+                            .get(url)
+                            .send()
+                            .await
+                            .map_err(|_| format!("OSV advisory lookup failed for {id}"))?;
+                        if !response.status().is_success() {
+                            return Err(format!(
+                                "OSV advisory lookup failed for {id}: HTTP {}",
+                                response.status()
+                            ));
+                        }
+                        let advisory: Value = response
+                            .json()
+                            .await
+                            .map_err(|_| format!("Invalid OSV advisory response for {id}"))?;
+                        if advisory.get("id").and_then(Value::as_str) != Some(id) {
+                            return Err(format!("OSV advisory ID mismatch for {id}"));
+                        }
+                        details.insert(id.to_string(), advisory);
+                    }
+                    let advisory = &details[id];
+                    let severity = extract_severity(advisory);
+                    if severity_level(&severity) < threshold_level {
+                        continue;
+                    }
+                    let pkg = &packages[index];
+                    vulnerabilities.push(Vulnerability {
+                        package: pkg.name.clone(),
+                        installed_version: pkg.version.clone(),
+                        vulnerability_id: id.to_string(),
+                        severity,
+                        description: advisory
+                            .get("summary")
+                            .or_else(|| advisory.get("details"))
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string(),
+                        fix_version: extract_fix_version(advisory, &pkg.name),
+                    });
+                }
+            }
+            if let Some(token) = result.get("next_page_token") {
+                let token = token.as_str().ok_or("Invalid OSV page token")?;
+                if !token.is_empty() {
+                    if !seen_tokens[index].insert(token.to_string()) {
+                        return Err("OSV repeated a pagination token".into());
+                    }
+                    query["page_token"] = json!(token);
+                    next.push((index, query));
+                }
+            }
+        }
+        active = next;
     }
-
     Ok(AuditReport {
         scanned: packages.len(),
-        unscanned,
+        unscanned: unscanned.len(),
         vulnerabilities,
     })
 }
 
 /// Rank a severity string for threshold comparisons. Unknown strings are
-/// treated as "low" (fail-open on ranking, not on reporting).
+/// ranked conservatively above critical so missing evidence cannot bypass a gate.
 pub fn severity_level(s: &str) -> u8 {
     match s.to_lowercase().as_str() {
         "none" => 0,
@@ -243,7 +299,7 @@ pub fn severity_level(s: &str) -> u8 {
         "medium" => 2,
         "high" => 3,
         "critical" => 4,
-        _ => 1,
+        _ => 5,
     }
 }
 
@@ -280,7 +336,7 @@ fn extract_severity(vuln: &Value) -> String {
         }
     }
 
-    "low".to_string()
+    "unknown".to_string()
 }
 
 fn normalize_severity(s: &str) -> String {
@@ -289,7 +345,7 @@ fn normalize_severity(s: &str) -> String {
         "HIGH" => "high",
         "MEDIUM" | "MODERATE" => "medium",
         "LOW" => "low",
-        _ => "low",
+        _ => "unknown",
     }
     .to_string()
 }
@@ -348,10 +404,27 @@ fn severity_from_cvss_vector(vector: &str) -> Option<String> {
     Some(level.to_string())
 }
 
-fn extract_fix_version(vuln: &Value) -> Option<String> {
+fn extract_fix_version(vuln: &Value, package: &str) -> Option<String> {
+    let normalize = |name: &str| {
+        name.to_ascii_lowercase()
+            .split(['-', '_', '.'])
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join("-")
+    };
+    let package = normalize(package);
     // Look in affected[].ranges[].events[].fixed
     if let Some(affected) = vuln.get("affected").and_then(|a| a.as_array()) {
         for aff in affected {
+            let matches_package = aff.get("package").is_some_and(|p| {
+                p.get("ecosystem").and_then(Value::as_str) == Some("PyPI")
+                    && p.get("name")
+                        .and_then(Value::as_str)
+                        .is_some_and(|name| normalize(name) == package)
+            });
+            if !matches_package {
+                continue;
+            }
             if let Some(ranges) = aff.get("ranges").and_then(|r| r.as_array()) {
                 for range in ranges {
                     if let Some(events) = range.get("events").and_then(|e| e.as_array()) {
@@ -363,6 +436,9 @@ fn extract_fix_version(vuln: &Value) -> Option<String> {
                     }
                 }
             }
+        }
+        if !affected.is_empty() {
+            return None;
         }
     }
 
@@ -393,6 +469,161 @@ mod tests {
     }
     use super::*;
 
+    #[tokio::test]
+    async fn scan_hydrates_paginated_ids_and_preserves_package_association() {
+        use httpmock::prelude::*;
+        let server = MockServer::start();
+        let first = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/querybatch")
+                .body_excludes("page_token");
+            then.status(200).json_body(json!({"results": [
+                {"vulns": [{"id": "GHSA-shared"}]},
+                {"vulns": [{"id": "GHSA-shared"}], "next_page_token": "next"}
+            ]}));
+        });
+        let next = server.mock(|when, then| {
+            when.method(POST).path("/v1/querybatch")
+                .json_body(json!({"queries": [{"package": {"name": "beta", "ecosystem": "PyPI"}, "version": "2", "page_token": "next"}]}));
+            then.status(200).json_body(json!({"results": [{"vulns": [{"id": "GHSA-critical"}, {"id": "GHSA-shared"}]}]}));
+        });
+        let shared = server.mock(|when, then| {
+            when.method(GET).path("/v1/vulns/GHSA-shared");
+            then.status(200).json_body(json!({"id": "GHSA-shared", "summary": "shared advisory", "database_specific": {"severity": "HIGH"}, "affected": []}));
+        });
+        let critical = server.mock(|when, then| {
+            when.method(GET).path("/v1/vulns/GHSA-critical");
+            then.status(200).json_body(json!({"id": "GHSA-critical", "summary": "critical advisory", "database_specific": {"severity": "CRITICAL"}, "affected": []}));
+        });
+        let packages = vec![
+            InstalledPackage {
+                name: "alpha".into(),
+                version: "1".into(),
+            },
+            InstalledPackage {
+                name: "beta".into(),
+                version: "2".into(),
+            },
+        ];
+        let report = scan_for_vulnerabilities(
+            &packages,
+            &format!("{}/v1/querybatch", server.base_url()),
+            "high",
+        )
+        .await
+        .unwrap();
+        assert_eq!(report.vulnerabilities.len(), 3);
+        assert_eq!(report.count_at_severity("high"), 2);
+        assert_eq!(report.count_at_severity("critical"), 1);
+        assert!(
+            report
+                .vulnerabilities
+                .iter()
+                .any(|v| v.package == "beta" && v.vulnerability_id == "GHSA-shared")
+        );
+        first.assert_calls(1);
+        next.assert_calls(1);
+        shared.assert_calls(1);
+        critical.assert_calls(1);
+    }
+
+    #[tokio::test]
+    async fn scan_never_reports_detail_failure_as_low_risk() {
+        use httpmock::prelude::*;
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/v1/querybatch");
+            then.status(200)
+                .json_body(json!({"results": [{"vulns": [{"id": "GHSA-missing"}]}]}));
+        });
+        let result = scan_for_vulnerabilities(
+            &[InstalledPackage {
+                name: "alpha".into(),
+                version: "1".into(),
+            }],
+            &format!("{}/v1/querybatch", server.base_url()),
+            "high",
+        )
+        .await;
+        assert!(result.is_err(), "missing details must fail the scan");
+    }
+
+    #[tokio::test]
+    async fn scan_keeps_unknown_severity_above_every_threshold() {
+        use httpmock::prelude::*;
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/v1/querybatch");
+            then.status(200)
+                .json_body(json!({"results": [{"vulns": [{"id": "GHSA-unknown"}]}]}));
+        });
+        server.mock(|when, then| {
+            when.method(GET).path("/v1/vulns/GHSA-unknown");
+            then.status(200).json_body(
+                json!({"id": "GHSA-unknown", "summary": "No severity evidence", "affected": []}),
+            );
+        });
+        let report = scan_for_vulnerabilities(
+            &[InstalledPackage {
+                name: "alpha".into(),
+                version: "1".into(),
+            }],
+            &format!("{}/v1/querybatch", server.base_url()),
+            "critical",
+        )
+        .await
+        .unwrap();
+        assert_eq!(report.vulnerabilities.len(), 1);
+        assert_eq!(report.vulnerabilities[0].severity, "unknown");
+    }
+
+    #[test]
+    fn fixes_follow_the_queried_package_in_shared_advisories() {
+        let advisory = json!({"affected": [
+            {"package": {"ecosystem": "PyPI", "name": "alpha"}, "ranges": [{"events": [{"fixed": "2"}]}]},
+            {"package": {"ecosystem": "PyPI", "name": "Beta_pkg"}, "ranges": [{"events": [{"fixed": "9"}]}]}
+        ]});
+        assert_eq!(extract_fix_version(&advisory, "beta-pkg"), Some("9".into()));
+        assert_eq!(extract_fix_version(&advisory, "alpha"), Some("2".into()));
+        assert_eq!(extract_fix_version(&advisory, "other"), None);
+    }
+
+    #[tokio::test]
+    async fn scan_rejects_invalid_details_and_pagination_loops() {
+        use httpmock::prelude::*;
+        for mode in ["id_mismatch", "invalid_json", "repeated_token"] {
+            let server = MockServer::start();
+            server.mock(|when, then| {
+                when.method(POST).path("/v1/querybatch");
+                let mut result = json!({"vulns": [{"id": "GHSA-test"}]});
+                if mode == "repeated_token" {
+                    result["next_page_token"] = json!("same");
+                }
+                then.status(200).json_body(json!({"results": [result]}));
+            });
+            server.mock(|when, then| {
+                when.method(GET).path("/v1/vulns/GHSA-test");
+                if mode == "invalid_json" {
+                    then.status(200).body("not json");
+                } else {
+                    then.status(200).json_body(
+                        json!({"id": if mode == "id_mismatch" {"GHSA-other"} else {"GHSA-test"}}),
+                    );
+                }
+            });
+            let result = scan_for_vulnerabilities(
+                &[InstalledPackage {
+                    name: "demo".into(),
+                    version: "1".into(),
+                }],
+                &format!("{}/v1/querybatch", server.base_url()),
+                "high",
+            )
+            .await;
+            assert!(result.is_err(), "must reject {mode}");
+        }
+    }
+
     #[test]
     fn severity_level_orders_known_levels() {
         assert_eq!(severity_level("none"), 0);
@@ -403,9 +634,9 @@ mod tests {
     }
 
     #[test]
-    fn severity_level_is_case_insensitive_and_defaults_unknown_to_low() {
+    fn severity_level_is_case_insensitive_and_ranks_unknown_conservatively() {
         assert_eq!(severity_level("HIGH"), 3);
-        assert_eq!(severity_level("totally-unknown"), 1);
+        assert_eq!(severity_level("totally-unknown"), 5);
     }
 
     #[test]
@@ -439,7 +670,7 @@ mod tests {
         let vuln = json!({
             "severity": [{"type": "CVSS_V2", "score": "AV:N/AC:L/Au:N/C:C/I:C/A:C"}]
         });
-        assert_eq!(extract_severity(&vuln), "low");
+        assert_eq!(extract_severity(&vuln), "unknown");
     }
 
     #[test]
@@ -447,25 +678,29 @@ mod tests {
         let vuln = json!({
             "severity": [{"type": "CVSS_V3", "score": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:N/VA:N/SC:N/SI:N/SA:N"}]
         });
-        assert_eq!(extract_severity(&vuln), "low");
+        assert_eq!(extract_severity(&vuln), "unknown");
     }
 
     #[test]
-    fn extract_severity_defaults_to_low_when_no_data() {
+    fn extract_severity_reports_unknown_when_no_data() {
         let vuln = json!({});
-        assert_eq!(extract_severity(&vuln), "low");
+        assert_eq!(extract_severity(&vuln), "unknown");
     }
 
     #[test]
     fn extract_fix_version_reads_affected_ranges() {
         let vuln = json!({
             "affected": [{
+                "package": {"ecosystem": "PyPI", "name": "requests"},
                 "ranges": [{
                     "events": [{"introduced": "0"}, {"fixed": "2.31.0"}]
                 }]
             }]
         });
-        assert_eq!(extract_fix_version(&vuln), Some("2.31.0".to_string()));
+        assert_eq!(
+            extract_fix_version(&vuln, "requests"),
+            Some("2.31.0".to_string())
+        );
     }
 
     #[test]
@@ -473,13 +708,16 @@ mod tests {
         let vuln = json!({
             "database_specific": {"fix_versions": ["1.2.3"]}
         });
-        assert_eq!(extract_fix_version(&vuln), Some("1.2.3".to_string()));
+        assert_eq!(
+            extract_fix_version(&vuln, "requests"),
+            Some("1.2.3".to_string())
+        );
     }
 
     #[test]
     fn extract_fix_version_returns_none_when_absent() {
         let vuln = json!({});
-        assert_eq!(extract_fix_version(&vuln), None);
+        assert_eq!(extract_fix_version(&vuln, "requests"), None);
     }
 
     #[tokio::test]
