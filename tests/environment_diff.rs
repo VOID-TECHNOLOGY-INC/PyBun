@@ -62,6 +62,7 @@ fn mcp(before: &Value, after: &Value) -> Value {
             serde_json::from_str(rpc["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
         assert_eq!(value["policy_applied"]["authorized"], true);
         value.as_object_mut().unwrap().remove("policy_applied");
+        value.as_object_mut().unwrap().remove("rate_limit_applied");
         value
     }
 }

@@ -34,6 +34,10 @@ struct AuditToolSchema {
 
 #[derive(Debug, Clone, Serialize)]
 struct AuditOutputSummary {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    diagnostic_codes: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    retry_after_ms: Option<u64>,
     status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     exit_code: Option<i64>,
@@ -544,7 +548,7 @@ pub(super) fn build_audit_entry(
 }
 
 fn summarize_tool_result(result: &Result<String, String>) -> AuditOutputSummary {
-    match result {
+    let mut summary = match result {
         Ok(content) => {
             let parsed = serde_json::from_str::<Value>(content).ok();
             let status = parsed
@@ -576,6 +580,8 @@ fn summarize_tool_result(result: &Result<String, String>) -> AuditOutputSummary 
                 .map(|stderr| stderr.len() as u64)
                 .unwrap_or(0);
             AuditOutputSummary {
+                diagnostic_codes: vec![],
+                retry_after_ms: None,
                 status,
                 exit_code,
                 stdout_bytes,
@@ -583,12 +589,30 @@ fn summarize_tool_result(result: &Result<String, String>) -> AuditOutputSummary 
             }
         }
         Err(message) => AuditOutputSummary {
+            diagnostic_codes: vec![],
+            retry_after_ms: None,
             status: "error".to_string(),
             exit_code: None,
             stdout_bytes: 0,
             stderr_bytes: message.len() as u64,
         },
+    };
+    let text = match result {
+        Ok(text) | Err(text) => text,
+    };
+    if let Ok(value) = serde_json::from_str::<Value>(text) {
+        summary.retry_after_ms = value["retry_after_ms"].as_u64();
+        summary.diagnostic_codes = value["diagnostics"]
+            .as_array()
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item["code"].as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
     }
+    summary
 }
 
 fn sandbox_events_from_result(result: &Result<String, String>) -> Vec<AuditSandboxEvent> {

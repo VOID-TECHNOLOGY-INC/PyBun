@@ -8,6 +8,8 @@ use std::path::{Component, Path, PathBuf};
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub(super) struct Policy {
+    #[serde(skip)]
+    pub rate_limit: super::rate_limit::Config,
     pub default_sandbox: bool,
     pub require_sandbox: bool,
     pub allow_network: bool,
@@ -21,6 +23,7 @@ pub(super) struct Policy {
 impl Default for Policy {
     fn default() -> Self {
         Self {
+            rate_limit: super::rate_limit::Config::default(),
             default_sandbox: true,
             require_sandbox: true,
             allow_network: false,
@@ -51,6 +54,35 @@ fn capability() -> Denied {
         "E_MCP_POLICY_UNSUPPORTED",
         "This tool cannot enforce the configured sandbox, network or resource boundary; use a compatible tool or ask the operator to configure its capabilities.",
     )
+}
+
+// Authorization runs before rate admission, so this probe must be bounded and
+// must never wait for a FIFO/device or read a file that grows past the limit.
+fn preparation_source(path: &Path) -> Result<String, Denied> {
+    const LIMIT: u64 = 2 * 1024 * 1024;
+    let metadata = std::fs::symlink_metadata(path).map_err(|_| invalid())?;
+    if !metadata.is_file() || metadata.len() > LIMIT {
+        return Err(capability());
+    }
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let file = options.open(path).map_err(|_| invalid())?;
+    if !file.metadata().map_err(|_| invalid())?.is_file() {
+        return Err(capability());
+    }
+    let mut bytes = Vec::new();
+    file.take(LIMIT + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| invalid())?;
+    if bytes.len() as u64 > LIMIT {
+        return Err(capability());
+    }
+    String::from_utf8(bytes).map_err(|_| invalid())
 }
 
 pub(super) struct ServerPolicy {
@@ -109,6 +141,16 @@ impl ServerPolicy {
             .clone()
             .try_into()
             .map_err(|_| invalid())?;
+        if let Some(rates) = section.and_then(|value| value.get("rate_limit")) {
+            policy.rate_limit = rates.clone().try_into().map_err(|_| invalid())?;
+        }
+        let tools: Vec<_> = super::schema::build_tools_list()
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect();
+        if !policy.rate_limit.validate(&tools) {
+            return Err(invalid());
+        }
         if policy.allowed_working_directories.is_empty()
             || policy
                 .allowed_backends
@@ -318,10 +360,7 @@ impl ServerPolicy {
                         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                         Err(_) => return Err(invalid()),
                     }
-                    if std::fs::metadata(&path).map_err(|_| invalid())?.len() > 2 * 1024 * 1024 {
-                        return Err(capability());
-                    }
-                    std::fs::read_to_string(path).map_err(|_| invalid())?
+                    preparation_source(&path)?
                 } else {
                     args["code"].as_str().unwrap_or("").to_string()
                 };
@@ -466,16 +505,33 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         std::fs::write(
             temp.path().join("pyproject.toml"),
-            "[tool.pybun.mcp.policy]\nallow_network=true\n",
+            "[tool.pybun.mcp.policy]\nallow_network=true\n[tool.pybun.mcp.rate_limit]\ncalls_per_minute=1\n",
         )
         .unwrap();
         let original = ServerPolicy::load(temp.path(), None);
         std::fs::create_dir(temp.path().join(".pybun")).unwrap();
         std::fs::write(
             temp.path().join(".pybun/config.toml"),
-            "[mcp.policy]\nallow_network=false\n",
+            "[mcp.policy]\nallow_network=false\n[mcp.rate_limit]\ncalls_per_minute=2\n",
         )
         .unwrap();
+        assert_eq!(
+            original
+                .effective
+                .as_ref()
+                .unwrap()
+                .rate_limit
+                .calls_per_minute,
+            1
+        );
+        assert_eq!(
+            ServerPolicy::load(temp.path(), None)
+                .effective
+                .unwrap()
+                .rate_limit
+                .calls_per_minute,
+            2
+        );
         assert!(original.effective.unwrap().allow_network);
         assert!(
             !ServerPolicy::load(temp.path(), None)
