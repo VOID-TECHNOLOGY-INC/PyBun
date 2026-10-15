@@ -47,6 +47,9 @@ pub enum ProgressMode {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
+    /// Compare captured Python/dependency/policy state.
+    #[command(subcommand, alias = "env")]
+    Environment(EnvironmentCommands),
     /// Query local CLI execution receipts.
     History(HistoryArgs),
     /// Initialize a new Python project.
@@ -929,4 +932,15 @@ pub struct HistoryArgs {
     /// Show receipts from the last duration (e.g. 20m, 2h, 1d).
     #[arg(long)]
     pub since: Option<String>,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum EnvironmentCommands {
+    /// Compare two JSON captures or execution receipts without changing environments.
+    Diff(EnvironmentDiffArgs),
+}
+#[derive(Args, Debug)]
+pub struct EnvironmentDiffArgs {
+    pub before: std::path::PathBuf,
+    pub after: std::path::PathBuf,
 }

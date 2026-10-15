@@ -52,3 +52,5 @@ pub mod wheel_cache;
 pub mod workspace;
 
 pub mod history;
+
+pub mod environment_diff;

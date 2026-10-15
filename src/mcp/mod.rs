@@ -198,6 +198,7 @@ impl McpServer {
             Err(err)
         } else {
             match tool_name {
+                "pybun_environment_diff" => crate::environment_diff::call(tool_args.clone()),
                 "pybun_resolve" => tools::call_resolve(tool_args.clone()).await,
                 "pybun_install" => tools::call_install(tool_args.clone()).await,
                 "pybun_add" => tools::call_project("add", tool_args.clone()).await,

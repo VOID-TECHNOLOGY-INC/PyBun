@@ -106,18 +106,22 @@ impl Pending {
                     .ok()
                     .map(|env| env.python_path)
             });
-        let python = detail.get("execution_python").cloned().unwrap_or_else(|| {
+        let mut python = detail.get("execution_python").cloned().unwrap_or_else(|| {
             python_path
                 .as_deref()
                 .map(python_state)
                 .unwrap_or(Value::Null)
         });
+        let installed_packages = python
+            .as_object_mut()
+            .and_then(|value| value.remove("installed_packages"))
+            .unwrap_or(Value::Null);
         let receipt = json!({
             "schema_version":1,"receipt_id":receipt_id,"timestamp_ms":self.timestamp,
             "command":name,"args":self.args,"project":{"path":root},
             "duration_ms":duration.as_millis().min(u64::MAX as u128) as u64,"exit_code":exit_code,
             "python":python,"python_observation":if detail.get("execution_python").is_some_and(|value| !value.is_null()) {"execution_interpreter_before_command"} else if detail.pointer("/environment/python").and_then(Value::as_str).is_some() {"backend_interpreter_after_command"} else {"selected_environment_after_command"},
-            "backend":backend,"lock":lock,"packages":detail.get("packages"),
+            "backend":backend,"lock":lock,"packages":detail.get("packages"),"installed_packages":installed_packages,
             "effective_policy":detail.get("effective_policy").or_else(||detail.get("sandbox")),
             "profile":detail.get("profile"),"cache_hit":detail.get("cache_hit"),
             "daemon_used":false,"backend_receipt_id":detail.get("receipt_id"),
@@ -132,15 +136,59 @@ pub(crate) fn python_state(path: &Path) -> Value {
         return Value::Null;
     }
     let mut command = Command::new(path);
-    command.args(["-I", "-S", "-c", "import json,sys,sysconfig; print(json.dumps({'implementation':sys.implementation.name,'version':sys.version.split()[0],'abi':sysconfig.get_config_var('SOABI') or sys.implementation.cache_tag,'executable':sys.executable}))"]);
-    match spawn_with_timeout(&mut command, Some(3), true) {
+    const CAPTURE: &str = r#"
+import json, pathlib, site, sys, sysconfig
+from importlib import metadata
+root = pathlib.Path(sys.executable).parent.parent
+config = root / 'pyvenv.cfg'
+paths = site.getsitepackages([str(root) if config.is_file() else sys.prefix])
+if config.is_file() and any(line.strip().lower() == 'include-system-site-packages = true' for line in config.read_text().splitlines()):
+    paths += site.getsitepackages([sys.base_prefix])
+packages = None
+try:
+    distributions = list(metadata.distributions(path=paths))
+    if config.is_file() and not any(line.strip().lower() == 'include-system-site-packages = true' for line in config.read_text().splitlines()) and len(distributions) <= 5000:
+        packages = sorted([{'name': dist.metadata['Name'], 'version': dist.version} for dist in distributions], key=lambda item: (item['name'] or '', item['version'] or ''))
+except Exception:
+    pass
+print(json.dumps({'implementation':sys.implementation.name,'version':sys.version.split()[0],'abi':sysconfig.get_config_var('SOABI') or sys.implementation.cache_tag,'executable':sys.executable,'installed_packages':packages}))
+"#;
+    command.args(["-I", "-S", "-c", CAPTURE]);
+    let raw = match spawn_with_timeout(&mut command, Some(3), true) {
         Ok(ProcExecOutcome::Completed {
             status,
             stdout: Some(bytes),
             ..
-        }) if status.success() => serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        }) if status.success() => serde_json::from_slice::<Value>(&bytes).unwrap_or(Value::Null),
         _ => Value::Null,
+    };
+    if !["implementation", "version", "abi", "executable"]
+        .iter()
+        .all(|key| raw[*key].as_str().is_some_and(|value| !value.is_empty()))
+    {
+        return Value::Null;
     }
+    let packages = raw["installed_packages"]
+        .as_array()
+        .filter(|items| items.len() <= 5000)
+        .and_then(|items| {
+            items
+                .iter()
+                .map(|item| {
+                    let name = item["name"].as_str().filter(|name| {
+                        !name.is_empty()
+                            && name
+                                .chars()
+                                .all(|ch| ch.is_ascii_alphanumeric() || "-_.".contains(ch))
+                    })?;
+                    let version = item["version"]
+                        .as_str()
+                        .filter(|version| crate::pep440::Pep440Version::parse(version).is_some())?;
+                    Some(json!({"name":name,"version":version,"artifact_hashes":null}))
+                })
+                .collect::<Option<Vec<_>>>()
+        });
+    json!({"implementation":raw["implementation"],"version":raw["version"],"abi":raw["abi"],"executable":raw["executable"],"executable_digest":fs::read(path).ok().map(|bytes|hex::encode(Sha256::digest(bytes))),"installed_packages":packages})
 }
 
 fn redact_args(args: impl IntoIterator<Item = String>) -> Vec<String> {
