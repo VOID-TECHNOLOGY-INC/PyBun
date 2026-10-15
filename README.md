@@ -420,6 +420,8 @@ pybun self update --dry-run
 pybun self update --channel nightly
 ```
 
+MCP exposes the same doctor remediation plan: call `pybun_doctor` with `{"fix": true}` to preview, or `{"fix": true, "apply": true}` to apply low-risk, auto-applicable fixes. `applied_fixes` includes before/after cache counts; `skipped_fixes` explains candidates requiring manual action. The existing `pybun_fix` tool continues to fix lint violations with Ruff.
+
 ## Sandbox usage
 
 Use the sandbox for untrusted scripts or PEP 723 snippets:

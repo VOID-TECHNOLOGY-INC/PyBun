@@ -186,9 +186,38 @@ fn doctor_fix_apply_removes_stale_pypi_cache_entry() {
     assert_eq!(applied[0]["command"], "pybun gc");
     assert_eq!(applied[0]["applied"], true);
     assert_eq!(applied[0]["files_removed"], 1);
+    assert_eq!(applied[0]["before"]["stale_count"], 1);
+    assert_eq!(applied[0]["after"]["stale_count"], 0);
 
     assert!(
         !pypi_cache.join("stale-package.bin").exists(),
         "--fix --apply should have removed the stale cache entry"
+    );
+}
+
+#[test]
+fn doctor_apply_records_unsafe_candidates_without_executing_them() {
+    let temp = tempdir().unwrap();
+    let cache = temp.path().join("pypi-cache");
+    fs::create_dir(&cache).unwrap();
+    let output = pybun_bin()
+        .current_dir(temp.path())
+        .env("PATH", "")
+        .env_remove("PYBUN_ENV")
+        .env_remove("PYBUN_PYTHON")
+        .env("PYBUN_HOME", temp.path().join("cache"))
+        .env("PYBUN_PYPI_CACHE_DIR", cache)
+        .args(["--format=json", "doctor", "--fix", "--apply"])
+        .output()
+        .unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let skipped = value["detail"]["skipped_fixes"].as_array().unwrap();
+    assert!(!skipped.is_empty(), "{value}");
+    assert!(skipped.iter().any(|fix| fix["risk"] == "medium"));
+    assert!(
+        value["detail"]["applied_fixes"]
+            .as_array()
+            .unwrap()
+            .is_empty()
     );
 }

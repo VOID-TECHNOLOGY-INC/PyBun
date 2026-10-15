@@ -36,6 +36,22 @@ pub(crate) fn call_gc(args: Value) -> Result<String, String> {
 }
 
 pub(crate) fn call_doctor(args: Value) -> Result<String, String> {
+    let boolean = |name: &str| -> Result<bool, String> {
+        match args.get(name) {
+            None => Ok(false),
+            Some(value) => value
+                .as_bool()
+                .ok_or_else(|| format!("{name} must be a boolean")),
+        }
+    };
+    let fix = boolean("fix")?;
+    let apply = boolean("apply")?;
+    if apply && !fix {
+        return Err("apply requires fix: true".to_string());
+    }
+    if fix {
+        return Ok(crate::commands::doctor_remediation(boolean("verbose")?, apply).to_string());
+    }
     use crate::cache::Cache;
     use crate::env::find_python_env;
     use crate::project::Project;

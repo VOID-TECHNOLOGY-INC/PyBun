@@ -147,6 +147,14 @@ pub(super) fn build_tools_list() -> Vec<Tool> {
                     "verbose": {
                         "type": "boolean",
                         "description": "Include verbose diagnostics"
+                    },
+                    "fix": {
+                        "type": "boolean",
+                        "description": "Preview shared safe remediation plan without applying changes"
+                    },
+                    "apply": {
+                        "type": "boolean",
+                        "description": "Apply low-risk auto-applicable fixes; requires fix=true. Returns before/after records."
                     }
                 }
             }),

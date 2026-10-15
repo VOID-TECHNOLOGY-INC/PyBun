@@ -2760,3 +2760,115 @@ fn mcp_pybun_test_false_skip_condition_cannot_succeed() {
     assert_eq!(result["summary"]["failed"], 1, "{result}");
     assert_eq!(result["summary"]["skipped"], 0, "{result}");
 }
+
+#[test]
+fn mcp_doctor_previews_and_applies_shared_safe_remediation() {
+    for apply in [false, true] {
+        let project = tempdir().unwrap();
+        let cache = project.path().join("pypi-cache");
+        fs::create_dir(&cache).unwrap();
+        let stale = cache.join("stale.bin");
+        fs::write(&stale, b"invalid cache data").unwrap();
+        let keep = cache.join("keep.txt");
+        fs::write(&keep, b"preserve this unrelated cache file").unwrap();
+        let cli_preview = pybun_bin()
+            .current_dir(project.path())
+            .env("PYBUN_PYPI_CACHE_DIR", &cache)
+            .env("PYBUN_HOME", project.path().join("cache"))
+            .args(["--format=json", "doctor", "--fix"])
+            .output()
+            .unwrap();
+        let cli_preview: serde_json::Value = serde_json::from_slice(&cli_preview.stdout).unwrap();
+        let req=serde_json::json!({"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_doctor","arguments":{"fix":true,"apply":apply}}}).to_string();
+        let stdout = mcp_call_in(
+            &[&req],
+            project.path(),
+            &[
+                ("PYBUN_PYPI_CACHE_DIR", cache.clone().into_os_string()),
+                ("PYBUN_HOME", project.path().join("cache").into_os_string()),
+            ],
+        );
+        let result = tool_result_json(&stdout, 2);
+        assert_eq!(result["fix_plan"], cli_preview["detail"]["fix_plan"]);
+        assert_eq!(
+            result["fix_plan"][0]["fix_candidates"][0]["command"], "pybun gc",
+            "{result}"
+        );
+        assert_eq!(stale.exists(), !apply);
+        assert_eq!(
+            fs::read(&keep).unwrap(),
+            b"preserve this unrelated cache file"
+        );
+        if apply {
+            let fix = &result["applied_fixes"][0];
+            assert_eq!(fix["applied"], true);
+            assert_eq!(fix["before"]["stale_count"], 1);
+            assert_eq!(fix["after"]["stale_count"], 0);
+            fs::write(&stale, b"invalid cache data").unwrap();
+            let cli_apply = pybun_bin()
+                .current_dir(project.path())
+                .env("PYBUN_PYPI_CACHE_DIR", &cache)
+                .env("PYBUN_HOME", project.path().join("cache"))
+                .args(["--format=json", "doctor", "--fix", "--apply"])
+                .output()
+                .unwrap();
+            let cli_apply: serde_json::Value = serde_json::from_slice(&cli_apply.stdout).unwrap();
+            assert_eq!(
+                result["applied_fixes"],
+                cli_apply["detail"]["applied_fixes"]
+            );
+            assert!(!stale.exists());
+            assert_eq!(
+                fs::read(&keep).unwrap(),
+                b"preserve this unrelated cache file"
+            );
+        }
+    }
+}
+
+#[test]
+fn mcp_doctor_rejects_apply_without_explicit_fix() {
+    let project = tempdir().unwrap();
+    let req = r#"{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_doctor","arguments":{"apply":true}}}"#;
+    let stdout = mcp_call_in(&[req], project.path(), &[]);
+    assert!(stdout.contains("\"isError\":true"), "{stdout}");
+    assert!(stdout.contains("requires fix"), "{stdout}");
+}
+
+#[test]
+fn mcp_doctor_rejects_non_boolean_remediation_flags() {
+    let project = tempdir().unwrap();
+    for arguments in [
+        json!({"fix":"true"}),
+        json!({"fix":true,"apply":1}),
+        json!({"fix":true,"verbose":null}),
+    ] {
+        let req=json!({"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_doctor","arguments":arguments}}).to_string();
+        let stdout = mcp_call_in(&[&req], project.path(), &[]);
+        assert!(stdout.contains("\"isError\":true"), "{stdout}");
+        assert!(stdout.contains("must be a boolean"), "{stdout}");
+    }
+}
+
+#[test]
+fn mcp_doctor_advertises_safe_remediation_flags() {
+    let stdout = mcp_call(&[r#"{"jsonrpc":"2.0","method":"tools/list","id":2}"#]);
+    let response = json_rpc_lines(&stdout)
+        .into_iter()
+        .find(|v| v["id"] == 2)
+        .unwrap();
+    let doctor = response["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "pybun_doctor")
+        .unwrap();
+    assert_eq!(
+        doctor["inputSchema"]["properties"]["fix"]["type"],
+        "boolean"
+    );
+    assert_eq!(
+        doctor["inputSchema"]["properties"]["apply"]["type"],
+        "boolean"
+    );
+}
