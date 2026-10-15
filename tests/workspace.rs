@@ -661,3 +661,150 @@ fn upgrade_with_unknown_group_falls_back_to_empty_dependency_set() {
         .stdout(predicate::str::contains("\"upgraded\":[]"))
         .stdout(predicate::str::contains("\"scope\":\"group\""));
 }
+
+#[test]
+fn workspace_conflicts_preserve_every_member_constraint_and_provenance() {
+    for root_conflict in [false, true] {
+        for reversed in [false, true] {
+            for group in [false, true] {
+                let temp = tempdir().unwrap();
+                let root = temp.path();
+                let members = if reversed { "['b', 'a']" } else { "['a', 'b']" };
+                let declarations = |name: &str, spec: &str| {
+                    if group {
+                        format!("[project]\nname='{name}'\n[dependency-groups]\ndev=['{spec}']\n")
+                    } else {
+                        format!("[project]\nname='{name}'\ndependencies=['{spec}']\n")
+                    }
+                };
+                let root_spec = if root_conflict {
+                    "demo==1.0"
+                } else {
+                    "other==1.0"
+                };
+                fs::write(
+                    root.join("pyproject.toml"),
+                    format!(
+                        "{}\n[tool.pybun.workspace]\nmembers={members}\n",
+                        declarations("root", root_spec)
+                    ),
+                )
+                .unwrap();
+                for (name, spec) in [("a", "demo==2.0"), ("b", "demo==1.0")] {
+                    fs::create_dir(root.join(name)).unwrap();
+                    fs::write(
+                        root.join(name).join("pyproject.toml"),
+                        declarations(name, spec),
+                    )
+                    .unwrap();
+                }
+                let index: Vec<_> = [("demo", "1.0"), ("demo", "2.0"), ("other", "1.0")].into_iter().map(|(name, version)| serde_json::json!({"name":name,"version":version,"dependencies":[],"wheels":[{"file":format!("{name}-{version}-py3-none-any.whl"),"hash":format!("sha256:{}", "0".repeat(64))}]})).collect();
+                fs::write(root.join("index.json"), serde_json::to_vec(&index).unwrap()).unwrap();
+                let mut command = bin();
+                command.current_dir(root).args([
+                    "--format=json",
+                    "install",
+                    "--workspace",
+                    "--index",
+                    "index.json",
+                ]);
+                if group {
+                    command.args(["--group", "dev"]);
+                }
+                let output = command.output().unwrap();
+                assert!(!output.status.success(), "constraints must conflict");
+                assert!(!root.join("pybun.lockb").exists());
+                let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+                let error = value["diagnostics"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|d| d["code"] == "E_RESOLVE_CONFLICT")
+                    .expect("conflict diagnostic");
+                let context = error["context"].to_string();
+                assert!(
+                    context.contains("demo==1.0") && context.contains("demo==2.0"),
+                    "{error}"
+                );
+                assert!(
+                    context.contains("pyproject.toml"),
+                    "must include declaration provenance: {error}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn workspace_overlaps_normalized_names_markers_and_extras_resolve_together() {
+    for group in [false, true] {
+        let temp = tempdir().unwrap();
+        let root = temp.path();
+        for (name, deps) in [
+            ("root", vec!["Demo_pkg>=1.0"]),
+            ("a", vec!["demo.pkg[fast]>=2.0"]),
+            (
+                "b",
+                vec!["demo-pkg<3.0", "demo-pkg==9.0; python_version < '0'"],
+            ),
+        ] {
+            let dir = if name == "root" {
+                root.to_path_buf()
+            } else {
+                root.join(name)
+            };
+            fs::create_dir_all(&dir).unwrap();
+            let deps_toml = deps
+                .iter()
+                .map(|d| format!("\"{d}\""))
+                .collect::<Vec<_>>()
+                .join(",");
+            let declaration = if group {
+                format!("[dependency-groups]\ndev=[{deps_toml}]\n")
+            } else {
+                format!("dependencies=[{deps_toml}]\n")
+            };
+            let workspace = if name == "root" {
+                "[tool.pybun.workspace]\nmembers=['b','a']\n"
+            } else {
+                ""
+            };
+            fs::write(
+                dir.join("pyproject.toml"),
+                format!("[project]\nname='{name}'\n{declaration}\n{workspace}"),
+            )
+            .unwrap();
+        }
+        let index:Vec<_>=["1.0","2.0","3.0"].into_iter().map(|v|serde_json::json!({"name":"demo-pkg","version":v,"dependencies":[],"wheels":[{"file":format!("demo_pkg-{v}-py3-none-any.whl"),"hash":format!("sha256:{}","0".repeat(64))}]})).collect();
+        fs::write(root.join("index.json"), serde_json::to_vec(&index).unwrap()).unwrap();
+        let mut command = bin();
+        command.current_dir(root).args([
+            "--format=json",
+            "install",
+            "--workspace",
+            "--index",
+            "index.json",
+        ]);
+        if group {
+            command.args(["--group", "dev"]);
+        }
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        let lock = pybun::lockfile::Lockfile::load_from_path(root.join("pybun.lockb")).unwrap();
+        assert_eq!(lock.packages.len(), 1);
+        assert_eq!(lock.packages["demo-pkg"].name, "demo-pkg");
+        assert_eq!(lock.packages["demo-pkg"].version, "2.0");
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert!(
+            value["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|d| d["code"] == "W_EXTRAS_IGNORED")
+        );
+    }
+}

@@ -1,5 +1,5 @@
 use crate::project::{Project, ProjectError, extract_package_name};
-use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
@@ -108,7 +108,7 @@ impl Workspace {
             .find(|member| member_display_name(member) == name)
     }
 
-    /// Merge dependencies from root and all members, de-duplicating by package name.
+    /// Merge dependencies from root and all members, retaining distinct requirements.
     pub fn merged_dependencies(&self) -> Vec<String> {
         merge_dependencies(
             self.root
@@ -120,7 +120,7 @@ impl Workspace {
 
     /// Merge dependencies for a named group (checked via `[project.optional-dependencies]`
     /// then `[dependency-groups]`) across the root and all members,
-    /// de-duplicating by package name.
+    /// retaining distinct requirements.
     pub fn dependencies_for_group(&self, group: &str) -> Vec<String> {
         merge_dependencies(
             self.root.group_dependencies(group).into_iter().chain(
@@ -144,15 +144,23 @@ fn member_display_name(member: &Project) -> String {
     })
 }
 
-/// De-duplicate dependency specifiers by package name (case-insensitive),
-/// keeping the first occurrence and returning a sorted, stable result.
+/// Canonicalize package names and deduplicate identical requirements only.
+/// Distinct constraints, markers, and extras must all reach the resolver.
 fn merge_dependencies(deps: impl Iterator<Item = String>) -> Vec<String> {
-    let mut merged: BTreeMap<String, String> = BTreeMap::new();
-    for dep in deps {
-        let key = extract_package_name(&dep).to_lowercase();
-        merged.entry(key).or_insert(dep);
-    }
-    merged.values().cloned().collect()
+    deps.map(|dep| {
+        let dep = dep.trim();
+        let name = extract_package_name(dep);
+        let normalized = name
+            .to_ascii_lowercase()
+            .split(['-', '_', '.'])
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join("-");
+        format!("{normalized}{}", dep[name.len()..].trim_start())
+    })
+    .collect::<BTreeSet<_>>()
+    .into_iter()
+    .collect()
 }
 
 /// Expand a workspace member path pattern relative to `root` into concrete
@@ -245,6 +253,27 @@ mod tests {
             ),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn merge_preserves_distinct_constraints_markers_and_extras() {
+        let deps = vec![
+            "Demo_pkg>=1",
+            "demo-pkg<3",
+            "demo.pkg[fast]>=2",
+            "demo-pkg==4; python_version < '0'",
+            "demo-pkg>=1",
+        ];
+        let merged = merge_dependencies(deps.into_iter().map(str::to_string));
+        assert_eq!(
+            merged.len(),
+            4,
+            "only equivalent requirements may be deduplicated: {merged:?}"
+        );
+        assert!(merged.contains(&"demo-pkg>=1".to_string()));
+        assert!(merged.contains(&"demo-pkg<3".to_string()));
+        assert!(merged.contains(&"demo-pkg[fast]>=2".to_string()));
+        assert!(merged.contains(&"demo-pkg==4; python_version < '0'".to_string()));
     }
 
     #[test]

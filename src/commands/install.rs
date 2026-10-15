@@ -25,6 +25,19 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 
+/// Retain declarations alongside merged requirements for conflict diagnostics.
+fn workspace_requirement_sources(workspace: &Workspace, group: Option<&str>) -> Value {
+    let mut projects: Vec<_> = std::iter::once(&workspace.root)
+        .chain(&workspace.members)
+        .collect();
+    projects.sort_by_key(|project| project.path());
+    json!(projects.into_iter().map(|project| json!({
+        "path": project.path().display().to_string(),
+        "project": project.metadata().name,
+        "requirements": group.map(|name| project.group_dependencies(name)).unwrap_or_else(|| project.dependencies()),
+    })).collect::<Vec<_>>())
+}
+
 /// Resolve dependency specifiers scoped by `--member` (optionally narrowed by
 /// `--group`) or `--group` alone, against an already-discovered workspace (or
 /// the single `project` when no workspace exists). Returns `Ok(None)` when
@@ -88,6 +101,7 @@ fn select_member_or_group_dependencies(
                     "root": ws.root.root().display().to_string(),
                     "selected_members": ws.member_names(),
                     "group": group_name,
+                    "requirement_sources": workspace_requirement_sources(ws, Some(group_name)),
                 })),
             )));
         }
@@ -163,6 +177,7 @@ fn select_install_dependencies(
                 "root": ws.root.root().display().to_string(),
                 "selected_members": ws.member_names(),
                 "group": Value::Null,
+                "requirement_sources": workspace_requirement_sources(ws, None),
             })),
         ));
     }
@@ -385,7 +400,10 @@ pub(crate) async fn install(
         {
             Ok(r) => r,
             Err(e) => {
-                for d in crate::self_heal::diagnostics_for_resolve_error(&requirements, &e) {
+                for mut d in crate::self_heal::diagnostics_for_resolve_error(&requirements, &e) {
+                    if let Some(workspace) = &workspace_detail {
+                        d.context.get_or_insert_with(|| json!({}))["workspace"] = workspace.clone();
+                    }
                     collector.diagnostic(d);
                 }
                 return Err(eyre!(e.to_string()));
@@ -411,7 +429,10 @@ pub(crate) async fn install(
         match resolve_result {
             Ok(r) => r,
             Err(e) => {
-                for d in crate::self_heal::diagnostics_for_resolve_error(&requirements, &e) {
+                for mut d in crate::self_heal::diagnostics_for_resolve_error(&requirements, &e) {
+                    if let Some(workspace) = &workspace_detail {
+                        d.context.get_or_insert_with(|| json!({}))["workspace"] = workspace.clone();
+                    }
                     collector.diagnostic(d);
                 }
                 return Err(eyre!(e.to_string()));
