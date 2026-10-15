@@ -9,6 +9,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Instant;
+mod graph;
+pub use graph::{GraphEvidence, provenance_graph};
 mod run;
 pub use run::{applicable as run_applicable, run};
 

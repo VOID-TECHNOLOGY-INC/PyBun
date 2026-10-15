@@ -47,6 +47,8 @@ pub enum ProgressMode {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
+    /// Explain every known dependency path to a locked package.
+    Why(WhyArgs),
     /// Compare captured Python/dependency/policy state.
     #[command(subcommand, alias = "env")]
     Environment(EnvironmentCommands),
@@ -943,4 +945,9 @@ pub enum EnvironmentCommands {
 pub struct EnvironmentDiffArgs {
     pub before: std::path::PathBuf,
     pub after: std::path::PathBuf,
+}
+
+#[derive(Args, Debug)]
+pub struct WhyArgs {
+    pub package: String,
 }

@@ -707,6 +707,18 @@ reject files over 32 MiB; archive the local log when needed.
 
 ### Comparing captured environments
 
+`pybun why <package> --format=json` explains every known declaration path to a
+locked distribution. MCP `pybun_why` takes a `package` string and uses the same
+service. The uv backend reads frozen, offline `uv workspace metadata`; it does
+not resolve, install, or synchronize an environment. Paths retain markers and
+classify direct, transitive, extra, dependency-group, and workspace provenance.
+They describe lock alternatives rather than the currently active environment.
+Results include backend/version, lock digest, `complete`, and diagnostics. An
+unreachable or unavailable locked variant is explicitly `unknown`. Native
+provenance uses current declarations with its lock and always reports partial
+evidence. Traversal is bounded (10,000 nodes, 100,000 expansions, depth 256,
+1,000 paths); reaching a bound also reports partial evidence.
+
 `pybun environment diff before.json after.json --format=json` compares two JSON
 captures, raw execution receipts, or JSON command envelopes. The MCP equivalent is
 `pybun_environment_diff` with `before` and `after` objects; both use the same
