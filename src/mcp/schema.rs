@@ -10,6 +10,11 @@ use serde_json::json;
 pub(super) fn build_tools_list() -> Vec<Tool> {
     let mut tools = vec![
         Tool {
+            name: "pybun_why".into(),
+            description: "Explain every known path to a package from the active backend's frozen lock graph; does not resolve or sync. Reports conditional/extra/group/workspace and unknown provenance.".into(),
+            input_schema: json!({"type":"object","properties":{"package":{"type":"string"}},"required":["package"],"additionalProperties":false}),
+        },
+        Tool {
             name: "pybun_environment_diff".into(),
             description: "Compare two captured environment states or receipts without mutation; distinguish unavailable evidence and never infer causality.".into(),
             input_schema: json!({"type":"object","properties":{"before":{"type":"object"},"after":{"type":"object"}},"required":["before","after"],"additionalProperties":false}),

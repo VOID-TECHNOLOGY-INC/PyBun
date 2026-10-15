@@ -28,6 +28,28 @@ pub async fn execute(cli: Cli) -> Result<()> {
     collector.event(EventType::CommandStart);
 
     let (command, mut detail) = match &cli.command {
+        Commands::Why(args) => {
+            let result = std::env::current_dir()
+                .map_err(|_| crate::why::WhyError {
+                    code: "E_WHY_PROJECT",
+                    message: "Cannot locate the current project.",
+                })
+                .and_then(|root| crate::why::explain(&root, &args.package));
+            (
+                "why".into(),
+                match result {
+                    Ok(value) => RenderDetail::with_json(crate::why::text(&value), value),
+                    Err(error) => {
+                        collector.error_with_code(error.code,error.message,"Check the active backend, distribution name and lock; update the lock explicitly if needed.");
+                        RenderDetail::error(
+                            error.message,
+                            json!({"error":error.message,"code":error.code}),
+                        )
+                    }
+                },
+            )
+        }
+
         Commands::Environment(crate::cli::EnvironmentCommands::Diff(args)) => {
             let result = crate::environment_diff::read(&args.before).and_then(|before| {
                 crate::environment_diff::read(&args.after)
