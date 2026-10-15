@@ -28,6 +28,26 @@ pub async fn execute(cli: Cli) -> Result<()> {
     collector.event(EventType::CommandStart);
 
     let (command, mut detail) = match &cli.command {
+        Commands::Environment(crate::cli::EnvironmentCommands::Diff(args)) => {
+            let result = crate::environment_diff::read(&args.before).and_then(|before| {
+                crate::environment_diff::read(&args.after)
+                    .and_then(|after| crate::environment_diff::compare(&before, &after))
+            });
+            (
+                "environment diff".into(),
+                match result {
+                    Ok(value) => RenderDetail::with_json(
+                        serde_json::to_string_pretty(&value).unwrap_or_default(),
+                        value,
+                    ),
+                    Err(message) => {
+                        collector.error_with_code("E_ENVIRONMENT_DIFF", &message, "Provide two captured JSON states or receipts; missing evidence remains unavailable.");
+                        RenderDetail::error(&message, json!({"error":message}))
+                    }
+                },
+            )
+        }
+
         Commands::History(args) => (
             "history".into(),
             match crate::history::query(args.since.as_deref()) {

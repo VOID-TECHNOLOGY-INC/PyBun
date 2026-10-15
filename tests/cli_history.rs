@@ -229,3 +229,26 @@ fn text_runs_record_receipts_and_propagate_child_codes() {
     assert_eq!(records[0]["exit_code"], 7);
     assert_eq!(records[1]["exit_code"], 5);
 }
+
+#[test]
+fn system_python_inventory_does_not_claim_user_site_is_complete() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let output = cargo_bin_cmd!("pybun")
+        .current_dir(temp.path())
+        .env("PYBUN_HOME", home.path())
+        .env("PYBUN_HISTORY", "1")
+        .env("PYBUN_BACKEND", "native")
+        .env("PYBUN_PYTHON", "python3")
+        .env("PYTHONUSERBASE", temp.path().join("user-base"))
+        .args(["--format=json", "run", "-c", "pass"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let records = fs::read_to_string(home.path().join("history.jsonl")).unwrap();
+    let record: Value = serde_json::from_str(records.lines().next().unwrap()).unwrap();
+    assert!(
+        record["installed_packages"].is_null(),
+        "System/user-site evidence cannot be treated as a complete empty inventory: {record}"
+    );
+}

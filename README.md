@@ -704,3 +704,31 @@ are never stored. Arbitrary positional secrets cannot be inferred; disable
 history when arguments contain such values. Queries accept positive `s`, `m`,
 `h`, or `d` durations, report corrupt/partial lines without echoing them, and
 reject files over 32 MiB; archive the local log when needed.
+
+### Comparing captured environments
+
+`pybun environment diff before.json after.json --format=json` compares two JSON
+captures, raw execution receipts, or JSON command envelopes. The MCP equivalent is
+`pybun_environment_diff` with `before` and `after` objects; both use the same
+read-only service. To compare CLI history entries, save the chosen `records[]`
+objects from `pybun history --format=json` as the input files. Each input file is
+limited to 4 MiB.
+
+The response reports deterministic `changes` with reason codes for Python,
+backend, lock, package, policy, profile and project evidence. `installed_packages`
+describes interpreter-site inventory; `packages` separately describes a backend's
+resolved lock inventory, which does not prove installation. History captures
+standard isolated-venv site packages by reading distribution metadata without
+importing project packages or running site hooks. System Python and venvs that
+include system/user sites leave the installed inventory unavailable. Executable
+digests are captured when readable; wheel artifact hashes remain unavailable
+unless supplied by a capture.
+
+Missing, masked and explicitly unknown values appear in `unavailable` and warning
+diagnostics. They do not establish equality or a runtime state change. An identical
+partial capture has an empty `changes` array while still reporting missing evidence.
+Array ordering and normalized package spelling do not create differences. Only
+typed, allowlisted metadata is compared; unrestricted environment variables and
+unknown configuration keys are excluded, and existing redaction applies before
+comparison. `causality: "not_inferred"` means the result describes recorded state
+changes and never claims that they caused a program's output to change.
