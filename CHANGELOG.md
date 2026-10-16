@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.2.1
+
+### Features
+- Share doctor remediation and transitive affected-test selection across CLI and MCP (#486, #487).
+- Record redacted local CLI execution history, compare captured environments, and explain backend-owned locked dependency provenance (#488, #489, #490, #491).
+- Support granular sandbox network destinations and executable grants (#492).
+- Enforce frozen administrator-owned MCP policy and atomic session/global/tool rate limits, with structured denials and retry hints (#493, #494).
+- Complete dry-run approval responses with bounded script-source risk estimation and explicit uncertainty (#495).
+
+### Security
+- Fail closed when a backend cannot enforce configured MCP sandbox/network/resource limits; validate derived paths, script locks, flags and resource aliases before side effects (#493).
+- Bound audit snapshots and pre-admission script reads, reject special files and unsafe symlinks, and report partial audit evidence (#493, #494).
+- Update vulnerable Rust dependencies and hydrate OSV advisories before applying severity gates (#482, #483).
+
+### Fixes
+- Preserve existing projects when dependency discovery fails (#482).
+- Evaluate conditional pytest skips in the target interpreter and preserve every workspace member dependency constraint (#484, #485).
+- Preserve child output and exit codes when finalizing Unix text execution receipts (#489).
+
+### Compatibility
+- Protected MCP operations now require operator-owned policy. Unsupported constraint combinations return explicit denials; rate quotas are process-local. Granular sandbox controls remain Python-level guards. See the README MCP and sandbox sections.
+
+### Known limitations
+- uv >=0.12,<0.13 remains the supported adapter range. The scheduled UX workflow currently installs uv 0.13.1 and fails its PEP 723 cases; supported-uv local execution succeeds, while two warm-start ratio thresholds remain unmet. This release does not change those benchmark thresholds.
+
 ## v0.2.0
 
 ### Features
