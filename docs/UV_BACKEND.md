@@ -85,3 +85,17 @@ legacy-format locks explicitly. The obsolete MCP-only name `pybun.lock` and
 custom paths passed to `install --lock` are not auto-discovered; use the canonical
 project filename when consuming project snapshots. The default uv backend
 continues to prefer the applicable `uv.lock`.
+
+
+### Snapshot environment health
+
+`venv_status` describes the project environment (`.pybun/venv`, `.venv`, or
+`venv`, searching ancestors up to the project root). A directory with no Python
+binary is `corrupt`; no project environment is `missing`. `venv_path` identifies
+both healthy and broken project environments.
+
+`python_path` and `python_source` separately describe the selected runtime.
+System Python and explicit `PYBUN_PYTHON` / `PYBUN_ENV` overrides can provide a
+runtime while the project environment is missing or corrupt. Overrides do not
+hide project-health warnings. These fields are available in full context,
+summary context, and the project snapshot resource.
