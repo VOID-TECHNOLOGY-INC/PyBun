@@ -75,3 +75,13 @@ For private registries and index authentication, see [PRIVATE_INDEXES.md](PRIVAT
 Native fixture/compatibility tests explicitly select native; uv contract tests
 select uv and use hermetic fake executables. Network E2E can be enabled with
 `PYBUN_E2E_NETWORK=1 cargo test --test cli_uv_backend`.
+
+
+### Project snapshots and native locks
+
+`pybun_context` and `pybun://project/snapshot` read the canonical native project
+lock `pybun.lockb`, including in summary mode. They report missing, corrupt, or
+legacy-format locks explicitly. The obsolete MCP-only name `pybun.lock` and
+custom paths passed to `install --lock` are not auto-discovered; use the canonical
+project filename when consuming project snapshots. The default uv backend
+continues to prefer the applicable `uv.lock`.
