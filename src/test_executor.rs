@@ -90,20 +90,34 @@ fn run_with_timeout(
     }
 }
 
-// Conditional markers must be evaluated in the target runtime. The sidecar
-// keeps skip outcomes/reasons separate from arbitrary captured test output.
-const CONDITIONAL_MARKER_RUNNER: &str = r#"
+// Outcome data travels through a sidecar, separately from captured user output.
+const PYTEST_REPORT_RUNNER: &str = r#"
 import json, sys, pytest
 class Result:
     value = None
-    def pytest_runtest_logreport(self, report):
+    def record(self, outcome, reason=None, strict_xpass=False, collection_skipped=False):
+        ranks = {"passed": 0, "skipped": 1, "xfail": 2, "xpass": 3, "failed": 4, "error": 5}
+        if self.value is None or ranks[outcome] > ranks[self.value["outcome"]]:
+            self.value = {"outcome": outcome, "skip_reason": reason, "strict_xpass": strict_xpass, "collection_skipped": collection_skipped}
+    def pytest_collectreport(self, report):
         if report.failed:
-            self.value = {"outcome": "failed" if report.when == "call" else "error", "skip_reason": None}
+            self.record("error")
         elif report.skipped:
             reason = report.longrepr[-1] if isinstance(report.longrepr, tuple) else str(report.longrepr)
-            self.value = {"outcome": "xfail" if hasattr(report, "wasxfail") else "skipped", "skip_reason": reason[len("Skipped: "):] if reason.startswith("Skipped: ") else reason}
+            reason = reason[len("Skipped: "):] if reason.startswith("Skipped: ") else reason
+            self.record("skipped", reason, collection_skipped=True)
+    def pytest_runtest_logreport(self, report):
+        if report.failed:
+            strict = report.when == "call" and str(report.longrepr).startswith("[XPASS(strict)]")
+            self.record("failed" if report.when == "call" else "error", strict_xpass=strict)
+        elif report.skipped:
+            reason = getattr(report, "wasxfail", None)
+            if reason is None:
+                reason = report.longrepr[-1] if isinstance(report.longrepr, tuple) else str(report.longrepr)
+                reason = reason[len("Skipped: "):] if reason.startswith("Skipped: ") else reason
+            self.record("xfail" if hasattr(report, "wasxfail") else "skipped", reason)
         elif report.when == "call":
-            self.value = {"outcome": "xpass" if hasattr(report, "wasxfail") else "passed", "skip_reason": None}
+            self.record("xpass" if hasattr(report, "wasxfail") else "passed")
 result = Result()
 code = pytest.main(["-xvs", sys.argv[1]], plugins=[result])
 with open(sys.argv[2], "w", encoding="utf-8") as stream:
@@ -112,43 +126,51 @@ sys.exit(code)
 "#;
 
 #[derive(Deserialize)]
-struct ConditionalMarkerResult {
+struct PytestReport {
     outcome: TestOutcome,
     skip_reason: Option<String>,
+    strict_xpass: bool,
+    collection_skipped: bool,
+}
+
+enum TestProcessOutcome {
+    Completed(Output, PytestReport),
+    TimedOut,
 }
 
 fn run_test_process(
     config: &ExecutorConfig,
     test: &TestItem,
-) -> std::io::Result<(RunOutcome, Option<ConditionalMarkerResult>)> {
+) -> std::io::Result<TestProcessOutcome> {
     let test_spec = format!("{}::{}", test.path.display(), test.name);
-    let mut command = Command::new(&config.python);
-    if !test.markers.iter().any(|marker| marker.name == "skipif") {
-        command.args(["-m", "pytest", "-xvs", &test_spec]);
-        return run_with_timeout(command, config.timeout).map(|outcome| (outcome, None));
-    }
     let report = tempfile::NamedTempFile::new()?;
+    let mut command = Command::new(&config.python);
     command
-        .args(["-c", CONDITIONAL_MARKER_RUNNER, &test_spec])
+        .args(["-c", PYTEST_REPORT_RUNNER, &test_spec])
         .arg(report.path());
-    let outcome = run_with_timeout(command, config.timeout)?;
-    let result = if let RunOutcome::Completed(output) = &outcome {
-        let result: ConditionalMarkerResult =
-            serde_json::from_reader(report.reopen()?).map_err(|_| {
-                std::io::Error::other("pytest did not return a conditional-marker result")
+    match run_with_timeout(command, config.timeout)? {
+        RunOutcome::Completed(output) => {
+            let result: PytestReport = serde_json::from_reader(report.reopen()?).map_err(|_| {
+                std::io::Error::other("pytest did not return a valid structured test report")
             })?;
-        if !output.status.success()
-            && !matches!(result.outcome, TestOutcome::Failed | TestOutcome::Error)
-        {
-            return Err(std::io::Error::other(
-                "pytest failed after conditional-marker evaluation",
-            ));
+            let failed = matches!(result.outcome, TestOutcome::Failed | TestOutcome::Error);
+            // Selecting a node in a skipped module yields pytest's no-collector
+            // or no-tests exit, despite a valid collection skip report.
+            let completed = output.status.success()
+                || (matches!(output.status.code(), Some(4 | 5)) && result.collection_skipped);
+            if completed == failed
+                || (result.collection_skipped && result.outcome != TestOutcome::Skipped)
+                || (result.strict_xpass && result.outcome != TestOutcome::Failed)
+                || matches!(result.outcome, TestOutcome::Timeout)
+            {
+                return Err(std::io::Error::other(
+                    "pytest exit status contradicts its structured test report",
+                ));
+            }
+            Ok(TestProcessOutcome::Completed(output, result))
         }
-        Some(result)
-    } else {
-        None
-    };
-    Ok((outcome, result))
+        RunOutcome::TimedOut => Ok(TestProcessOutcome::TimedOut),
+    }
 }
 
 /// Result of executing a single test
@@ -162,6 +184,9 @@ pub struct TestResult {
     pub line: usize,
     /// Test outcome
     pub outcome: TestOutcome,
+    /// A strict XPASS is a failure, unlike a non-strict XPASS.
+    #[serde(default)]
+    pub strict_xpass: bool,
     /// Duration in milliseconds
     pub duration_ms: u64,
     /// Stdout from the test
@@ -484,6 +509,7 @@ impl TestExecutor {
                 path: test.path.clone(),
                 line: test.line,
                 outcome: TestOutcome::Skipped,
+                strict_xpass: false,
                 duration_ms: 0,
                 stdout: String::new(),
                 stderr: String::new(),
@@ -523,20 +549,16 @@ impl TestExecutor {
         let start = Instant::now();
 
         match run_test_process(config, test) {
-            Ok((RunOutcome::Completed(output), marker)) => {
+            Ok(TestProcessOutcome::Completed(output, report)) => {
                 let duration_ms = start.elapsed().as_millis() as u64;
-                let mut result = Self::parse_test_output(test, output, duration_ms, worker_id);
-                if let Some(marker) = marker {
-                    result.outcome = marker.outcome;
-                    result.skip_reason = marker.skip_reason;
-                }
-                result
+                Self::parse_test_output(test, output, report, duration_ms, worker_id)
             }
-            Ok((RunOutcome::TimedOut, _)) => TestResult {
+            Ok(TestProcessOutcome::TimedOut) => TestResult {
                 name: test.name.clone(),
                 path: test.path.clone(),
                 line: test.line,
                 outcome: TestOutcome::Timeout,
+                strict_xpass: false,
                 duration_ms: start.elapsed().as_millis() as u64,
                 stdout: String::new(),
                 stderr: format!(
@@ -552,6 +574,7 @@ impl TestExecutor {
                 path: test.path.clone(),
                 line: test.line,
                 outcome: TestOutcome::Error,
+                strict_xpass: false,
                 duration_ms: start.elapsed().as_millis() as u64,
                 stdout: String::new(),
                 stderr: format!("Failed to execute test: {}", e),
@@ -567,47 +590,28 @@ impl TestExecutor {
         Self::run_test_static(&self.config, test, worker_id)
     }
 
-    /// Parse pytest output to determine test outcome
+    /// Combine structured pytest outcomes with captured process output.
     fn parse_test_output(
         test: &TestItem,
         output: Output,
+        report: PytestReport,
         duration_ms: u64,
         worker_id: usize,
     ) -> TestResult {
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
-        let outcome = if output.status.success() {
-            if test.xfail {
-                TestOutcome::XPass
-            } else {
-                TestOutcome::Passed
-            }
-        } else {
-            // Check for various failure modes
-            let combined = format!("{}{}", stdout, stderr);
-
-            if combined.contains("SKIPPED") {
-                TestOutcome::Skipped
-            } else if test.xfail && combined.contains("XFAIL") {
-                TestOutcome::XFail
-            } else if combined.contains("ERROR") {
-                TestOutcome::Error
-            } else {
-                TestOutcome::Failed
-            }
-        };
-
         TestResult {
             name: test.name.clone(),
             path: test.path.clone(),
             line: test.line,
-            outcome,
+            outcome: report.outcome,
+            strict_xpass: report.strict_xpass,
             duration_ms,
             stdout,
             stderr,
             worker_id,
-            skip_reason: None,
+            skip_reason: report.skip_reason,
             retries: 0,
         }
     }
@@ -926,7 +930,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn conditional_marker_requires_a_valid_runtime_report() {
+    fn every_test_requires_a_valid_runtime_report() {
         use std::os::unix::fs::PermissionsExt;
         let temp = tempfile::tempdir().unwrap();
         let python = temp.path().join("python");
@@ -936,19 +940,41 @@ mod tests {
             python: python.display().to_string(),
             ..Default::default()
         });
-        let mut test = make_test("test_conditional");
-        test.markers.push(crate::test_discovery::PytestMarker {
-            name: "skipif".into(),
-            args: vec!["False".into()],
-            kwargs: Default::default(),
-        });
+        let test = make_test("test_without_markers");
+
         let result = executor.execute(vec![test]);
         assert_eq!(result.results[0].outcome, TestOutcome::Error);
-        assert!(
-            result.results[0]
-                .stderr
-                .contains("conditional-marker result")
-        );
+        assert!(result.results[0].stderr.contains("structured test report"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn structured_reports_reject_exit_status_contradictions_and_invalid_outcomes() {
+        use std::os::unix::fs::PermissionsExt;
+        for (code, outcome, strict_xpass) in [
+            (1, "passed", false),
+            (0, "failed", false),
+            (0, "passed", true),
+            (0, "timeout", false),
+            (0, "unknown", false),
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let python = temp.path().join("python");
+            let report = serde_json::json!({"outcome": outcome, "skip_reason": null, "strict_xpass": strict_xpass, "collection_skipped": false});
+            std::fs::write(
+                &python,
+                format!("#!/bin/sh\nprintf '%s' '{report}' > \"$4\"\nexit {code}\n"),
+            )
+            .unwrap();
+            std::fs::set_permissions(&python, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let executor = TestExecutor::new(ExecutorConfig {
+                python: python.display().to_string(),
+                ..Default::default()
+            });
+            let result = executor.execute(vec![make_test("test_protocol")]);
+            assert_eq!(result.results[0].outcome, TestOutcome::Error, "{report}");
+            assert_eq!(result.summary.passed, 0);
+        }
     }
 
     #[test]

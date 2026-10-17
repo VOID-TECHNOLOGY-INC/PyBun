@@ -82,6 +82,12 @@ jobs:
         run: cargo fmt --all -- --check
       - name: clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Set up Python for runtime integration tests
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.11"
+      - name: Install pytest for runtime integration tests
+        run: python3 -m pip install pytest
       - name: test
         run: cargo test
 
@@ -210,6 +216,12 @@ jobs:
           cache-on-failure: true
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@4e14a60b36eb62630dcc25614f0be0659ab8830c # cargo-llvm-cov
+      - name: Set up Python for runtime integration tests
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.11"
+      - name: Install pytest for runtime integration tests
+        run: python3 -m pip install pytest
       - name: Generate coverage report
         run: |
           cargo llvm-cov \

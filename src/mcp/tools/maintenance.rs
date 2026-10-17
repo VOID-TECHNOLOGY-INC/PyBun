@@ -1107,10 +1107,11 @@ fn call_test_selected(
         return Ok(json!({
             "summary": {
                 "total": 0, "passed": 0, "failed": 0,
-                "skipped": 0, "errors": 0, "duration_ms": 0
+                "skipped": 0, "errors": 0, "xfail": 0, "xpass": 0, "timeouts": 0, "duration_ms": 0
             },
             "failures": [],
             "passed": [],
+            "results": [],
             "analysis_notes": analysis_notes
         })
         .to_string());
@@ -1136,10 +1137,11 @@ fn call_test_selected(
         return Ok(json!({
             "summary": {
                 "total": 0, "passed": 0, "failed": 0,
-                "skipped": 0, "errors": 0, "duration_ms": 0
+                "skipped": 0, "errors": 0, "xfail": 0, "xpass": 0, "timeouts": 0, "duration_ms": 0
             },
             "failures": [],
             "passed": [],
+            "results": [],
         })
         .to_string());
     }
@@ -1170,9 +1172,9 @@ fn call_test_selected(
         .results
         .iter()
         .filter(|r| {
-            !matches!(
+            matches!(
                 r.outcome,
-                TestOutcome::Passed | TestOutcome::Skipped | TestOutcome::XFail
+                TestOutcome::Failed | TestOutcome::Error | TestOutcome::Timeout
             )
         })
         .map(|r| {
@@ -1217,10 +1219,24 @@ fn call_test_selected(
             "failed": summary.failed,
             "skipped": summary.skipped,
             "errors": summary.errors,
+            "xfail": summary.xfail,
+            "xpass": summary.xpass,
+            "timeouts": summary.timeouts,
             "duration_ms": summary.duration_ms,
         },
         "failures": failures,
         "passed": passed,
+        "results": result.results.iter().map(|r| json!({
+            "name": r.name,
+            "path": r.path,
+            "line": r.line,
+            "outcome": r.outcome,
+            "duration_ms": r.duration_ms,
+            "worker_id": r.worker_id,
+            "skip_reason": r.skip_reason,
+            "strict_xpass": r.strict_xpass,
+            "retries": r.retries,
+        })).collect::<Vec<_>>(),
         "analysis_notes": analysis_notes,
     })
     .to_string())
