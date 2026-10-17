@@ -62,7 +62,9 @@ jobs:
           python ux_gate.py results-ci --criteria ux_criteria.toml --format text
 
       - name: Upload results
+        if: ${{ !cancelled() && hashFiles('scripts/benchmark/results-ci/**') != '' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: benchmark-results-${{ matrix.os }}
           path: scripts/benchmark/results-ci/
+          if-no-files-found: error

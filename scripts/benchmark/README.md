@@ -215,3 +215,13 @@ uv = "/path/to/uv"
 [general]
 timeout_seconds = 600
 ```
+
+
+### CI failure evidence
+
+The benchmark workflow uploads available `results-ci` files even when the UX
+gate fails, with a separate artifact for each platform. Gate failure still
+fails the job. Cancellation skips the upload; if no result files were produced
+(for example, the build failed), the upload is deliberately skipped. If files
+were detected but disappear before upload, the upload fails rather than hiding
+the missing evidence. Text gate failures include measured values and thresholds.

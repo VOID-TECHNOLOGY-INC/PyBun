@@ -184,7 +184,13 @@ def main() -> int:
                 scenario = failure.get("scenario", "?")
                 tool = failure.get("tool", "?")
                 reason = failure.get("reason", "?")
-                print(f"- {scenario} [{tool}]: {reason}")
+                details = ", ".join(
+                    f"{key}={failure[key]}"
+                    for key in ("duration_ms", "max_ms", "baseline_ms", "ratio", "max_ratio")
+                    if key in failure
+                )
+                suffix = f" ({details})" if details else ""
+                print(f"- {scenario} [{tool}]: {reason}{suffix}")
 
     return 0 if outcome.passed else 1
 
