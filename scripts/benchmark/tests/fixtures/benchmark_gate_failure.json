@@ -1,0 +1,6 @@
+{
+  "results": [
+    {"scenario": "B3.1_simple_startup", "tool": "pybun", "duration_ms": 50.0, "success": true},
+    {"scenario": "B3.1_simple_startup", "tool": "python", "duration_ms": 10.0, "success": true}
+  ]
+}

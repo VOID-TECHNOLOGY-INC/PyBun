@@ -1,4 +1,6 @@
 import sys
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -37,6 +39,23 @@ class TestUxGate(unittest.TestCase):
         outcome = ux_gate.evaluate_rules(report, rules)
         self.assertFalse(outcome.passed)
         self.assertEqual(len(outcome.failures), 1)
+
+
+    def test_cli_failure_includes_measured_values_and_threshold(self):
+        fixture = Path(__file__).parent / "fixtures/benchmark_gate_failure.json"
+        with tempfile.TemporaryDirectory() as directory:
+            criteria = Path(directory) / "criteria.toml"
+            criteria.write_text(
+                '[[rules]]\nscenario="B3.1_simple_startup"\ntool="pybun"\n'
+                'compare_to="python"\nmax_ratio=1.5\n'
+            )
+            result = subprocess.run([
+                sys.executable, str(Path(ux_gate.__file__)), str(fixture),
+                "--criteria", str(criteria), "--format", "text"
+            ], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 1)
+        for detail in ["duration_ms=50.0", "baseline_ms=10.0", "ratio=5.0", "max_ratio=1.5"]:
+            self.assertIn(detail, result.stdout)
 
 
 if __name__ == "__main__":
