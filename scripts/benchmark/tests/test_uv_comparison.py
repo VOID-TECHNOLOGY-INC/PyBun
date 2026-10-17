@@ -204,7 +204,7 @@ def test_format_comparison_table_empty():
 # Integration: C4 startup benchmark (dry run with /usr/bin/true)
 # ---------------------------------------------------------------------------
 
-def test_c4_startup_dry_run_produces_results():
+def test_c4_startup_dry_run_produces_results(monkeypatch):
     """C4 should produce BenchResult objects for both tools."""
     # Import the module and inject bench stubs
     import importlib.util
@@ -239,10 +239,14 @@ def test_c4_startup_dry_run_produces_results():
     scenario_config = config["scenarios"]["uv_comparison"]
     base_dir = Path(__file__).parent.parent
 
+    # Keep every discovered executable local and inert, including uvx and hyperfine.
+    monkeypatch.setattr(mod.shutil, "which", lambda _name: None)
     results = mod.uv_comparison_benchmark(config, scenario_config, base_dir)
 
-    # Must return a list (may be empty if tools not found, but type must be correct)
-    assert isinstance(results, list)
+    assert {(r.scenario, r.tool) for r in results if r.scenario == "C4_startup"} == {
+        ("C4_startup", "pybun"), ("C4_startup", "uv"),
+    }
+    assert any(r.scenario == "C3_adhoc" and r.tool == "uvx" for r in results)
     for r in results:
         assert hasattr(r, "scenario")
         assert hasattr(r, "tool")
