@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.2.2
+
+### Fixes
+- Read the canonical native lockfile in MCP context and snapshots (#500).
+- Report project virtual environment health independently of interpreter selection (#501).
+- Preserve structured pytest outcomes, including collection, setup and teardown failures, across native CLI and MCP test results (#502).
+- Revalidate Python version selectors before reusing cached interpreters (#503).
+- Retain benchmark evidence after UX gate failures and include captured process output in diagnostics (#504).
+
+### Security
+- Update zip to 9.0.1 and adapt archive extraction to its API (#480).
+
+### Testing and maintenance
+- Run all Python test suites in CI and isolate offline benchmark tool discovery (#499).
+- Update artifact upload and download GitHub Actions (#481).
+
+### Known limitations
+- Ordinary native MCP `pybun_doctor` still checks the obsolete `pybun.lock` name; tracked in #505.
+- The uv adapter still supports uv >=0.12,<0.13. Existing scheduled benchmark tool-version and warm-start threshold limitations remain as documented for v0.2.1.
+
 ## v0.2.1
 
 ### Features
