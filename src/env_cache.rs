@@ -45,6 +45,18 @@ impl EnvCache {
 
     pub fn get(&self, cwd: &Path) -> Option<PythonEnv> {
         if let Some(entry) = self.entries.get(cwd) {
+            // Resolve current version selectors afresh, including ancestor files.
+            // Version-selected entries are also stale once their selector is removed.
+            if crate::env::find_python_version_file(cwd).is_some()
+                || matches!(
+                    entry.env.source,
+                    crate::env::EnvSource::PythonVersionFile(_)
+                )
+                || (matches!(entry.env.source, crate::env::EnvSource::System)
+                    && entry.env.version.is_some())
+            {
+                return None;
+            }
             // Check existence
             if entry.env.python_path.exists() {
                 // Invalidate cache if a local venv now exists but cached env is System
@@ -78,5 +90,54 @@ impl EnvCache {
                 timestamp,
             },
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::env::EnvSource;
+
+    #[test]
+    fn version_selectors_never_reuse_stale_cached_environments() {
+        let root = tempfile::tempdir().unwrap();
+        let cwd = root.path().join("project");
+        fs::create_dir(&cwd).unwrap();
+        let python = root.path().join("python");
+        fs::write(&python, "interpreter fixture").unwrap();
+        let mut cache = EnvCache::default();
+        let system = PythonEnv {
+            python_path: python.clone(),
+            version: None,
+            source: EnvSource::System,
+        };
+        cache.put(&cwd, &system);
+        assert!(cache.get(&cwd).is_some());
+        let ancestor = root.path().join(".python-version");
+        fs::write(&ancestor, "3.11.11").unwrap();
+        assert!(
+            cache.get(&cwd).is_none(),
+            "new ancestor selector must invalidate system cache"
+        );
+        fs::write(cwd.join(".python-version"), "3.12.12").unwrap();
+        assert!(cache.get(&cwd).is_none());
+        fs::remove_file(cwd.join(".python-version")).unwrap();
+        fs::remove_file(&ancestor).unwrap();
+        for source in [EnvSource::System, EnvSource::PythonVersionFile(ancestor)] {
+            cache.put(
+                &cwd,
+                &PythonEnv {
+                    python_path: python.clone(),
+                    version: Some("3.11.11".into()),
+                    source,
+                },
+            );
+            assert!(
+                cache.get(&cwd).is_none(),
+                "removed selector must invalidate version-selected cache"
+            );
+        }
+        cache.put(&cwd, &system);
+        assert!(cache.get(&cwd).is_some());
     }
 }
