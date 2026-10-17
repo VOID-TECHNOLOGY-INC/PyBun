@@ -815,7 +815,7 @@ pub(crate) fn call_context(args: Value) -> Result<String, String> {
         .flatten();
     let lockfile_path = uv_lock
         .clone()
-        .unwrap_or_else(|| working_dir.join("pybun.lock"));
+        .unwrap_or_else(|| working_dir.join("pybun.lockb"));
     let (lockfile_status, locked_packages, locked_names) = if uv_lock.is_some() {
         match crate::backend::read_lock(&lockfile_path) {
             Ok((_, packages)) => {
@@ -899,21 +899,21 @@ pub(crate) fn call_context(args: Value) -> Result<String, String> {
     if lockfile_status == "missing" {
         doctor_warnings.push(json!({
             "code": "W_LOCKFILE_MISSING",
-            "message": "No pybun.lock found. Run `pybun install` to generate one.",
+            "message": "No pybun.lockb found. Run `pybun install` to generate one.",
             "severity": "info"
         }));
     }
     if lockfile_status == "corrupt" {
         doctor_warnings.push(json!({
             "code": "W_LOCKFILE_CORRUPT",
-            "message": "pybun.lock exists but cannot be parsed. Run `pybun install` to regenerate.",
+            "message": "pybun.lockb exists but cannot be parsed. Run `pybun install` to regenerate.",
             "severity": "error"
         }));
     }
     if lockfile_status == "legacy_format" {
         doctor_warnings.push(json!({
             "code": "W_LOCKFILE_LEGACY_FORMAT",
-            "message": "pybun.lock uses the legacy bincode format. Run `pybun install` to regenerate.",
+            "message": "pybun.lockb uses the legacy bincode format. Run `pybun install` to regenerate.",
             "severity": "warning"
         }));
     }
@@ -1332,5 +1332,27 @@ pub(crate) fn call_upgrade(args: Value) -> Result<String, String> {
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
         Err(format!("pip install {} failed: {}", spec, stderr.trim()))
+    }
+}
+
+#[cfg(test)]
+mod context_lock_tests {
+    use super::*;
+
+    #[test]
+    fn context_summary_reads_the_native_canonical_lock() {
+        let project = tempfile::tempdir().unwrap();
+        let lock = crate::lockfile::Lockfile::new(vec![], vec![]);
+        lock.save_to_path(project.path().join("pybun.lockb"))
+            .unwrap();
+        let value: Value = serde_json::from_str(
+            &call_context(json!({
+                "cwd": project.path(), "summary_only": true
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(value["lockfile_status"], "in_sync");
+        assert_eq!(value["installed_count"], 0);
     }
 }

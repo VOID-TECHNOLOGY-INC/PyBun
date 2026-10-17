@@ -1768,7 +1768,7 @@ fn mcp_resources_list_includes_project_snapshot() {
 fn mcp_pybun_context_corrupt_lockfile_returns_corrupt_status() {
     let project = tempdir().unwrap();
     // Write an invalid lockfile (not valid binary format)
-    std::fs::write(project.path().join("pybun.lock"), b"not a valid lockfile").unwrap();
+    std::fs::write(project.path().join("pybun.lockb"), b"not a valid lockfile").unwrap();
     let call_req = r#"{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_context","arguments":{}}}"#;
     let stdout = mcp_call_in(&[call_req], project.path(), &[]);
     let result = tool_result_json(&stdout, 2);
@@ -2919,4 +2919,100 @@ fn default_root_write_audit_skips_build_artifacts_and_reports_partial_evidence()
                 .unwrap()
                 .contains("large-build-output"))
     );
+}
+
+fn assert_native_lock_snapshot(project: &Path, status: &str, count: usize) {
+    let requests = [
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"pybun_context","arguments":{}}}"#,
+        r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"pybun_context","arguments":{"summary_only":true}}}"#,
+        r#"{"jsonrpc":"2.0","id":4,"method":"resources/read","params":{"uri":"pybun://project/snapshot"}}"#,
+    ];
+    let stdout = mcp_call_in(&requests, project, &[]);
+    let responses = json_rpc_lines(&stdout);
+    let resource = responses.iter().find(|v| v["id"] == 4).unwrap();
+    let snapshot: serde_json::Value =
+        serde_json::from_str(resource["result"]["contents"][0]["text"].as_str().unwrap()).unwrap();
+    for value in [
+        tool_result_json(&stdout, 2),
+        tool_result_json(&stdout, 3),
+        snapshot,
+    ] {
+        assert_eq!(value["lockfile_status"], status, "{value}");
+        assert_eq!(
+            value["doctor_warnings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|warning| warning["code"] == "W_LOCKFILE_MISSING"),
+            status == "missing",
+            "{value}"
+        );
+        if let Some(packages) = value["installed_packages"].as_array() {
+            assert_eq!(packages.len(), count);
+        }
+        if let Some(installed_count) = value["installed_count"].as_u64() {
+            assert_eq!(installed_count, count as u64);
+        }
+    }
+}
+
+#[test]
+fn mcp_native_lock_snapshot_follows_cli_lock_producer() {
+    let project = tempdir().unwrap();
+    fs::write(
+        project.path().join("pyproject.toml"),
+        "[project]\nname = 'demo'\nversion = '1.0'\ndependencies = []\n",
+    )
+    .unwrap();
+    let output = pybun_bin()
+        .current_dir(project.path())
+        .env("PYBUN_HOME", project.path().join("home"))
+        .args(["--format=json", "lock", "--offline"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(project.path().join("pybun.lockb").is_file());
+    assert_native_lock_snapshot(project.path(), "in_sync", 0);
+}
+
+#[test]
+fn mcp_native_lock_snapshot_follows_mcp_install_producer() {
+    let project = tempdir().unwrap();
+    let index = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/index.json");
+    let request = json!({"jsonrpc":"2.0", "id":2, "method":"tools/call", "params":{
+        "name":"pybun_install", "arguments":{"requirements":["app==1.0.0"], "index":index}
+    }})
+    .to_string();
+    let stdout = mcp_call_in(&[&request], project.path(), &[]);
+    assert_eq!(tool_result_json(&stdout, 2)["status"], "resolved");
+    assert!(project.path().join("pybun.lockb").is_file());
+    let lock =
+        pybun::lockfile::Lockfile::load_from_path(project.path().join("pybun.lockb")).unwrap();
+    assert!(!lock.packages.is_empty());
+    assert_native_lock_snapshot(project.path(), "in_sync", lock.packages.len());
+}
+
+#[test]
+fn mcp_native_lock_snapshot_canonical_states_and_ignored_custom_paths() {
+    let project = tempdir().unwrap();
+    let lock = pybun::lockfile::Lockfile::new(vec![], vec![]);
+    for name in ["pybun.lock", "custom.lockb"] {
+        lock.save_to_path(project.path().join(name)).unwrap();
+    }
+    assert_native_lock_snapshot(project.path(), "missing", 0);
+    fs::write(project.path().join("pybun.lockb"), b"corrupt").unwrap();
+    assert_native_lock_snapshot(project.path(), "corrupt", 0);
+    lock.save_to_path(project.path().join("pybun.lockb"))
+        .unwrap();
+    assert_native_lock_snapshot(project.path(), "in_sync", 0);
+    fs::write(
+        project.path().join("pybun.lockb"),
+        b"PYBUNLK1\x01\x00\x00\x00",
+    )
+    .unwrap();
+    assert_native_lock_snapshot(project.path(), "legacy_format", 0);
 }
