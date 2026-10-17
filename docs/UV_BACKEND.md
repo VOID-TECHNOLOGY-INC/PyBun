@@ -110,3 +110,11 @@ not determine results. A strict XPASS is `failed` with `strict_xpass: true` and
 fails the command. Missing, malformed, or contradictory reports are errors.
 CLI and MCP results expose per-test outcomes and skip reasons; MCP summaries
 also include `xfail`, `xpass`, and `timeouts` counts.
+
+
+### Native interpreter discovery cache
+
+Native interpreter discovery reevaluates local and ancestor `.python-version`
+selectors before reusing cached system discovery. Version-selected entries are
+not reused after the selector is removed. Adding, changing, or removing version
+files therefore takes effect without deleting `env_cache.json`.

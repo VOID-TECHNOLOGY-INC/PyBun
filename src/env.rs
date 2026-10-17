@@ -233,7 +233,7 @@ fn find_project_venv(start_dir: &Path) -> Option<PathBuf> {
 }
 
 /// Find .python-version file and read its content.
-fn find_python_version_file(start_dir: &Path) -> Option<(PathBuf, String)> {
+pub(crate) fn find_python_version_file(start_dir: &Path) -> Option<(PathBuf, String)> {
     let mut current = start_dir;
     loop {
         let version_file = current.join(".python-version");
