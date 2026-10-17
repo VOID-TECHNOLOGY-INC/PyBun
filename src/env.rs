@@ -164,7 +164,7 @@ pub fn find_python_env(working_dir: &Path) -> Result<PythonEnv> {
 }
 
 /// Find Python binary inside a virtual environment.
-fn find_venv_python(venv_path: &Path) -> Option<PathBuf> {
+pub(crate) fn find_venv_python(venv_path: &Path) -> Option<PathBuf> {
     // Unix: venv/bin/python
     let unix_python = venv_path.join("bin").join("python");
     if unix_python.exists() {

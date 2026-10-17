@@ -711,8 +711,45 @@ pub(crate) fn read_env_info() -> Result<String, String> {
     }
 }
 
+// Project health is independent of system/explicit interpreter selection.
+fn project_venv_health(
+    working_dir: &std::path::Path,
+) -> (Option<std::path::PathBuf>, &'static str) {
+    for directory in working_dir.ancestors() {
+        let mut broken = None;
+        for name in [".pybun/venv", ".venv", "venv"] {
+            let path = directory.join(name);
+            if path.is_dir() {
+                if let Some(python) = crate::env::find_venv_python(&path) {
+                    let usable = std::fs::metadata(python).is_ok_and(|metadata| {
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            if metadata.permissions().mode() & 0o111 == 0 {
+                                return false;
+                            }
+                        }
+                        metadata.is_file()
+                    });
+                    return (Some(path), if usable { "ok" } else { "corrupt" });
+                }
+                if broken.is_none() {
+                    broken = Some(path);
+                }
+            }
+        }
+        if broken.is_some() {
+            return (broken, "corrupt");
+        }
+        if directory.join("pyproject.toml").exists() {
+            break;
+        }
+    }
+    (None, "missing")
+}
+
 pub(crate) fn call_context(args: Value) -> Result<String, String> {
-    use crate::env::{EnvSource, find_python_env};
+    use crate::env::find_python_env;
     use crate::lockfile::Lockfile;
     use crate::project::Project;
     use std::collections::HashSet;
@@ -759,33 +796,10 @@ pub(crate) fn call_context(args: Value) -> Result<String, String> {
     }
 
     // ── Python / venv info ────────────────────────────────────────────────
-    let (python_version, venv_path, venv_status) = match find_python_env(&working_dir) {
-        Ok(env) => {
-            let is_local = matches!(env.source, EnvSource::ProjectLocal | EnvSource::PybunEnv);
-            let venv = if is_local {
-                env.python_path
-                    .parent()
-                    .and_then(|p| p.parent())
-                    .map(|p| p.display().to_string())
-            } else {
-                None
-            };
-            (env.version, venv, "ok".to_string())
-        }
-        Err(_) => {
-            // Mirror find_project_venv's probe list: directory exists but no Python binary = corrupt.
-            let venv_candidates = [
-                working_dir.join(".pybun").join("venv"),
-                working_dir.join(".venv"),
-                working_dir.join("venv"),
-            ];
-            let status = if venv_candidates.iter().any(|p| p.is_dir()) {
-                "corrupt"
-            } else {
-                "missing"
-            };
-            (None, None, status.to_string())
-        }
+    let (venv_path, venv_status) = project_venv_health(&working_dir);
+    let (python_version, python_path, python_source) = match find_python_env(&working_dir) {
+        Ok(env) => (env.version, Some(env.python_path), Some(env.source)),
+        Err(_) => (None, None, None),
     };
 
     // ── Project declared dependencies ─────────────────────────────────────
@@ -954,6 +968,8 @@ pub(crate) fn call_context(args: Value) -> Result<String, String> {
 
         json!({
             "python_version": python_version,
+            "python_path": python_path,
+            "python_source": python_source,
             "venv_path": venv_path,
             "venv_status": venv_status,
             "lockfile_status": lockfile_status,
@@ -967,6 +983,8 @@ pub(crate) fn call_context(args: Value) -> Result<String, String> {
     } else {
         json!({
             "python_version": python_version,
+            "python_path": python_path,
+            "python_source": python_source,
             "venv_path": venv_path,
             "venv_status": venv_status,
             "lockfile_status": lockfile_status,
@@ -1354,5 +1372,50 @@ mod context_lock_tests {
         .unwrap();
         assert_eq!(value["lockfile_status"], "in_sync");
         assert_eq!(value["installed_count"], 0);
+    }
+}
+
+#[cfg(test)]
+mod context_venv_tests {
+    use super::project_venv_health;
+
+    #[test]
+    fn project_health_checks_local_and_ancestor_environments() {
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(project.path().join("pyproject.toml"), "[project]").unwrap();
+        let nested = project.path().join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        assert_eq!(project_venv_health(&nested), (None, "missing"));
+        let venv = project.path().join(".venv");
+        std::fs::create_dir_all(&venv).unwrap();
+        assert_eq!(
+            project_venv_health(&nested),
+            (Some(venv.clone()), "corrupt")
+        );
+        std::fs::create_dir_all(venv.join("bin")).unwrap();
+        std::fs::write(venv.join("bin/python"), "python fixture").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                project_venv_health(&nested),
+                (Some(venv.clone()), "corrupt")
+            );
+            std::fs::set_permissions(
+                venv.join("bin/python"),
+                std::fs::Permissions::from_mode(0o755),
+            )
+            .unwrap();
+        }
+        assert_eq!(project_venv_health(&nested), (Some(venv), "ok"));
+        #[cfg(unix)]
+        {
+            let higher = project.path().join(".pybun/venv");
+            std::fs::create_dir_all(higher.join("bin")).unwrap();
+            std::fs::write(higher.join("bin/python"), "not executable").unwrap();
+            assert_eq!(project_venv_health(&nested), (Some(higher), "corrupt"));
+        }
+        std::fs::write(nested.join("pyproject.toml"), "[project]").unwrap();
+        assert_eq!(project_venv_health(&nested), (None, "missing"));
     }
 }

@@ -1730,10 +1730,14 @@ fn mcp_pybun_context_venv_status_missing_in_empty_dir() {
     let stdout = mcp_call_in(&[call_req], project.path(), &[]);
     let result = tool_result_json(&stdout, 2);
 
-    let venv_status = result["venv_status"].as_str().unwrap_or("");
+    assert_eq!(result["venv_status"], "missing", "{result}");
+    assert!(result["venv_path"].is_null());
     assert!(
-        ["ok", "missing", "corrupt"].contains(&venv_status),
-        "venv_status must be one of ok/missing/corrupt. Got: {venv_status}"
+        result["doctor_warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|warning| warning["code"] == "W_VENV_MISSING")
     );
 }
 
@@ -3015,4 +3019,107 @@ fn mcp_native_lock_snapshot_canonical_states_and_ignored_custom_paths() {
     )
     .unwrap();
     assert_native_lock_snapshot(project.path(), "legacy_format", 0);
+}
+
+#[test]
+#[cfg(unix)]
+fn mcp_context_project_venv_health_is_independent_of_interpreter_selection() {
+    use std::os::unix::fs::PermissionsExt;
+    let project = tempdir().unwrap();
+    fs::write(
+        project.path().join("pyproject.toml"),
+        "[project]\nname='health'\nversion='1.0'\n",
+    )
+    .unwrap();
+    let tools = tempdir().unwrap();
+    let system = tools.path().join("python3");
+    fs::write(&system, "#!/bin/sh\necho Python 3.12.0\n").unwrap();
+    fs::set_permissions(&system, fs::Permissions::from_mode(0o755)).unwrap();
+    let requests = [
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"pybun_context","arguments":{}}}"#,
+        r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"pybun_context","arguments":{"summary_only":true}}}"#,
+        r#"{"jsonrpc":"2.0","id":4,"method":"resources/read","params":{"uri":"pybun://project/snapshot"}}"#,
+    ];
+    let venv = project.path().join(".venv");
+    for (state, source, override_kind) in [
+        ("missing", "System", ""),
+        ("corrupt", "System", ""),
+        ("ok", "ProjectLocal", ""),
+        ("missing", "PybunPython", "binary"),
+        ("missing", "PybunEnv", "venv"),
+        ("corrupt", "PybunPython", "binary"),
+        ("corrupt", "PybunEnv", "venv"),
+    ] {
+        if venv.exists() {
+            fs::remove_dir_all(&venv).unwrap();
+        }
+        if state != "missing" {
+            fs::create_dir_all(&venv).unwrap();
+        }
+        if state == "ok" {
+            fs::create_dir_all(venv.join("bin")).unwrap();
+            fs::copy(&system, venv.join("bin/python")).unwrap();
+            fs::write(venv.join("pyvenv.cfg"), "version = 3.12.0\n").unwrap();
+        }
+        let external = tools.path().join("external");
+        fs::create_dir_all(external.join("bin")).unwrap();
+        fs::copy(&system, external.join("bin/python")).unwrap();
+        let envs = [
+            ("PATH", tools.path().as_os_str().to_owned()),
+            (
+                "PYBUN_PYTHON",
+                if override_kind == "binary" {
+                    system.as_os_str().to_owned()
+                } else {
+                    OsString::new()
+                },
+            ),
+            (
+                "PYBUN_ENV",
+                if override_kind == "venv" {
+                    external.as_os_str().to_owned()
+                } else {
+                    OsString::new()
+                },
+            ),
+        ];
+        let stdout = mcp_call_in(&requests, project.path(), &envs);
+        let responses = json_rpc_lines(&stdout);
+        let resource = responses.iter().find(|value| value["id"] == 4).unwrap();
+        let snapshot: serde_json::Value =
+            serde_json::from_str(resource["result"]["contents"][0]["text"].as_str().unwrap())
+                .unwrap();
+        for value in [
+            tool_result_json(&stdout, 2),
+            tool_result_json(&stdout, 3),
+            snapshot,
+        ] {
+            assert_eq!(value["venv_status"], state, "{value}");
+            assert_eq!(value["python_source"], source, "{value}");
+            assert!(value["python_path"].is_string(), "{value}");
+            if state == "missing" {
+                assert!(value["venv_path"].is_null(), "{value}");
+            } else {
+                assert_eq!(
+                    value["venv_path"],
+                    venv.canonicalize().unwrap().display().to_string(),
+                    "{value}"
+                );
+            }
+            for (code, present) in [
+                ("W_VENV_MISSING", state == "missing"),
+                ("W_VENV_CORRUPT", state == "corrupt"),
+            ] {
+                assert_eq!(
+                    value["doctor_warnings"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|w| w["code"] == code),
+                    present,
+                    "{value}"
+                );
+            }
+        }
+    }
 }
