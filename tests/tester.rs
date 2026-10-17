@@ -2386,3 +2386,135 @@ fn conditional_skip_inherits_class_conditions() {
         }
     }
 }
+
+#[test]
+fn native_structured_pytest_outcomes_match_runtime_reports() {
+    let project = TempDir::new().unwrap();
+    fs::write(
+        project.path().join("test_outcomes.py"),
+        include_str!("fixtures/pytest-outcomes/outcomes.py"),
+    )
+    .unwrap();
+    let output = pybun()
+        .current_dir(project.path())
+        .env("PYBUN_BACKEND", "native")
+        .env_remove("PYBUN_ENV")
+        .env("PYBUN_PYTHON", "python3")
+        .args([
+            "--format=json",
+            "test",
+            "--backend=pybun",
+            "test_outcomes.py",
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let summary = &value["detail"]["summary"];
+    for (field, count) in [
+        ("total", 12),
+        ("passed", 2),
+        ("failed", 2),
+        ("skipped", 2),
+        ("xfail", 3),
+        ("xpass", 1),
+        ("errors", 2),
+    ] {
+        assert_eq!(summary[field], count, "{value}");
+    }
+    let results = value["detail"]["results"].as_array().unwrap();
+    for (name, outcome) in [
+        ("test_pass", "passed"),
+        ("test_assertion_failure", "failed"),
+        ("test_runtime_skip", "skipped"),
+        ("test_fixture_skip", "skipped"),
+        ("test_expected_failure", "xfail"),
+        ("test_inactive_xfail", "passed"),
+        ("test_active_xfail", "xfail"),
+        ("test_unexpected_pass", "xpass"),
+        ("test_strict_unexpected_pass", "failed"),
+        ("test_setup_error", "error"),
+        ("test_teardown_error", "error"),
+        ("test_runtime_xfail", "xfail"),
+    ] {
+        let result = results.iter().find(|r| r["name"] == name).unwrap();
+        assert_eq!(result["outcome"], outcome, "{result}");
+        if name == "test_strict_unexpected_pass" {
+            assert_eq!(result["strict_xpass"], true);
+        }
+        if name == "test_runtime_skip" {
+            assert_eq!(result["skip_reason"], "runtime reason");
+        }
+        if name == "test_fixture_skip" {
+            assert_eq!(result["skip_reason"], "fixture reason");
+        }
+    }
+}
+
+#[test]
+fn native_structured_pytest_reports_collection_errors() {
+    let project = TempDir::new().unwrap();
+    fs::write(
+        project.path().join("test_collect.py"),
+        "raise RuntimeError('collection failure')\ndef test_example():\n    pass\n",
+    )
+    .unwrap();
+    let output = pybun()
+        .current_dir(project.path())
+        .env("PYBUN_BACKEND", "native")
+        .env_remove("PYBUN_ENV")
+        .env("PYBUN_PYTHON", "python3")
+        .args([
+            "--format=json",
+            "test",
+            "--backend=pybun",
+            "test_collect.py",
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["detail"]["summary"]["errors"], 1, "{value}");
+    assert_eq!(value["detail"]["results"][0]["outcome"], "error", "{value}");
+}
+
+#[test]
+fn native_structured_pytest_preserves_collection_skips() {
+    for statement in [
+        "pytest.skip('module reason', allow_module_level=True)",
+        "pytest.importorskip('pybun_missing_dependency_456')",
+    ] {
+        let project = TempDir::new().unwrap();
+        fs::write(
+            project.path().join("test_collect_skip.py"),
+            format!("import pytest\n{statement}\ndef test_example():\n    pass\n"),
+        )
+        .unwrap();
+        let output = pybun()
+            .current_dir(project.path())
+            .env("PYBUN_BACKEND", "native")
+            .env_remove("PYBUN_ENV")
+            .env("PYBUN_PYTHON", "python3")
+            .args([
+                "--format=json",
+                "test",
+                "--backend=pybun",
+                "test_collect_skip.py",
+            ])
+            .output()
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert!(output.status.success(), "{value}");
+        assert_eq!(value["detail"]["summary"]["skipped"], 1, "{value}");
+        assert!(
+            value["detail"]["results"][0]["skip_reason"]
+                .as_str()
+                .unwrap()
+                .contains(if statement.contains("importorskip") {
+                    "pybun_missing_dependency_456"
+                } else {
+                    "module reason"
+                })
+        );
+    }
+}

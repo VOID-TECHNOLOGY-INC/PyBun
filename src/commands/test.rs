@@ -1101,6 +1101,7 @@ fn run_tests_native(
                 "duration_ms": r.duration_ms,
                 "worker_id": r.worker_id,
                 "skip_reason": r.skip_reason,
+                "strict_xpass": r.strict_xpass,
                 "retries": r.retries,
             })
         })

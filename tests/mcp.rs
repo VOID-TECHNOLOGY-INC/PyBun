@@ -1824,57 +1824,16 @@ fn mcp_project_snapshot_resource_returns_context_data() {
 // pybun_test MCP tool tests (Issue #246)
 // ---------------------------------------------------------------------------
 
-/// Create a minimal fake venv whose `bin/python` can run test functions without
-/// requiring pytest to be installed in the host environment.
-///
-/// The fake python:
-/// - Intercepts `python -m pytest -xvs FILE::TEST` calls
-/// - Executes the target function via importlib and exits 0/1 based on outcome
-/// - Delegates every other invocation to the real `python3`
-///
-/// Returns the venv root path that should be passed as `PYBUN_ENV`.
+/// Create a venv wrapper that delegates to the host Python, including real pytest.
 #[cfg(unix)]
 fn make_pytest_venv(dir: &Path) -> std::path::PathBuf {
     use std::os::unix::fs::PermissionsExt;
-
     let venv = dir.join("venv");
     let bin = venv.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
-
-    // Minimal test runner: loads file with importlib, calls the function, exits 0/1.
-    let runner = bin.join("_pytest_runner.py");
-    std::fs::write(
-        &runner,
-        r#"import sys, importlib.util
-file_path, test_name = sys.argv[1], sys.argv[2]
-spec = importlib.util.spec_from_file_location("_test_mod", file_path)
-mod = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(mod)
-fn = getattr(mod, test_name)
-try:
-    fn()
-    sys.exit(0)
-except Exception as e:
-    print(f"FAILED {test_name}: {e}", file=sys.stderr)
-    sys.exit(1)
-"#,
-    )
-    .unwrap();
-
-    // Shell wrapper that intercepts `python -m pytest -xvs FILE::TEST`.
-    let runner_path = runner.display().to_string();
-    let python_script = format!(
-        r#"#!/bin/sh
-if [ "$1" = "-m" ] && [ "$2" = "pytest" ]; then
-    SPEC="$4"
-    FILE="${{SPEC%%::*}}"
-    TEST="${{SPEC##*::}}"
-    exec python3 "{runner_path}" "$FILE" "$TEST"
-else
-    exec python3 "$@"
-fi
-"#
-    );
+    let python_script = r#"#!/bin/sh
+exec python3 "$@"
+"#;
     let python_bin = bin.join("python");
     std::fs::write(&python_bin, python_script).unwrap();
     let mut perms = std::fs::metadata(&python_bin).unwrap().permissions();
@@ -3121,5 +3080,82 @@ fn mcp_context_project_venv_health_is_independent_of_interpreter_selection() {
                 );
             }
         }
+    }
+}
+
+#[test]
+fn mcp_native_structured_pytest_outcomes_match_runtime_reports() {
+    let project = tempdir().unwrap();
+    fs::write(
+        project.path().join("test_outcomes.py"),
+        include_str!("fixtures/pytest-outcomes/outcomes.py"),
+    )
+    .unwrap();
+    let request = r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"pybun_test","arguments":{"paths":["test_outcomes.py"]}}}"#;
+    let stdout = mcp_call_in(
+        &[request],
+        project.path(),
+        &[
+            ("PYBUN_PYTHON", OsString::from("python3")),
+            ("PYBUN_ENV", OsString::new()),
+        ],
+    );
+    let value = tool_result_json(&stdout, 2);
+    for (field, count) in [
+        ("total", 12),
+        ("passed", 2),
+        ("failed", 2),
+        ("skipped", 2),
+        ("xfail", 3),
+        ("xpass", 1),
+        ("errors", 2),
+    ] {
+        assert_eq!(value["summary"][field], count, "{value}");
+    }
+    let results = value["results"].as_array().unwrap();
+    assert_eq!(
+        results
+            .iter()
+            .find(|r| r["name"] == "test_runtime_skip")
+            .unwrap()["skip_reason"],
+        "runtime reason"
+    );
+    let strict = results
+        .iter()
+        .find(|r| r["name"] == "test_strict_unexpected_pass")
+        .unwrap();
+    assert_eq!(strict["outcome"], "failed");
+    assert_eq!(strict["strict_xpass"], true);
+}
+
+#[test]
+fn mcp_native_structured_pytest_empty_and_collection_skip_results() {
+    let project = tempdir().unwrap();
+    let request = r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"pybun_test","arguments":{}}}"#;
+    let envs = [
+        ("PYBUN_PYTHON", OsString::from("python3")),
+        ("PYBUN_ENV", OsString::new()),
+    ];
+    let stdout = mcp_call_in(&[request], project.path(), &envs);
+    let value = tool_result_json(&stdout, 2);
+    assert_eq!(value["results"], json!([]), "{value}");
+    for field in ["xfail", "xpass", "timeouts"] {
+        assert_eq!(value["summary"][field], 0, "{value}");
+    }
+    for statement in [
+        "pytest.skip('module reason', allow_module_level=True)",
+        "pytest.importorskip('pybun_missing_dependency_456')",
+    ] {
+        fs::write(
+            project.path().join("test_collect_skip.py"),
+            format!("import pytest\n{statement}\ndef test_example():\n    pass\n"),
+        )
+        .unwrap();
+        let stdout = mcp_call_in(&[request], project.path(), &envs);
+        let value = tool_result_json(&stdout, 2);
+        assert_eq!(value["summary"]["skipped"], 1, "{value}");
+        assert_eq!(value["summary"]["errors"], 0, "{value}");
+        assert_eq!(value["results"][0]["outcome"], "skipped", "{value}");
+        assert!(value["results"][0]["skip_reason"].is_string(), "{value}");
     }
 }
