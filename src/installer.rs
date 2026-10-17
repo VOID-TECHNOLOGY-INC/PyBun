@@ -193,7 +193,7 @@ pub fn install_wheel_with_scheme(wheel_path: &Path, scheme: &InstallScheme) -> R
 
     for i in 0..archive.len() {
         let mut entry = archive.by_index(i)?;
-        let (rel_str, rel_path) = validated_wheel_entry_path(entry.name())?;
+        let (rel_str, rel_path) = validated_wheel_entry_path(&entry.name()?)?;
 
         let (outpath, is_script) = if let Some(rest) = rel_str.strip_prefix(&data_prefix) {
             if rest.is_empty() {
@@ -876,7 +876,7 @@ fn sync_install_directory(_path: &Path) -> io::Result<()> {
 fn find_dist_info_prefix<R: io::Read + io::Seek>(archive: &mut ZipArchive<R>) -> Result<String> {
     for i in 0..archive.len() {
         let entry = archive.by_index(i)?;
-        let name = entry.name();
+        let name = entry.name()?;
         if let Some(idx) = name.find(".dist-info/")
             && !name[..idx].contains('/')
         {
