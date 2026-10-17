@@ -99,3 +99,14 @@ System Python and explicit `PYBUN_PYTHON` / `PYBUN_ENV` overrides can provide a
 runtime while the project environment is missing or corrupt. Overrides do not
 hide project-health warnings. These fields are available in full context,
 summary context, and the project snapshot resource.
+
+
+### Native test outcome reports
+
+The native test executor reads pytest report hooks through a JSON sidecar for
+all executed tests. Runtime and fixture skips, XFAIL, non-strict XPASS, and
+collection/setup/teardown errors retain their pytest outcomes; printed words do
+not determine results. A strict XPASS is `failed` with `strict_xpass: true` and
+fails the command. Missing, malformed, or contradictory reports are errors.
+CLI and MCP results expose per-test outcomes and skip reasons; MCP summaries
+also include `xfail`, `xpass`, and `timeouts` counts.
