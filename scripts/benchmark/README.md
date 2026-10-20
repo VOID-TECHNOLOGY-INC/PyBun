@@ -18,6 +18,30 @@ python bench.py --dry-run
 python bench.py --list
 ```
 
+## UX Gate の再現
+
+`Benchmark UX Gate` は PyBun の uv アダプターが対応する `uv==0.12.13` を使います。
+最新版を無条件に入れると、対応範囲外の uv によって PEP 723 ケースが失敗します。
+
+```bash
+python -m pip install "uv==0.12.13"
+cargo build --release
+cd scripts/benchmark
+python bench.py -s run,uv_comparison --config config_ci.toml --format json -o results-ci
+python ux_gate.py results-ci --criteria ux_criteria.toml --format text
+```
+
+子プロセスの非ゼロ終了・タイムアウト・起動失敗・warmup失敗は、JSON の
+`success: false` と `error` に記録され、ランナーも非ゼロで終了します。
+診断は stdout/stderr をそれぞれ最大500文字保存します。失敗結果と C3 の参考値は
+勝敗集計から除外し、C系の比較表は両ツールが成功した組だけを表示します。
+C系は中央値と p95 を記録し、PEP 723 の warm/cold ケースにはそれぞれ独立した
+一時キャッシュ・スクリプトを使います。C5 は `pybun install` と `uv lock` の比較であり、
+同一処理のオフライン依存解決比較ではありません。
+
+失敗時も生成済みJSONはCIのArtifactに保存されます。実行の成否と性能閾値は別に確認し、
+有効な計測で残る閾値超過を調査してください。
+
 ## シナリオ
 
 | ID | 名前 | 説明 |
