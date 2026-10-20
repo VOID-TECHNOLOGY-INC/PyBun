@@ -10,6 +10,17 @@ ROOT = Path(__file__).resolve().parents[3]
 
 
 class BenchmarkWorkflowTests(unittest.TestCase):
+    def test_uv_is_pinned_to_supported_adapter_version(self):
+        import shlex
+        workflow = yaml.safe_load((ROOT / ".github/workflows/benchmark.yml").read_text())
+        steps = workflow["jobs"]["ux-gate"]["steps"]
+        install = next(step for step in steps if step.get("name") == "Install uv")
+        tokens = shlex.split(install["run"])
+        self.assertIn("uv==0.12.13", tokens)
+        self.assertIn("uv --version", install["run"])
+        adapter = (ROOT / "src/backend.rs").read_text()
+        self.assertIn("supports uv >=0.12.0,<0.13.0", adapter)
+
     def test_results_upload_runs_after_failure_only_when_files_exist(self):
         workflow = yaml.safe_load((ROOT / ".github/workflows/benchmark.yml").read_text())
         steps = workflow["jobs"]["ux-gate"]["steps"]

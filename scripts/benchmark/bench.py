@@ -197,6 +197,16 @@ def compute_stats(samples: list[float], trim_ratio: float = 0.0) -> tuple[float,
     return avg, min_t, max_t, stddev, len(trimmed)
 
 
+def _process_diagnostic(message: str, stdout: bytes | str | None, stderr: bytes | str | None) -> str:
+    """Keep bounded output from both channels, including stdout-only CLI errors."""
+    parts = [message]
+    for label, output in (("stdout", stdout), ("stderr", stderr)):
+        if output:
+            text = output.decode("utf-8", errors="replace") if isinstance(output, bytes) else output
+            parts.append(f"{label}: {text[:500]}")
+    return "\n".join(parts)
+
+
 def measure_command(
     cmd: list[str],
     warmup: int = 1,
@@ -205,6 +215,7 @@ def measure_command(
     env: dict | None = None,
     cwd: str | None = None,
     trim_ratio: float = 0.0,
+    record_samples: bool = False,
 ) -> BenchResult:
     """
     Execute command multiple times and measure performance.
@@ -216,23 +227,27 @@ def measure_command(
     if env:
         run_env.update(env)
     
-    # Warmup runs
-    for _ in range(warmup):
-        try:
-            subprocess.run(
-                cmd,
-                capture_output=True,
-                timeout=timeout,
-                env=run_env,
-                cwd=cwd,
-            )
-        except Exception:
-            pass
-    
-    # Timed runs
-    times: list[float] = []
     success = True
     last_error = None
+
+    # A failed warmup must not become a successful benchmark afterward.
+    for _ in range(warmup):
+        try:
+            result = subprocess.run(cmd, capture_output=True, timeout=timeout, env=run_env, cwd=cwd, check=False)
+            if result.returncode != 0:
+                success = False
+                last_error = _process_diagnostic(
+                    f"warmup exit code {result.returncode}", result.stdout, result.stderr,
+                )
+        except subprocess.TimeoutExpired as error:
+            success = False
+            last_error = _process_diagnostic(f"warmup Timeout after {timeout}s", error.stdout, error.stderr)
+        except OSError as error:
+            success = False
+            last_error = f"warmup: {error}"
+
+    # Timed runs
+    times: list[float] = []
     
     for _ in range(iterations):
         start = time.perf_counter()
@@ -248,13 +263,15 @@ def measure_command(
             
             if result.returncode != 0:
                 success = False
-                last_error = result.stderr.decode("utf-8", errors="replace")[:500]
+                last_error = _process_diagnostic(
+                    f"exit code {result.returncode}", result.stdout, result.stderr,
+                )
             
             times.append((end - start) * 1000)  # Convert to ms
             
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as error:
             success = False
-            last_error = f"Timeout after {timeout}s"
+            last_error = _process_diagnostic(f"Timeout after {timeout}s", error.stdout, error.stderr)
             times.append(timeout * 1000)
         except Exception as e:
             success = False
@@ -274,6 +291,8 @@ def measure_command(
         success=success,
         error=last_error if not success else None,
     )
+    if record_samples:
+        result.metadata["samples_ms"] = times
     if trim_ratio > 0 and trimmed_count:
         result.metadata["trim_ratio"] = trim_ratio
         result.metadata["trimmed_iterations"] = trimmed_count
@@ -437,11 +456,11 @@ def generate_summary(results: list[BenchResult]) -> dict:
     
     for scenario, scenario_results in by_scenario.items():
         pybun_result = next((r for r in scenario_results if r.tool == "pybun"), None)
-        if not pybun_result:
+        if not pybun_result or not pybun_result.success or pybun_result.metadata.get("reference_only"):
             continue
         
         for r in scenario_results:
-            if r.tool == "pybun" or not r.success:
+            if r.tool == "pybun" or not r.success or r.metadata.get("reference_only"):
                 continue
             
             if pybun_result.duration_ms < r.duration_ms:

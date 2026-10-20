@@ -8,7 +8,7 @@ Scenarios:
 - C1  : PEP 723 script execution — cold and warm cache
 - C2  : Package installation / lock — cold, warm, incremental
 - C3  : Ad-hoc tool execution (pybun x vs uvx) — reference only
-- C5  : Dependency resolution, offline index
+- C5  : Small-project preparation (pybun install vs uv lock)
 
 Notes:
   C3 (pybun x) currently delegates to uv internally. Timings are
@@ -17,14 +17,15 @@ Notes:
 
 from __future__ import annotations
 
-import os
 import shutil
 import statistics
 import subprocess
-import sys
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from bench import BenchResult, find_tool, measure_command
 
 # Injected by bench.py: scenario, BenchResult, find_tool, is_tool_enabled,
 #                        measure_command, measure_with_hyperfine
@@ -134,19 +135,20 @@ def format_comparison_table(rows: list[dict[str, Any]]) -> str:
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+
 def _measure(
     cmd: list[str],
     config: dict,
     scenario_id: str,
     tool: str,
     *,
-    warmup: int = 1,
-    iterations: int = 10,
-    trim_ratio: float = 0.05,
+    warmup: int = 0,
+    iterations: int = 1,
     cwd: str | None = None,
     env: dict | None = None,
-) -> "BenchResult":  # type: ignore[name-defined]  # injected
-    """Run measure_command and tag the result."""
+    cv_threshold: float = 0.15,
+) -> BenchResult:  # noqa: F821  # injected
+    """Use the shared success/diagnostic contract while preserving C-series medians."""
     result = measure_command(  # noqa: F821  # injected
         cmd,
         warmup=warmup,
@@ -154,457 +156,227 @@ def _measure(
         timeout=config.get("general", {}).get("timeout_seconds", 120),
         cwd=cwd,
         env=env,
-        trim_ratio=trim_ratio,
+        record_samples=True,
     )
     result.scenario = scenario_id
     result.tool = tool
+    samples = result.metadata.pop("samples_ms")
+    if samples:
+        result.duration_ms = round(compute_median(samples), 2)
+        result.metadata.update(
+            p50_ms=result.duration_ms,
+            p95_ms=round(compute_percentile(samples, 95), 2),
+            cv_stable=is_cv_stable(samples, cv_threshold),
+        )
     return result
-
-
-def _collect_samples(
-    cmd: list[str],
-    n: int,
-    timeout: int,
-    cwd: str | None = None,
-) -> list[float]:
-    """Collect raw wall-clock samples (ms) without warmup."""
-    import time
-    samples: list[float] = []
-    for _ in range(n):
-        t0 = time.perf_counter()
-        try:
-            subprocess.run(cmd, capture_output=True, timeout=timeout, cwd=cwd)
-        except Exception:
-            pass
-        samples.append((time.perf_counter() - t0) * 1000.0)
-    return samples
 
 
 def _get_tool_version(path: str | None) -> str:
     if not path:
         return "unknown"
     try:
-        r = subprocess.run([path, "--version"], capture_output=True, text=True, timeout=5)
-        return r.stdout.strip() or r.stderr.strip() or "unknown"
-    except Exception:
+        r = subprocess.run(
+            [path, "--version"], capture_output=True, text=True, timeout=5, check=False
+        )
+        return (
+            (r.stdout.strip() or r.stderr.strip()) if r.returncode == 0 else "unknown"
+        )
+    except (OSError, subprocess.TimeoutExpired):
         return "unknown"
 
 
-# ---------------------------------------------------------------------------
-# Scenario: uv_comparison
-# ---------------------------------------------------------------------------
-
-def uv_comparison_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
-    """Run the full PyBun vs uv head-to-head benchmark suite."""
-    results: list[BenchResult] = []  # noqa: F821  # injected
-    comparison_rows: list[dict] = []
-
+def uv_comparison_benchmark(
+    config: dict, scenario_config: dict, base_dir: Path
+) -> list:
+    """Measure real subprocess outcomes, then compare only successful pairs."""
     general = config.get("general", {})
     iterations = scenario_config.get("iterations", general.get("iterations", 10))
     warmup = scenario_config.get("warmup", general.get("warmup", 1))
-    trim_ratio = scenario_config.get("trim_ratio", general.get("trim_ratio", 0.05))
     cv_threshold = scenario_config.get("cv_threshold", 0.15)
-    timeout = general.get("timeout_seconds", 120)
     dry_run = config.get("dry_run", False)
-    verbose = config.get("verbose", False)
-
-    pybun_path = find_tool("pybun", config)  # noqa: F821  # injected
-    uv_path = find_tool("uv", config)        # noqa: F821  # injected
-
-    # Record tool versions in metadata (attached to first result's metadata later)
+    pybun_path = find_tool("pybun", config)  # noqa: F821
+    uv_path = find_tool("uv", config)  # noqa: F821
     tool_versions = {
         "pybun": _get_tool_version(pybun_path),
         "uv": _get_tool_version(uv_path),
     }
+    results: list[BenchResult] = []  # noqa: F821
 
-    if verbose:
-        print(f"  pybun: {pybun_path} ({tool_versions['pybun']})")
-        print(f"  uv:    {uv_path} ({tool_versions['uv']})")
+    def record(
+        scenario_id: str,
+        tool: str,
+        cmd: list[str],
+        *,
+        count: int = iterations,
+        prepare: int = warmup,
+        cwd: str | None = None,
+        env: dict | None = None,
+        note: str | None = None,
+    ) -> None:
+        if dry_run:
+            print(f"  Would run: {cmd} (×{count})")
+            return
+        result = _measure(
+            cmd,
+            config,
+            scenario_id,
+            tool,
+            iterations=count,
+            warmup=prepare,
+            cwd=cwd,
+            env=env,
+            cv_threshold=cv_threshold,
+        )
+        if note:
+            result.metadata["note"] = note
+        if scenario_id == "C3_adhoc":
+            result.metadata.update(
+                reference_only=True, reason="pybun x delegates to uv internally"
+            )
+        results.append(result)
+        status = "ok" if result.success else f"FAILED: {result.error}"
+        print(f"  {scenario_id} {tool}: p50={result.duration_ms:.1f}ms ({status})")
 
-    if not pybun_path:
-        print("[SKIP] pybun not found in PATH or config")
-    if not uv_path:
-        print("[SKIP] uv not found in PATH — install via https://docs.astral.sh/uv/")
-
-    # -----------------------------------------------------------------------
-    # C4: Binary startup overhead
-    # -----------------------------------------------------------------------
     print("\n--- C4: Binary Startup Overhead ---")
-
-    pybun_startup_samples: list[float] = []
-    uv_startup_samples: list[float] = []
-
-    if pybun_path and not dry_run:
-        cmd = [pybun_path, "--version"]
-        if verbose:
-            print(f"  pybun cmd: {cmd}")
-        # Warmup
-        for _ in range(warmup):
-            subprocess.run(cmd, capture_output=True, timeout=timeout)
-        pybun_startup_samples = _collect_samples(cmd, iterations, timeout)
-        pybun_p50 = compute_median(pybun_startup_samples)
-        pybun_p95 = compute_percentile(pybun_startup_samples, 95)
-        r = BenchResult(  # noqa: F821
-            scenario="C4_startup",
-            tool="pybun",
-            duration_ms=round(pybun_p50, 2),
-            min_ms=round(min(pybun_startup_samples), 2),
-            max_ms=round(max(pybun_startup_samples), 2),
-            stddev_ms=round(statistics.stdev(pybun_startup_samples) if len(pybun_startup_samples) > 1 else 0.0, 2),
-            iterations=iterations,
-            success=True,
-            metadata={
-                "p50_ms": round(pybun_p50, 2),
-                "p95_ms": round(pybun_p95, 2),
-                "cv_stable": is_cv_stable(pybun_startup_samples, cv_threshold),
-                "tool_versions": tool_versions,
-            },
-        )
-        results.append(r)
-        print(f"  pybun --version: p50={pybun_p50:.1f}ms p95={pybun_p95:.1f}ms")
-    elif dry_run and pybun_path:
-        print(f"  Would run: {pybun_path} --version  (×{iterations})")
-
-    if uv_path and not dry_run:
-        cmd = [uv_path, "--version"]
-        if verbose:
-            print(f"  uv cmd: {cmd}")
-        for _ in range(warmup):
-            subprocess.run(cmd, capture_output=True, timeout=timeout)
-        uv_startup_samples = _collect_samples(cmd, iterations, timeout)
-        uv_p50 = compute_median(uv_startup_samples)
-        uv_p95 = compute_percentile(uv_startup_samples, 95)
-        r = BenchResult(  # noqa: F821
-            scenario="C4_startup",
-            tool="uv",
-            duration_ms=round(uv_p50, 2),
-            min_ms=round(min(uv_startup_samples), 2),
-            max_ms=round(max(uv_startup_samples), 2),
-            stddev_ms=round(statistics.stdev(uv_startup_samples) if len(uv_startup_samples) > 1 else 0.0, 2),
-            iterations=iterations,
-            success=True,
-            metadata={
-                "p50_ms": round(uv_p50, 2),
-                "p95_ms": round(uv_p95, 2),
-                "cv_stable": is_cv_stable(uv_startup_samples, cv_threshold),
-            },
-        )
-        results.append(r)
-        print(f"  uv --version:    p50={uv_p50:.1f}ms p95={uv_p95:.1f}ms")
-    elif dry_run and uv_path:
-        print(f"  Would run: {uv_path} --version  (×{iterations})")
-
-    if pybun_startup_samples and uv_startup_samples:
-        comparison_rows.append(build_comparison_row(
-            "C4_startup",
-            compute_median(pybun_startup_samples),
-            compute_percentile(pybun_startup_samples, 95),
-            compute_median(uv_startup_samples),
-            compute_percentile(uv_startup_samples, 95),
-            "binary startup: `pybun --version` vs `uv --version`",
-        ))
-
-    # -----------------------------------------------------------------------
-    # C1: PEP 723 script execution — warm cache
-    # -----------------------------------------------------------------------
-    print("\n--- C1_warm: PEP 723 Script (warm cache) ---")
-
-    pep723_fixture = base_dir / "fixtures" / "pep723.py"
-    if not pep723_fixture.exists():
-        print(f"  [SKIP] fixture not found: {pep723_fixture}")
-    else:
-        pybun_warm_samples: list[float] = []
-        uv_warm_samples: list[float] = []
-
-        if pybun_path and not dry_run:
-            cmd_pybun = [pybun_path, "run", str(pep723_fixture)]
-            # Warmup to populate pybun env-cache
-            for _ in range(max(1, warmup)):
-                subprocess.run(cmd_pybun, capture_output=True, timeout=timeout)
-            pybun_warm_samples = _collect_samples(cmd_pybun, iterations, timeout)
-            pybun_p50 = compute_median(pybun_warm_samples)
-            pybun_p95 = compute_percentile(pybun_warm_samples, 95)
-            r = BenchResult(  # noqa: F821
-                scenario="C1_warm",
-                tool="pybun",
-                duration_ms=round(pybun_p50, 2),
-                min_ms=round(min(pybun_warm_samples), 2),
-                max_ms=round(max(pybun_warm_samples), 2),
-                stddev_ms=round(statistics.stdev(pybun_warm_samples) if len(pybun_warm_samples) > 1 else 0.0, 2),
-                iterations=iterations,
-                success=True,
-                metadata={"p50_ms": round(pybun_p50, 2), "p95_ms": round(pybun_p95, 2),
-                          "cv_stable": is_cv_stable(pybun_warm_samples, cv_threshold)},
-            )
-            results.append(r)
-            print(f"  pybun run (warm): p50={pybun_p50:.1f}ms p95={pybun_p95:.1f}ms")
-        elif dry_run and pybun_path:
-            print(f"  Would run: {pybun_path} run {pep723_fixture}  (×{iterations})")
-
-        if uv_path and not dry_run:
-            # uv run --with resolves deps inline (no separate install step)
-            cmd_uv = [uv_path, "run", "--with", "requests", str(pep723_fixture)]
-            for _ in range(max(1, warmup)):
-                subprocess.run(cmd_uv, capture_output=True, timeout=timeout)
-            uv_warm_samples = _collect_samples(cmd_uv, iterations, timeout)
-            uv_p50 = compute_median(uv_warm_samples)
-            uv_p95 = compute_percentile(uv_warm_samples, 95)
-            r = BenchResult(  # noqa: F821
-                scenario="C1_warm",
-                tool="uv",
-                duration_ms=round(uv_p50, 2),
-                min_ms=round(min(uv_warm_samples), 2),
-                max_ms=round(max(uv_warm_samples), 2),
-                stddev_ms=round(statistics.stdev(uv_warm_samples) if len(uv_warm_samples) > 1 else 0.0, 2),
-                iterations=iterations,
-                success=True,
-                metadata={"p50_ms": round(uv_p50, 2), "p95_ms": round(uv_p95, 2),
-                          "cv_stable": is_cv_stable(uv_warm_samples, cv_threshold)},
-            )
-            results.append(r)
-            print(f"  uv run (warm):    p50={uv_p50:.1f}ms p95={uv_p95:.1f}ms")
-        elif dry_run and uv_path:
-            print(f"  Would run: {uv_path} run --with requests {pep723_fixture}  (×{iterations})")
-
-        if pybun_warm_samples and uv_warm_samples:
-            comparison_rows.append(build_comparison_row(
-                "C1_warm",
-                compute_median(pybun_warm_samples),
-                compute_percentile(pybun_warm_samples, 95),
-                compute_median(uv_warm_samples),
-                compute_percentile(uv_warm_samples, 95),
-                "PEP 723 warm cache: `pybun run script.py` vs `uv run --with requests script.py`",
-            ))
-
-    # -----------------------------------------------------------------------
-    # C1_cold: PEP 723 script execution — cold cache
-    # -----------------------------------------------------------------------
-    print("\n--- C1_cold: PEP 723 Script (cold cache) ---")
-
-    if not pep723_fixture.exists():
-        print(f"  [SKIP] fixture not found: {pep723_fixture}")
-    else:
-        pybun_cold_samples: list[float] = []
-        uv_cold_samples: list[float] = []
-
-        pybun_cache_dir = Path.home() / ".cache" / "pybun" / "pep723-envs"
-
-        if pybun_path and not dry_run:
-            # Clear pybun PEP 723 env cache before each cold measurement
-            if pybun_cache_dir.exists():
-                shutil.rmtree(pybun_cache_dir, ignore_errors=True)
-            cmd_pybun = [pybun_path, "run", str(pep723_fixture)]
-            samples: list[float] = []
-            for _ in range(1):  # single cold run (expensive)
-                if pybun_cache_dir.exists():
-                    shutil.rmtree(pybun_cache_dir, ignore_errors=True)
-                samples.extend(_collect_samples(cmd_pybun, 1, timeout))
-            pybun_cold_samples = samples
-            pybun_p50 = compute_median(pybun_cold_samples)
-            pybun_p95 = compute_percentile(pybun_cold_samples, 95)
-            r = BenchResult(  # noqa: F821
-                scenario="C1_cold",
-                tool="pybun",
-                duration_ms=round(pybun_p50, 2),
-                min_ms=round(min(pybun_cold_samples), 2),
-                max_ms=round(max(pybun_cold_samples), 2),
-                stddev_ms=0.0,
-                iterations=1,
-                success=True,
-                metadata={"p50_ms": round(pybun_p50, 2), "p95_ms": round(pybun_p95, 2),
-                          "note": "single cold run"},
-            )
-            results.append(r)
-            print(f"  pybun run (cold): {pybun_p50:.1f}ms")
-        elif dry_run and pybun_path:
-            print(f"  Would clear {pybun_cache_dir} and run: {pybun_path} run {pep723_fixture}")
-
-        if uv_path and not dry_run:
-            uv_cache_dir = Path(os.environ.get("UV_CACHE_DIR", Path.home() / ".cache" / "uv"))
-            # Use a temp UV_CACHE_DIR to simulate cold cache without deleting user's real cache
-            with tempfile.TemporaryDirectory(prefix="pybun_bench_uv_cold_") as tmp_cache:
-                cmd_uv = [uv_path, "run", "--with", "requests", str(pep723_fixture)]
-                env_cold = {"UV_CACHE_DIR": tmp_cache}
-                run_env = os.environ.copy()
-                run_env.update(env_cold)
-                import time
-                t0 = time.perf_counter()
-                subprocess.run(cmd_uv, capture_output=True, env=run_env, timeout=timeout)
-                uv_cold_samples = [(time.perf_counter() - t0) * 1000.0]
-            uv_p50 = compute_median(uv_cold_samples)
-            uv_p95 = compute_percentile(uv_cold_samples, 95)
-            r = BenchResult(  # noqa: F821
-                scenario="C1_cold",
-                tool="uv",
-                duration_ms=round(uv_p50, 2),
-                min_ms=round(min(uv_cold_samples), 2),
-                max_ms=round(max(uv_cold_samples), 2),
-                stddev_ms=0.0,
-                iterations=1,
-                success=True,
-                metadata={"p50_ms": round(uv_p50, 2), "p95_ms": round(uv_p95, 2),
-                          "note": "single cold run with isolated UV_CACHE_DIR"},
-            )
-            results.append(r)
-            print(f"  uv run (cold):    {uv_p50:.1f}ms")
-        elif dry_run and uv_path:
-            print(f"  Would run: UV_CACHE_DIR=<tmp> {uv_path} run --with requests {pep723_fixture}")
-
-        if pybun_cold_samples and uv_cold_samples:
-            comparison_rows.append(build_comparison_row(
-                "C1_cold",
-                compute_median(pybun_cold_samples),
-                compute_percentile(pybun_cold_samples, 95),
-                compute_median(uv_cold_samples),
-                compute_percentile(uv_cold_samples, 95),
-                "PEP 723 cold cache (network + install included)",
-            ))
-
-    # -----------------------------------------------------------------------
-    # C5: Dependency resolution — startup-only (offline index)
-    # -----------------------------------------------------------------------
-    print("\n--- C5: Dependency Resolution (offline) ---")
-
-    small_fixture = base_dir / "fixtures" / "small_project" / "pyproject.toml"
-    if not small_fixture.exists():
-        print(f"  [SKIP] small_project fixture not found: {small_fixture}")
-    else:
-        pybun_res_samples: list[float] = []
-        uv_res_samples: list[float] = []
-
-        if pybun_path and not dry_run:
-            with tempfile.TemporaryDirectory(prefix="pybun_bench_res_") as tmpdir:
-                import shutil as _shutil
-                _shutil.copy(small_fixture, Path(tmpdir) / "pyproject.toml")
-                cmd = [pybun_path, "install"]
-                pybun_res_samples = _collect_samples(cmd, min(3, iterations), timeout, cwd=tmpdir)
-            pybun_p50 = compute_median(pybun_res_samples)
-            pybun_p95 = compute_percentile(pybun_res_samples, 95)
-            r = BenchResult(  # noqa: F821
-                scenario="C5_resolution",
-                tool="pybun",
-                duration_ms=round(pybun_p50, 2),
-                min_ms=round(min(pybun_res_samples), 2),
-                max_ms=round(max(pybun_res_samples), 2),
-                stddev_ms=round(statistics.stdev(pybun_res_samples) if len(pybun_res_samples) > 1 else 0.0, 2),
-                iterations=min(3, iterations),
-                success=True,
-                metadata={"p50_ms": round(pybun_p50, 2), "p95_ms": round(pybun_p95, 2)},
-            )
-            results.append(r)
-            print(f"  pybun install (small project): p50={pybun_p50:.1f}ms")
-        elif dry_run and pybun_path:
-            print(f"  Would run: {pybun_path} install  (in {small_fixture.parent})")
-
-        if uv_path and not dry_run:
-            with tempfile.TemporaryDirectory(prefix="pybun_bench_uv_res_") as tmpdir:
-                import shutil as _shutil
-                _shutil.copy(small_fixture, Path(tmpdir) / "pyproject.toml")
-                cmd = [uv_path, "lock"]
-                uv_res_samples = _collect_samples(cmd, min(3, iterations), timeout, cwd=tmpdir)
-            uv_p50 = compute_median(uv_res_samples)
-            uv_p95 = compute_percentile(uv_res_samples, 95)
-            r = BenchResult(  # noqa: F821
-                scenario="C5_resolution",
-                tool="uv",
-                duration_ms=round(uv_p50, 2),
-                min_ms=round(min(uv_res_samples), 2),
-                max_ms=round(max(uv_res_samples), 2),
-                stddev_ms=round(statistics.stdev(uv_res_samples) if len(uv_res_samples) > 1 else 0.0, 2),
-                iterations=min(3, iterations),
-                success=True,
-                metadata={"p50_ms": round(uv_p50, 2), "p95_ms": round(uv_p95, 2)},
-            )
-            results.append(r)
-            print(f"  uv lock (small project):       p50={uv_p50:.1f}ms")
-        elif dry_run and uv_path:
-            print(f"  Would run: {uv_path} lock  (in {small_fixture.parent})")
-
-        if pybun_res_samples and uv_res_samples:
-            comparison_rows.append(build_comparison_row(
-                "C5_resolution",
-                compute_median(pybun_res_samples),
-                compute_percentile(pybun_res_samples, 95),
-                compute_median(uv_res_samples),
-                compute_percentile(uv_res_samples, 95),
-                "dependency resolution: `pybun install` vs `uv lock` (small project)",
-            ))
-
-    # -----------------------------------------------------------------------
-    # C3: Ad-hoc tool execution (reference only)
-    # -----------------------------------------------------------------------
-    print("\n--- C3: Ad-hoc Tool Execution (⚠️ reference only) ---")
-    print("  NOTE: pybun x delegates to uv internally — timings are reference, not speed comparisons.")
-
-    adhoc_pkg = scenario_config.get("adhoc_package", "ruff")
-    adhoc_args = ["--version"]
-
-    pybun_adhoc_samples: list[float] = []
-    uvx_adhoc_samples: list[float] = []
-
-    uvx_path = shutil.which("uvx") or uv_path
-
-    if pybun_path and not dry_run:
-        cmd = [pybun_path, "x", adhoc_pkg] + adhoc_args
-        for _ in range(max(1, warmup)):
-            subprocess.run(cmd, capture_output=True, timeout=timeout)
-        pybun_adhoc_samples = _collect_samples(cmd, min(5, iterations), timeout)
-        p50 = compute_median(pybun_adhoc_samples)
-        r = BenchResult(  # noqa: F821
-            scenario="C3_adhoc",
-            tool="pybun",
-            duration_ms=round(p50, 2),
-            min_ms=round(min(pybun_adhoc_samples), 2),
-            max_ms=round(max(pybun_adhoc_samples), 2),
-            stddev_ms=round(statistics.stdev(pybun_adhoc_samples) if len(pybun_adhoc_samples) > 1 else 0.0, 2),
-            iterations=min(5, iterations),
-            success=True,
-            metadata={
-                "p50_ms": round(p50, 2),
-                "reference_only": True,
-                "reason": "pybun x delegates to uv internally",
-            },
-        )
-        results.append(r)
-        print(f"  pybun x {adhoc_pkg} (warm, reference): p50={p50:.1f}ms")
-    elif dry_run and pybun_path:
-        print(f"  Would run: {pybun_path} x {adhoc_pkg} --version  (×{min(5, iterations)})")
-
-    if uvx_path and not dry_run:
-        if uvx_path == uv_path:
-            cmd = [uv_path, "tool", "run", adhoc_pkg] + adhoc_args
+    for tool, path in (("pybun", pybun_path), ("uv", uv_path)):
+        if path:
+            record("C4_startup", tool, [path, "--version"])
         else:
-            cmd = [uvx_path, adhoc_pkg] + adhoc_args
-        for _ in range(max(1, warmup)):
-            subprocess.run(cmd, capture_output=True, timeout=timeout)
-        uvx_adhoc_samples = _collect_samples(cmd, min(5, iterations), timeout)
-        p50 = compute_median(uvx_adhoc_samples)
-        r = BenchResult(  # noqa: F821
-            scenario="C3_adhoc",
-            tool="uvx",
-            duration_ms=round(p50, 2),
-            min_ms=round(min(uvx_adhoc_samples), 2),
-            max_ms=round(max(uvx_adhoc_samples), 2),
-            stddev_ms=round(statistics.stdev(uvx_adhoc_samples) if len(uvx_adhoc_samples) > 1 else 0.0, 2),
-            iterations=min(5, iterations),
-            success=True,
-            metadata={"p50_ms": round(p50, 2), "reference_only": True},
+            print(f"  [SKIP] {tool} not found")
+
+    # Never remove real user caches or generate lockfiles beside repository fixtures.
+    with tempfile.TemporaryDirectory(prefix="pybun_bench_compare_") as tmp:
+        root = Path(tmp)
+        fixture = base_dir / "fixtures" / "pep723.py"
+        script = root / "pep723.py"
+        if fixture.exists():
+            shutil.copyfile(fixture, script)
+            print("\n--- C1: PEP 723 Script (warm / cold cache) ---")
+            for tool, path in (("pybun", pybun_path), ("uv", uv_path)):
+                if not path:
+                    continue
+                cmd = (
+                    [path, "run"]
+                    + (["--with", "requests"] if tool == "uv" else [])
+                    + [str(script)]
+                )
+                for cache_state in ("warm", "cold"):
+                    cache = root / tool / cache_state
+                    env = {
+                        "UV_CACHE_DIR": str(cache / "uv"),
+                        "PYBUN_HOME": str(cache / "pybun"),
+                    }
+                    # Separate script paths keep warm-run lockfiles out of cold setup.
+                    case_dir = cache / "script"
+                    case_dir.mkdir(parents=True)
+                    case_script = case_dir / "pep723.py"
+                    shutil.copyfile(script, case_script)
+                    case_cmd = cmd[:-1] + [str(case_script)]
+                    record(
+                        f"C1_{cache_state}",
+                        tool,
+                        case_cmd,
+                        count=iterations if cache_state == "warm" else 1,
+                        prepare=max(1, warmup) if cache_state == "warm" else 0,
+                        cwd=str(case_dir),
+                        env=env,
+                        note=f"{cache_state} cache with isolated UV_CACHE_DIR and PYBUN_HOME",
+                    )
+        else:
+            print(f"  [SKIP] fixture not found: {fixture}")
+
+        print("\n--- C5: Small-project dependency preparation ---")
+        project = base_dir / "fixtures" / "small_project" / "pyproject.toml"
+        if project.exists():
+            for tool, path, operation in (
+                ("pybun", pybun_path, "install"),
+                ("uv", uv_path, "lock"),
+            ):
+                if not path:
+                    continue
+                cwd = root / tool / "resolution"
+                cwd.mkdir(parents=True)
+                shutil.copyfile(project, cwd / "pyproject.toml")
+                record(
+                    "C5_resolution",
+                    tool,
+                    [path, operation],
+                    count=min(3, iterations),
+                    prepare=0,
+                    cwd=str(cwd),
+                    env={
+                        "UV_CACHE_DIR": str(cwd / "uv-cache"),
+                        "PYBUN_HOME": str(cwd / "pybun-home"),
+                    },
+                    note="pybun install vs uv lock; includes preparation, not equivalent offline resolution",
+                )
+        else:
+            print(f"  [SKIP] small_project fixture not found: {project}")
+
+        print("\n--- C3: Ad-hoc Tool Execution (reference only) ---")
+        package = scenario_config.get("adhoc_package", "ruff")
+        uvx_path = shutil.which("uvx")
+        for tool, adhoc_cmd in (
+            (
+                "pybun",
+                [pybun_path, "x", package, "--", "--version"] if pybun_path else None,
+            ),
+            (
+                "uvx",
+                (
+                    [uvx_path, package, "--version"]
+                    if uvx_path
+                    else (
+                        [uv_path, "tool", "run", package, "--version"]
+                        if uv_path
+                        else None
+                    )
+                ),
+            ),
+        ):
+            if adhoc_cmd:
+                cwd = root / tool / "adhoc"
+                cwd.mkdir(parents=True)
+                record(
+                    "C3_adhoc",
+                    tool,
+                    adhoc_cmd,
+                    count=min(5, iterations),
+                    prepare=max(1, warmup),
+                    cwd=str(cwd),
+                    env={
+                        "UV_CACHE_DIR": str(cwd / "uv-cache"),
+                        "PYBUN_HOME": str(cwd / "pybun-home"),
+                    },
+                )
+
+    indexed = {(r.scenario, r.tool): r for r in results}
+    comparisons = []
+    notes = {
+        "C4_startup": "binary startup: pybun --version vs uv --version",
+        "C1_warm": "PEP 723 warm cache",
+        "C1_cold": "PEP 723 cold cache (network + install included)",
+        "C5_resolution": "pybun install vs uv lock (includes preparation)",
+    }
+    for scenario_id, note in notes.items():
+        pybun = indexed.get((scenario_id, "pybun"))
+        uv = indexed.get((scenario_id, "uv"))
+        if pybun and uv and pybun.success and uv.success:
+            comparisons.append(
+                build_comparison_row(
+                    scenario_id,
+                    pybun.duration_ms,
+                    pybun.metadata["p95_ms"],
+                    uv.duration_ms,
+                    uv.metadata["p95_ms"],
+                    note,
+                )
+            )
+    if results:
+        results[0].metadata.update(
+            tool_versions=tool_versions, comparison_table=comparisons
         )
-        results.append(r)
-        print(f"  uvx {adhoc_pkg} (warm, reference):     p50={p50:.1f}ms")
-    elif dry_run and uvx_path:
-        print(f"  Would run: uvx {adhoc_pkg} --version  (×{min(5, iterations)})")
-
-    # -----------------------------------------------------------------------
-    # Summary table
-    # -----------------------------------------------------------------------
-    if comparison_rows and not dry_run:
-        print("\n" + "=" * 60)
-        print("PyBun vs uv — Comparison Summary")
-        print("=" * 60)
-        print(format_comparison_table(comparison_rows))
-        # Attach comparison rows to first result metadata for JSON consumers
-        if results:
-            results[0].metadata["comparison_table"] = comparison_rows
-
+    if comparisons:
+        print("\nPyBun vs uv — Comparison Summary")
+        print(format_comparison_table(comparisons))
     return results

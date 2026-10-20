@@ -266,3 +266,82 @@ def test_report_has_comparison_key():
     assert "winner" in row
     assert "pybun_p50_ms" in row
     assert "uv_p50_ms" in row
+
+
+@pytest.mark.parametrize("mode", ["nonzero", "timeout", "missing", "warmup"])
+def test_failed_commands_are_not_comparisons(tmp_path, monkeypatch, mode):
+    import bench
+    bench.load_scenarios(_BENCH_DIR)
+    scenario = bench.SCENARIOS["uv_comparison"]
+    stub = tmp_path / "pybun"
+    state = tmp_path / "seen"
+    stub.write_text(
+        f"#!{sys.executable}\n"
+        "import sys,time\nfrom pathlib import Path\n"
+        "if sys.argv[1:] == ['--version']: print('pybun test'); sys.exit(0)\n"
+        + ({
+            "nonzero": "print('stdout-only-failure');sys.exit(7)\n",
+            "timeout": "print('before-timeout',flush=True);time.sleep(10)\n",
+            "missing": "print('unused')\n",
+            "warmup": f"p=Path({str(state)!r}); seen=p.exists();p.touch(); print('warmup-failure');sys.exit(0 if seen else 8)\n",
+        }[mode])
+    )
+    stub.chmod(0o755)
+    # Neither discover nor invoke a real uvx during this test.
+    monkeypatch.setattr(bench.shutil, "which", lambda _: None)
+    if mode == "missing":
+        # find_tool checks existence; simulate an executable removed after discovery.
+        monkeypatch.setitem(scenario.__globals__, "find_tool", lambda tool, config: str(tmp_path / "missing") if tool == "pybun" else "/usr/bin/true")
+    config = {
+        "general": {"iterations": 1, "warmup": 1, "timeout_seconds": 0.1 if mode == "timeout" else 10},
+        "paths": {"pybun": str(stub), "uv": "/usr/bin/true"},
+    }
+    results = scenario(config, {}, _BENCH_DIR)
+    failed = [r for r in results if not r.success]
+    assert failed
+    if mode in {"nonzero", "timeout", "missing"}:
+        assert {r.scenario for r in failed} >= {"C1_warm", "C1_cold", "C5_resolution", "C3_adhoc"}
+    assert all(r.error for r in failed)
+    if mode == "nonzero":
+        assert all('stdout-only-failure' in r.error for r in failed)
+    comparisons = results[0].metadata.get("comparison_table", [])
+    failed_scenarios = {r.scenario for r in failed}
+    assert not any(row["scenario"] in failed_scenarios for row in comparisons)
+    assert not list(_BENCH_DIR.glob("fixtures/pep723.py.lock"))
+
+
+def test_benchmark_cli_reports_failure_and_exits_nonzero(tmp_path):
+    import subprocess
+    stub = tmp_path / 'pybun'
+    stub.write_text(f"#!{sys.executable}\nimport sys\nprint('probe-failure')\nsys.exit(0 if sys.argv[1:] == ['--version'] else 7)\n")
+    stub.chmod(0o755)
+    # Ensure optional uvx discovery also resolves to an inert executable.
+    (tmp_path / 'uvx').symlink_to('/usr/bin/true')
+    config = tmp_path / 'config.toml'
+    config.write_text(f'[general]\niterations=1\nwarmup=0\ntimeout_seconds=10\n[paths]\npybun="{stub}"\nuv="/usr/bin/true"\n[scenarios.uv_comparison]\niterations=1\nwarmup=0\n')
+    import os
+    env = dict(os.environ, PATH=str(tmp_path))
+    output = tmp_path / 'results'
+    run = subprocess.run([sys.executable, str(_BENCH_DIR / 'bench.py'), '-s', 'uv_comparison', '--config', str(config), '--format', 'json', '-o', str(output)], capture_output=True, text=True, env=env)
+    assert run.returncode == 1, run.stdout + run.stderr
+    report = json.loads(next(output.glob('benchmark_*.json')).read_text())
+    assert report['summary']['failed'] >= 4
+    assert any('probe-failure' in (r.get('error') or '') for r in report['results'])
+
+
+def test_c3_passes_tool_flags_after_separator(tmp_path, monkeypatch):
+    import bench
+    bench.load_scenarios(_BENCH_DIR)
+    stub = tmp_path / "pybun"
+    stub.write_text(
+        f"#!{sys.executable}\nimport sys\n"
+        "if sys.argv[1:2] == ['x'] and sys.argv[1:] != ['x','ruff','--','--version']: sys.exit(2)\n"
+    )
+    stub.chmod(0o755)
+    monkeypatch.setattr(bench.shutil, "which", lambda _: None)
+    config = {
+        "general": {"iterations": 1, "warmup": 0},
+        "paths": {"pybun": str(stub), "uv": "/usr/bin/true"},
+    }
+    results = bench.SCENARIOS["uv_comparison"](config, {}, _BENCH_DIR)
+    assert next(r for r in results if r.scenario == "C3_adhoc" and r.tool == "pybun").success
