@@ -284,6 +284,156 @@ fn mcp_tools_call_doctor_detects_corrupt_pypi_cache() {
     );
 }
 
+/// Regression test for issue #505: `pybun_doctor` must recognize the canonical
+/// native project lock written by `pybun lock` (`pybun.lockb`).
+#[test]
+fn mcp_doctor_recognizes_native_cli_lock_output() {
+    let project = tempdir().unwrap();
+    fs::write(
+        project.path().join("pyproject.toml"),
+        "[project]\nname = \"doctor-probe\"\nversion = \"1.0\"\ndependencies = []\n",
+    )
+    .unwrap();
+
+    let output = pybun_bin()
+        .current_dir(project.path())
+        .args(["--format=json", "lock", "--offline"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "pybun lock should succeed. stdout: {} stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let lock_path = project.path().join("pybun.lockb");
+    assert!(
+        lock_path.is_file(),
+        "pybun lock should produce {}",
+        lock_path.display()
+    );
+
+    let check = doctor_lockfile_check(project.path());
+    assert_eq!(check["status"], "ok", "doctor should accept: {check}");
+    assert_eq!(
+        check["path"],
+        project
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("pybun.lockb")
+            .display()
+            .to_string()
+    );
+    assert!(
+        check["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("pybun.lockb"),
+        "doctor should name the canonical lock: {check}"
+    );
+}
+
+/// Regression test for issue #505: the lock written by `pybun_install` must be
+/// the same one `pybun_doctor` recognizes in the same native project.
+#[test]
+fn mcp_doctor_recognizes_mcp_install_lock_output() {
+    let project = tempdir().unwrap();
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("manifest dir");
+    let index_path = Path::new(&manifest_dir)
+        .join("tests")
+        .join("fixtures")
+        .join("index.json");
+    let index_str = index_path.display().to_string().replace('\\', "\\\\");
+
+    let install_req = format!(
+        r#"{{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{{"name":"pybun_install","arguments":{{"requirements":["app==1.0.0"],"index":"{}"}}}}}}"#,
+        index_str
+    );
+    let stdout = mcp_call_in(&[install_req.as_str()], project.path(), &[]);
+    let install = tool_result_json(&stdout, 2);
+    assert!(
+        !install.get("error").is_some_and(|error| !error.is_null()),
+        "pybun_install should succeed: {install}"
+    );
+
+    let lock_path = project.path().join("pybun.lockb");
+    assert!(
+        lock_path.is_file(),
+        "pybun_install should produce {}: {install}",
+        lock_path.display()
+    );
+
+    let check = doctor_lockfile_check(project.path());
+    assert_eq!(check["status"], "ok", "doctor should accept: {check}");
+    assert_eq!(
+        check["path"],
+        project
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("pybun.lockb")
+            .display()
+            .to_string()
+    );
+}
+
+/// Regression test for issue #505: a project without a lock reports the
+/// canonical filename instead of the obsolete MCP-only `pybun.lock`.
+#[test]
+fn mcp_doctor_reports_missing_canonical_lock_filename() {
+    let project = tempdir().unwrap();
+
+    let check = doctor_lockfile_check(project.path());
+    assert_eq!(check["status"], "info");
+    let message = check["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("pybun.lockb"),
+        "missing-lock diagnostic should name the canonical file: {check}"
+    );
+    assert!(
+        check.get("path").is_none(),
+        "a missing lock must not report a path: {check}"
+    );
+}
+
+/// Regression test for issue #505: the obsolete `pybun.lock` is not
+/// auto-discovered, and the canonical file wins when both exist, matching the
+/// documented native snapshot policy.
+#[test]
+fn mcp_doctor_ignores_obsolete_lock_and_prefers_canonical_lock() {
+    let project = tempdir().unwrap();
+    fs::write(project.path().join("pybun.lock"), b"obsolete").unwrap();
+
+    let check = doctor_lockfile_check(project.path());
+    assert_eq!(
+        check["status"], "info",
+        "obsolete pybun.lock must not satisfy the doctor check: {check}"
+    );
+    assert!(
+        check["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("pybun.lockb")
+    );
+
+    let canonical = project.path().join("pybun.lockb");
+    fs::write(&canonical, b"canonical").unwrap();
+    let check = doctor_lockfile_check(project.path());
+    assert_eq!(check["status"], "ok", "canonical lock should win: {check}");
+    assert_eq!(
+        check["path"],
+        project
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("pybun.lockb")
+            .display()
+            .to_string()
+    );
+}
+
 #[test]
 fn mcp_tools_call_run_inline_code() {
     let temp = tempdir().unwrap();
@@ -411,6 +561,17 @@ fn audit_log_entries(path: &Path) -> Vec<serde_json::Value> {
                 .unwrap_or_else(|err| panic!("valid JSONL audit entry ({err}): {line}"))
         })
         .collect()
+}
+
+fn doctor_lockfile_check(project: &Path) -> serde_json::Value {
+    let request = r#"{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"pybun_doctor","arguments":{}}}"#;
+    let stdout = mcp_call_in(&[request], project, &[]);
+    let report = tool_result_json(&stdout, 2);
+    report["checks"]
+        .as_array()
+        .and_then(|checks| checks.iter().find(|check| check["name"] == "lockfile"))
+        .cloned()
+        .unwrap_or_else(|| panic!("pybun_doctor should report a lockfile check: {report}"))
 }
 
 fn tool_result_json(stdout: &str, id: i64) -> serde_json::Value {
