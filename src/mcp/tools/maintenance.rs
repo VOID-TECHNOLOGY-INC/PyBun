@@ -167,8 +167,13 @@ pub(crate) fn call_doctor(args: Value) -> Result<String, String> {
         }
     }
 
-    // Check for lockfile
-    let lockfile_path = working_dir.join("pybun.lock");
+    // Check the canonical native project lock. Native `pybun lock`/`install`
+    // and native `pybun_install` write `pybun.lockb`; the obsolete MCP-only
+    // `pybun.lock` and custom `install --lock` paths are deliberately not
+    // auto-discovered, matching the native snapshot policy documented in
+    // docs/UV_BACKEND.md. The uv backend writes `uv.lock` and is outside this
+    // native check.
+    let lockfile_path = working_dir.join("pybun.lockb");
     if lockfile_path.exists() {
         checks.push(json!({
             "name": "lockfile",
@@ -180,7 +185,7 @@ pub(crate) fn call_doctor(args: Value) -> Result<String, String> {
         checks.push(json!({
             "name": "lockfile",
             "status": "info",
-            "message": "No pybun.lock found",
+            "message": "No pybun.lockb found",
         }));
     }
 
