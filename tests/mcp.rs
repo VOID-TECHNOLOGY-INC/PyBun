@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 use std::ffi::OsString;
 use std::fs;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 use tempfile::tempdir;
@@ -289,6 +289,7 @@ fn mcp_tools_call_doctor_detects_corrupt_pypi_cache() {
 #[test]
 fn mcp_doctor_recognizes_native_cli_lock_output() {
     let project = tempdir().unwrap();
+    let home = tempdir().unwrap();
     fs::write(
         project.path().join("pyproject.toml"),
         "[project]\nname = \"doctor-probe\"\nversion = \"1.0\"\ndependencies = []\n",
@@ -297,6 +298,7 @@ fn mcp_doctor_recognizes_native_cli_lock_output() {
 
     let output = pybun_bin()
         .current_dir(project.path())
+        .env("PYBUN_HOME", home.path())
         .args(["--format=json", "lock", "--offline"])
         .output()
         .unwrap();
@@ -317,14 +319,8 @@ fn mcp_doctor_recognizes_native_cli_lock_output() {
     let check = doctor_lockfile_check(project.path());
     assert_eq!(check["status"], "ok", "doctor should accept: {check}");
     assert_eq!(
-        check["path"],
-        project
-            .path()
-            .canonicalize()
-            .unwrap()
-            .join("pybun.lockb")
-            .display()
-            .to_string()
+        doctor_reported_path(&check),
+        canonical_project_lock(project.path(), "pybun.lockb")
     );
     assert!(
         check["message"]
@@ -368,14 +364,8 @@ fn mcp_doctor_recognizes_mcp_install_lock_output() {
     let check = doctor_lockfile_check(project.path());
     assert_eq!(check["status"], "ok", "doctor should accept: {check}");
     assert_eq!(
-        check["path"],
-        project
-            .path()
-            .canonicalize()
-            .unwrap()
-            .join("pybun.lockb")
-            .display()
-            .to_string()
+        doctor_reported_path(&check),
+        canonical_project_lock(project.path(), "pybun.lockb")
     );
 }
 
@@ -398,18 +388,19 @@ fn mcp_doctor_reports_missing_canonical_lock_filename() {
     );
 }
 
-/// Regression test for issue #505: the obsolete `pybun.lock` is not
-/// auto-discovered, and the canonical file wins when both exist, matching the
-/// documented native snapshot policy.
+/// Regression test for issue #505: the obsolete `pybun.lock` and custom lock
+/// paths are not auto-discovered, and the canonical file wins when both
+/// canonical and obsolete names exist, matching the native snapshot policy.
 #[test]
-fn mcp_doctor_ignores_obsolete_lock_and_prefers_canonical_lock() {
+fn mcp_doctor_ignores_obsolete_and_custom_locks_and_prefers_canonical_lock() {
     let project = tempdir().unwrap();
     fs::write(project.path().join("pybun.lock"), b"obsolete").unwrap();
+    fs::write(project.path().join("custom.lockb"), b"custom").unwrap();
 
     let check = doctor_lockfile_check(project.path());
     assert_eq!(
         check["status"], "info",
-        "obsolete pybun.lock must not satisfy the doctor check: {check}"
+        "obsolete/custom locks must not satisfy the doctor check: {check}"
     );
     assert!(
         check["message"]
@@ -419,18 +410,14 @@ fn mcp_doctor_ignores_obsolete_lock_and_prefers_canonical_lock() {
     );
 
     let canonical = project.path().join("pybun.lockb");
-    fs::write(&canonical, b"canonical").unwrap();
+    pybun::lockfile::Lockfile::new(vec![], vec![])
+        .save_to_path(&canonical)
+        .unwrap();
     let check = doctor_lockfile_check(project.path());
     assert_eq!(check["status"], "ok", "canonical lock should win: {check}");
     assert_eq!(
-        check["path"],
-        project
-            .path()
-            .canonicalize()
-            .unwrap()
-            .join("pybun.lockb")
-            .display()
-            .to_string()
+        doctor_reported_path(&check),
+        canonical_project_lock(project.path(), "pybun.lockb")
     );
 }
 
@@ -572,6 +559,17 @@ fn doctor_lockfile_check(project: &Path) -> serde_json::Value {
         .and_then(|checks| checks.iter().find(|check| check["name"] == "lockfile"))
         .cloned()
         .unwrap_or_else(|| panic!("pybun_doctor should report a lockfile check: {report}"))
+}
+
+fn canonical_project_lock(project: &Path, name: &str) -> PathBuf {
+    project.canonicalize().unwrap().join(name)
+}
+
+fn doctor_reported_path(check: &serde_json::Value) -> PathBuf {
+    let path = check["path"]
+        .as_str()
+        .unwrap_or_else(|| panic!("doctor check should report a path: {check}"));
+    Path::new(path).canonicalize().unwrap()
 }
 
 fn tool_result_json(stdout: &str, id: i64) -> serde_json::Value {

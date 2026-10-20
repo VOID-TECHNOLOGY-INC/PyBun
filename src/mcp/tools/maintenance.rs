@@ -167,10 +167,12 @@ pub(crate) fn call_doctor(args: Value) -> Result<String, String> {
         }
     }
 
-    // Check for the canonical native project lock written by the CLI and by
-    // `pybun_install`. The obsolete MCP-only `pybun.lock` and custom
-    // `install --lock` paths are deliberately not auto-discovered, matching
-    // the native snapshot policy documented in docs/UV_BACKEND.md.
+    // Check the canonical native project lock. Native `pybun lock`/`install`
+    // and native `pybun_install` write `pybun.lockb`; the obsolete MCP-only
+    // `pybun.lock` and custom `install --lock` paths are deliberately not
+    // auto-discovered, matching the native snapshot policy documented in
+    // docs/UV_BACKEND.md. The uv backend writes `uv.lock` and is outside this
+    // native check.
     let lockfile_path = working_dir.join("pybun.lockb");
     if lockfile_path.exists() {
         checks.push(json!({
