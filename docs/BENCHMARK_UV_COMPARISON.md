@@ -1,5 +1,11 @@
 # PyBun vs uv — Head-to-Head Benchmark
 
+> **Historical pre-v0.2 snapshot.** These numbers measure PyBun 0.1.21's native
+> dependency paths against uv 0.11.21. Since v0.2, project dependency operations
+> delegate to uv, so `C5_resolution` is not a comparison with the current
+> default. Re-run the benchmark against a v0.2 build and a supported uv 0.12.x
+> before quoting dependency results.
+>
 > **Generated**: 2026-06-27 (post Issue #238 fix — 20 iterations, 3 warmup)
 > **Environment**: Apple M1 · macOS 25.5.0
 > **pybun**: 0.1.21 · **uv**: 0.11.21
@@ -107,7 +113,7 @@ pybun x ruff --version   →  p50=3.8ms   (reference)
 uvx ruff --version       →  p50=22.9ms  (reference)
 ```
 
-> **Note**: `pybun x` delegates to `uv tool run` internally. The timing advantage of `pybun x` reflects uv's own tool caching, not an independent pybun implementation. These results are for reference only and excluded from win/loss counts.
+> **Note**: At generation time `pybun x` delegated to `uv tool run`; current PyBun uses `uv pip install` when uv is available. These historical results reflect uv's own tool caching, not an independent pybun implementation, and are excluded from win/loss counts.
 
 ---
 

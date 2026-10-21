@@ -53,20 +53,53 @@ fn readme_maturity_and_backend_claims_match_current_behavior() {
         .expect("README.md should exist at repo root");
 
     assert!(
-        readme.contains("`pybun install` | **Preview**"),
-        "the native installer should be documented as Preview"
+        readme.contains("`pybun install` | **Stable for common cases**")
+            && readme.contains("`uv sync`"),
+        "install should be documented through its uv sync execution path"
+    );
+    assert!(
+        readme.contains(">=0.12.0,<0.13.0"),
+        "README should state the supported uv range"
+    );
+    assert!(
+        readme.contains("PYBUN_BACKEND=native"),
+        "README should document the explicit native compatibility opt-in"
+    );
+    assert!(
+        readme.contains("`pybun add` / `pybun remove`")
+            && readme.contains("`pybun lock` | **Stable for common cases**")
+            && readme.contains("`pybun upgrade` | **Stable for common cases**"),
+        "README should describe delegated dependency commands consistently"
+    );
+    assert!(
+        readme.contains(
+            "`pybun install`, `pybun add`, `pybun remove`, `pybun lock`, and `pybun upgrade`"
+        ),
+        "Why PyBun should describe the delegated command set"
     );
     assert!(
         readme.contains("`.data/{purelib,platlib,scripts,headers,data}` routing is implemented"),
         "the closed Issue #402 work should be described as implemented"
     );
     assert!(
-        readme.contains("`pybun install`, `pybun lock`, and `pybun upgrade` use PyBun's native"),
-        "ordinary dependency commands should not be claimed to delegate to uv"
-    );
-    assert!(
         readme.contains("Issue #239](https://github.com/VOID-TECHNOLOGY-INC/PyBun/issues/239)"),
         "resolver performance should link to Issue #239"
+    );
+    assert!(
+        readme.contains("schema-version 2"),
+        "README should document how to print the delegated JSON v2 schema"
+    );
+    assert!(
+        readme.contains("contract_version") || readme.contains("envelope version `2`"),
+        "README should distinguish the delegated JSON v2 contract"
+    );
+    assert!(
+        readme.contains("pybun_add") && readme.contains("pybun_upgrade"),
+        "MCP tool list should include the delegated project tools"
+    );
+    assert!(
+        !readme.contains("No runtime dependencies."),
+        "the single-binary claim must state the uv runtime requirement"
     );
     assert!(
         !readme.contains("where uv is available PyBun delegates to it directly"),
@@ -83,6 +116,16 @@ fn readme_maturity_and_backend_claims_match_current_behavior() {
     assert!(
         !readme.contains("If `uv` is available, it is used for faster environment creation."),
         "pybun x creates its environment with Python, not uv"
+    );
+    assert!(
+        !readme.contains("ordinary dependency commands still use PyBun's native path")
+            && !readme
+                .contains("`pybun install`, `pybun lock`, and `pybun upgrade` use PyBun's native"),
+        "README should not claim dependency commands still use the native path by default"
+    );
+    assert!(
+        !readme.contains("v0.2.0 target architecture broadens uv delegation"),
+        "v0.2 delegation is the current behavior, not a future target"
     );
     assert!(
         readme.contains("PyBun-managed PEP 723 environments may still use `uv pip install`"),
@@ -171,31 +214,88 @@ fn install_one_liner_reports_release_notes_from_manifest() {
     );
 }
 
+fn markdown_anchors(content: &str) -> Vec<String> {
+    let mut slugs = Vec::new();
+    let mut in_fence = false;
+    for line in content.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+        let Some(rest) = trimmed.strip_prefix('#') else {
+            continue;
+        };
+        let heading = rest.trim_start_matches('#');
+        let Some(heading) = heading.strip_prefix(' ') else {
+            continue;
+        };
+        let mut slug = String::new();
+        for ch in heading.trim().chars() {
+            if ch.is_alphanumeric() {
+                slug.extend(ch.to_lowercase());
+            } else if ch == ' ' {
+                slug.push('-');
+            } else if ch == '-' || ch == '_' {
+                slug.push(ch);
+            }
+        }
+        slugs.push(slug);
+    }
+    slugs
+}
+
 #[test]
 fn relative_markdown_links_resolve() {
     let root = project_root();
-    let files = ["README.md", "docs/UPGRADE.md"];
-    let link_re = Regex::new(r"\[[^\]]+\]\(([^)#]+)(#[^)]+)?\)").expect("valid regex");
+    let files = [
+        "README.md",
+        "docs/UPGRADE.md",
+        "docs/UV_BACKEND.md",
+        "docs/SPECS.md",
+    ];
+    let link_re = Regex::new(r"\[[^\]]+\]\(([^)#]*)(#[^)]*)?\)").expect("valid regex");
 
     for file in files {
         let content = fs::read_to_string(root.join(file))
             .unwrap_or_else(|_| panic!("failed to read {}", file));
         for caps in link_re.captures_iter(&content) {
             let target = caps.get(1).map(|m| m.as_str()).unwrap_or_default();
+            let anchor = caps.get(2).map(|m| m.as_str().trim_start_matches('#'));
             if target.starts_with("http://")
                 || target.starts_with("https://")
                 || target.starts_with("mailto:")
-                || target.starts_with('#')
             {
                 continue;
             }
-            let path = root.join(target.trim_start_matches("./"));
+            let base = root.join(file).parent().unwrap_or(&root).to_path_buf();
+            let path = base.join(target.trim_start_matches("./"));
             assert!(
                 path.exists(),
                 "missing markdown target {} referenced from {}",
                 target,
                 file
             );
+            if let Some(anchor) = anchor {
+                let linked = if target.is_empty() {
+                    content.clone()
+                } else {
+                    fs::read_to_string(&path).unwrap_or_else(|_| {
+                        panic!("failed to read linked markdown target {}", target)
+                    })
+                };
+                let anchors = markdown_anchors(&linked);
+                assert!(
+                    anchors.iter().any(|slug| slug == anchor),
+                    "missing anchor #{} in {} referenced from {}",
+                    anchor,
+                    target,
+                    file
+                );
+            }
         }
     }
 }
