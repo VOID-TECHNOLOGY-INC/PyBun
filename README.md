@@ -1,11 +1,23 @@
 # PyBun (Python Bundle)
 
-# v0.2 backend transition
+## v0.2 backend transition
 
-Normal project install/add/remove/lock/upgrade and project/PEP 723 execution now
-delegate to uv. See [backend semantics and migration](docs/UV_BACKEND.md) for
-the supported uv version, lock ownership, JSON v2, MCP parity, and explicit
-native compatibility mode.
+PyBun 0.2 delegates normal project dependency operations and project/PEP 723
+execution to uv. You need `uv >=0.12.0,<0.13.0` on `PATH` (or point `PYBUN_UV`
+at a supported executable). Missing, unsupported, or failed uv produces a
+structured error; PyBun does not silently fall back to its native resolver.
+
+| Operation | Default path (requires uv) |
+| --- | --- |
+| `pybun install` | `uv sync` |
+| `pybun add` / `pybun remove` | `uv add` / `uv remove` |
+| `pybun lock` | `uv lock`; `--script` selects a PEP 723 script |
+| `pybun upgrade` | `uv lock --upgrade` / `--upgrade-package`; run `pybun install` to sync |
+| Project `run`, PEP 723 `run` | uv environment preparation, then Python under PyBun's sandbox/profile settings |
+
+The legacy native dependency commands and binary locks remain available only
+with `PYBUN_BACKEND=native`. See [backend semantics and migration](docs/UV_BACKEND.md)
+for lock ownership, JSON v2, MCP parity, receipts, and native compatibility limits.
 
 <p align="center">
   <strong>🐍 The Agent-Native Python Control Plane 🤖</strong>
@@ -22,6 +34,7 @@ native compatibility mode.
   <a href="#why-pybun">Why PyBun?</a> •
   <a href="#mcp-server">MCP Server</a> •
   <a href="#command-reference">Commands</a> •
+  <a href="#execution-history-environment-diff-and-dependency-provenance">Evidence</a> •
   <a href="#benchmarks">Benchmarks</a> •
   <a href="#roadmap">Roadmap</a>
 </p>
@@ -48,6 +61,14 @@ native compatibility mode.
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/VOID-TECHNOLOGY-INC/PyBun/blob/main/examples/PyBun_Quick_Start.ipynb)
 
+**Requirements:** `uv >=0.12.0,<0.13.0` on `PATH` (see uv's
+[installation guide](https://docs.astral.sh/uv/getting-started/installation/))
+and a supported CPython interpreter (3.9–3.12; see the
+[supported versions](docs/SPECS.md)). uv may provide the interpreter for
+project/PEP 723 runs, but standalone script execution still needs one on the
+machine. The exact range and error behavior are in
+[UV_BACKEND.md](docs/UV_BACKEND.md).
+
 **macOS / Linux:**
 ```bash
 curl -LsSf https://raw.githubusercontent.com/VOID-TECHNOLOGY-INC/PyBun/main/scripts/install.sh | sh
@@ -67,9 +88,13 @@ pip install pybun-cli
 
 **Then run:**
 ```bash
+pybun init --yes
 pybun add requests
 pybun run -c "import requests; print('Hello, PyBun!')"
 ```
+
+`pybun init --yes` accepts defaults non-interactively and creates a `pyproject.toml`. `pybun add` then delegates to
+`uv add`, which updates project metadata, `uv.lock`, and the environment.
 
 ---
 
@@ -77,9 +102,11 @@ pybun run -c "import requests; print('Hello, PyBun!')"
 
 Existing Python tools are built for **humans**. PyBun is designed for **AI agents** — and humans who work alongside them.
 
-**PyBun is not a speed competitor to uv.** Tools like uv and pip are excellent at dependency resolution and installation. PyBun adds an **agent-facing control layer**: structured output, MCP integration, sandboxed execution, and audit/provenance that AI systems can rely on without fragile text scraping or unverifiable side effects. Delegation is currently command-specific: `pybun x` and eligible PEP 723 script runs use uv when it is available, while ordinary dependency commands still use PyBun's native path.
+**PyBun is not a speed competitor to uv.** Tools like uv and pip are excellent at dependency resolution and installation. PyBun adds an **agent-facing control layer**: structured output, MCP integration, sandboxed execution, and audit/provenance that AI systems can rely on without fragile text scraping or unverifiable side effects. In v0.2, `pybun install`, `pybun add`, `pybun remove`, `pybun lock`, and `pybun upgrade` delegate to uv by default, as do project and PEP 723 runs. PyBun keeps the agent-facing contract around that backend instead of reimplementing dependency resolution.
 
 The value PyBun adds isn't "faster pip." It's removing the ambiguity, non-determinism, and risk an agent faces when it operates a Python environment on its own.
+
+**Hypothesis about who benefits:** PyBun is aimed at people building automated Python agents and the reviewers who supervise them. If that describes you, the intended shortcuts are concrete: locating a usable interpreter, reproducing the environment behind a failure, explaining why a package is locked, comparing two captured environments, and attaching a receipt that says which backend and lock produced a result. These are design targets, not validated adoption claims; real usage is being studied in [Issue #242](https://github.com/VOID-TECHNOLOGY-INC/PyBun/issues/242).
 
 ### Design Philosophy
 
@@ -97,7 +124,7 @@ The value PyBun adds isn't "faster pip." It's removing the ambiguity, non-determ
      uv       pytest    Python
 ```
 
-PyBun is moving toward a thin, structured control layer on top of proven execution backends rather than expanding its reimplementation of the Python packaging/import ecosystem. The v0.2.0 target architecture broadens uv delegation; it does not describe every current command path. See [`docs/SPECS.md`](docs/SPECS.md#03-外部レビューによる方向性提言-2026-08-29) for the reasoning behind this scope decision.
+PyBun is a thin, structured control layer on top of proven execution backends rather than a reimplementation of the Python packaging/import ecosystem. Since v0.2, project dependency operations and project/PEP 723 execution delegate to uv; the native path is an explicit compatibility mode. See [`docs/SPECS.md`](docs/SPECS.md#03-外部レビューによる方向性提言-2026-08-29) for the reasoning behind this scope decision.
 
 ### ✨ What PyBun adds that other tools don't
 
@@ -105,20 +132,22 @@ PyBun is moving toward a thin, structured control layer on top of proven executi
 - 🔌 **Built-in MCP Server:** [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) lets AI tools like Cursor and Claude Desktop operate your Python environment directly via stdio — no extra glue code required.
 - 📋 **Structured diagnostics:** Errors come with machine-readable `code`, `level`, and `message` fields. Agents can act on failures without guessing what went wrong.
 - 🛡️ **Sandbox Mode:** Run untrusted AI-generated code safely with `--sandbox`. File and network access are restricted when the flag is set.
-- 📦 **Single binary:** No runtime dependencies. Download and run anywhere.
+- 📦 **Single executable:** The PyBun binary itself has no bundled runtime. Project dependency operations additionally require a supported `uv` on `PATH`; standalone script execution requires a Python interpreter.
 
 ### 💡 Example: AI Agent Workflow
 
 ```bash
-# AI agent asks: "Install pandas and show the version"
+# AI agent asks: "Install pandas and show the version" (inside a pybun project)
 $ pybun --format=json add pandas
-{"status": "ok", "detail": {"added": ["pandas==2.2.0"], ...}}
+{"version": "2", "status": "ok", "detail": {"contract_version": "2", ...}}
 
 $ pybun --format=json run -c "import pandas; print(pandas.__version__)"
-{"status": "ok", "stdout": "2.2.0\n", ...}
+{"version": "2", "status": "ok", "detail": {"contract_version": "2", "stdout": "2.2.0\n", ...}}
 ```
 
-The AI receives structured JSON — no parsing required, no ambiguity.
+The AI receives structured JSON — no parsing required, no ambiguity. Delegated
+commands additionally report the backend, lock digest, policy, and receipt ID;
+see [JSON contracts](#json-output-examples).
 
 ---
 
@@ -128,19 +157,25 @@ Maturity is assigned per execution path rather than to an entire milestone:
 
 | Surface | Maturity | Current execution path |
 | --- | --- | --- |
-| `pybun install` | **Preview** | PyBun's native resolver, downloader, and wheel installer. Path containment is hardened by [Issue #431](https://github.com/VOID-TECHNOLOGY-INC/PyBun/issues/431), but this is not a claim of full Python packaging compatibility. |
-| `pybun x` | **Stable for common cases** | Creates a temporary environment and uses `uv pip install` when uv is available; otherwise it falls back to pip. |
-| `pybun run` | **Stable for common cases** | Runs ordinary scripts with Python. Eligible PEP 723 scripts use `uv run --script` automatically when uv is available. Other PEP 723 paths are orchestrated by PyBun and may still use `uv pip install` for dependencies. |
+| `pybun install` | **Stable for common cases** | `uv sync`: exact synchronization of the project environment. Requires a supported uv. |
+| `pybun add` / `pybun remove` | **Stable for common cases** | `uv add` / `uv remove`: mutate project metadata, `uv.lock`, and the environment. Requires a supported uv. |
+| `pybun lock` | **Stable for common cases** | `uv lock`; `--script` selects a PEP 723 script. Requires a supported uv. |
+| `pybun upgrade` | **Stable for common cases** | `uv lock --upgrade` / `--upgrade-package`: update the lock without syncing. Run `pybun install` afterward. Requires a supported uv. |
+| `pybun outdated` | **Preview** | Native reader of `pybun.lockb`; it is not part of the uv delegation path. |
+| `pybun x` | **Stable for common cases** | Creates a temporary environment with Python and uses `uv pip install` when uv is available; otherwise it falls back to pip. |
+| `pybun run` | **Stable for common cases** | Project and PEP 723 runs prepare the environment with uv. Standalone scripts without project or PEP 723 metadata use PyBun's existing interpreter path. |
 | `pybun test` | **Stable for common cases** | The default backend wraps pytest/unittest. `--backend=pybun` is **Preview** and reports `W_TEST_BACKEND_COMPAT_*` diagnostics for known plugin/fixture gaps. |
 | `pybun watch` | **Preview** | Native monitoring on macOS/Linux, with polling fallback on standard builds. |
 | `pybun module-find` | **Experimental** | Standalone Rust Module Finder; it is not wired into CPython's runtime import path ([Issue #403](https://github.com/VOID-TECHNOLOGY-INC/PyBun/issues/403)). |
 | Windows support | **Preview** | CI compile coverage and selected cross-platform behavior; continue to validate command-specific behavior. |
 
-`pybun install`, `pybun lock`, and `pybun upgrade` use PyBun's native dependency path today; installing uv does not switch those commands to an uv backend. Broader dependency-operation delegation is a v0.2.0 target.
+Delegated commands require `uv >=0.12.0,<0.13.0` and do not fall back automatically. `PYBUN_BACKEND=native` is an explicit compatibility opt-in for schema v1 native dependency commands and binary locks; treat it as a migration or fixture path, not the default.
 
-PyBun-managed PEP 723 environments may still use `uv pip install` for dependency installation when uv is available, including sandboxed, no-cache, and PyBun-lockfile paths. Without uv, those paths fall back to native resolution/installation or pip depending on the environment mode. This is separate from direct `uv run --script` delegation.
+`pybun outdated` remains on the native path and reads `pybun.lockb` even when other commands use uv. For uv projects, inspect `uv.lock` with uv's own tools until `outdated` is migrated.
 
-The native installer's `.data/{purelib,platlib,scripts,headers,data}` routing is implemented and tested by the work that closed [Issue #402](https://github.com/VOID-TECHNOLOGY-INC/PyBun/issues/402). That tested subset includes relocation, script permissions/shebang handling, and headers placement; it does not promise complete wheel compatibility such as console-entry-point generation, every platform scheme, source distributions, or arbitrary install hooks.
+PyBun-managed PEP 723 environments may still use `uv pip install` for dependency installation when uv is available, including sandboxed, no-cache, and PyBun-lockfile paths. Without uv, those paths fall back to native resolution/installation or pip depending on the environment mode. This is separate from the v0.2 project/PEP 723 uv preparation path.
+
+In native compatibility mode, the installer's `.data/{purelib,platlib,scripts,headers,data}` routing is implemented and tested by the work that closed [Issue #402](https://github.com/VOID-TECHNOLOGY-INC/PyBun/issues/402). That tested subset includes relocation, script permissions/shebang handling, and headers placement; it does not promise complete wheel compatibility such as console-entry-point generation, every platform scheme, source distributions, or arbitrary install hooks.
 
 - **Platforms:** macOS/Linux (arm64/amd64), Windows (preview)
 
@@ -185,27 +220,38 @@ cargo install --path .
 ```bash
 # Initialize a new project (pyproject.toml)
 pybun init
+pybun init --yes
 pybun init --name my-project --python ">=3.11" --template package
 
-# Install dependencies (generates lockfile)
-pybun install --require requests==2.31.0 --index fixtures/index.json
+# Synchronize the project environment from pyproject.toml/uv.lock (requires uv)
+pybun install
 
-# Add a package (updates pyproject.toml)
+# Add a package: updates pyproject.toml, uv.lock, and the environment (requires uv)
 pybun add requests
 
-# Remove a package
+# Remove a package (requires uv)
 pybun remove requests
 
-# Lock dependencies for a PEP 723 script
+# Lock dependencies for a PEP 723 script (requires uv)
 pybun lock --script script.py
 
-# Check for outdated dependencies
+# Check for outdated dependencies (native pybun.lockb path)
 pybun outdated
 
-# Upgrade dependencies within constraints (or specific packages)
+# Upgrade the lock without syncing (requires uv); run `pybun install` afterward
 pybun upgrade
 pybun upgrade requests
-pybun upgrade --dry-run
+```
+
+The default project path passes `--index` values to uv as HTTP(S) URLs or
+`NAME=URL`; authenticated private indexes are covered in
+[PRIVATE_INDEXES.md](docs/PRIVATE_INDEXES.md). JSON fixture indexes and legacy
+selectors belong to native compatibility mode:
+
+```bash
+# Explicit native compatibility mode (schema v1, binary pybun.lockb)
+PYBUN_BACKEND=native pybun install --require requests==2.31.0
+PYBUN_BACKEND=native pybun upgrade --dry-run
 ```
 
 ### Script Execution
@@ -232,7 +278,7 @@ PEP 723 inline metadata is also supported:
 # ///
 import requests
 ```
-※ Metadata parsing and isolated-environment execution are supported. Direct `uv run --script` is Stable for common cases; PyBun-managed fallback paths inherit the native installer's Preview limitations. Environments are cached per script/dependency/Python-version key; see `docs/PLAN.md` for details.
+※ Metadata parsing and isolated-environment execution are supported. Eligible PEP 723 scripts go through the uv project path. With `PYBUN_BACKEND=native`, `PYBUN_PEP723_BACKEND` selects the PyBun-native or uv path; PyBun-managed fallback paths inherit the native installer's Preview limitations. Environments are cached per script/dependency/Python-version key; see `docs/PLAN.md` for details.
 
 ### Ad-hoc Execution (`pybun x`)
 
@@ -392,10 +438,18 @@ MCP server for AI agents:
 pybun mcp serve --stdio
 ```
 
-Tools: `pybun_resolve`, `pybun_install`, `pybun_run`, `pybun_gc`, `pybun_doctor`, `pybun_lint`, `pybun_type_check`, `pybun_profile`, `pybun_fix`  
-Resources: `pybun://cache/info`, `pybun://env/info`, `pybun://audit/recent`
+Dependency/project tools: `pybun_install`, `pybun_add`, `pybun_remove`,
+`pybun_lock`, `pybun_upgrade`, `pybun_resolve`.
+Execution/diagnostics tools: `pybun_run`, `pybun_test`, `pybun_gc`,
+`pybun_doctor`, `pybun_lint`, `pybun_type_check`, `pybun_profile`, `pybun_fix`,
+`pybun_context`, `pybun_drift`, `pybun_audit`.
+Evidence tools: `pybun_why`, `pybun_environment_diff`.
+Resources: `pybun://cache/info`, `pybun://env/info`, `pybun://audit/recent`.
 
-※ Currently **`pybun_gc`, `pybun_doctor`, `pybun_run`, `pybun_resolve`, `pybun_lint`, `pybun_type_check`, `pybun_profile`, `pybun_fix`, and resources are operational**. `pybun_install` generates lockfiles via resolution. HTTP mode is not yet implemented.
+`pybun_install`, `pybun_add`, `pybun_remove`, `pybun_lock`, and `pybun_upgrade`
+use the uv backend and return contract v2 unless the server is started with
+`PYBUN_BACKEND=native`. `pybun_resolve` requires native mode; use `pybun_lock`
+or `pybun_install` for uv project semantics. HTTP mode is not yet implemented.
 
 `pybun_run` is sandboxed by default for MCP-originated calls. To preview code without executing it, pass `dry_run: true`; to disable the sandbox, pass `unsafe_no_sandbox: true` and treat the warning in the response as an approval checkpoint.
 
@@ -491,7 +545,12 @@ Operate PyBun as an MCP server for agents/IDEs:
 pybun mcp serve --stdio
 pybun --format=json mcp serve --stdio  # JSON envelope for tooling
 ```
-Tools: `pybun_resolve`, `pybun_install`, `pybun_run`, `pybun_gc`, `pybun_doctor`, `pybun_lint`, `pybun_type_check`, `pybun_profile`, `pybun_fix`. Resources: `pybun://cache/info`, `pybun://env/info`, `pybun://audit/recent`.
+Tools: `pybun_install`, `pybun_add`, `pybun_remove`, `pybun_lock`,
+`pybun_upgrade`, `pybun_resolve`, `pybun_run`, `pybun_test`, `pybun_gc`,
+`pybun_doctor`, `pybun_lint`, `pybun_type_check`, `pybun_profile`, `pybun_fix`,
+`pybun_context`, `pybun_drift`, `pybun_audit`, `pybun_why`,
+`pybun_environment_diff`. Resources: `pybun://cache/info`,
+`pybun://env/info`, `pybun://audit/recent`.
 
 MCP `pybun_run` applies the sandbox by default, including process/file-size limits and secret-like environment variable filtering. Use `sandbox_policy` to allow network/path/env exceptions, `dry_run: true` for a non-executing plan, or `unsafe_no_sandbox: true` only in controlled environments.
 
@@ -653,7 +712,24 @@ and fields, zero or more than 1,000,000 calls, and windows outside 1–86,400 se
 
 ## JSON output examples
 
-All commands support the `--format=json` option (schema v1). Examples:
+All commands support `--format=json`. Two contracts are in use:
+
+| Command family | Envelope | Contract |
+| --- | --- | --- |
+| Non-delegated commands (`test`, `doctor`, `watch`, standalone `run`, …) | schema v1 | Default and frozen; `pybun schema print` |
+| Delegated project commands (`install`, `add`, `remove`, `lock`, `upgrade`, project/PEP 723 `run`) | schema v2 | `version: "2"` and `detail.contract_version: "2"`; `pybun schema print --schema-version 2` |
+| Native compatibility mode (`PYBUN_BACKEND=native`) | schema v1 | Legacy dependency results and binary locks |
+
+Schema v2 details add backend name/version/operation, environment fingerprint,
+lock source and SHA-256, effective policy, duration, diagnostics, and a persisted
+receipt identifier under `.pybun/receipts/<id>.json`. Receipts omit execution
+stdout/stderr. MCP project tools return the same v2 detail payload. Backend
+stdout/stderr stays private; fixed diagnostics avoid leaking credentials from
+netrc, keyring, or backend errors. See
+[UV_BACKEND.md](docs/UV_BACKEND.md#json-and-mcp-contracts).
+
+Schema v1 examples (shown outside a project; inside a uv project, `run` uses
+the v2 contract):
 
 ```bash
 pybun --format=json run -c "print('hello')"
@@ -705,8 +781,9 @@ PYBUN_TRACE=1 pybun --format=json run script.py
 
 Print or validate the JSON schema itself:
 ```bash
-pybun schema print
+pybun schema print                    # schema v1 (frozen)
 pybun schema check
+pybun schema print --schema-version 2 # delegated contract
 ```
 
 ## Environment Variables
@@ -715,6 +792,9 @@ pybun schema check
 |----------|-------------|
 | `PYBUN_ENV` | Path to venv to use |
 | `PYBUN_PYTHON` | Path to Python binary |
+| `PYBUN_BACKEND` | `uv` (default) or `native` for explicit legacy compatibility |
+| `PYBUN_UV` | Path to the uv executable (defaults to `uv` on `PATH`) |
+| `PYBUN_PEP723_BACKEND` | PyBun-managed PEP 723 backend: `auto`, `pybun`, or `uv` |
 | `PYBUN_PROFILE` | Default profile (dev/prod/benchmark) |
 | `PYBUN_TRACE` | Set to `1` to enable trace ID |
 | `PYBUN_HOME` | Override cache root directory |
@@ -724,6 +804,8 @@ pybun schema check
 | `PYBUN_PYPI_CACHE_DIR` | Override the PyPI metadata cache directory. By default this uses the platform cache directory plus `pybun/pypi` (for example `~/Library/Caches/pybun/pypi` on macOS). Current binary cache entries use `.bin`; legacy `.json` entries are only read from the same directory as a fallback. |
 | `PYBUN_AUDIT_LOG` | Override the MCP audit log path (`/dev/null` disables it) |
 | `PYBUN_SANDBOX_ALLOW_NETWORK` | Allow network access under `--sandbox` |
+| `PYBUN_HISTORY` | Set to `0` to disable local execution-history recording |
+| `PYBUN_OSV_URL` | Override the OSV batch endpoint used by `pybun audit` |
 
 See `CLAUDE.md`'s Environment Variables section for the full list, including testing/dry-run-only variables.
 
@@ -777,9 +859,9 @@ cargo test mcp
 
 ## Benchmarks
 
-PyBun is not a speed competitor to uv — it is an interface layer. Current uv delegation is limited to command paths such as `pybun x` package installation and eligible PEP 723 script runs. Ordinary `pybun install`, `pybun lock`, and `pybun upgrade` still use native dependency code; the v0.2.0 architecture aims to delegate more of that work.
+PyBun is not a speed competitor to uv — it is an interface layer. Since v0.2, project dependency operations and project/PEP 723 execution delegate to uv, so dependency timings mostly measure uv plus PyBun's orchestration overhead rather than a competing resolver. Native resolver timings describe the explicit `PYBUN_BACKEND=native` compatibility path.
 
-The areas where PyBun intentionally differs from uv (JSON output, MCP, sandbox) are evaluated for structured correctness and safety first. Native resolver performance work and measurements are tracked in [Issue #239](https://github.com/VOID-TECHNOLOGY-INC/PyBun/issues/239); they should not be read as a product goal to out-run uv.
+The areas where PyBun intentionally differs from uv (JSON output, MCP, sandbox, receipts) are evaluated for structured correctness and safety first. Native resolver performance work and measurements are tracked in [Issue #239](https://github.com/VOID-TECHNOLOGY-INC/PyBun/issues/239); they should not be read as a product goal to out-run uv.
 
 Full numbers: [docs/BENCHMARK_UV_COMPARISON.md](docs/BENCHMARK_UV_COMPARISON.md)
 
@@ -788,7 +870,7 @@ Full numbers: [docs/BENCHMARK_UV_COMPARISON.md](docs/BENCHMARK_UV_COMPARISON.md)
 ## Roadmap
 
 - [x] M0: Repository & CI scaffold
-- [x] M1: Installer foundation (lockfile, native resolver, PEP 723); native install remains Preview while the v0.2.0 backend transition is pending
+- [x] M1: Installer foundation (lockfile, native resolver, PEP 723); v0.2 delegates project dependency operations and project/PEP 723 execution to uv, with native retained as an explicit compatibility mode
 - [x] M2: Runtime optimization (module finder, lazy import, hot reload) — *opportunistic, ROI under evaluation; see [Issue #403](https://github.com/VOID-TECHNOLOGY-INC/PyBun/issues/403)*
 - [x] M3: Test runner (discovery, parallel execution, snapshots)
 - [x] M4: JSON/MCP & diagnostics
@@ -821,9 +903,20 @@ pybun telemetry disable
 
 Environment override: `PYBUN_TELEMETRY=0|1`
 
-## License
+## Execution history, environment diff, and dependency provenance
 
-MIT
+These read-only surfaces answer the evidence questions an agent or reviewer
+usually asks after a command: what ran, what changed, and why is this package
+here.
+
+- `pybun history` lists local CLI receipts for `run`, `test`, `install`, `add`,
+  and `remove`, including failures.
+- `pybun environment diff` compares two captures or receipts without execution.
+- `pybun why` explains every known declaration path to a locked package.
+
+MCP exposes the same services as `pybun_environment_diff` and `pybun_why`;
+`pybun_context` provides the current project snapshot. See
+[UV_BACKEND.md](docs/UV_BACKEND.md) for backend-specific lock evidence.
 
 ### Local execution history
 
@@ -886,3 +979,7 @@ typed, allowlisted metadata is compared; unrestricted environment variables and
 unknown configuration keys are excluded, and existing redaction applies before
 comparison. `causality: "not_inferred"` means the result describes recorded state
 changes and never claims that they caused a program's output to change.
+
+## License
+
+MIT

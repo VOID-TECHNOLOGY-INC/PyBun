@@ -14,6 +14,9 @@ falls back to its native resolver automatically.
 | project `run` | `uv lock`, then `uv sync --locked --inexact`, then the prepared Python |
 | PEP 723 `run` | `uv lock --script`, `uv sync --script --locked --inexact`, then that script's Python |
 
+`outdated` is not delegated: it remains a native reader of `pybun.lockb`, even
+when other commands use uv.
+
 Run preserves extra installed packages, as uv's run semantics do. Install
 intentionally removes extras. Python execution retains PyBun's sandbox, timeout
 and launch-profile optimization settings. The uv path reports lazy import
