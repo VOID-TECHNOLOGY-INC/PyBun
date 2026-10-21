@@ -214,21 +214,60 @@ fn install_one_liner_reports_release_notes_from_manifest() {
     );
 }
 
+fn markdown_anchors(content: &str) -> Vec<String> {
+    let mut slugs = Vec::new();
+    let mut in_fence = false;
+    for line in content.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+        let Some(rest) = trimmed.strip_prefix('#') else {
+            continue;
+        };
+        let heading = rest.trim_start_matches('#');
+        let Some(heading) = heading.strip_prefix(' ') else {
+            continue;
+        };
+        let mut slug = String::new();
+        for ch in heading.trim().chars() {
+            if ch.is_alphanumeric() {
+                slug.extend(ch.to_lowercase());
+            } else if ch == ' ' {
+                slug.push('-');
+            } else if ch == '-' || ch == '_' {
+                slug.push(ch);
+            }
+        }
+        slugs.push(slug);
+    }
+    slugs
+}
+
 #[test]
 fn relative_markdown_links_resolve() {
     let root = project_root();
-    let files = ["README.md", "docs/UPGRADE.md", "docs/UV_BACKEND.md"];
-    let link_re = Regex::new(r"\[[^\]]+\]\(([^)#]+)(#[^)]+)?\)").expect("valid regex");
+    let files = [
+        "README.md",
+        "docs/UPGRADE.md",
+        "docs/UV_BACKEND.md",
+        "docs/SPECS.md",
+    ];
+    let link_re = Regex::new(r"\[[^\]]+\]\(([^)#]*)(#[^)]*)?\)").expect("valid regex");
 
     for file in files {
         let content = fs::read_to_string(root.join(file))
             .unwrap_or_else(|_| panic!("failed to read {}", file));
         for caps in link_re.captures_iter(&content) {
             let target = caps.get(1).map(|m| m.as_str()).unwrap_or_default();
+            let anchor = caps.get(2).map(|m| m.as_str().trim_start_matches('#'));
             if target.starts_with("http://")
                 || target.starts_with("https://")
                 || target.starts_with("mailto:")
-                || target.starts_with('#')
             {
                 continue;
             }
@@ -240,6 +279,23 @@ fn relative_markdown_links_resolve() {
                 target,
                 file
             );
+            if let Some(anchor) = anchor {
+                let linked = if target.is_empty() {
+                    content.clone()
+                } else {
+                    fs::read_to_string(&path).unwrap_or_else(|_| {
+                        panic!("failed to read linked markdown target {}", target)
+                    })
+                };
+                let anchors = markdown_anchors(&linked);
+                assert!(
+                    anchors.iter().any(|slug| slug == anchor),
+                    "missing anchor #{} in {} referenced from {}",
+                    anchor,
+                    target,
+                    file
+                );
+            }
         }
     }
 }

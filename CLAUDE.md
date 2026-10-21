@@ -299,6 +299,10 @@ cargo fmt -- --check
 Core:
 - `PYBUN_ENV`: Path to venv to use
 - `PYBUN_PYTHON`: Path to Python binary
+- `PYBUN_BACKEND`: `uv` (default) or `native` for explicit legacy compatibility
+- `PYBUN_UV`: Path to the uv executable (defaults to `uv` on `PATH`)
+- `PYBUN_PEP723_BACKEND`: PyBun-managed PEP 723 backend (`auto`/`pybun`/`uv`)
+- `PYBUN_HISTORY`: Set to `0`, `false`, or `off` to disable local history recording
 - `PYBUN_PROFILE`: Default profile (dev/prod/benchmark)
 - `PYBUN_TRACE`: Enable trace IDs in JSON output (set to "1")
 - `PYBUN_HOME`: Override cache root directory

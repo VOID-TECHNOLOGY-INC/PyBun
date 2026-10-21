@@ -132,7 +132,7 @@ PyBun is a thin, structured control layer on top of proven execution backends ra
 - 🔌 **Built-in MCP Server:** [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) lets AI tools like Cursor and Claude Desktop operate your Python environment directly via stdio — no extra glue code required.
 - 📋 **Structured diagnostics:** Errors come with machine-readable `code`, `level`, and `message` fields. Agents can act on failures without guessing what went wrong.
 - 🛡️ **Sandbox Mode:** Run untrusted AI-generated code safely with `--sandbox`. File and network access are restricted when the flag is set.
-- 📦 **Single executable:** The PyBun binary itself has no bundled runtime. Project dependency operations additionally require a supported `uv` on `PATH`; standalone script execution requires a Python interpreter.
+- 📦 **Single executable:** The PyBun binary itself has no bundled runtime. Project dependency operations additionally require a supported `uv` on `PATH`; commands that execute Python (`run`, `test`, `build`, `x`, and others) also need an interpreter.
 
 ### 💡 Example: AI Agent Workflow
 
@@ -153,7 +153,9 @@ see [JSON contracts](#json-output-examples).
 
 ## Status
 
-Maturity is assigned per execution path rather than to an entire milestone:
+Maturity is assigned per execution path rather than to an entire milestone.
+Labels follow the definitions in [docs/SPECS.md](docs/SPECS.md); uv-path labels
+assume a supported uv 0.12.x.
 
 | Surface | Maturity | Current execution path |
 | --- | --- | --- |
@@ -235,7 +237,7 @@ pybun remove requests
 # Lock dependencies for a PEP 723 script (requires uv)
 pybun lock --script script.py
 
-# Check for outdated dependencies (native pybun.lockb path)
+# Check outdated dependencies: requires a native pybun.lockb (see note below)
 pybun outdated
 
 # Upgrade the lock without syncing (requires uv); run `pybun install` afterward
@@ -245,8 +247,13 @@ pybun upgrade requests
 
 The default project path passes `--index` values to uv as HTTP(S) URLs or
 `NAME=URL`; authenticated private indexes are covered in
-[PRIVATE_INDEXES.md](docs/PRIVATE_INDEXES.md). JSON fixture indexes and legacy
-selectors belong to native compatibility mode:
+[PRIVATE_INDEXES.md](docs/PRIVATE_INDEXES.md). For `install`, `lock`, and
+`upgrade`, JSON fixture indexes and legacy selectors belong to native
+compatibility mode; `add`/`remove --index` require uv:
+
+`pybun outdated` reads only `pybun.lockb`, which default uv-mode `pybun install`
+does not create. For a uv-only project, inspect `uv.lock` with uv's own tools or
+opt into native compatibility and build a `pybun.lockb` first.
 
 ```bash
 # Explicit native compatibility mode (schema v1, binary pybun.lockb)
@@ -444,12 +451,15 @@ Execution/diagnostics tools: `pybun_run`, `pybun_test`, `pybun_gc`,
 `pybun_doctor`, `pybun_lint`, `pybun_type_check`, `pybun_profile`, `pybun_fix`,
 `pybun_context`, `pybun_drift`, `pybun_audit`.
 Evidence tools: `pybun_why`, `pybun_environment_diff`.
-Resources: `pybun://cache/info`, `pybun://env/info`, `pybun://audit/recent`.
+Resources: `pybun://cache/info`, `pybun://env/info`, `pybun://audit/recent`,
+`pybun://project/snapshot`.
 
-`pybun_install`, `pybun_add`, `pybun_remove`, `pybun_lock`, and `pybun_upgrade`
-use the uv backend and return contract v2 unless the server is started with
-`PYBUN_BACKEND=native`. `pybun_resolve` requires native mode; use `pybun_lock`
-or `pybun_install` for uv project semantics. HTTP mode is not yet implemented.
+`pybun_install` and `pybun_upgrade` keep native branches and return schema v1
+when the server runs with `PYBUN_BACKEND=native`; otherwise they use uv and
+return contract v2. `pybun_add`, `pybun_remove`, and `pybun_lock` require the uv
+backend and return an actionable error in native mode. `pybun_resolve` requires
+native mode; use `pybun_lock` or `pybun_install` for uv project semantics. HTTP
+mode is not yet implemented.
 
 `pybun_run` is sandboxed by default for MCP-originated calls. To preview code without executing it, pass `dry_run: true`; to disable the sandbox, pass `unsafe_no_sandbox: true` and treat the warning in the response as an approval checkpoint.
 
@@ -550,7 +560,7 @@ Tools: `pybun_install`, `pybun_add`, `pybun_remove`, `pybun_lock`,
 `pybun_doctor`, `pybun_lint`, `pybun_type_check`, `pybun_profile`, `pybun_fix`,
 `pybun_context`, `pybun_drift`, `pybun_audit`, `pybun_why`,
 `pybun_environment_diff`. Resources: `pybun://cache/info`,
-`pybun://env/info`, `pybun://audit/recent`.
+`pybun://env/info`, `pybun://audit/recent`, `pybun://project/snapshot`.
 
 MCP `pybun_run` applies the sandbox by default, including process/file-size limits and secret-like environment variable filtering. Use `sandbox_policy` to allow network/path/env exceptions, `dry_run: true` for a non-executing plan, or `unsafe_no_sandbox: true` only in controlled environments.
 
@@ -735,15 +745,22 @@ the v2 contract):
 pybun --format=json run -c "print('hello')"
 ```
 
+Abridged success output:
 ```json
 {
   "version": "1",
   "command": "pybun run",
   "status": "ok",
   "detail": {
-    "summary": "executed inline code"
+    "cache_hit": false,
+    "exit_code": 0,
+    "pep723_backend": "system",
+    "stdout": "hello\n",
+    "stderr": null,
+    "profile": { "name": "dev", "...": "..." },
+    "...": "..."
   },
-  "events": [],
+  "events": [{ "type": "command_start", "...": "..." }],
   "diagnostics": []
 }
 ```
@@ -758,11 +775,13 @@ pybun --format=json run missing.py
   "version": "1",
   "command": "pybun run",
   "status": "error",
+  "detail": { "error": "script not found: missing.py", "...": "..." },
   "diagnostics": [
     {
-      "kind": "runtime",
-      "message": "missing.py not found",
-      "hint": "pass -c for inline code or a valid path"
+      "code": "E_RUN_FAILED",
+      "level": "error",
+      "message": "script not found: missing.py",
+      "suggestion": "Check the script path and any PEP 723 inline metadata, then re-run `pybun run <script>`."
     }
   ]
 }
@@ -804,7 +823,7 @@ pybun schema print --schema-version 2 # delegated contract
 | `PYBUN_PYPI_CACHE_DIR` | Override the PyPI metadata cache directory. By default this uses the platform cache directory plus `pybun/pypi` (for example `~/Library/Caches/pybun/pypi` on macOS). Current binary cache entries use `.bin`; legacy `.json` entries are only read from the same directory as a fallback. |
 | `PYBUN_AUDIT_LOG` | Override the MCP audit log path (`/dev/null` disables it) |
 | `PYBUN_SANDBOX_ALLOW_NETWORK` | Allow network access under `--sandbox` |
-| `PYBUN_HISTORY` | Set to `0` to disable local execution-history recording |
+| `PYBUN_HISTORY` | Set to `0`, `false`, or `off` to disable local execution-history recording |
 | `PYBUN_OSV_URL` | Override the OSV batch endpoint used by `pybun audit` |
 
 See `CLAUDE.md`'s Environment Variables section for the full list, including testing/dry-run-only variables.
@@ -863,7 +882,10 @@ PyBun is not a speed competitor to uv — it is an interface layer. Since v0.2, 
 
 The areas where PyBun intentionally differs from uv (JSON output, MCP, sandbox, receipts) are evaluated for structured correctness and safety first. Native resolver performance work and measurements are tracked in [Issue #239](https://github.com/VOID-TECHNOLOGY-INC/PyBun/issues/239); they should not be read as a product goal to out-run uv.
 
-Full numbers: [docs/BENCHMARK_UV_COMPARISON.md](docs/BENCHMARK_UV_COMPARISON.md)
+The linked report is a historical pre-v0.2 snapshot (PyBun 0.1.21 / uv 0.11.21)
+that measured the native resolver, not the current delegated path. Re-run
+`scripts/benchmark` against a v0.2 build before quoting dependency numbers.
+[Historical numbers](docs/BENCHMARK_UV_COMPARISON.md)
 
 ---
 
