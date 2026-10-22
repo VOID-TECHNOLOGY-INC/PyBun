@@ -230,17 +230,56 @@ fn text_runs_record_receipts_and_propagate_child_codes() {
     assert_eq!(records[1]["exit_code"], 5);
 }
 
+fn venv_with_system_site_packages(root: &Path) -> std::path::PathBuf {
+    let venv = root.join("venv");
+    let bootstrap = if cfg!(windows) { "python" } else { "python3" };
+    let status = std::process::Command::new(bootstrap)
+        .args(["-m", "venv", "--without-pip"])
+        .arg(&venv)
+        .status()
+        .expect("create test venv");
+    assert!(status.success(), "failed to create test venv");
+
+    let config_path = venv.join("pyvenv.cfg");
+    let mut replaced = false;
+    let config = fs::read_to_string(&config_path)
+        .expect("read pyvenv.cfg")
+        .lines()
+        .map(|line| {
+            if line
+                .trim_start()
+                .starts_with("include-system-site-packages")
+            {
+                replaced = true;
+                "include-system-site-packages = true".to_string()
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    assert!(replaced, "pyvenv.cfg lacks include-system-site-packages");
+    fs::write(&config_path, config).expect("write pyvenv.cfg");
+
+    if cfg!(windows) {
+        venv.join("Scripts").join("python.exe")
+    } else {
+        venv.join("bin").join("python3")
+    }
+}
+
 #[test]
 fn system_python_inventory_does_not_claim_user_site_is_complete() {
     let temp = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
+    let python = venv_with_system_site_packages(temp.path());
     let output = cargo_bin_cmd!("pybun")
         .current_dir(temp.path())
         .env("PYBUN_HOME", home.path())
         .env("PYBUN_HISTORY", "1")
         .env("PYBUN_BACKEND", "native")
-        .env("PYBUN_PYTHON", "python3")
-        .env("PYTHONUSERBASE", temp.path().join("user-base"))
+        .env("PYBUN_PYTHON", &python)
         .args(["--format=json", "run", "-c", "pass"])
         .output()
         .unwrap();
