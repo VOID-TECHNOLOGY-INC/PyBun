@@ -230,19 +230,9 @@ fn text_runs_record_receipts_and_propagate_child_codes() {
     assert_eq!(records[1]["exit_code"], 5);
 }
 
-fn venv_with_system_site_packages(root: &Path) -> std::path::PathBuf {
-    let venv = root.join("venv");
-    let bootstrap = if cfg!(windows) { "python" } else { "python3" };
-    let status = std::process::Command::new(bootstrap)
-        .args(["-m", "venv", "--without-pip"])
-        .arg(&venv)
-        .status()
-        .expect("create test venv");
-    assert!(status.success(), "failed to create test venv");
-
-    let config_path = venv.join("pyvenv.cfg");
+fn set_include_system_site_packages(config_path: &Path, enabled: bool) {
     let mut replaced = false;
-    let config = fs::read_to_string(&config_path)
+    let config = fs::read_to_string(config_path)
         .expect("read pyvenv.cfg")
         .lines()
         .map(|line| {
@@ -251,7 +241,7 @@ fn venv_with_system_site_packages(root: &Path) -> std::path::PathBuf {
                 .starts_with("include-system-site-packages")
             {
                 replaced = true;
-                "include-system-site-packages = true".to_string()
+                format!("include-system-site-packages = {enabled}")
             } else {
                 line.to_string()
             }
@@ -260,32 +250,123 @@ fn venv_with_system_site_packages(root: &Path) -> std::path::PathBuf {
         .join("\n")
         + "\n";
     assert!(replaced, "pyvenv.cfg lacks include-system-site-packages");
-    fs::write(&config_path, config).expect("write pyvenv.cfg");
+    fs::write(config_path, config).expect("write pyvenv.cfg");
+}
 
-    if cfg!(windows) {
+fn create_test_venv(
+    root: &Path,
+    include_system_site_packages: bool,
+) -> (std::path::PathBuf, std::path::PathBuf) {
+    let venv = root.join("venv");
+    let bootstraps: &[&str] = if cfg!(windows) {
+        &["python"]
+    } else {
+        &["python3", "python"]
+    };
+    let mut failure = String::new();
+    let mut created = false;
+    for bootstrap in bootstraps {
+        match std::process::Command::new(bootstrap)
+            .args(["-m", "venv", "--without-pip"])
+            .arg(&venv)
+            .env_remove("PYTHONHOME")
+            .env_remove("PYTHONPATH")
+            .output()
+        {
+            Ok(output) if output.status.success() => {
+                created = true;
+                break;
+            }
+            Ok(output) => {
+                failure = format!("{bootstrap}: {}", String::from_utf8_lossy(&output.stderr));
+            }
+            Err(error) => failure = format!("{bootstrap}: {error}"),
+        }
+    }
+    assert!(created, "failed to create test venv ({failure})");
+
+    let config_path = venv.join("pyvenv.cfg");
+    set_include_system_site_packages(&config_path, include_system_site_packages);
+
+    let python = if cfg!(windows) {
         venv.join("Scripts").join("python.exe")
     } else {
         venv.join("bin").join("python3")
-    }
+    };
+    assert!(
+        python.is_file(),
+        "missing venv interpreter: {}",
+        python.display()
+    );
+    (python, config_path)
 }
 
-#[test]
-fn system_python_inventory_does_not_claim_user_site_is_complete() {
-    let temp = tempfile::tempdir().unwrap();
-    let home = tempfile::tempdir().unwrap();
-    let python = venv_with_system_site_packages(temp.path());
+fn run_with_history(root: &Path, home: &Path, python: &Path) -> Value {
     let output = cargo_bin_cmd!("pybun")
-        .current_dir(temp.path())
-        .env("PYBUN_HOME", home.path())
+        .current_dir(root)
+        .env_remove("PYBUN_ENV")
+        .env_remove("PYTHONHOME")
+        .env_remove("PYTHONPATH")
+        .env("PYBUN_HOME", home)
         .env("PYBUN_HISTORY", "1")
         .env("PYBUN_BACKEND", "native")
-        .env("PYBUN_PYTHON", &python)
+        .env("PYBUN_PYTHON", python)
         .args(["--format=json", "run", "-c", "pass"])
         .output()
         .unwrap();
-    assert!(output.status.success());
-    let records = fs::read_to_string(home.path().join("history.jsonl")).unwrap();
-    let record: Value = serde_json::from_str(records.lines().next().unwrap()).unwrap();
+    assert!(
+        output.status.success(),
+        "run failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let records = fs::read_to_string(home.join("history.jsonl")).expect("read history");
+    serde_json::from_str(
+        records
+            .lines()
+            .last()
+            .expect("history should contain a record"),
+    )
+    .expect("history record should be JSON")
+}
+
+fn assert_python_state(record: &Value, expected_python: &Path) {
+    assert_eq!(
+        record["python_observation"], "execution_interpreter_before_command",
+        "python_state should describe the execution interpreter: {record}"
+    );
+    assert!(
+        record["python"]["version"].is_string(),
+        "python_state should be populated: {record}"
+    );
+    let recorded = Path::new(
+        record["python"]["executable"]
+            .as_str()
+            .expect("python executable should be recorded"),
+    );
+    assert_eq!(
+        recorded.canonicalize().unwrap(),
+        expected_python.canonicalize().unwrap(),
+        "history should observe the configured interpreter: {record}"
+    );
+}
+
+#[test]
+fn venv_with_system_site_packages_is_not_reported_as_complete_inventory() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+
+    let (python, config_path) = create_test_venv(temp.path(), false);
+    let record = run_with_history(temp.path(), home.path(), &python);
+    assert_python_state(&record, &python);
+    assert!(
+        record["installed_packages"].is_array(),
+        "a regular venv inventory should be reported, even when empty: {record}"
+    );
+
+    set_include_system_site_packages(&config_path, true);
+
+    let record = run_with_history(temp.path(), home.path(), &python);
+    assert_python_state(&record, &python);
     assert!(
         record["installed_packages"].is_null(),
         "System/user-site evidence cannot be treated as a complete empty inventory: {record}"
