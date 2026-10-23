@@ -1091,6 +1091,18 @@ pub(super) struct AddedPackage {
     pub(super) version: Option<String>,
 }
 
+/// Dependency-group flags are forwarded to `uv add`/`uv remove`. The native
+/// backend does not edit PEP 735/optional-dependency tables yet, so reject the
+/// flags explicitly instead of silently adding to the main dependency list.
+fn reject_native_group_flags(args: &crate::cli::PackageArgs) -> Result<()> {
+    if args.dev || args.group.is_some() || args.optional.is_some() {
+        return Err(eyre!(
+            "--dev/--group/--optional require the uv backend; set PYBUN_BACKEND=uv or omit the flag"
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Debug)]
 pub(super) struct AddOutcome {
     pub(super) summary: String,
@@ -1102,6 +1114,7 @@ pub(super) fn add_package(args: &crate::cli::PackageArgs) -> Result<AddOutcome> 
     if args.packages.is_empty() {
         return Err(eyre!("package name is required"));
     }
+    reject_native_group_flags(args)?;
 
     // Find or create pyproject.toml
     let current_dir = std::env::current_dir()?;
@@ -1186,6 +1199,7 @@ pub(super) fn remove_package(args: &crate::cli::PackageArgs) -> Result<RemoveOut
     if args.packages.is_empty() {
         return Err(eyre!("package name is required"));
     }
+    reject_native_group_flags(args)?;
 
     // Find pyproject.toml
     let current_dir = std::env::current_dir()?;

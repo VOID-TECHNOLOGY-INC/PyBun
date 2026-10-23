@@ -384,3 +384,29 @@ fn real_uv_workspace_member_uses_shared_root_lock() {
     assert!(dir.path().join("uv.lock").exists());
     assert!(!dir.path().join("member/uv.lock").exists());
 }
+
+#[test]
+fn add_and_remove_forward_dependency_group_flags() {
+    for (args, expected, unexpected) in [
+        (vec!["add", "requests", "--dev"], "--dev", "--group"),
+        (
+            vec!["add", "pytest", "--group", "test"],
+            "--group",
+            "--optional",
+        ),
+        (
+            vec!["add", "sphinx", "--optional", "docs"],
+            "--optional",
+            "--dev",
+        ),
+        (vec!["remove", "requests", "--dev"], "--dev", "--group"),
+    ] {
+        let dir = fixture(
+            "printf '%s\\n' \"$@\" > argv; printf \"version = 1\\n[[package]]\\nname = 'demo'\\nversion = '0.1.0'\\nsource = { virtual = '.' }\\n\" > uv.lock; mkdir -p .venv/bin; printf '#!/bin/sh\\nexit 0\\n' > .venv/bin/python; chmod +x .venv/bin/python",
+        );
+        let (_ok, value) = run(&dir, &args);
+        let argv = fs::read_to_string(dir.path().join("argv")).unwrap();
+        assert!(argv.contains(expected), "{args:?}: {argv}\n{value}");
+        assert!(!argv.contains(unexpected), "{args:?}: {argv}");
+    }
+}

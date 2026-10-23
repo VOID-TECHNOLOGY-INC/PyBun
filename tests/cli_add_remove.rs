@@ -396,3 +396,21 @@ fn add_creates_missing_project_offline_before_install_failure() {
     let content = fs::read_to_string(temp.path().join("pyproject.toml")).unwrap();
     assert!(content.contains("demo-audit-package"));
 }
+
+#[test]
+fn dependency_group_flags_are_rejected_on_the_native_backend() {
+    let temp = tempdir().unwrap();
+    fs::write(
+        temp.path().join("pyproject.toml"),
+        "[project]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    bin()
+        .current_dir(temp.path())
+        .args(["--format=json", "add", "build", "--dev"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains(
+            "--dev/--group/--optional require the uv backend",
+        ));
+}

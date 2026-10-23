@@ -215,6 +215,15 @@ pub struct PackageArgs {
     /// them by default unless a specifier mentions one).
     #[arg(long)]
     pub pre: bool,
+    /// Add/remove the dependency in the `dev` dependency group.
+    #[arg(long, conflicts_with_all = ["group", "optional"])]
+    pub dev: bool,
+    /// Add/remove the dependency in a named PEP 735 dependency group.
+    #[arg(long, value_name = "NAME", conflicts_with_all = ["dev", "optional"])]
+    pub group: Option<String>,
+    /// Add/remove the dependency in `[project.optional-dependencies]`.
+    #[arg(long, value_name = "EXTRA", conflicts_with_all = ["dev", "group"])]
+    pub optional: Option<String>,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -956,4 +965,51 @@ pub struct EnvironmentDiffArgs {
 #[derive(Args, Debug)]
 pub struct WhyArgs {
     pub package: String,
+}
+
+#[cfg(test)]
+mod package_flag_tests {
+    use super::*;
+
+    #[test]
+    fn add_and_remove_accept_dependency_group_flags() {
+        for (args, dev, group, optional) in [
+            (vec!["pybun", "add", "build", "--dev"], true, None, None),
+            (
+                vec!["pybun", "add", "pytest", "--group", "test"],
+                false,
+                Some("test"),
+                None,
+            ),
+            (
+                vec!["pybun", "add", "sphinx", "--optional", "docs"],
+                false,
+                None,
+                Some("docs"),
+            ),
+            (vec!["pybun", "remove", "build", "--dev"], true, None, None),
+        ] {
+            let cli =
+                Cli::try_parse_from(&args).unwrap_or_else(|error| panic!("{args:?}: {error}"));
+            match cli.command {
+                Commands::Add(package) | Commands::Remove(package) => {
+                    assert_eq!(package.dev, dev, "{args:?}");
+                    assert_eq!(package.group.as_deref(), group, "{args:?}");
+                    assert_eq!(package.optional.as_deref(), optional, "{args:?}");
+                }
+                other => panic!("unexpected command: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn dependency_group_flags_are_mutually_exclusive() {
+        assert!(Cli::try_parse_from(["pybun", "add", "x", "--dev", "--group", "g"]).is_err());
+        assert!(Cli::try_parse_from(["pybun", "add", "x", "--optional", "g", "--dev"]).is_err());
+    }
+
+    #[test]
+    fn build_remediation_hint_parses() {
+        Cli::try_parse_from(["pybun", "add", "build"]).unwrap();
+    }
 }
