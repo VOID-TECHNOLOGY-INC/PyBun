@@ -1,5 +1,5 @@
 use super::RenderDetail;
-use crate::cli::{LazyImportArgs, ModuleFindArgs, ProfileArgs, WatchArgs};
+use crate::cli::{LazyImportArgs, ModuleFindArgs, OutputFormat, ProfileArgs, WatchArgs};
 use crate::env::find_python_env;
 #[cfg(feature = "native-watch")]
 use crate::hot_reload::run_native_watch_loop;
@@ -743,12 +743,63 @@ pub(super) struct XOutcome {
     pub(super) python_version: String,
     pub(super) exit_code: i32,
     pub(super) cleanup: bool,
+    pub(super) stdout: Option<String>,
+    pub(super) stderr: Option<String>,
+}
+
+/// Run the tool's child process. In JSON mode, capture stdout/stderr so the
+/// envelope stays a single parseable JSON document (Issue #517); text mode
+/// keeps streaming through the inherited descriptors.
+fn run_tool_command(
+    mut cmd: ProcessCommand,
+    capture: bool,
+    context: &str,
+) -> Result<(i32, Option<String>, Option<String>)> {
+    if !capture {
+        let status = cmd.status().map_err(|e| eyre!("{context}: {e}"))?;
+        return Ok((status.code().unwrap_or(-1), None, None));
+    }
+    match crate::proc_exec::spawn_with_timeout(&mut cmd, None, true)
+        .map_err(|e| eyre!("{context}: {e}"))?
+    {
+        crate::proc_exec::ProcExecOutcome::Completed {
+            status,
+            stdout,
+            stderr,
+        } => Ok((
+            status.code().unwrap_or(-1),
+            stdout.as_deref().and_then(capture_stdio),
+            stderr.as_deref().and_then(capture_stdio),
+        )),
+        crate::proc_exec::ProcExecOutcome::TimedOut => Err(eyre!("{context}: process timed out")),
+    }
+}
+
+const MAX_TOOL_STDIO_CAPTURE_BYTES: usize = 64 * 1024;
+
+fn capture_stdio(bytes: &[u8]) -> Option<String> {
+    if bytes.is_empty() {
+        return None;
+    }
+    let truncated = bytes.len() > MAX_TOOL_STDIO_CAPTURE_BYTES;
+    let slice = if truncated {
+        &bytes[..MAX_TOOL_STDIO_CAPTURE_BYTES]
+    } else {
+        bytes
+    };
+    let mut out = String::from_utf8_lossy(slice).to_string();
+    if truncated {
+        out.push_str("\n...[truncated]");
+    }
+    Some(out)
 }
 
 pub(super) fn execute_tool(
     args: &crate::cli::ToolArgs,
     _collector: &mut EventCollector,
+    format: OutputFormat,
 ) -> Result<XOutcome> {
+    let capture = format == OutputFormat::Json;
     let package_spec = args
         .package
         .as_ref()
@@ -789,6 +840,8 @@ pub(super) fn execute_tool(
             python_version,
             exit_code,
             cleanup: true,
+            stdout: None,
+            stderr: None,
         });
     }
 
@@ -807,11 +860,10 @@ pub(super) fn execute_tool(
         venv_cmd.arg("--without-pip");
     }
     venv_cmd.arg(&venv_path);
-    let venv_status = venv_cmd
-        .status()
-        .map_err(|e| eyre!("failed to create virtual environment: {}", e))?;
+    let (venv_exit, _, _) =
+        run_tool_command(venv_cmd, capture, "failed to create virtual environment")?;
 
-    if !venv_status.success() {
+    if venv_exit != 0 {
         return Err(eyre!("failed to create virtual environment"));
     }
 
@@ -831,22 +883,31 @@ pub(super) fn execute_tool(
 
     // Install the package using uv if available, otherwise pip
     eprintln!("info: installing {}...", package_spec);
-    let install_status = if let Some(uv_path) = crate::env::find_uv_executable() {
-        ProcessCommand::new(uv_path)
-            .args(["pip", "install", "--quiet", "--python"])
+    let (install_exit, _, install_stderr) = if let Some(uv_path) = crate::env::find_uv_executable()
+    {
+        let mut cmd = ProcessCommand::new(uv_path);
+        cmd.args(["pip", "install", "--quiet", "--python"])
             .arg(&venv_path)
-            .arg(package_spec)
-            .status()
-            .map_err(|e| eyre!("failed to install package with uv: {}", e))?
+            .arg(package_spec);
+        run_tool_command(cmd, capture, "failed to install package with uv")?
     } else {
-        ProcessCommand::new(&pip_path)
-            .args(["install", "--quiet", package_spec])
-            .status()
-            .map_err(|e| eyre!("failed to install package: {}", e))?
+        let mut cmd = ProcessCommand::new(&pip_path);
+        cmd.args(["install", "--quiet", package_spec]);
+        run_tool_command(cmd, capture, "failed to install package")?
     };
 
-    if !install_status.success() {
-        return Err(eyre!("failed to install package {}", package_spec));
+    if install_exit != 0 {
+        let detail = install_stderr
+            .as_deref()
+            .map(str::trim)
+            .filter(|detail| !detail.is_empty())
+            .map(crate::support_bundle::redact_text)
+            .unwrap_or_default();
+        return Err(if detail.is_empty() {
+            eyre!("failed to install package {}", package_spec)
+        } else {
+            eyre!("failed to install package {}: {}", package_spec, detail)
+        });
     }
 
     // Find and execute the entry point
@@ -859,17 +920,14 @@ pub(super) fn execute_tool(
         venv_path.join("bin").join(&package_name)
     };
 
-    let exit_code = if entry_point.exists() {
+    let (exit_code, stdout, stderr) = if entry_point.exists() {
         // Execute the console script directly
         eprintln!("info: executing {}...", entry_point.display());
         let mut cmd = ProcessCommand::new(&entry_point);
         for arg in &args.passthrough {
             cmd.arg(arg);
         }
-        let status = cmd
-            .status()
-            .map_err(|e| eyre!("failed to execute {}: {}", package_name, e))?;
-        status.code().unwrap_or(-1)
+        run_tool_command(cmd, capture, &format!("failed to execute {package_name}"))?
     } else {
         // Fallback: try to run as a module
         eprintln!("info: executing python -m {}...", package_name);
@@ -878,10 +936,11 @@ pub(super) fn execute_tool(
         for arg in &args.passthrough {
             cmd.arg(arg);
         }
-        let status = cmd
-            .status()
-            .map_err(|e| eyre!("failed to execute module {}: {}", package_name, e))?;
-        status.code().unwrap_or(-1)
+        run_tool_command(
+            cmd,
+            capture,
+            &format!("failed to execute module {package_name}"),
+        )?
     };
 
     // Cleanup is automatic when temp_dir is dropped
@@ -900,6 +959,8 @@ pub(super) fn execute_tool(
         python_version,
         exit_code,
         cleanup: true,
+        stdout,
+        stderr,
     })
 }
 

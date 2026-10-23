@@ -745,7 +745,7 @@ async fn dispatch_tooling(
     match command {
         Commands::X(args) => {
             collector.event(EventType::EnvCreate);
-            let result = tooling::execute_tool(args, collector);
+            let result = tooling::execute_tool(args, collector, format);
             match result {
                 Ok(tooling::XOutcome {
                     summary,
@@ -756,22 +756,38 @@ async fn dispatch_tooling(
                     python_version,
                     exit_code,
                     cleanup,
-                }) => (
-                    "x".to_string(),
-                    RenderDetail::with_json(
-                        summary,
-                        json!({
-                            "package": package,
-                            "version": version,
-                            "passthrough": passthrough,
-                            "temp_env": temp_env,
-                            "python_version": python_version,
-                            "exit_code": exit_code,
-                            "cleanup": cleanup,
-                        }),
+                    stdout,
+                    stderr,
+                }) => {
+                    if exit_code != 0 {
+                        collector.error_with_code(
+                            "E_X_EXIT_NONZERO",
+                            format!(
+                                "{} exited with a nonzero status (exit_code={exit_code})",
+                                package
+                            ),
+                            "Check detail.exit_code and the tool's detail.stdout/detail.stderr for the cause.",
+                        );
+                    }
+                    (
+                        "x".to_string(),
+                        RenderDetail::with_json(
+                            summary,
+                            json!({
+                                "package": package,
+                                "version": version,
+                                "passthrough": passthrough,
+                                "temp_env": temp_env,
+                                "python_version": python_version,
+                                "exit_code": exit_code,
+                                "cleanup": cleanup,
+                                "stdout": stdout,
+                                "stderr": stderr,
+                            }),
+                        )
+                        .with_process_exit_code(exit_code),
                     )
-                    .with_process_exit_code(exit_code),
-                ),
+                }
                 Err(e) => {
                     collector.error_with_code(
                         "E_X_FAILED",
