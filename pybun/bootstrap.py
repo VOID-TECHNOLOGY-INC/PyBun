@@ -336,8 +336,13 @@ def _safe_extract_tar(archive_path: str, dest: str) -> None:
                     raise BootstrapError(
                         "refusing to extract hardlink pointing outside destination"
                     )
-        if hasattr(tarfile, "data_filter"):
-            tar.extractall(dest, filter="data")
+        # The explicit member checks above already enforce containment, so use
+        # the permissive PEP 706 "tar" filter rather than "data". The initial
+        # "data" filter backports (3.9.17/3.10.12/3.11.4) rejected legitimate
+        # nested relative symlinks (Issue #526). Older interpreters without the
+        # filter API are safe because every member was validated above.
+        if hasattr(tarfile, "tar_filter"):
+            tar.extractall(dest, filter="tar")
         else:
             tar.extractall(dest)
 
