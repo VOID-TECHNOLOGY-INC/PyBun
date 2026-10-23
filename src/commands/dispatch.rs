@@ -467,7 +467,7 @@ async fn dispatch_package(
                         collector.error_with_code(
                             "E_OUTDATED_FAILED",
                             e.to_string(),
-                            "Run `pybun install` to generate pybun.lockb, then re-run `pybun outdated`.",
+                            "Check the project lockfile state and backend, then re-run `pybun outdated`; use `uv tree --outdated` on the uv backend.",
                         );
                     }
                     (
