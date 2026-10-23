@@ -384,3 +384,101 @@ fn real_uv_workspace_member_uses_shared_root_lock() {
     assert!(dir.path().join("uv.lock").exists());
     assert!(!dir.path().join("member/uv.lock").exists());
 }
+
+#[test]
+fn backend_failures_have_actionable_codes() {
+    for (body, code) in [
+        (
+            "echo 'x No solution found when resolving dependencies' >&2; exit 1",
+            "E_BACKEND_RESOLUTION",
+        ),
+        (
+            "echo \"error: The dependency 'requests' could not be found in 'project.dependencies'\" >&2; exit 2",
+            "E_BACKEND_RESOLUTION",
+        ),
+        (
+            "echo 'error: Failed to fetch: 401 Unauthorized' >&2; exit 1",
+            "E_BACKEND_AUTH",
+        ),
+        (
+            "echo 'error: network error: connection refused' >&2; exit 1",
+            "E_BACKEND_NETWORK",
+        ),
+        (
+            "echo 'error: project.name field is not set' >&2; exit 2",
+            "E_BACKEND_ARGUMENT",
+        ),
+    ] {
+        let dir = fixture(body);
+        let (ok, value) = run(&dir, &["lock"]);
+        assert!(!ok, "{value}");
+        assert_eq!(value["diagnostics"][0]["code"], code, "{value}");
+        assert!(
+            !value["diagnostics"][0]["suggestion"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("PYBUN_BACKEND=native"),
+            "{value}"
+        );
+    }
+}
+
+#[test]
+fn uv_run_promotes_the_traceback_diagnostic() {
+    let dir = fixture("");
+    let real_python = String::from_utf8(
+        std::process::Command::new("sh")
+            .args(["-c", "command -v python3"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_string();
+    let script = r#"#!/bin/sh
+if [ "$1" = '--version' ]; then echo 'uv 0.12.13'; exit 0; fi
+if [ "$1" = 'workspace' ]; then pwd; exit 0; fi
+if [ "$1" = 'lock' ]; then printf "version = 1\n[[package]]\nname = 'demo'\nversion = '0.1.0'\nsource = { virtual = '.' }\n" > uv.lock; exit 0; fi
+if [ "$1" = 'sync' ]; then exit 0; fi
+echo "unexpected uv args: $*" >&2
+exit 2
+"#;
+    let uv = dir.path().join("uv");
+    fs::write(&uv, script).unwrap();
+    fs::set_permissions(&uv, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(
+        std::process::Command::new(&real_python)
+            .args(["-m", "venv", "--without-pip"])
+            .arg(dir.path().join(".venv"))
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    let output = cargo_bin_cmd!("pybun")
+        .current_dir(dir.path())
+        .env("PYBUN_BACKEND", "uv")
+        .env("PYBUN_UV", &uv)
+        .arg("--format=json")
+        .args(["run", "-c", "import definitely_missing_pkg_zz9"])
+        .output()
+        .unwrap();
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(!output.status.success(), "{value}");
+    assert_eq!(
+        value["diagnostics"][0]["code"], "E_RUNTIME_MODULE_NOT_FOUND",
+        "{value}"
+    );
+    assert!(
+        value["diagnostics"][0]["suggestion"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("pybun add definitely_missing_pkg_zz9"),
+        "{value}"
+    );
+    assert_eq!(
+        value["detail"]["diagnostics"][0]["code"], "E_RUNTIME_MODULE_NOT_FOUND",
+        "{value}"
+    );
+}
