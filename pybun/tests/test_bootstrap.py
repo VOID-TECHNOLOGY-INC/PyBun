@@ -255,6 +255,27 @@ class SafeExtractTarTests(unittest.TestCase):
             self.assertTrue(os.path.islink(link_path))
             self.assertEqual(os.readlink(link_path), "../shared/lib")
 
+    def test_does_not_apply_the_data_filter(self):
+        from unittest import mock
+
+        with tempfile.TemporaryDirectory() as tmp:
+            archive_path = os.path.join(tmp, "ok.tar")
+            dest = os.path.join(tmp, "dest")
+            os.makedirs(dest)
+            with tarfile.open(archive_path, "w") as tar:
+                info = tarfile.TarInfo(name="bin/lib")
+                info.type = tarfile.SYMTYPE
+                info.linkname = "../shared/lib"
+                tar.addfile(info)
+            with mock.patch.object(
+                tarfile,
+                "data_filter",
+                side_effect=AssertionError("data filter must not be used"),
+                create=True,
+            ):
+                bootstrap._safe_extract_tar(archive_path, dest)
+            self.assertTrue(os.path.islink(os.path.join(dest, "bin", "lib")))
+
     def test_extracts_valid_archive(self):
         with tempfile.TemporaryDirectory() as tmp:
             archive_path = os.path.join(tmp, "ok.tar")
