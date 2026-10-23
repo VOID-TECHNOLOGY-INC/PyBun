@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.2.3
+
+### Fixes
+- Recognize the canonical `pybun.lockb` in MCP doctor and scope native lock checks to the native backend (#509).
+- Preserve benchmark execution failures and pin the supported uv version in the scheduled comparison suite (#508).
+
+### Security
+- Patch `rustls-webpki` to 0.103.16 and `webpki-roots` to 1.0.10 for RUSTSEC-2026-0382 and RUSTSEC-2026-0381 (#510).
+
+### Documentation
+- Align the README with v0.2 uv delegation, per-command maturity, JSON v1/v2 contracts, `outdated` limitations, and the execution-evidence entry points (#510).
+
+### Testing and maintenance
+- Make the system-site inventory history test hermetic and assert the recorded Python state and control branch (#513).
+- Update `zip` to 9.0.5, `sha2` to 0.11.1, and `libc` to 0.2.191 (#511).
+
+### Known limitations
+- The uv adapter supports uv >=0.12,<0.13. `pybun outdated` remains a native `pybun.lockb` reader; uv-only projects must use uv's own inspection commands.
+
 ## v0.2.2
 
 ### Fixes
