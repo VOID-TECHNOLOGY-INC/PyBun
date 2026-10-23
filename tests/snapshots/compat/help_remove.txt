@@ -12,4 +12,7 @@ Options:
       --progress <PROGRESS>  Progress UI mode (auto hides on non-TTY) [env: PYBUN_PROGRESS=] [default: auto] [possible values: auto, always, never]
       --no-progress          Disable progress UI
       --pre                  Allow pre-release and dev versions when resolving (PEP 440 excludes them by default unless a specifier mentions one)
+      --dev                  Add/remove the dependency in the `dev` dependency group
+      --group <NAME>         Add/remove the dependency in a named PEP 735 dependency group
+      --optional <EXTRA>     Add/remove the dependency in `[project.optional-dependencies]`
   -h, --help                 Print help
