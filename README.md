@@ -956,7 +956,7 @@ Python observations identify whether they describe the execution interpreter or
 the selected environment observed after the command; unavailable evidence is
 `null`. Recording does not launch an extra interpreter: the version is read from
 `pyvenv.cfg` (or the interpreter layout) and the inventory from
-`*.dist-info/METADATA` under `site-packages`. Daemon use is false for the current direct execution paths. Inline code
+`*.dist-info/METADATA` and `*.egg-info/PKG-INFO` under `site-packages`. Daemon use is false for the current direct execution paths. Inline code
 and credential option values are removed, and the existing output redaction rules
 apply before persistence and on reads. Program output and environment variables
 are never stored. Arbitrary positional secrets cannot be inferred; disable

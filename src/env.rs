@@ -430,7 +430,7 @@ fn find_system_python() -> Option<PathBuf> {
 }
 
 /// Check if an executable exists in PATH.
-fn which_executable(name: &str) -> Option<PathBuf> {
+pub(crate) fn which_executable(name: &str) -> Option<PathBuf> {
     std::env::var_os("PATH").and_then(|paths| {
         std::env::split_paths(&paths).find_map(|dir| {
             let full_path = dir.join(name);

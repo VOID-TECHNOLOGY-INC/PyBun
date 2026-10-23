@@ -142,47 +142,63 @@ pub(crate) fn python_state(path: &Path) -> Value {
     if !enabled() {
         return Value::Null;
     }
-    let venv = venv_root(path);
-    let config = venv
-        .as_deref()
-        .and_then(|root| fs::read_to_string(root.join("pyvenv.cfg")).ok())
-        .map(|text| parse_config(&text));
-    let implementation = if path.to_string_lossy().contains("pypy") {
-        "pypy"
-    } else if path.to_string_lossy().contains("graalpy") {
-        "graalpy"
-    } else {
-        "cpython"
+    let executable = resolve_executable(path);
+    let venv = venv_root(&executable);
+    // `None` here means "not a venv". A venv whose config cannot be read is an
+    // unknown environment, not a self-contained one.
+    let config = match venv.as_deref() {
+        Some(root) => fs::read_to_string(root.join("pyvenv.cfg"))
+            .ok()
+            .map(|text| parse_config(&text)),
+        None => None,
     };
+    let implementation = config
+        .as_ref()
+        .and_then(|config| config.get("implementation"))
+        .map(|value| value.to_ascii_lowercase())
+        .unwrap_or_else(|| implementation_of(&executable));
+    let prefix = prefix_of(&executable);
     let version = config
         .as_ref()
         .and_then(config_version)
-        .or_else(|| version_from_path(path))
-        .or_else(|| venv.as_deref().and_then(layout_version))
+        .or_else(|| version_from_path(&executable))
+        .or_else(|| prefix.as_deref().and_then(layout_version))
         .unwrap_or_else(|| "unknown".to_string());
-    let abi = abi_tag(implementation, &version);
+    let abi = abi_tag(&implementation, &version);
     let include_system = config
         .as_ref()
         .and_then(|config| config.get("include-system-site-packages"))
         .is_some_and(|value| value.eq_ignore_ascii_case("true"));
-    // Only a self-contained venv has a complete inventory. A venv that sees
-    // system site-packages, or a non-venv interpreter, cannot be represented
-    // as an exhaustive package list.
-    let packages = match (venv.as_deref(), include_system) {
-        (Some(root), false) => Some(inventory(&site_packages(root, &version))),
+    // Only a self-contained venv with a readable config has a complete
+    // inventory. A venv that sees system site-packages, a non-venv
+    // interpreter, an unreadable config, or an unknown layout cannot be
+    // represented as an exhaustive package list.
+    let packages = match (venv.as_deref(), &config, include_system) {
+        (Some(root), Some(_), false) => {
+            site_packages(root, &implementation, &version).and_then(|dirs| inventory(&dirs))
+        }
         _ => None,
     };
     json!({
         "implementation": implementation,
         "version": version,
         "abi": abi,
-        "executable": absolute(path),
-        "executable_digest": fs::read(path).ok().map(|bytes| hex::encode(Sha256::digest(bytes))),
+        "executable": executable,
+        "executable_digest": fs::read(&executable).ok().map(|bytes| hex::encode(Sha256::digest(bytes))),
         "installed_packages": packages,
     })
 }
 
-fn absolute(path: &Path) -> PathBuf {
+/// Resolve a bare command name (`PYBUN_PYTHON=python3`) through `PATH`.
+/// Absolute and relative paths are kept as-is; canonicalizing them would lose
+/// the venv symlink that identifies `pyvenv.cfg`.
+fn resolve_executable(path: &Path) -> PathBuf {
+    if path.components().count() == 1
+        && let Some(name) = path.to_str()
+        && let Some(found) = crate::env::which_executable(name)
+    {
+        return found;
+    }
     if path.is_absolute() {
         return path.to_path_buf();
     }
@@ -191,11 +207,43 @@ fn absolute(path: &Path) -> PathBuf {
         .unwrap_or_else(|_| path.to_path_buf())
 }
 
+fn prefix_of(path: &Path) -> Option<PathBuf> {
+    path.parent()?.parent().map(Path::to_path_buf)
+}
+
 fn venv_root(path: &Path) -> Option<PathBuf> {
-    let root = path.parent()?.parent()?;
+    let root = prefix_of(path)?;
     root.join("pyvenv.cfg")
         .is_file()
         .then(|| root.to_path_buf())
+}
+
+fn implementation_of(path: &Path) -> String {
+    let mut current = path.to_path_buf();
+    for _ in 0..8 {
+        let name = current
+            .file_name()
+            .map(|name| name.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_default();
+        if name.contains("pypy") {
+            return "pypy".into();
+        }
+        if name.contains("graalpy") {
+            return "graalpy".into();
+        }
+        let Ok(target) = fs::read_link(&current) else {
+            break;
+        };
+        current = if target.is_absolute() {
+            target
+        } else {
+            current
+                .parent()
+                .map(|parent| parent.join(&target))
+                .unwrap_or(target)
+        };
+    }
+    "cpython".into()
 }
 
 fn parse_config(text: &str) -> BTreeMap<String, String> {
@@ -238,10 +286,13 @@ fn version_from_path(path: &Path) -> Option<String> {
     if let Some(version) = version_from_name(name) {
         return Some(version);
     }
-    // venv `bin/python` is usually a symlink to a versioned interpreter.
+    // A venv `bin/python` is usually a symlink to a versioned interpreter;
+    // pyenv installs keep the version in an ancestor directory instead.
     let mut current = path.to_path_buf();
     for _ in 0..8 {
-        let target = fs::read_link(&current).ok()?;
+        let Ok(target) = fs::read_link(&current) else {
+            break;
+        };
         current = if target.is_absolute() {
             target
         } else {
@@ -255,32 +306,45 @@ fn version_from_path(path: &Path) -> Option<String> {
             return Some(version);
         }
     }
-    None
+    path.ancestors()
+        .filter_map(|ancestor| ancestor.file_name())
+        .filter_map(|name| name.to_str())
+        .find_map(normalize_version)
 }
 
 /// Look for `lib/pythonX.Y` next to the interpreter when the name carries no
-/// version (for example a distro's `/usr/bin/python3`).
+/// version (for example a distro's `/usr/bin/python3`). Directories are
+/// compared numerically so `3.13` wins over `3.9`.
 fn layout_version(root: &Path) -> Option<String> {
+    let mut versions = Vec::new();
     for lib in [root.join("lib"), root.join("lib64"), root.join("Lib")] {
         let Ok(entries) = fs::read_dir(lib) else {
             continue;
         };
-        let mut versions = entries
-            .flatten()
-            .filter_map(|entry| {
-                entry
-                    .file_name()
-                    .to_str()
-                    .and_then(version_from_name)
-                    .filter(|_| entry.path().is_dir())
-            })
-            .collect::<Vec<_>>();
-        versions.sort();
-        if let Some(version) = versions.pop() {
-            return Some(version);
-        }
+        versions.extend(entries.flatten().filter_map(|entry| {
+            let file_name = entry.file_name();
+            let version = file_name.to_str()?.strip_prefix("python")?;
+            entry
+                .path()
+                .is_dir()
+                .then(|| normalize_version(version))
+                .flatten()
+        }));
     }
-    None
+    versions.sort_by_key(|version| version_key(version));
+    versions.pop()
+}
+
+fn version_key(version: &str) -> (u64, u64, u64) {
+    let mut parts = version
+        .split('.')
+        .map(|part| part.parse::<u64>().unwrap_or(0))
+        .chain(std::iter::repeat(0));
+    (
+        parts.next().unwrap_or(0),
+        parts.next().unwrap_or(0),
+        parts.next().unwrap_or(0),
+    )
 }
 
 fn abi_tag(implementation: &str, version: &str) -> String {
@@ -296,17 +360,25 @@ fn abi_tag(implementation: &str, version: &str) -> String {
     }
 }
 
-fn site_packages(root: &Path, version: &str) -> Vec<PathBuf> {
+/// Locate the `site-packages` directories for exactly the interpreter's
+/// `major.minor` version. Returns `None` when the layout cannot be determined,
+/// because an empty list would falsely claim a complete, empty environment.
+fn site_packages(root: &Path, implementation: &str, version: &str) -> Option<Vec<PathBuf>> {
+    let parts = version.split('.').take(2).collect::<Vec<_>>();
+    if parts.len() != 2 {
+        return None;
+    }
+    let stem = if implementation == "pypy" {
+        format!("pypy{}.{}", parts[0], parts[1])
+    } else {
+        format!("python{}.{}", parts[0], parts[1])
+    };
     let mut dirs = BTreeSet::new();
     for lib in [root.join("lib"), root.join("lib64")] {
-        if let Ok(entries) = fs::read_dir(&lib) {
-            for entry in entries.flatten() {
-                if entry.file_name().to_string_lossy().starts_with("python") {
-                    let site = entry.path().join("site-packages");
-                    if site.is_dir() {
-                        dirs.insert(site);
-                    }
-                }
+        for name in [stem.clone(), format!("{stem}t")] {
+            let site = lib.join(&name).join("site-packages");
+            if site.is_dir() {
+                dirs.insert(site);
             }
         }
     }
@@ -314,68 +386,82 @@ fn site_packages(root: &Path, version: &str) -> Vec<PathBuf> {
     if windows.is_dir() {
         dirs.insert(windows);
     }
-    if dirs.is_empty() && version != "unknown" {
-        let parts = version.split('.').take(2).collect::<Vec<_>>();
-        if parts.len() == 2 {
-            for lib in [root.join("lib"), root.join("lib64")] {
-                let site = lib
-                    .join(format!("python{}.{}", parts[0], parts[1]))
-                    .join("site-packages");
-                if site.is_dir() {
-                    dirs.insert(site);
-                }
-            }
-        }
-    }
-    dirs.into_iter().collect()
+    (!dirs.is_empty()).then(|| dirs.into_iter().collect())
 }
 
-fn inventory(dirs: &[PathBuf]) -> Vec<Value> {
+fn inventory(dirs: &[PathBuf]) -> Option<Vec<Value>> {
     let mut packages = BTreeSet::new();
+    let mut found_layout = false;
     for dir in dirs {
-        let Ok(entries) = fs::read_dir(dir) else {
-            continue;
-        };
+        let entries = fs::read_dir(dir).ok()?;
+        found_layout = true;
         for entry in entries.flatten() {
-            let name = entry.file_name();
-            let Some(stem) = name
-                .to_string_lossy()
-                .strip_suffix(".dist-info")
-                .map(str::to_string)
-            else {
+            let file_name = entry.file_name();
+            let file_name = file_name.to_string_lossy();
+            let (metadata, fallback) = if let Some(stem) = file_name.strip_suffix(".dist-info") {
+                if !entry.path().is_dir() {
+                    continue;
+                }
+                (Some(entry.path().join("METADATA")), stem.to_string())
+            } else if let Some(stem) = file_name.strip_suffix(".egg-info") {
+                let path = entry.path();
+                (
+                    Some(if path.is_dir() {
+                        path.join("PKG-INFO")
+                    } else {
+                        path
+                    }),
+                    stem.to_string(),
+                )
+            } else {
                 continue;
             };
-            let path = entry.path();
-            if !path.is_dir() {
-                continue;
-            }
-            let Some((fallback_name, fallback_version)) = stem.rsplit_once('-') else {
+            let Some((fallback_name, fallback_version)) = fallback.rsplit_once('-') else {
                 continue;
             };
-            let (name, version) = dist_metadata(&path)
-                .unwrap_or_else(|| (fallback_name.to_string(), fallback_version.to_string()));
-            if name.is_empty()
-                || !name
-                    .chars()
-                    .all(|ch| ch.is_ascii_alphanumeric() || "-_.".contains(ch))
-                || crate::pep440::Pep440Version::parse(&version).is_none()
-            {
+            let from_metadata = metadata
+                .as_deref()
+                .and_then(dist_metadata)
+                .filter(|(name, version)| valid_package(name, version));
+            let candidate = from_metadata.or_else(|| {
+                let name = fallback_name.to_string();
+                let version = fallback_version.to_string();
+                valid_package(&name, &version).then_some((name, version))
+            });
+            let Some((name, version)) = candidate else {
                 continue;
-            }
+            };
             packages.insert((name, version));
             if packages.len() > 5000 {
-                return Vec::new();
+                return None;
             }
         }
     }
-    packages
-        .into_iter()
-        .map(|(name, version)| json!({"name":name,"version":version,"artifact_hashes":null}))
-        .collect()
+    if !found_layout {
+        return None;
+    }
+    Some(
+        packages
+            .into_iter()
+            .map(|(name, version)| json!({"name":name,"version":version,"artifact_hashes":null}))
+            .collect(),
+    )
+}
+
+fn valid_package(name: &str, version: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || "-_.".contains(ch))
+        && crate::pep440::Pep440Version::parse(version).is_some()
 }
 
 fn dist_metadata(path: &Path) -> Option<(String, String)> {
-    let text = fs::read_to_string(path.join("METADATA")).ok()?;
+    let file = File::open(path).ok()?;
+    // METADATA is a small RFC 822 header block. Bound the read so a corrupt or
+    // hostile file cannot stall the command.
+    let mut text = String::new();
+    file.take(16 * 1024).read_to_string(&mut text).ok()?;
     let mut name = None;
     let mut version = None;
     for line in text.lines() {
@@ -649,6 +735,110 @@ mod tests {
         let state = python_state(&python);
         assert_eq!(state["version"], "3.11.9");
         assert!(state["installed_packages"].is_null());
+    }
+
+    fn fake_interpreter(root: &Path) -> PathBuf {
+        let bin = root.join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        let python = bin.join(format!("python{}", std::env::consts::EXE_SUFFIX));
+        fs::write(&python, b"not-a-real-interpreter").unwrap();
+        python
+    }
+
+    #[test]
+    fn non_venv_interpreter_uses_its_library_layout() {
+        let temp = tempfile::tempdir().unwrap();
+        let python = fake_interpreter(temp.path());
+        let site = temp
+            .path()
+            .join("lib")
+            .join("python3.13")
+            .join("site-packages");
+        fs::create_dir_all(&site).unwrap();
+
+        let state = python_state(&python);
+        assert_eq!(state["version"], "3.13");
+        assert_eq!(state["abi"], "cpython-313");
+        assert!(
+            state["installed_packages"].is_null(),
+            "a non-venv interpreter must not claim a complete inventory: {state}"
+        );
+    }
+
+    #[test]
+    fn layout_version_prefers_the_newest_numeric_version() {
+        let temp = tempfile::tempdir().unwrap();
+        for version in ["3.9", "3.12", "3.13"] {
+            fs::create_dir_all(
+                temp.path()
+                    .join("lib")
+                    .join(format!("python{version}"))
+                    .join("site-packages"),
+            )
+            .unwrap();
+        }
+        assert_eq!(layout_version(temp.path()).as_deref(), Some("3.13"));
+    }
+
+    #[test]
+    fn inventory_uses_only_the_running_minor_version_and_reads_egg_info() {
+        let temp = tempfile::tempdir().unwrap();
+        let venv = temp.path().join("venv");
+        let python = fake_interpreter(&venv);
+        fs::write(
+            venv.join("pyvenv.cfg"),
+            "version = 3.12.14\ninclude-system-site-packages = false\n",
+        )
+        .unwrap();
+        let current = venv.join("lib").join("python3.12").join("site-packages");
+        fs::create_dir_all(&current).unwrap();
+        write_dist_info(&current, "Current", "1.0.0");
+        let legacy = current.join("Legacy-2.0.0.egg-info");
+        fs::create_dir_all(&legacy).unwrap();
+        fs::write(
+            legacy.join("PKG-INFO"),
+            "Metadata-Version: 1.0\nName: Legacy\nVersion: 2.0.0\n",
+        )
+        .unwrap();
+        let stale = venv.join("lib").join("python3.11").join("site-packages");
+        fs::create_dir_all(&stale).unwrap();
+        write_dist_info(&stale, "Stale", "9.9.9");
+
+        let state = python_state(&python);
+        assert_eq!(
+            state["installed_packages"],
+            json!([
+                {"name":"Current","version":"1.0.0","artifact_hashes":null},
+                {"name":"Legacy","version":"2.0.0","artifact_hashes":null},
+            ]),
+            "{state}"
+        );
+    }
+
+    #[test]
+    fn pypy_venv_uses_its_own_site_packages_layout() {
+        let temp = tempfile::tempdir().unwrap();
+        let venv = temp.path().join("neutral");
+        let bin = venv.join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        let python = bin.join("python");
+        fs::write(&python, b"not-a-real-interpreter").unwrap();
+        fs::write(
+            venv.join("pyvenv.cfg"),
+            "implementation = PyPy\nversion_info = 3.10.14\ninclude-system-site-packages = false\n",
+        )
+        .unwrap();
+        let site = venv.join("lib").join("pypy3.10").join("site-packages");
+        fs::create_dir_all(&site).unwrap();
+        write_dist_info(&site, "Demo", "1.0.0");
+
+        let state = python_state(&python);
+        assert_eq!(state["implementation"], "pypy");
+        assert_eq!(state["abi"], "pypy-310");
+        assert_eq!(
+            state["installed_packages"],
+            json!([{"name":"Demo","version":"1.0.0","artifact_hashes":null}])
+        );
     }
 
     #[test]
