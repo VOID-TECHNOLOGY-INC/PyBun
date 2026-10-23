@@ -272,8 +272,11 @@ def _verify_signature(path: str, signature: Dict[str, Any]) -> None:
         raise BootstrapError("signature missing value or public key")
     if not shutil.which("minisign"):
         raise BootstrapError(
-            "minisign is required for signature verification. "
-            "Install minisign or set PYBUN_PYPI_NO_VERIFY=1 to skip verification temporarily."
+            "minisign is required for signature verification. Install it first: "
+            "brew install minisign (macOS), apt-get install minisign (Debian/Ubuntu), "
+            "apk add minisign (Alpine), or scoop install minisign (Windows). "
+            "PYBUN_PYPI_NO_VERIFY=1 skips verification but is insecure and only "
+            "appropriate for offline testing."
         )
 
     with tempfile.TemporaryDirectory(prefix="pybun-sig-") as tmp:

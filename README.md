@@ -193,6 +193,21 @@ The easiest way to install PyBun:
 pip install pybun-cli
 ```
 
+> **Prerequisite: `minisign`.** The pip/uvx shim and `install.sh` verify the
+> downloaded binary's signature and fail closed when `minisign` is not on
+> `PATH` (the MCP server would otherwise fail to start with no visible reason).
+> Install it before the first `pybun` invocation:
+>
+> | Platform | Command |
+> | --- | --- |
+> | macOS | `brew install minisign` |
+> | Debian/Ubuntu | `apt-get install minisign` |
+> | Alpine | `apk add minisign` |
+> | Windows | `scoop install minisign` |
+>
+> `PYBUN_PYPI_NO_VERIFY=1` skips signature verification, but it is **insecure**
+> and intended only for offline testing.
+
 <details>
 <summary><strong>Other installation methods</strong></summary>
 
@@ -569,6 +584,9 @@ MCP `pybun_run` applies the sandbox by default, including process/file-size limi
 Add to your `claude_desktop_config.json`:
 
 #### Option 1: Using `uvx` (No install required)
+
+`uvx` runs the same shim, so `minisign` must be on `PATH` (see
+[Installation](#installation)) before the MCP server can start.
 ```json
 {
   "mcpServers": {

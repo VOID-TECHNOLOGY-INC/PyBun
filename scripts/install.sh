@@ -722,7 +722,7 @@ if [ "$NO_VERIFY" -eq 0 ]; then
     die "manifest missing signature value for asset (refusing to install unsigned artifact)"
   fi
   if ! command -v minisign >/dev/null 2>&1; then
-    die "minisign is required for signature verification (install minisign or use --no-verify)"
+    die "minisign is required for signature verification. Install it first: brew install minisign (macOS), apt-get install minisign (Debian/Ubuntu), apk add minisign (Alpine), or scoop install minisign (Windows). --no-verify skips verification but is insecure and only appropriate for offline testing."
   fi
   sig_path="$tmp_dir/${ASSET_NAME}.minisig"
   pub_path="$tmp_dir/pybun-release.pub"
