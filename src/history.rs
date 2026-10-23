@@ -1,13 +1,12 @@
 //! Optional CLI execution receipts. Never store program output or environment variables.
 use crate::cli::Commands;
-use crate::proc_exec::{ProcExecOutcome, spawn_with_timeout};
 use fs2::FileExt;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub fn enabled() -> bool {
@@ -131,64 +130,265 @@ impl Pending {
     }
 }
 
+/// Collect the interpreter identity and package inventory for a receipt.
+///
+/// This deliberately does not launch the interpreter: running
+/// `python -I -S -c ...` cost 67-176 ms per command and dominated the startup
+/// latency of every history-enabled invocation (Issue #516). The identity is
+/// read from `pyvenv.cfg`, the executable name/symlink target and the
+/// interpreter's `lib/pythonX.Y` layout; the inventory comes from
+/// `*.dist-info/METADATA` in `site-packages`.
 pub(crate) fn python_state(path: &Path) -> Value {
     if !enabled() {
         return Value::Null;
     }
-    let mut command = Command::new(path);
-    const CAPTURE: &str = r#"
-import json, pathlib, site, sys, sysconfig
-from importlib import metadata
-root = pathlib.Path(sys.executable).parent.parent
-config = root / 'pyvenv.cfg'
-paths = site.getsitepackages([str(root) if config.is_file() else sys.prefix])
-if config.is_file() and any(line.strip().lower() == 'include-system-site-packages = true' for line in config.read_text().splitlines()):
-    paths += site.getsitepackages([sys.base_prefix])
-packages = None
-try:
-    distributions = list(metadata.distributions(path=paths))
-    if config.is_file() and not any(line.strip().lower() == 'include-system-site-packages = true' for line in config.read_text().splitlines()) and len(distributions) <= 5000:
-        packages = sorted([{'name': dist.metadata['Name'], 'version': dist.version} for dist in distributions], key=lambda item: (item['name'] or '', item['version'] or ''))
-except Exception:
-    pass
-print(json.dumps({'implementation':sys.implementation.name,'version':sys.version.split()[0],'abi':sysconfig.get_config_var('SOABI') or sys.implementation.cache_tag,'executable':sys.executable,'installed_packages':packages}))
-"#;
-    command.args(["-I", "-S", "-c", CAPTURE]);
-    let raw = match spawn_with_timeout(&mut command, Some(3), true) {
-        Ok(ProcExecOutcome::Completed {
-            status,
-            stdout: Some(bytes),
-            ..
-        }) if status.success() => serde_json::from_slice::<Value>(&bytes).unwrap_or(Value::Null),
-        _ => Value::Null,
+    let venv = venv_root(path);
+    let config = venv
+        .as_deref()
+        .and_then(|root| fs::read_to_string(root.join("pyvenv.cfg")).ok())
+        .map(|text| parse_config(&text));
+    let implementation = if path.to_string_lossy().contains("pypy") {
+        "pypy"
+    } else if path.to_string_lossy().contains("graalpy") {
+        "graalpy"
+    } else {
+        "cpython"
     };
-    if !["implementation", "version", "abi", "executable"]
-        .iter()
-        .all(|key| raw[*key].as_str().is_some_and(|value| !value.is_empty()))
-    {
-        return Value::Null;
+    let version = config
+        .as_ref()
+        .and_then(config_version)
+        .or_else(|| version_from_path(path))
+        .or_else(|| venv.as_deref().and_then(layout_version))
+        .unwrap_or_else(|| "unknown".to_string());
+    let abi = abi_tag(implementation, &version);
+    let include_system = config
+        .as_ref()
+        .and_then(|config| config.get("include-system-site-packages"))
+        .is_some_and(|value| value.eq_ignore_ascii_case("true"));
+    // Only a self-contained venv has a complete inventory. A venv that sees
+    // system site-packages, or a non-venv interpreter, cannot be represented
+    // as an exhaustive package list.
+    let packages = match (venv.as_deref(), include_system) {
+        (Some(root), false) => Some(inventory(&site_packages(root, &version))),
+        _ => None,
+    };
+    json!({
+        "implementation": implementation,
+        "version": version,
+        "abi": abi,
+        "executable": absolute(path),
+        "executable_digest": fs::read(path).ok().map(|bytes| hex::encode(Sha256::digest(bytes))),
+        "installed_packages": packages,
+    })
+}
+
+fn absolute(path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        return path.to_path_buf();
     }
-    let packages = raw["installed_packages"]
-        .as_array()
-        .filter(|items| items.len() <= 5000)
-        .and_then(|items| {
-            items
-                .iter()
-                .map(|item| {
-                    let name = item["name"].as_str().filter(|name| {
-                        !name.is_empty()
-                            && name
-                                .chars()
-                                .all(|ch| ch.is_ascii_alphanumeric() || "-_.".contains(ch))
-                    })?;
-                    let version = item["version"]
-                        .as_str()
-                        .filter(|version| crate::pep440::Pep440Version::parse(version).is_some())?;
-                    Some(json!({"name":name,"version":version,"artifact_hashes":null}))
-                })
-                .collect::<Option<Vec<_>>>()
-        });
-    json!({"implementation":raw["implementation"],"version":raw["version"],"abi":raw["abi"],"executable":raw["executable"],"executable_digest":fs::read(path).ok().map(|bytes|hex::encode(Sha256::digest(bytes))),"installed_packages":packages})
+    std::env::current_dir()
+        .map(|cwd| cwd.join(path))
+        .unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn venv_root(path: &Path) -> Option<PathBuf> {
+    let root = path.parent()?.parent()?;
+    root.join("pyvenv.cfg")
+        .is_file()
+        .then(|| root.to_path_buf())
+}
+
+fn parse_config(text: &str) -> BTreeMap<String, String> {
+    text.lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                return None;
+            }
+            let (key, value) = line.split_once('=')?;
+            Some((key.trim().to_ascii_lowercase(), value.trim().to_string()))
+        })
+        .collect()
+}
+
+fn config_version(config: &BTreeMap<String, String>) -> Option<String> {
+    ["version", "version_info", "python-version"]
+        .iter()
+        .find_map(|key| config.get(*key).and_then(|value| normalize_version(value)))
+}
+
+/// Normalize `3.12.14`, `3.13.14.final.0`, or `3.12` to `major.minor[.micro]`.
+fn normalize_version(raw: &str) -> Option<String> {
+    let mut parts = Vec::new();
+    for part in raw.trim().split('.') {
+        if parts.len() == 3 || part.is_empty() || !part.chars().all(|ch| ch.is_ascii_digit()) {
+            break;
+        }
+        parts.push(part);
+    }
+    (parts.len() >= 2).then(|| parts.join("."))
+}
+
+fn version_from_name(name: &str) -> Option<String> {
+    normalize_version(name.strip_prefix("python")?)
+}
+
+fn version_from_path(path: &Path) -> Option<String> {
+    let name = path.file_name()?.to_str()?;
+    if let Some(version) = version_from_name(name) {
+        return Some(version);
+    }
+    // venv `bin/python` is usually a symlink to a versioned interpreter.
+    let mut current = path.to_path_buf();
+    for _ in 0..8 {
+        let target = fs::read_link(&current).ok()?;
+        current = if target.is_absolute() {
+            target
+        } else {
+            current.parent()?.join(target)
+        };
+        if let Some(version) = current
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(version_from_name)
+        {
+            return Some(version);
+        }
+    }
+    None
+}
+
+/// Look for `lib/pythonX.Y` next to the interpreter when the name carries no
+/// version (for example a distro's `/usr/bin/python3`).
+fn layout_version(root: &Path) -> Option<String> {
+    for lib in [root.join("lib"), root.join("lib64"), root.join("Lib")] {
+        let Ok(entries) = fs::read_dir(lib) else {
+            continue;
+        };
+        let mut versions = entries
+            .flatten()
+            .filter_map(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .and_then(version_from_name)
+                    .filter(|_| entry.path().is_dir())
+            })
+            .collect::<Vec<_>>();
+        versions.sort();
+        if let Some(version) = versions.pop() {
+            return Some(version);
+        }
+    }
+    None
+}
+
+fn abi_tag(implementation: &str, version: &str) -> String {
+    let digits = version
+        .split('.')
+        .take(2)
+        .filter(|part| part.chars().all(|ch| ch.is_ascii_digit()))
+        .collect::<String>();
+    if digits.len() >= 2 {
+        format!("{implementation}-{digits}")
+    } else {
+        "unknown".to_string()
+    }
+}
+
+fn site_packages(root: &Path, version: &str) -> Vec<PathBuf> {
+    let mut dirs = BTreeSet::new();
+    for lib in [root.join("lib"), root.join("lib64")] {
+        if let Ok(entries) = fs::read_dir(&lib) {
+            for entry in entries.flatten() {
+                if entry.file_name().to_string_lossy().starts_with("python") {
+                    let site = entry.path().join("site-packages");
+                    if site.is_dir() {
+                        dirs.insert(site);
+                    }
+                }
+            }
+        }
+    }
+    let windows = root.join("Lib").join("site-packages");
+    if windows.is_dir() {
+        dirs.insert(windows);
+    }
+    if dirs.is_empty() && version != "unknown" {
+        let parts = version.split('.').take(2).collect::<Vec<_>>();
+        if parts.len() == 2 {
+            for lib in [root.join("lib"), root.join("lib64")] {
+                let site = lib
+                    .join(format!("python{}.{}", parts[0], parts[1]))
+                    .join("site-packages");
+                if site.is_dir() {
+                    dirs.insert(site);
+                }
+            }
+        }
+    }
+    dirs.into_iter().collect()
+}
+
+fn inventory(dirs: &[PathBuf]) -> Vec<Value> {
+    let mut packages = BTreeSet::new();
+    for dir in dirs {
+        let Ok(entries) = fs::read_dir(dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(stem) = name
+                .to_string_lossy()
+                .strip_suffix(".dist-info")
+                .map(str::to_string)
+            else {
+                continue;
+            };
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let Some((fallback_name, fallback_version)) = stem.rsplit_once('-') else {
+                continue;
+            };
+            let (name, version) = dist_metadata(&path)
+                .unwrap_or_else(|| (fallback_name.to_string(), fallback_version.to_string()));
+            if name.is_empty()
+                || !name
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || "-_.".contains(ch))
+                || crate::pep440::Pep440Version::parse(&version).is_none()
+            {
+                continue;
+            }
+            packages.insert((name, version));
+            if packages.len() > 5000 {
+                return Vec::new();
+            }
+        }
+    }
+    packages
+        .into_iter()
+        .map(|(name, version)| json!({"name":name,"version":version,"artifact_hashes":null}))
+        .collect()
+}
+
+fn dist_metadata(path: &Path) -> Option<(String, String)> {
+    let text = fs::read_to_string(path.join("METADATA")).ok()?;
+    let mut name = None;
+    let mut version = None;
+    for line in text.lines() {
+        if line.is_empty() {
+            break;
+        }
+        if let Some(value) = line.strip_prefix("Name:") {
+            name = Some(value.trim().to_string());
+        } else if let Some(value) = line.strip_prefix("Version:") {
+            version = Some(value.trim().to_string());
+        }
+    }
+    Some((name?, version?))
 }
 
 fn redact_args(args: impl IntoIterator<Item = String>) -> Vec<String> {
@@ -363,6 +563,94 @@ fn parse_duration(value: &str) -> Result<Duration, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn write_dist_info(site: &Path, name: &str, version: &str) {
+        let dir = site.join(format!("{name}-{version}.dist-info"));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("METADATA"),
+            format!("Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n\nsummary\n"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn normalizes_version_lines_from_every_venv_creator() {
+        assert_eq!(normalize_version("3.12.14").as_deref(), Some("3.12.14"));
+        assert_eq!(
+            normalize_version("3.13.14.final.0").as_deref(),
+            Some("3.13.14")
+        );
+        assert_eq!(normalize_version("3.12").as_deref(), Some("3.12"));
+        assert_eq!(normalize_version("unknown"), None);
+
+        let stdlib = parse_config("home = /usr/bin\nversion = 3.12.14\n");
+        assert_eq!(config_version(&stdlib).as_deref(), Some("3.12.14"));
+        let uv = parse_config("version_info = 3.12.14\ninclude-system-site-packages = false\n");
+        assert_eq!(config_version(&uv).as_deref(), Some("3.12.14"));
+        let virtualenv = parse_config(
+            "python-version = 3.13\nversion_info = 3.13.14.final.0\nversion = 3.13.14\n",
+        );
+        assert_eq!(config_version(&virtualenv).as_deref(), Some("3.13.14"));
+    }
+
+    #[test]
+    fn python_state_reads_a_venv_without_launching_an_interpreter() {
+        let temp = tempfile::tempdir().unwrap();
+        let venv = temp.path().join("venv");
+        let bin = venv.join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        let python = bin.join(format!("python{}", std::env::consts::EXE_SUFFIX));
+        fs::write(&python, b"not-a-real-interpreter").unwrap();
+        fs::write(
+            venv.join("pyvenv.cfg"),
+            "version_info = 3.12.14\ninclude-system-site-packages = false\n",
+        )
+        .unwrap();
+        let site = venv.join("lib").join("python3.12").join("site-packages");
+        fs::create_dir_all(&site).unwrap();
+        write_dist_info(&site, "Demo-Pkg", "1.2.3");
+        write_dist_info(&site, "Other", "0.1.0");
+
+        let state = python_state(&python);
+        assert_eq!(state["implementation"], "cpython");
+        assert_eq!(state["version"], "3.12.14");
+        assert_eq!(state["abi"], "cpython-312");
+        assert_eq!(
+            state["executable"].as_str().unwrap(),
+            python.to_str().unwrap()
+        );
+        assert_eq!(
+            state["installed_packages"],
+            json!([
+                {"name":"Demo-Pkg","version":"1.2.3","artifact_hashes":null},
+                {"name":"Other","version":"0.1.0","artifact_hashes":null},
+            ])
+        );
+    }
+
+    #[test]
+    fn system_site_packages_disable_the_complete_inventory() {
+        let temp = tempfile::tempdir().unwrap();
+        let venv = temp.path().join("venv");
+        let bin = venv.join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        let python = bin.join(format!("python{}", std::env::consts::EXE_SUFFIX));
+        fs::write(&python, b"not-a-real-interpreter").unwrap();
+        fs::write(
+            venv.join("pyvenv.cfg"),
+            "version = 3.11.9\ninclude-system-site-packages = true\n",
+        )
+        .unwrap();
+        let site = venv.join("lib").join("python3.11").join("site-packages");
+        fs::create_dir_all(&site).unwrap();
+        write_dist_info(&site, "Demo", "1.0.0");
+
+        let state = python_state(&python);
+        assert_eq!(state["version"], "3.11.9");
+        assert!(state["installed_packages"].is_null());
+    }
+
     #[test]
     fn duration_and_redaction_are_strict() {
         assert_eq!(parse_duration("20m").unwrap(), Duration::from_secs(1200));
