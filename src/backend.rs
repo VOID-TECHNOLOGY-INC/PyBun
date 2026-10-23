@@ -23,12 +23,17 @@ pub use run::{applicable as run_applicable, run};
 pub struct BackendError {
     pub code: &'static str,
     pub message: &'static str,
+    suggestion: &'static str,
     detected_version: Option<String>,
     operation: Option<&'static str>,
     duration_ms: u64,
 }
 
 impl BackendError {
+    pub fn suggestion(&self) -> &'static str {
+        self.suggestion
+    }
+
     pub fn detail(&self, command: &str) -> Value {
         let operation = self.operation.unwrap_or(match command {
             "install" => "sync",
@@ -39,7 +44,7 @@ impl BackendError {
             "backend": { "name": "uv", "version": self.detected_version, "operation": operation },
             "duration_ms": self.duration_ms,
             "diagnostics": [{ "level": "error", "code": self.code, "message": self.message,
-                "suggestion": "Check uv configuration and supported project arguments." }] })
+                "suggestion": self.suggestion }] })
     }
 }
 
@@ -47,10 +52,92 @@ fn error(code: &'static str, message: &'static str) -> BackendError {
     BackendError {
         code,
         message,
+        suggestion: "Check uv configuration and supported project arguments.",
         detected_version: None,
         operation: None,
         duration_ms: 0,
     }
+}
+
+fn classified(code: &'static str, message: &'static str, suggestion: &'static str) -> BackendError {
+    BackendError {
+        suggestion,
+        ..error(code, message)
+    }
+}
+
+/// Map a uv failure to an actionable code without echoing raw backend output.
+///
+/// uv's stderr is deliberately withheld from JSON responses because it can
+/// contain index credentials. Classification uses only a small allowlist of
+/// stable uv error prefixes plus the exit code (Issue #520).
+fn classify_backend_failure(exit_code: Option<i32>, stderr: &str) -> BackendError {
+    let text = stderr.to_ascii_lowercase();
+    let contains = |needles: &[&str]| needles.iter().any(|needle| text.contains(needle));
+    if contains(&[
+        "no solution found",
+        "could not be found in",
+        "package not found",
+        "failed to resolve",
+        "because it does not exist",
+    ]) {
+        return classified(
+            "E_BACKEND_RESOLUTION",
+            "uv could not resolve dependencies or find a requested package.",
+            "Check package names and version constraints, then run `uv lock --check` to reproduce the resolver error locally.",
+        );
+    }
+    if contains(&[
+        "401",
+        "403",
+        "unauthorized",
+        "authentication",
+        "forbidden",
+        "keyring",
+        "credentials",
+    ]) {
+        return classified(
+            "E_BACKEND_AUTH",
+            "uv could not authenticate to the package index.",
+            "Check index credentials, keyring configuration, and UV_INDEX_URL/PIP_INDEX_URL, then retry.",
+        );
+    }
+    if contains(&[
+        "failed to fetch",
+        "network",
+        "connection refused",
+        "connection reset",
+        "timed out",
+        "timeout",
+        "dns",
+        "temporary failure in name resolution",
+    ]) {
+        return classified(
+            "E_BACKEND_NETWORK",
+            "uv could not reach the package index.",
+            "Check network connectivity, proxy settings, and index availability, then retry.",
+        );
+    }
+    if exit_code == Some(2)
+        || contains(&[
+            "project.name",
+            "not a valid",
+            "failed to parse",
+            "invalid value",
+            "unexpected argument",
+        ])
+    {
+        return classified(
+            "E_BACKEND_ARGUMENT",
+            "uv rejected the project configuration or command arguments.",
+            "Inspect pyproject.toml (including parent workspace config) and the command arguments, then retry.",
+        );
+    }
+    classified(
+        "E_BACKEND_FAILED",
+        "uv failed. Backend output is withheld to protect credentials.",
+        "Run the equivalent `uv` command locally with --verbose to inspect the failure.",
+    )
 }
 
 pub fn native_selected() -> bool {
@@ -265,9 +352,9 @@ impl UvBackend {
             ProcExecOutcome::Completed { status, stdout, .. } if status.success() => {
                 Ok(stdout.unwrap_or_default())
             }
-            ProcExecOutcome::Completed { .. } => Err(error(
-                "E_BACKEND_FAILED",
-                "uv failed. Check project configuration, index authentication, and connectivity; backend output is withheld to protect credentials.",
+            ProcExecOutcome::Completed { status, stderr, .. } => Err(classify_backend_failure(
+                status.code(),
+                &String::from_utf8_lossy(stderr.as_deref().unwrap_or_default()),
             )),
             ProcExecOutcome::TimedOut => Err(error(
                 "E_BACKEND_TIMEOUT",
@@ -679,6 +766,50 @@ fn requirement_name(spec: &str) -> String {
 mod tests {
     use super::*;
     use clap::Parser;
+
+    #[test]
+    fn backend_failures_are_classified_without_echoing_output() {
+        for (exit, stderr, code) in [
+            (
+                Some(1),
+                "x No solution found when resolving dependencies",
+                "E_BACKEND_RESOLUTION",
+            ),
+            (
+                Some(2),
+                "error: The dependency 'requests' could not be found in 'project.dependencies'",
+                "E_BACKEND_RESOLUTION",
+            ),
+            (
+                Some(1),
+                "error: Failed to fetch https://example.org: 401 Unauthorized",
+                "E_BACKEND_AUTH",
+            ),
+            (
+                Some(1),
+                "error: network error: connection refused",
+                "E_BACKEND_NETWORK",
+            ),
+            (
+                Some(2),
+                "error: project.name field is not set",
+                "E_BACKEND_ARGUMENT",
+            ),
+            (
+                Some(1),
+                "password=netrc-secret https://user:pass@example.org token=secret",
+                "E_BACKEND_FAILED",
+            ),
+        ] {
+            let error = classify_backend_failure(exit, stderr);
+            assert_eq!(error.code, code, "{stderr}");
+            assert!(!error.suggestion().contains("PYBUN_BACKEND=native"));
+            let detail = error.detail("lock").to_string();
+            for secret in ["netrc-secret", "user:pass", "token=secret"] {
+                assert!(!detail.contains(secret), "{detail}");
+            }
+        }
+    }
 
     #[test]
     fn index_urls_preserve_queries_and_delegate_named_indexes() {

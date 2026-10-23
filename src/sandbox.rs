@@ -14,6 +14,31 @@ pub const DEFAULT_SANDBOX_MAX_PROCESSES: u64 = 0;
 /// Default maximum file size a sandboxed run may create, in MiB, on Unix.
 pub const DEFAULT_SANDBOX_FILE_SIZE_LIMIT_MB: u64 = 10;
 
+/// Process-creation APIs intercepted by the Python sandbox guard. The MCP
+/// dry-run risk heuristic uses the same list so enforcement and preview cannot
+/// silently drift (Issue #523).
+pub(crate) const PROCESS_CREATION_APIS: &[&str] = &[
+    "subprocess",
+    "os.system",
+    "os.popen",
+    "os.fork",
+    "os.exec",
+    "os.posix_spawn",
+    "os.spawn",
+    "pty",
+];
+
+/// Network primitives intercepted by the Python sandbox guard / common client
+/// libraries that open sockets internally.
+pub(crate) const NETWORK_APIS: &[&str] = &[
+    "socket",
+    "urllib",
+    "http.client",
+    "requests",
+    "httpx",
+    "aiohttp",
+];
+
 fn serialize_policy_paths(paths: &[String]) -> Result<String> {
     serde_json::to_string(paths).map_err(|e| eyre!("failed to serialize sandbox policy paths: {e}"))
 }

@@ -784,6 +784,16 @@ pub(super) fn estimate_run_risk(
         );
     }
     let source = code.or(script_source.as_deref()).unwrap_or_default();
+    for needle in crate::sandbox::PROCESS_CREATION_APIS {
+        if source.contains(needle) {
+            reasons.push(format!("process creation detected: {needle}"));
+        }
+    }
+    for needle in crate::sandbox::NETWORK_APIS {
+        if source.contains(needle) {
+            reasons.push(format!("network access detected: {needle}"));
+        }
+    }
     for (needle, reason) in [
         (
             "shutil.rmtree",
@@ -791,13 +801,22 @@ pub(super) fn estimate_run_risk(
         ),
         ("os.remove", "file deletion detected: os.remove"),
         ("os.unlink", "file deletion detected: os.unlink"),
-        ("subprocess", "subprocess execution detected"),
-        ("socket", "network access detected"),
+        ("os.rmdir", "file deletion detected: os.rmdir"),
+        (".unlink(", "file deletion detected: pathlib.Path.unlink"),
         ("ctypes", "native library access detected: ctypes"),
         ("cffi", "native library access detected: cffi"),
     ] {
         if source.contains(needle) {
             reasons.push(reason.to_string());
+        }
+    }
+    // Dynamic behavior cannot be inspected statically. Call it out explicitly
+    // instead of reporting `low` (per the #449 go/no-go constraint).
+    for needle in ["exec(", "eval(", "compile(", "__import__", "importlib"] {
+        if source.contains(needle) {
+            reasons.push(format!(
+                "dynamic execution detected: {needle} (behavior cannot be fully analyzed)"
+            ));
         }
     }
     if !sandboxed {
@@ -1083,5 +1102,67 @@ mod risk_tests {
             ("low".to_string(), vec![])
         );
         assert_eq!(estimate_run_risk(Some(path), None, false).0, "high");
+    }
+
+    #[test]
+    fn process_network_and_dynamic_primitives_are_not_low() {
+        for (code, expected) in [
+            ("import os; os.system('id')", "process creation"),
+            ("import os; os.popen('id').read()", "process creation"),
+            ("import os; os.execv('/bin/sh', ['sh'])", "process creation"),
+            ("import subprocess", "process creation"),
+            (
+                "import urllib.request; urllib.request.urlopen('http://x')",
+                "network access",
+            ),
+            (
+                "import requests; requests.get('http://x')",
+                "network access",
+            ),
+            ("import httpx", "network access"),
+            ("import http.client", "network access"),
+            ("exec(open('x').read())", "dynamic execution"),
+            ("eval('1+1')", "dynamic execution"),
+            ("compile('1', '<x>', 'eval')", "dynamic execution"),
+            ("__import__('os')", "dynamic execution"),
+            (
+                "import importlib; importlib.import_module('os')",
+                "dynamic execution",
+            ),
+        ] {
+            let (risk, reasons) = estimate_run_risk(None, Some(code), true);
+            assert_eq!(risk, "medium", "{code}: {reasons:?}");
+            assert!(
+                reasons.iter().any(|reason| reason.contains(expected)),
+                "{code}: {reasons:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn deletion_primitives_are_high_risk() {
+        for code in [
+            "import shutil; shutil.rmtree('x')",
+            "import os; os.remove('x')",
+            "import os; os.rmdir('x')",
+            "from pathlib import Path; Path('x').unlink()",
+        ] {
+            let (risk, reasons) = estimate_run_risk(None, Some(code), true);
+            assert_eq!(risk, "high", "{code}: {reasons:?}");
+        }
+    }
+
+    #[test]
+    fn script_files_use_the_same_heuristics() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("risky.py");
+        fs::write(&path, "import os\nos.system('echo hi')\n").unwrap();
+        let (risk, reasons) = estimate_run_risk(Some(path.to_str().unwrap()), None, true);
+        assert_eq!(risk, "medium");
+        assert!(
+            reasons
+                .iter()
+                .any(|reason| reason.contains("process creation"))
+        );
     }
 }
