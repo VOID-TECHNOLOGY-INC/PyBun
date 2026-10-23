@@ -223,7 +223,7 @@ When implementing install features, ensure project isolation:
 - Progress events go in `events` array
 
 ### Cross-Platform Support
-- Primary: macOS (x86_64, ARM64), Linux (x86_64 glibc/musl, ARM64 glibc/musl)
+- Primary: macOS (x86_64, ARM64), Linux (x86_64 glibc/musl, ARM64 glibc). ARM64 musl has no published build; the shim and `install.sh` fail fast with an actionable message.
 - Preview: Windows (x86_64)
 - Use conditional compilation (`#[cfg(unix)]`, `#[cfg(windows)]`) when needed
 - Test in CI matrix to prevent platform-specific breakage

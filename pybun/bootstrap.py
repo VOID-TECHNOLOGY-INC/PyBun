@@ -105,6 +105,17 @@ def detect_target(
                 return "x86_64-unknown-linux-musl"
             return "x86_64-unknown-linux-gnu"
         if machine in {"aarch64", "arm64"}:
+            if is_musl is None:
+                is_musl = detect_musl()
+            if is_musl:
+                # No aarch64 musl asset is published. Selecting the glibc build
+                # makes exec fail later with an opaque ENOENT for the missing
+                # dynamic loader, so fail with an actionable error instead.
+                raise BootstrapError(
+                    "no PyBun build for aarch64 musl (Alpine); use a glibc-based "
+                    "image, install from source, or set PYBUN_PYPI_TARGET to a "
+                    "compatible published target."
+                )
             return "aarch64-unknown-linux-gnu"
         raise BootstrapError(f"unsupported Linux arch: {machine}")
 
