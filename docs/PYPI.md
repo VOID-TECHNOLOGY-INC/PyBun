@@ -9,7 +9,24 @@ python -m build
 python -m pip install dist/pybun_cli-*.whl
 pybun --version
 ```
-`PYBUN_PYPI_MANIFEST` or `PYBUN_INSTALL_MANIFEST` can point the shim at a custom release manifest for testing, and `PYBUN_PYPI_NO_VERIFY=1` skips checksum/signature verification when working offline.
+`PYBUN_PYPI_MANIFEST` or `PYBUN_INSTALL_MANIFEST` can point the shim at a custom release manifest for testing.
+
+## Prerequisite: minisign
+
+The shim downloads a PyBun binary from the release manifest and verifies its
+minisign signature before executing it. `minisign` must be installed and on
+`PATH`; otherwise the first `pybun` invocation fails closed, and MCP clients
+such as Claude Desktop only see the server exit:
+
+| Platform | Command |
+| --- | --- |
+| macOS | `brew install minisign` |
+| Debian/Ubuntu | `apt-get install minisign` |
+| Alpine | `apk add minisign` |
+| Windows | `scoop install minisign` |
+
+`PYBUN_PYPI_NO_VERIFY=1` skips checksum/signature verification. It is insecure
+and intended only for offline testing, not as a normal installation step.
 
 ## Publishing flow
 1) Align versions in `Cargo.toml` and `pyproject.toml` with the release tag (`vX.Y.Z`).

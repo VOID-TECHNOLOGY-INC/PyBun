@@ -291,5 +291,27 @@ class SafeExtractTarTests(unittest.TestCase):
                 self.assertEqual(f.read(), "hello")
 
 
+class MinisignPrerequisiteTests(unittest.TestCase):
+    def test_missing_minisign_error_lists_install_commands(self):
+        from unittest import mock
+
+        signature = {
+            "type": "minisign",
+            "value": "untrusted comment: signature\nabc",
+            "public_key": "untrusted comment: public key\ndef",
+        }
+        with mock.patch.object(bootstrap.shutil, "which", return_value=None):
+            with self.assertRaises(bootstrap.BootstrapError) as caught:
+                bootstrap._verify_signature("archive.tar.gz", signature)
+        message = str(caught.exception)
+        for command in ("brew install minisign", "apt-get install minisign", "apk add minisign"):
+            self.assertIn(command, message)
+        self.assertIn("insecure", message)
+        self.assertLess(
+            message.index("brew install minisign"),
+            message.index("PYBUN_PYPI_NO_VERIFY"),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
