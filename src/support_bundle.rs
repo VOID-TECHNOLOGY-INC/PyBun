@@ -411,18 +411,22 @@ fn write_json_file(
     value: &Value,
     rules: &RedactionRules,
 ) -> Result<(BundleFile, usize), BundleError> {
+    // `redact_json_value` is structural: it replaces values while preserving
+    // JSON syntax. Running the line-based text redactor afterwards rewrote
+    // keys/indentation/quotes and produced invalid JSON whenever a
+    // credential-like name was present (Issue #518).
     let redacted = rules.redact_json_value(value);
     let content = serde_json::to_string_pretty(&redacted)?;
-    write_text_file(path, &content, rules)
+    let redactions = content.matches("<redacted>").count();
+    write_prepared_file(path, &content, redactions)
 }
 
-fn write_text_file(
+fn write_prepared_file(
     path: &Path,
     content: &str,
-    rules: &RedactionRules,
+    redactions: usize,
 ) -> Result<(BundleFile, usize), BundleError> {
-    let (sanitized, redactions) = rules.redact_text(content);
-    fs::write(path, sanitized.as_bytes())?;
+    fs::write(path, content.as_bytes())?;
     let bytes = fs::metadata(path)?.len();
     Ok((
         BundleFile {
