@@ -86,7 +86,12 @@ detect_target() {
             printf '%s\n' "x86_64-unknown-linux-gnu"
           fi
           ;;
-        aarch64|arm64) printf '%s\n' "aarch64-unknown-linux-gnu" ;;
+        aarch64|arm64)
+          if is_musl; then
+            die "no PyBun build for aarch64 musl (Alpine); use a glibc-based image or install from source"
+          fi
+          printf '%s\n' "aarch64-unknown-linux-gnu"
+          ;;
         *) die "unsupported Linux arch: $arch" ;;
       esac
       ;;

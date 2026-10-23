@@ -22,6 +22,27 @@ class DetectTargetTests(unittest.TestCase):
         target = bootstrap.detect_target(system="Linux", machine="x86_64", is_musl=False)
         self.assertEqual(target, "x86_64-unknown-linux-gnu")
 
+    def test_linux_aarch64_gnu(self):
+        target = bootstrap.detect_target(system="Linux", machine="aarch64", is_musl=False)
+        self.assertEqual(target, "aarch64-unknown-linux-gnu")
+
+    def test_linux_aarch64_musl_fails_fast(self):
+        with self.assertRaises(bootstrap.BootstrapError) as caught:
+            bootstrap.detect_target(system="Linux", machine="aarch64", is_musl=True)
+        self.assertIn("aarch64 musl", str(caught.exception))
+
+    def test_explicit_target_still_overrides_aarch64_musl(self):
+        previous = os.environ.get("PYBUN_PYPI_TARGET")
+        os.environ["PYBUN_PYPI_TARGET"] = "aarch64-unknown-linux-musl"
+        try:
+            target = bootstrap.detect_target(system="Linux", machine="aarch64", is_musl=True)
+        finally:
+            if previous is None:
+                os.environ.pop("PYBUN_PYPI_TARGET", None)
+            else:
+                os.environ["PYBUN_PYPI_TARGET"] = previous
+        self.assertEqual(target, "aarch64-unknown-linux-musl")
+
 
 class SelectAssetTests(unittest.TestCase):
     def test_select_asset_by_target(self):
