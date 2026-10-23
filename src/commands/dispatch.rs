@@ -200,7 +200,7 @@ async fn dispatch_package(
             match result {
                 Ok(detail) => RenderDetail::with_json(format!("uv {name} completed"), detail),
                 Err(error) => {
-                    collector.error_with_code(error.code, error.message, "Check uv configuration or select PYBUN_BACKEND=native for explicit experimental compatibility.");
+                    collector.error_with_code(error.code, error.message, error.suggestion());
                     RenderDetail::error(error.message, error.detail(name))
                 }
             },
@@ -541,11 +541,28 @@ async fn dispatch_execution(
                     Ok(value) => {
                         let code = value["exit_code"].as_i64().unwrap_or(1) as i32;
                         if code != 0 {
-                            collector.error_with_code(
-                                "E_RUN_FAILED",
-                                "Python execution failed.",
-                                "Inspect the structured execution result.",
-                            );
+                            // Promote the backend's parsed traceback diagnostic
+                            // (including self-healing hints) instead of hiding it
+                            // behind a generic E_RUN_FAILED (Issue #520).
+                            let promoted = value["diagnostics"]
+                                .as_array()
+                                .into_iter()
+                                .flatten()
+                                .filter_map(|raw| {
+                                    serde_json::from_value::<Diagnostic>(raw.clone()).ok()
+                                })
+                                .collect::<Vec<_>>();
+                            if promoted.is_empty() {
+                                collector.error_with_code(
+                                    "E_RUN_FAILED",
+                                    "Python execution failed.",
+                                    "Inspect the structured execution result.",
+                                );
+                            } else {
+                                for diagnostic in promoted {
+                                    collector.diagnostic(diagnostic);
+                                }
+                            }
                         }
                         if matches!(format, OutputFormat::Text) {
                             eprint!("{}", value["stderr"].as_str().unwrap_or_default());

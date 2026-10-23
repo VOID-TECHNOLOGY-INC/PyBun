@@ -2,6 +2,42 @@ use super::*;
 use crate::cli::RunArgs;
 use crate::sandbox::{self, SandboxConfig};
 
+/// Build the same structured traceback diagnostic the native path emits,
+/// including the `next_action` self-healing hint. `dispatch_execution`
+/// promotes this into the response envelope (Issue #520).
+pub(crate) fn runtime_diagnostic(stderr: &str) -> crate::schema::Diagnostic {
+    let Some(tb) = crate::traceback::parse(stderr) else {
+        return crate::schema::Diagnostic::error("Python execution failed.")
+            .with_code("E_RUN_FAILED");
+    };
+    let mut diagnostic = crate::schema::Diagnostic::error(tb.message).with_code(tb.code);
+    diagnostic.exception_type = Some(tb.exception_type);
+    if let Some(location) = tb.location {
+        diagnostic.file = Some(location.file.clone());
+        diagnostic.line = Some(location.line);
+        diagnostic.location = Some(json!({
+            "file": location.file,
+            "line": location.line,
+            "function": location.function,
+        }));
+    }
+    if let Some(action) = &tb.next_action {
+        diagnostic.suggestion = Some(format!(
+            "Run: pybun add {}",
+            action
+                .args
+                .get("package")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+        ));
+        diagnostic.next_action = Some(json!({
+            "tool": action.tool,
+            "args": action.args,
+        }));
+    }
+    diagnostic
+}
+
 pub fn applicable(args: &RunArgs) -> bool {
     if native_selected() {
         return false;
@@ -227,12 +263,7 @@ impl UvBackend {
         let stderr =
             String::from_utf8_lossy(result.stderr.as_deref().unwrap_or_default()).to_string();
         let diagnostics = if exit_code != 0 {
-            let diagnostic = match crate::traceback::parse(&stderr) {
-                Some(tb) => crate::schema::Diagnostic::error(tb.message).with_code(tb.code),
-                None => crate::schema::Diagnostic::error("Python execution failed.")
-                    .with_code("E_RUN_FAILED"),
-            };
-            vec![diagnostic]
+            vec![runtime_diagnostic(&stderr)]
         } else {
             Vec::new()
         };
@@ -256,5 +287,36 @@ impl UvBackend {
                 "lazy_imports": profile_config.lazy_imports, "lazy_imports_injected": false, "timing": profile_config.timing },
         });
         publish_receipt(&root, result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn module_not_found_promotes_the_self_healing_hint() {
+        let stderr = "Traceback (most recent call last):\n  File \"main.py\", line 1, in <module>\n    import requests\nModuleNotFoundError: No module named 'requests'\n";
+        let diagnostic = runtime_diagnostic(stderr);
+        assert_eq!(
+            diagnostic.code.as_deref(),
+            Some("E_RUNTIME_MODULE_NOT_FOUND")
+        );
+        assert_eq!(
+            diagnostic.suggestion.as_deref(),
+            Some("Run: pybun add requests")
+        );
+        assert!(diagnostic.next_action.is_some());
+        assert_eq!(
+            diagnostic.exception_type.as_deref(),
+            Some("ModuleNotFoundError")
+        );
+    }
+
+    #[test]
+    fn non_traceback_failure_falls_back_to_generic_code() {
+        let diagnostic = runtime_diagnostic("plain failure\n");
+        assert_eq!(diagnostic.code.as_deref(), Some("E_RUN_FAILED"));
+        assert!(diagnostic.suggestion.is_none());
     }
 }
