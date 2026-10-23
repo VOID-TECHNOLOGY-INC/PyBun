@@ -871,7 +871,7 @@ async fn dispatch_tooling(
                         collector.error_with_code(
                             "E_BUILD_FAILED",
                             e.to_string(),
-                            "Ensure the `build` package is installed (`pybun add build --dev`) and pyproject.toml is valid, then re-run `pybun build`.",
+                            "Ensure the `build` package is installed (`pybun add build`) and pyproject.toml is valid, then re-run `pybun build`.",
                         );
                     }
                     RenderDetail::error(

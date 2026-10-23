@@ -218,6 +218,15 @@ impl BackendRequest {
                         "Package arguments must be requirements, not backend flags.",
                     ));
                 }
+                if a.dev {
+                    request.args.push("--dev".into());
+                }
+                if let Some(group) = &a.group {
+                    request.args.extend(["--group".into(), group.into()]);
+                }
+                if let Some(extra) = &a.optional {
+                    request.args.extend(["--optional".into(), extra.into()]);
+                }
                 request.args.extend(a.packages.iter().map(OsString::from));
                 (a.offline, a.pre)
             }

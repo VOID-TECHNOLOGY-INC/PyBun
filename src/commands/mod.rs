@@ -478,10 +478,10 @@ fn run_build(
                 collector.diagnostic(
                     Diagnostic::error("python -m build failed: No module named build")
                         .with_code("E_BUILD_MISSING_BUILD_PKG")
-                        .with_suggestion("pybun add build --dev\n  or: pip install build"),
+                        .with_suggestion("pybun add build\n  or: pip install build"),
                 );
                 if matches!(format, OutputFormat::Text) {
-                    eprintln!("hint: Install the build package first: pybun add build --dev");
+                    eprintln!("hint: Install the build package first: pybun add build");
                     eprintln!("      or: pip install build");
                 }
                 return Err(eyre!("python -m build failed: No module named build"));
