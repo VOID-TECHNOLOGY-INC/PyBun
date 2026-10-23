@@ -627,3 +627,47 @@ fn audit_unknown_or_unavailable_advisories_cannot_pass_gates() {
         }
     }
 }
+
+/// Issue #519: uv/virtualenv write `version_info` / `python-version` instead of
+/// stdlib `version`. The normalized version must reach `detail.python_env`.
+#[cfg(unix)]
+#[test]
+fn audit_reports_normalized_uv_venv_version() {
+    let server = MockServer::start();
+    let _osv_mock = server.mock(|when, then| {
+        when.method(POST).path("/v1/querybatch");
+        then.status(200)
+            .header("Content-Type", "application/json")
+            .body(r#"{"results":[]}"#);
+    });
+
+    let project = tempdir().unwrap();
+    let fake_venv = make_fake_pip_venv(project.path(), r#"[{"name": "demo", "version": "1.0.0"}]"#);
+    std::fs::write(
+        fake_venv.join("pyvenv.cfg"),
+        "home = /usr/bin\nversion_info = 3.13.14\ninclude-system-site-packages = false\n",
+    )
+    .unwrap();
+
+    let osv_url = format!("{}/v1/querybatch", server.base_url());
+    let output = bin()
+        .current_dir(project.path())
+        .env("PYBUN_OSV_URL", &osv_url)
+        .env("PYBUN_ENV", &fake_venv)
+        .env("PYBUN_BACKEND", "native")
+        .args(["--format=json", "audit"])
+        .output()
+        .expect("failed to run pybun audit");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value: Value = serde_json::from_slice(&output.stdout).expect("valid JSON output");
+    assert_eq!(
+        value["detail"]["python_env"]["version"].as_str(),
+        Some("3.13.14"),
+        "{value}"
+    );
+}
