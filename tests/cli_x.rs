@@ -180,3 +180,109 @@ fn x_json_mode_zero_exit_reports_ok_status() {
     assert_eq!(value["status"], "ok");
     assert_eq!(value["detail"]["exit_code"], 0);
 }
+
+#[cfg(unix)]
+fn fake_uv_environment(temp: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let bin = temp.join("fake-bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let uv = bin.join("uv");
+    std::fs::write(
+        &uv,
+        r#"#!/bin/sh
+set -e
+if [ "$1" = "pip" ] && [ "$2" = "install" ]; then
+  venv="$5"
+  package="$6"
+  cat > "$venv/bin/$package" <<'TOOL'
+#!/bin/sh
+echo '{"ok":true}'
+echo 'tool stderr line' >&2
+exit "${FAKE_TOOL_EXIT:-0}"
+TOOL
+  chmod +x "$venv/bin/$package"
+fi
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&uv, std::fs::Permissions::from_mode(0o755)).unwrap();
+    (bin, uv)
+}
+
+#[cfg(unix)]
+#[test]
+fn x_json_mode_captures_real_tool_stdout_and_stderr() {
+    let temp = tempfile::tempdir().unwrap();
+    let (fake_bin, _) = fake_uv_environment(temp.path());
+    let path = format!(
+        "{}:{}",
+        fake_bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    let output = bin()
+        .current_dir(temp.path())
+        .args(["--format=json", "x", "hello"])
+        .env("PATH", path)
+        .env("PYBUN_PYTHON", "python3")
+        .env_remove("PYBUN_X_DRY_RUN")
+        .output()
+        .expect("run pybun");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let value: Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|_| panic!("stdout must be exactly one JSON document, got: {stdout}"));
+    assert_eq!(value["status"], "ok", "{value}");
+    assert!(
+        value["detail"]["stdout"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("{\"ok\":true}"),
+        "{value}"
+    );
+    assert!(
+        value["detail"]["stderr"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("tool stderr line"),
+        "{value}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn x_json_mode_nonzero_real_tool_adds_diagnostic() {
+    let temp = tempfile::tempdir().unwrap();
+    let (fake_bin, _) = fake_uv_environment(temp.path());
+    let path = format!(
+        "{}:{}",
+        fake_bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    let output = bin()
+        .current_dir(temp.path())
+        .args(["--format=json", "x", "hello"])
+        .env("PATH", path)
+        .env("PYBUN_PYTHON", "python3")
+        .env("FAKE_TOOL_EXIT", "3")
+        .env_remove("PYBUN_X_DRY_RUN")
+        .output()
+        .expect("run pybun");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let value: Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|_| panic!("stdout must be exactly one JSON document, got: {stdout}"));
+    assert_eq!(value["status"], "error", "{value}");
+    assert_eq!(value["detail"]["exit_code"], 3);
+    assert_eq!(output.status.code(), Some(3));
+    assert!(
+        value["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == "E_X_EXIT_NONZERO"),
+        "{value}"
+    );
+}
