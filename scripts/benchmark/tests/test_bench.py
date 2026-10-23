@@ -134,3 +134,38 @@ class TestMeasurementFailures(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestGeometricSummary(unittest.TestCase):
+    def test_speedup_summary_uses_geometric_mean(self) -> None:
+        results = [
+            bench.BenchResult(scenario="s", tool="pybun", duration_ms=100.0),
+            bench.BenchResult(scenario="s", tool="uv", duration_ms=400.0),
+            bench.BenchResult(scenario="s2", tool="pybun", duration_ms=100.0),
+            bench.BenchResult(scenario="s2", tool="uv", duration_ms=50.0),
+        ]
+        summary = bench.generate_summary(results)
+        self.assertAlmostEqual(summary["geometric_mean_speedup"], 1.41, places=2)
+        self.assertAlmostEqual(summary["arithmetic_mean_speedup"], 2.25, places=2)
+        self.assertEqual(summary["average_speedup"], summary["geometric_mean_speedup"])
+
+
+class TestRequiredStdout(unittest.TestCase):
+    def test_missing_marker_marks_the_run_as_failed(self) -> None:
+        import sys
+
+        ok = bench.measure_command(
+            [sys.executable, "-c", "print('tool-output')"],
+            warmup=0,
+            iterations=1,
+            required_stdout="tool-output",
+        )
+        self.assertTrue(ok.success, ok.error)
+        missing = bench.measure_command(
+            [sys.executable, "-c", "print('pybun usage')"],
+            warmup=0,
+            iterations=1,
+            required_stdout="tool-output",
+        )
+        self.assertFalse(missing.success)
+        self.assertIn("does not contain", missing.error or "")

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import select
 import subprocess
 import tempfile
@@ -78,7 +79,15 @@ def tool_response_error(response: dict | None) -> str | None:
 class McpStdioSession:
     """Line-oriented stdio client for a single MCP server process."""
 
-    def __init__(self, pybun_path: str) -> None:
+    def __init__(
+        self,
+        pybun_path: str,
+        env: dict[str, str] | None = None,
+        cwd: str | None = None,
+    ) -> None:
+        run_env = os.environ.copy()
+        if env:
+            run_env.update(env)
         self._proc = subprocess.Popen(
             [pybun_path, "mcp", "serve", "--stdio"],
             stdin=subprocess.PIPE,
@@ -86,6 +95,8 @@ class McpStdioSession:
             stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
+            env=run_env,
+            cwd=cwd,
         )
         self._pending: dict[str, dict] = {}
 
@@ -198,12 +209,14 @@ def measure_mcp_round(
     init_request: dict,
     call_request: dict,
     timeout: int = 30,
+    env: dict[str, str] | None = None,
+    cwd: str | None = None,
 ) -> tuple[dict | None, dict | None, float]:
     """
     Measure one MCP benchmark sample using a single stdio server session.
     Returns (initialize_response, tool_response, tool_call_elapsed_ms).
     """
-    with McpStdioSession(pybun_path) as session:
+    with McpStdioSession(pybun_path, env=env, cwd=cwd) as session:
         init_response, _ = session.send_request(init_request, timeout=timeout)
         call_response, call_time = session.send_request(call_request, timeout=timeout)
     return init_response, call_response, call_time
@@ -215,6 +228,8 @@ def measure_mcp_tool(
     arguments: dict,
     iterations: int = 5,
     warmup: int = 1,
+    env: dict[str, str] | None = None,
+    cwd: str | None = None,
 ) -> BenchResult:
     """Measure MCP tool call latency."""
     # Initialize request
@@ -247,7 +262,7 @@ def measure_mcp_tool(
     # Warmup
     for _ in range(warmup):
         try:
-            measure_mcp_round(pybun_path, init_request, call_request)
+            measure_mcp_round(pybun_path, init_request, call_request, env=env, cwd=cwd)
         except Exception:
             pass
 
@@ -258,6 +273,8 @@ def measure_mcp_tool(
                 pybun_path,
                 init_request,
                 call_request,
+                env=env,
+                cwd=cwd,
             )
         except Exception as exc:
             init_response = None
@@ -318,6 +335,28 @@ def mcp_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
     with tempfile.TemporaryDirectory(prefix="pybun_mcp_bench_") as tmpdir:
         tmp = Path(tmpdir)
         
+        # A policy is required before protected tools run. Keep it inside the
+        # isolated working directory and start the server with cwd=tmp so
+        # script paths resolve inside the project boundary (Issue #527).
+        (tmp / "pyproject.toml").write_text(
+            "[project]\nname = \"mcp-bench\"\nversion = \"0.1.0\"\ndependencies = []\n"
+        )
+        policy_path = tmp / "policy.toml"
+        policy_path.write_text(
+            "[tool.pybun.mcp.policy]\n"
+            "default_sandbox = true\n"
+            "require_sandbox = true\n"
+            "allow_network = false\n"
+            "max_execution_time_s = 30\n"
+            "allowed_working_directories = [\".\"]\n"
+            "allowed_backends = [\"uv\", \"native\"]\n"
+        )
+        mcp_env = {
+            "PYBUN_MCP_POLICY": str(policy_path),
+            "PYBUN_HOME": str(tmp / "home"),
+        }
+        mcp_cwd = str(tmp)
+
         # Create a simple script for run tests
         test_script = tmp / "test.py"
         test_script.write_text('print("Hello from MCP!")')
@@ -337,6 +376,8 @@ def mcp_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
                     {},
                     iterations=iterations,
                     warmup=warmup,
+                    env=mcp_env,
+                    cwd=mcp_cwd,
                 )
                 result.scenario = "B8.1_doctor"
                 results.append(result)
@@ -359,6 +400,8 @@ def mcp_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
                     {"code": "print('Hello')"},
                     iterations=iterations,
                     warmup=warmup,
+                    env=mcp_env,
+                    cwd=mcp_cwd,
                 )
                 result.scenario = "B8.2_run_inline"
                 result.metadata["mode"] = "inline"
@@ -372,6 +415,8 @@ def mcp_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
                     {"script": str(test_script)},
                     iterations=iterations,
                     warmup=warmup,
+                    env=mcp_env,
+                    cwd=mcp_cwd,
                 )
                 result.scenario = "B8.2_run_script"
                 result.metadata["mode"] = "script"
@@ -393,6 +438,8 @@ def mcp_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
                     {"requirements": ["requests>=2.28.0"]},
                     iterations=iterations,
                     warmup=warmup,
+                    env={**mcp_env, "PYBUN_BACKEND": "native"},
+                    cwd=mcp_cwd,
                 )
                 result.scenario = "B8.3_resolve"
                 results.append(result)
@@ -417,6 +464,7 @@ def mcp_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
                 warmup=warmup,
                 iterations=iterations,
                 trim_ratio=trim_ratio,
+                cwd=mcp_cwd,
             )
             result.scenario = "B8.4_json_overhead"
             result.tool = "pybun_text"
@@ -437,6 +485,7 @@ def mcp_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
                 warmup=warmup,
                 iterations=iterations,
                 trim_ratio=trim_ratio,
+                cwd=mcp_cwd,
             )
             result.scenario = "B8.4_json_overhead"
             result.tool = "pybun_json"
