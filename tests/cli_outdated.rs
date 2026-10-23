@@ -176,3 +176,36 @@ dependencies = ["requests"]
         "corrupt lockfile should not be reported as missing: {stdout}"
     );
 }
+
+#[test]
+fn outdated_on_uv_project_recommends_uv_not_pybun_lockb() {
+    let temp = TempDir::new().unwrap();
+    fs::write(
+        temp.path().join("pyproject.toml"),
+        "[project]\nname = \"demo\"\nversion = \"0.1.0\"\ndependencies = [\"requests\"]\n",
+    )
+    .unwrap();
+    fs::write(temp.path().join("uv.lock"), "version = 1\n").unwrap();
+
+    let output = cargo_bin_cmd!("pybun")
+        .current_dir(temp.path())
+        .env("PYBUN_BACKEND", "uv")
+        .args(["--format=json", "outdated"])
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        value["diagnostics"][0]["code"], "E_OUTDATED_UNSUPPORTED_BACKEND",
+        "{value}"
+    );
+    let suggestion = value["diagnostics"][0]["suggestion"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(suggestion.contains("uv tree --outdated"), "{value}");
+    assert!(
+        !suggestion.contains("`pybun install` to generate"),
+        "{value}"
+    );
+}

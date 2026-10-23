@@ -1294,6 +1294,18 @@ pub(super) async fn run_outdated(
     let lock_path = cwd.join("pybun.lockb");
 
     if !lock_path.exists() {
+        // On the uv backend `pybun install` runs `uv sync` and writes uv.lock;
+        // it never creates pybun.lockb, so the native remediation would loop
+        // forever (Issue #524).
+        if !crate::backend::native_selected() || cwd.join("uv.lock").is_file() {
+            let message = "pybun outdated reads only the native pybun.lockb; this project uses the uv backend.".to_string();
+            collector.error_with_code(
+                "E_OUTDATED_UNSUPPORTED_BACKEND",
+                message.clone(),
+                "Run `uv tree --outdated` or `uv lock --upgrade --dry-run`; for the native path run `PYBUN_BACKEND=native pybun install` first.",
+            );
+            return Err(eyre!(message));
+        }
         let message = "pybun.lockb not found. Run 'pybun install' first.".to_string();
         collector.error_with_code(
             "E_LOCKFILE_NOT_FOUND",
