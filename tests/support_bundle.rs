@@ -35,6 +35,25 @@ fn doctor_bundle_creates_bundle_and_redacts_env() {
     let env_json = fs::read_to_string(bundle_path.join("env.json")).unwrap();
     assert!(env_json.contains("<redacted>"));
     assert!(!env_json.contains("super-secret"));
+    let parsed: serde_json::Value = serde_json::from_str(&env_json)
+        .unwrap_or_else(|error| panic!("env.json must stay valid JSON: {error}\n{env_json}"));
+    assert_eq!(
+        parsed["environment"]["PYBUN_TEST_TOKEN"], "<redacted>",
+        "{env_json}"
+    );
+
+    for entry in fs::read_dir(&bundle_path).unwrap().flatten() {
+        let path = entry.path();
+        if path
+            .extension()
+            .is_some_and(|extension| extension == "json")
+        {
+            let text = fs::read_to_string(&path).unwrap();
+            serde_json::from_str::<serde_json::Value>(&text).unwrap_or_else(|error| {
+                panic!("{} must be valid JSON: {error}\n{text}", path.display())
+            });
+        }
+    }
 }
 
 #[test]
