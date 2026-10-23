@@ -187,19 +187,48 @@ pub(crate) fn find_venv_python(venv_path: &Path) -> Option<PathBuf> {
 }
 
 /// Try to get Python version from venv's pyvenv.cfg.
+///
+/// Creators write different keys: stdlib `venv` writes `version`, uv writes
+/// only `version_info`, and virtualenv writes `python-version`, `version_info`
+/// and `version`. Match keys exactly (a prefix match on "version" also matched
+/// `version_info` and produced values like `_info = 3.13.14.final.0`,
+/// Issue #519).
 fn get_python_version_from_venv(venv_path: &Path) -> Option<String> {
-    let cfg_path = venv_path.join("pyvenv.cfg");
-    if let Ok(content) = std::fs::read_to_string(&cfg_path) {
-        for line in content.lines() {
-            if let Some(stripped) = line.strip_prefix("version") {
-                let value = stripped.trim().trim_start_matches(['=', ' ']);
-                if !value.is_empty() {
-                    return Some(value.to_string());
-                }
-            }
+    let content = std::fs::read_to_string(venv_path.join("pyvenv.cfg")).ok()?;
+    let mut version = None;
+    let mut version_info = None;
+    let mut python_version = None;
+    for line in content.lines() {
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let value = value.trim();
+        if value.is_empty() {
+            continue;
         }
+        match key.trim().to_ascii_lowercase().as_str() {
+            "version" => version.get_or_insert_with(|| value.to_string()),
+            "version_info" => version_info.get_or_insert_with(|| value.to_string()),
+            "python-version" => python_version.get_or_insert_with(|| value.to_string()),
+            _ => continue,
+        };
     }
-    None
+    version
+        .or(version_info)
+        .or(python_version)
+        .and_then(|value| normalize_venv_version(&value))
+}
+
+/// Keep `major.minor[.micro]` from values such as `3.13.14.final.0`.
+fn normalize_venv_version(value: &str) -> Option<String> {
+    let mut parts = Vec::new();
+    for part in value.trim().split('.') {
+        if parts.len() == 3 || part.is_empty() || !part.chars().all(|ch| ch.is_ascii_digit()) {
+            break;
+        }
+        parts.push(part);
+    }
+    (parts.len() >= 2).then(|| parts.join("."))
 }
 
 /// Find project-local .pybun/venv directory.
@@ -508,6 +537,38 @@ mod tests {
         fs::write(&python3, "fake python3").unwrap();
 
         assert_eq!(find_venv_python(&venv), Some(python3));
+    }
+
+    fn venv_version(config: &str) -> Option<String> {
+        let temp = TempDir::new().unwrap();
+        fs::write(temp.path().join("pyvenv.cfg"), config).unwrap();
+        get_python_version_from_venv(temp.path())
+    }
+
+    #[test]
+    fn test_venv_version_from_stdlib_uv_and_virtualenv() {
+        assert_eq!(
+            venv_version("home = /usr/bin\nversion = 3.12.14\n").as_deref(),
+            Some("3.12.14")
+        );
+        assert_eq!(
+            venv_version("version_info = 3.12.14\ninclude-system-site-packages = false\n")
+                .as_deref(),
+            Some("3.12.14")
+        );
+        assert_eq!(
+            venv_version(
+                "python-version = 3.13\nversion_info = 3.13.14.final.0\nversion = 3.13.14\n"
+            )
+            .as_deref(),
+            Some("3.13.14")
+        );
+        assert_eq!(
+            venv_version("version_info = 3.13.14.final.0\n").as_deref(),
+            Some("3.13.14")
+        );
+        assert_eq!(venv_version("version = 3.12\n").as_deref(), Some("3.12"));
+        assert_eq!(venv_version("home = /usr/bin\n"), None);
     }
 
     #[test]
