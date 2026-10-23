@@ -18,6 +18,17 @@ python bench.py --dry-run
 python bench.py --list
 ```
 
+## 実行環境の注意
+
+- リポジトリ内の `pyproject.toml` 配下で実行すると、`pybun run <一時スクリプト>` が
+  uv プロジェクトの準備を測ってしまう。基準値を取る場合はリポジトリ外の空ディレクトリで実行する。
+- 各シナリオは一時ディレクトリを `cwd` にし、PEP 723 フィクスチャも一時ディレクトリへ
+  コピーするため、リポジトリの `fixtures/*.lock` は生成されない。
+- `pybun x` はツール引数を `--` の後ろに渡す。B4 はツール自身の出力マーカーを検証するので、
+  PyBun の `--help` 画面を誤って成功扱いしない。
+- 速度比の要約は幾何平均 (`summary.average_speedup` = `geometric_mean_speedup`) を使う。
+  算術平均は `arithmetic_mean_speedup` に参考値として残る。
+
 ## UX Gate の再現
 
 `Benchmark UX Gate` は PyBun の uv アダプターが対応する `uv==0.12.13` を使います。

@@ -233,7 +233,7 @@ def resolution_benchmark(config: dict, scenario_config: dict, base_dir: Path) ->
                 req_in = tmp / "requirements.in"
                 req_in.write_text("\n".join(extract_dependencies(pyproject_content)))
 
-                cmd = [uv_path, "pip", "compile", str(req_in), "-o", "/dev/null", "--quiet"]
+                cmd = [uv_path, "pip", "compile", str(req_in), "-o", str(tmp / "compile.out"), "--quiet"]
                 if dry_run:
                     print(f"  Would run: {' '.join(cmd)}")
                 else:
@@ -259,7 +259,7 @@ def resolution_benchmark(config: dict, scenario_config: dict, base_dir: Path) ->
                 if not req_in.exists():
                     req_in.write_text("\n".join(extract_dependencies(pyproject_content)))
 
-                cmd = [pip_compile, str(req_in), "-o", "/dev/null", "--quiet"]
+                cmd = [pip_compile, str(req_in), "-o", str(tmp / "compile.out"), "--quiet"]
                 if dry_run:
                     print(f"  Would run: {' '.join(cmd)}")
                 else:
@@ -333,7 +333,7 @@ def resolution_benchmark(config: dict, scenario_config: dict, base_dir: Path) ->
             req_in = tmp / "requirements.in"
             req_in.write_text("requests>=2.28.0,<2.30.0\nurllib3>=1.26.0,<2.0.0")
 
-            cmd = [uv_path, "pip", "compile", str(req_in), "-o", "/dev/null", "--quiet"]
+            cmd = [uv_path, "pip", "compile", str(req_in), "-o", str(tmp / "compile.out"), "--quiet"]
             if dry_run:
                 print(f"  Would run: {' '.join(cmd)}")
             else:

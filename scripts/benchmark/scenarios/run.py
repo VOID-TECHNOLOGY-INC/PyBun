@@ -65,13 +65,24 @@ print(f"Python: {sys.executable}")
 '''
 
 
-def resolve_pep723_script(base_dir: Path, scenario_config: dict) -> Path:
-    """Resolve the fixed PEP 723 fixture path."""
+def resolve_pep723_script(
+    base_dir: Path, scenario_config: dict, destination: Path | None = None
+) -> Path:
+    """Resolve the PEP 723 fixture, copying it out of the repo when asked.
+
+    Running the repository fixture in place makes PyBun write
+    ``fixtures/pep723.py.lock`` into the working tree (Issue #527).
+    """
     fixture = scenario_config.get("pep723_fixture", "fixtures/pep723.py")
     script_path = (base_dir / fixture).resolve()
     if not script_path.exists():
         raise FileNotFoundError(f"PEP 723 fixture not found: {script_path}")
-    return script_path
+    if destination is None:
+        return script_path
+    destination.mkdir(parents=True, exist_ok=True)
+    target = destination / script_path.name
+    shutil.copyfile(script_path, target)
+    return target
 
 
 def pep723_envs_dir() -> Path:
@@ -256,7 +267,7 @@ def run_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
         if scenario_config.get("pep723", True):
             print("\n--- B3.2: PEP 723 Script (with dependencies) ---")
 
-            pep723_script = resolve_pep723_script(base_dir, scenario_config)
+            pep723_script = resolve_pep723_script(base_dir, scenario_config, tmp)
             
             # PyBun (should handle PEP 723 natively)
             if pybun_path:

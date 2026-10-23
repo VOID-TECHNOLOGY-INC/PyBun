@@ -170,3 +170,21 @@ class TestRunCwdHermetic(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPep723FixtureIsolation(unittest.TestCase):
+    def test_fixture_is_copied_to_the_destination(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            fixture = tmp / "fixtures" / "pep723.py"
+            fixture.parent.mkdir()
+            fixture.write_text("# /// script\nprint('hi')\n")
+            destination = tmp / "work"
+            result = run_module.resolve_pep723_script(
+                tmp, {"pep723_fixture": "fixtures/pep723.py"}, destination
+            )
+            self.assertEqual(result, destination / "pep723.py")
+            self.assertTrue(result.exists())
+            self.assertNotEqual(result, fixture.resolve())

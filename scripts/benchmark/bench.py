@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import platform
 import shutil
@@ -216,9 +217,14 @@ def measure_command(
     cwd: str | None = None,
     trim_ratio: float = 0.0,
     record_samples: bool = False,
+    required_stdout: str | None = None,
 ) -> BenchResult:
     """
     Execute command multiple times and measure performance.
+
+    When ``required_stdout`` is set, the combined stdout/stderr must contain it,
+    so a command that silently ran something else (for example PyBun's own
+    ``--help`` instead of the requested tool) cannot be counted as success.
     
     Returns BenchResult with timing statistics.
     """
@@ -239,6 +245,14 @@ def measure_command(
                 last_error = _process_diagnostic(
                     f"warmup exit code {result.returncode}", result.stdout, result.stderr,
                 )
+            elif required_stdout is not None:
+                output = (result.stdout or b"") + (result.stderr or b"")
+                if required_stdout.encode() not in output:
+                    success = False
+                    last_error = (
+                        f"warmup output does not contain {required_stdout!r}: "
+                        f"{output[:200].decode(errors='replace')}"
+                    )
         except subprocess.TimeoutExpired as error:
             success = False
             last_error = _process_diagnostic(f"warmup Timeout after {timeout}s", error.stdout, error.stderr)
@@ -266,6 +280,14 @@ def measure_command(
                 last_error = _process_diagnostic(
                     f"exit code {result.returncode}", result.stdout, result.stderr,
                 )
+            elif required_stdout is not None:
+                output = (result.stdout or b"") + (result.stderr or b"")
+                if required_stdout.encode() not in output:
+                    success = False
+                    last_error = (
+                        f"output does not contain {required_stdout!r}: "
+                        f"{output[:200].decode(errors='replace')}"
+                    )
             
             times.append((end - start) * 1000)  # Convert to ms
             
@@ -439,6 +461,24 @@ def load_scenarios(base_dir: Path):
 
 # === Report Generation ===
 
+def _tool_version(path: str | None) -> str:
+    """Return the reported version of an executable without failing the run."""
+    if not path:
+        return "unknown"
+    try:
+        result = subprocess.run(
+            [path, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return f"unknown ({error})"
+    output = (result.stdout or result.stderr).strip().splitlines()
+    return output[0].strip() if output else "unknown"
+
+
 def generate_summary(results: list[BenchResult]) -> dict:
     """Generate summary statistics from results."""
     if not results:
@@ -472,14 +512,23 @@ def generate_summary(results: list[BenchResult]) -> dict:
                 if pybun_result.duration_ms > 0:
                     speedups.append(r.duration_ms / pybun_result.duration_ms)
     
-    avg_speedup = sum(speedups) / len(speedups) if speedups else 1.0
-    
+    # Ratios are multiplicative: a few bogus 100x+ rows would dominate an
+    # arithmetic mean. Use the geometric mean, and report the arithmetic mean
+    # only as secondary context.
+    if speedups:
+        geometric_speedup = math.exp(sum(math.log(value) for value in speedups) / len(speedups))
+    else:
+        geometric_speedup = 1.0
+    arithmetic_speedup = sum(speedups) / len(speedups) if speedups else 1.0
+
     return {
         "total_scenarios": len(by_scenario),
         "total_benchmarks": len(results),
         "pybun_wins": pybun_wins,
         "pybun_losses": pybun_losses,
-        "average_speedup": round(avg_speedup, 2),
+        "average_speedup": round(geometric_speedup, 2),
+        "geometric_mean_speedup": round(geometric_speedup, 2),
+        "arithmetic_mean_speedup": round(arithmetic_speedup, 2),
         "successful": sum(1 for r in results if r.success),
         "failed": sum(1 for r in results if not r.success),
     }
@@ -529,7 +578,7 @@ def save_markdown_report(report: BenchReport, output_path: Path):
         f"| Total Benchmarks | {summary.get('total_benchmarks', 0)} |",
         f"| PyBun Wins | {summary.get('pybun_wins', 0)} |",
         f"| PyBun Losses | {summary.get('pybun_losses', 0)} |",
-        f"| Average Speedup | {summary.get('average_speedup', 1.0)}x |",
+        f"| Geometric Mean Speedup | {summary.get('average_speedup', 1.0)}x |",
         "",
     ])
     
@@ -722,7 +771,7 @@ def main():
     summary = generate_summary(all_results)
     report = BenchReport(
         meta={
-            "pybun_version": "0.1.0",
+            "pybun_version": _tool_version(find_tool("pybun", config)),
             "timestamp": sys_info.timestamp,
             "system": asdict(sys_info),
         },
@@ -753,7 +802,7 @@ def main():
     print(f"Failed: {summary.get('failed', 0)}")
     print(f"PyBun wins: {summary.get('pybun_wins', 0)}")
     print(f"PyBun losses: {summary.get('pybun_losses', 0)}")
-    print(f"Average speedup: {summary.get('average_speedup', 1.0):.2f}x")
+    print(f"Geometric mean speedup: {summary.get('average_speedup', 1.0):.2f}x")
     
     return 0 if summary.get('failed', 0) == 0 else 1
 

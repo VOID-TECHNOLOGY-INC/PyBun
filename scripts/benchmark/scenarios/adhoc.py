@@ -18,6 +18,23 @@ from pathlib import Path
 # scenario, BenchResult, find_tool, is_tool_enabled, measure_command
 
 
+TOOL_INVOCATIONS = {
+    "cowsay": (["-t", "hello"], "hello"),
+    "black": (["--version"], "black"),
+    "ruff": (["--version"], "ruff"),
+}
+
+
+def tool_invocation(package: str) -> tuple[list[str], str]:
+    """Arguments that make the tool print its own output, plus a marker.
+
+    Nothing may be passed directly after ``pybun x <package>``: clap would
+    parse ``--help`` as PyBun's own flag and exit 0 without running the tool.
+    """
+    base = package.split("==")[0].lower()
+    return TOOL_INVOCATIONS.get(base, (["--help"], base))
+
+
 def adhoc_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
     """Run ad-hoc execution benchmarks."""
     results: list[BenchResult] = []
@@ -42,6 +59,7 @@ def adhoc_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list
     packages = scenario_config.get("packages", ["cowsay", "black", "ruff"])
     
     for package in packages:
+        tool_args, expected_output = tool_invocation(package)
         print(f"\n--- Testing package: {package} ---")
         
         # === B4.1: Cold Run (first execution) ===
@@ -51,7 +69,7 @@ def adhoc_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list
         with tempfile.TemporaryDirectory(prefix=f"pybun_x_bench_{package}_") as tmpdir:
             # PyBun
             if pybun_path:
-                cmd = [pybun_path, "x", package, "--help"]
+                cmd = [pybun_path, "x", package, "--", *tool_args]
                 if dry_run:
                     print(f"    Would run: {' '.join(cmd)}")
                 else:
@@ -63,6 +81,7 @@ def adhoc_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list
                         iterations=1,
                         env={"PYBUN_X_CACHE": tmpdir},  # Use temp cache
                         trim_ratio=trim_ratio,
+                        required_stdout=expected_output,
                     )
                     result.scenario = f"B4.1_cold_{package}"
                     result.tool = "pybun"
@@ -73,7 +92,7 @@ def adhoc_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list
             
             # pipx
             if pipx_path:
-                cmd = [pipx_path, "run", package, "--help"]
+                cmd = [pipx_path, "run", package, *tool_args]
                 if dry_run:
                     print(f"    Would run: {' '.join(cmd)}")
                 else:
@@ -85,6 +104,7 @@ def adhoc_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list
                         iterations=1,
                         env={"PIPX_HOME": tmpdir},
                         trim_ratio=trim_ratio,
+                        required_stdout=expected_output,
                     )
                     result.scenario = f"B4.1_cold_{package}"
                     result.tool = "pipx"
@@ -97,9 +117,9 @@ def adhoc_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list
             if uvx_path:
                 # uvx or uv tool run
                 if "uv" in str(uvx_path) and "uvx" not in str(uvx_path):
-                    cmd = [uvx_path, "tool", "run", package, "--help"]
+                    cmd = [uvx_path, "tool", "run", package, *tool_args]
                 else:
-                    cmd = [uvx_path, package, "--help"]
+                    cmd = [uvx_path, package, *tool_args]
                 
                 if dry_run:
                     print(f"    Would run: {' '.join(cmd)}")
@@ -112,6 +132,7 @@ def adhoc_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list
                         iterations=1,
                         env={"UV_TOOL_DIR": tmpdir},
                         trim_ratio=trim_ratio,
+                        required_stdout=expected_output,
                     )
                     result.scenario = f"B4.1_cold_{package}"
                     result.tool = "uvx"
@@ -125,7 +146,7 @@ def adhoc_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list
         
         # PyBun
         if pybun_path:
-            cmd = [pybun_path, "x", package, "--help"]
+            cmd = [pybun_path, "x", package, "--", *tool_args]
             if dry_run:
                 print(f"    Would run: {' '.join(cmd)}")
             else:
@@ -136,6 +157,7 @@ def adhoc_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list
                     warmup=warmup,
                     iterations=iterations,
                     trim_ratio=trim_ratio,
+                    required_stdout=expected_output,
                 )
                 result.scenario = f"B4.2_warm_{package}"
                 result.tool = "pybun"
@@ -146,7 +168,7 @@ def adhoc_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list
         
         # pipx
         if pipx_path:
-            cmd = [pipx_path, "run", package, "--help"]
+            cmd = [pipx_path, "run", package, *tool_args]
             if dry_run:
                 print(f"    Would run: {' '.join(cmd)}")
             else:
@@ -157,6 +179,7 @@ def adhoc_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list
                     warmup=warmup,
                     iterations=iterations,
                     trim_ratio=trim_ratio,
+                    required_stdout=expected_output,
                 )
                 result.scenario = f"B4.2_warm_{package}"
                 result.tool = "pipx"
@@ -168,9 +191,9 @@ def adhoc_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list
         # uvx
         if uvx_path:
             if "uv" in str(uvx_path) and "uvx" not in str(uvx_path):
-                cmd = [uvx_path, "tool", "run", package, "--help"]
+                cmd = [uvx_path, "tool", "run", package, *tool_args]
             else:
-                cmd = [uvx_path, package, "--help"]
+                cmd = [uvx_path, package, *tool_args]
             
             if dry_run:
                 print(f"    Would run: {' '.join(cmd)}")
@@ -182,6 +205,7 @@ def adhoc_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list
                     warmup=warmup,
                     iterations=iterations,
                     trim_ratio=trim_ratio,
+                    required_stdout=expected_output,
                 )
                 result.scenario = f"B4.2_warm_{package}"
                 result.tool = "uvx"
@@ -195,28 +219,10 @@ def adhoc_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list
     
     # Test with a specific version of black
     versioned_package = "black==23.12.1"
+    tool_args, expected_output = tool_invocation(versioned_package)
     
     if pybun_path:
-        cmd = [pybun_path, "x", versioned_package, "--help"]
-        if dry_run:
-            print(f"  Would run: {' '.join(cmd)}")
-        else:
-            if verbose:
-                print(f"  Running: {' '.join(cmd)}")
-                result = measure_command(
-                    cmd,
-                    warmup=warmup,
-                    iterations=iterations,
-                    trim_ratio=trim_ratio,
-                )
-            result.scenario = "B4.3_versioned"
-            result.tool = "pybun"
-            result.metadata["package"] = versioned_package
-            results.append(result)
-            print(f"  pybun x {versioned_package}: {result.duration_ms:.2f}ms")
-    
-    if pipx_path:
-        cmd = [pipx_path, "run", versioned_package, "--help"]
+        cmd = [pybun_path, "x", versioned_package, "--", *tool_args]
         if dry_run:
             print(f"  Would run: {' '.join(cmd)}")
         else:
@@ -227,6 +233,27 @@ def adhoc_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list
                 warmup=warmup,
                 iterations=iterations,
                 trim_ratio=trim_ratio,
+                required_stdout=expected_output,
+            )
+            result.scenario = "B4.3_versioned"
+            result.tool = "pybun"
+            result.metadata["package"] = versioned_package
+            results.append(result)
+            print(f"  pybun x {versioned_package}: {result.duration_ms:.2f}ms")
+    
+    if pipx_path:
+        cmd = [pipx_path, "run", versioned_package, *tool_args]
+        if dry_run:
+            print(f"  Would run: {' '.join(cmd)}")
+        else:
+            if verbose:
+                print(f"  Running: {' '.join(cmd)}")
+            result = measure_command(
+                cmd,
+                warmup=warmup,
+                iterations=iterations,
+                trim_ratio=trim_ratio,
+                required_stdout=expected_output,
             )
             result.scenario = "B4.3_versioned"
             result.tool = "pipx"
@@ -236,9 +263,9 @@ def adhoc_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list
     
     if uvx_path:
         if "uv" in str(uvx_path) and "uvx" not in str(uvx_path):
-            cmd = [uvx_path, "tool", "run", versioned_package, "--help"]
+            cmd = [uvx_path, "tool", "run", versioned_package, *tool_args]
         else:
-            cmd = [uvx_path, versioned_package, "--help"]
+            cmd = [uvx_path, versioned_package, *tool_args]
         
         if dry_run:
             print(f"  Would run: {' '.join(cmd)}")
@@ -250,6 +277,7 @@ def adhoc_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list
                 warmup=warmup,
                 iterations=iterations,
                 trim_ratio=trim_ratio,
+                required_stdout=expected_output,
             )
             result.scenario = "B4.3_versioned"
             result.tool = "uvx"
