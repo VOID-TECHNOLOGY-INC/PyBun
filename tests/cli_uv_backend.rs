@@ -508,3 +508,101 @@ exit 2
         "{value}"
     );
 }
+
+fn fixture_with_mutating_uv() -> TempDir {
+    let dir = TempDir::new().unwrap();
+    fs::write(
+        dir.path().join("pyproject.toml"),
+        "[project]\nname = \"demo\"\nversion = \"0.1.0\"\ndependencies = [\"click\"]\n\n[dependency-groups]\ndev = [\"pytest\"]\n",
+    )
+    .unwrap();
+    let script = r##"#!/usr/bin/env python3
+import pathlib
+import sys
+
+args = sys.argv[1:]
+if args[:1] == ["--version"]:
+    print("uv 0.12.13")
+    sys.exit(0)
+if args[:1] == ["workspace"]:
+    print(pathlib.Path.cwd())
+    sys.exit(0)
+if args[:1] == ["lock"]:
+    pathlib.Path("uv.lock").write_text("version = 1\n[[package]]\nname = 'demo'\nversion = '0.1.0'\nsource = { virtual = '.' }\n")
+    sys.exit(0)
+if args[:1] == ["sync"]:
+    sys.exit(0)
+
+operation = args[0]
+rest = [arg for arg in args[1:] if arg != "--no-progress"]
+kind = "project"
+name = None
+packages = []
+i = 0
+while i < len(rest):
+    arg = rest[i]
+    if arg == "--dev":
+        kind, name = "group", "dev"
+    elif arg in ("--group", "--optional"):
+        kind = "group" if arg == "--group" else "optional"
+        i += 1
+        name = rest[i]
+    elif arg.startswith("-"):
+        pass
+    else:
+        packages.append(arg)
+    i += 1
+
+base = '[project]\nname = "demo"\nversion = "0.1.0"\ndependencies = ["click"]\n'
+if operation == "add":
+    package = packages[0].split("==")[0].split(">")[0].split("<")[0]
+    if kind == "group":
+        base += f'\n[dependency-groups]\n{name} = ["{package}"]\n'
+    elif kind == "optional":
+        base += f'\n[project.optional-dependencies]\n{name} = ["{package}"]\n'
+    else:
+        base = base.replace('dependencies = ["click"]', f'dependencies = ["click", "{package}"]')
+pathlib.Path("pyproject.toml").write_text(base)
+pathlib.Path("uv.lock").write_text("version = 1\n[[package]]\nname = 'demo'\nversion = '0.1.0'\nsource = { virtual = '.' }\n")
+"##;
+    let uv = dir.path().join("uv");
+    fs::write(&uv, script).unwrap();
+    fs::set_permissions(&uv, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(
+        std::process::Command::new("python3")
+            .args(["-m", "venv", "--without-pip"])
+            .arg(dir.path().join(".venv"))
+            .status()
+            .unwrap()
+            .success()
+    );
+    dir
+}
+
+#[test]
+fn dependency_group_mutations_are_verified_in_their_table() {
+    for (args, expected) in [
+        (
+            vec!["add", "pytest", "--dev"],
+            "[dependency-groups]\ndev = [\"pytest\"]",
+        ),
+        (
+            vec!["add", "ruff", "--group", "lint"],
+            "[dependency-groups]\nlint = [\"ruff\"]",
+        ),
+        (
+            vec!["add", "mkdocs", "--optional", "docs"],
+            "[project.optional-dependencies]\ndocs = [\"mkdocs\"]",
+        ),
+        (
+            vec!["remove", "pytest", "--dev"],
+            "dependencies = [\"click\"]",
+        ),
+    ] {
+        let dir = fixture_with_mutating_uv();
+        let (ok, value) = run(&dir, &args);
+        assert!(ok, "{args:?}: {value}");
+        let pyproject = fs::read_to_string(dir.path().join("pyproject.toml")).unwrap();
+        assert!(pyproject.contains(expected), "{args:?}: {pyproject}");
+    }
+}

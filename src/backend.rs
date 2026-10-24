@@ -144,6 +144,14 @@ pub fn native_selected() -> bool {
     std::env::var("PYBUN_BACKEND").is_ok_and(|v| v == "native")
 }
 
+/// Which pyproject table a dependency mutation targets.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum MutationTarget {
+    Project,
+    DependencyGroup(String),
+    Optional(String),
+}
+
 /// A request contains only uv arguments; subprocess diagnostics are kept private.
 #[derive(Debug)]
 pub struct BackendRequest {
@@ -151,7 +159,7 @@ pub struct BackendRequest {
     args: Vec<OsString>,
     script: Option<PathBuf>,
     needs_env: bool,
-    mutation: Option<(bool, Vec<String>)>,
+    mutation: Option<(bool, Vec<String>, MutationTarget)>,
 }
 
 impl BackendRequest {
@@ -211,7 +219,16 @@ impl BackendRequest {
                 request.operation = if add { "add" } else { "remove" };
                 request.index(a.index.as_deref())?;
                 request.needs_env = true;
-                request.mutation = Some((add, a.packages.clone()));
+                let target = if a.dev {
+                    MutationTarget::DependencyGroup("dev".into())
+                } else if let Some(group) = &a.group {
+                    MutationTarget::DependencyGroup(group.clone())
+                } else if let Some(extra) = &a.optional {
+                    MutationTarget::Optional(extra.clone())
+                } else {
+                    MutationTarget::Project
+                };
+                request.mutation = Some((add, a.packages.clone(), target));
                 if a.packages.iter().any(|p| p.starts_with('-')) {
                     return Err(error(
                         "E_BACKEND_ARGUMENT",
@@ -455,13 +472,13 @@ impl UvBackend {
         if request.needs_env {
             verify_python(&python, self.timeout_secs)?;
         }
-        if let Some((add, specs)) = request.mutation {
+        if let Some((add, specs, target)) = request.mutation {
             let member = self
                 .root
                 .ancestors()
                 .find(|p| p.join("pyproject.toml").is_file())
                 .unwrap_or(&root);
-            verify_mutation(member, add, &specs)?;
+            verify_mutation(member, add, &specs, &target)?;
         }
         let result = json!({
             "contract_version": "2", "status": "success",
@@ -702,7 +719,12 @@ fn publish_receipt(root: &Path, result: Value) -> Result<Value, BackendError> {
     Ok(result)
 }
 
-fn verify_mutation(root: &Path, added: bool, specs: &[String]) -> Result<(), BackendError> {
+fn verify_mutation(
+    root: &Path,
+    added: bool,
+    specs: &[String],
+    target: &MutationTarget,
+) -> Result<(), BackendError> {
     let invalid = || {
         error(
             "E_BACKEND_ARTIFACT",
@@ -711,11 +733,25 @@ fn verify_mutation(root: &Path, added: bool, specs: &[String]) -> Result<(), Bac
     };
     let text = fs::read_to_string(root.join("pyproject.toml")).map_err(|_| invalid())?;
     let project: toml::Value = toml::from_str(&text).map_err(|_| invalid())?;
-    let deps = project
-        .get("project")
-        .and_then(|p| p.get("dependencies"))
-        .and_then(toml::Value::as_array)
-        .ok_or_else(invalid)?;
+    let deps = match target {
+        MutationTarget::Project => project
+            .get("project")
+            .and_then(|p| p.get("dependencies"))
+            .and_then(toml::Value::as_array),
+        MutationTarget::DependencyGroup(group) => project
+            .get("dependency-groups")
+            .and_then(|groups| groups.get(group))
+            .and_then(toml::Value::as_array),
+        MutationTarget::Optional(extra) => project
+            .get("project")
+            .and_then(|p| p.get("optional-dependencies"))
+            .and_then(|extras| extras.get(extra))
+            .and_then(toml::Value::as_array),
+    };
+    // A missing table means the requested dependency is absent. That is valid
+    // for `remove` and invalid for `add`; the per-spec check below decides.
+    let empty: Vec<toml::Value> = Vec::new();
+    let deps = deps.unwrap_or(&empty);
     for spec in specs {
         // Validate local project identity from metadata, without resolving dependencies.
         let local = root.join(spec).join("pyproject.toml");
@@ -766,6 +802,103 @@ fn requirement_name(spec: &str) -> String {
 mod tests {
     use super::*;
     use clap::Parser;
+
+    #[test]
+    fn mutation_verification_checks_the_requested_dependency_table() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(
+            temp.path().join("pyproject.toml"),
+            r#"[project]
+name = "demo"
+dependencies = ["click>=8"]
+
+[project.optional-dependencies]
+docs = ["mkdocs"]
+
+[dependency-groups]
+dev = ["click>=8", "pytest"]
+"#,
+        )
+        .unwrap();
+
+        let specs = vec!["pytest".to_string()];
+        verify_mutation(
+            temp.path(),
+            true,
+            &specs,
+            &MutationTarget::DependencyGroup("dev".into()),
+        )
+        .unwrap();
+        verify_mutation(
+            temp.path(),
+            false,
+            &specs,
+            &MutationTarget::DependencyGroup("dev".into()),
+        )
+        .unwrap_err();
+
+        // An existing project dependency must not make `--dev` add/remove look
+        // applied or unapplied (Issue #540).
+        let click = vec!["click".to_string()];
+        verify_mutation(
+            temp.path(),
+            false,
+            &click,
+            &MutationTarget::DependencyGroup("dev".into()),
+        )
+        .unwrap_err();
+        verify_mutation(
+            temp.path(),
+            true,
+            &click,
+            &MutationTarget::DependencyGroup("dev".into()),
+        )
+        .unwrap();
+        verify_mutation(temp.path(), false, &click, &MutationTarget::Project).unwrap_err();
+
+        let docs = vec!["mkdocs".to_string()];
+        verify_mutation(
+            temp.path(),
+            true,
+            &docs,
+            &MutationTarget::Optional("docs".into()),
+        )
+        .unwrap();
+        verify_mutation(
+            temp.path(),
+            false,
+            &docs,
+            &MutationTarget::Optional("docs".into()),
+        )
+        .unwrap_err();
+    }
+
+    #[test]
+    fn missing_dependency_tables_are_absent_not_invalid() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(
+            temp.path().join("pyproject.toml"),
+            "[project]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        let spec = vec!["pytest".to_string()];
+        // Removing an entry that is already absent is idempotent success.
+        verify_mutation(
+            temp.path(),
+            false,
+            &spec,
+            &MutationTarget::DependencyGroup("dev".into()),
+        )
+        .unwrap();
+        // Adding to a missing table is a real failure.
+        verify_mutation(
+            temp.path(),
+            true,
+            &spec,
+            &MutationTarget::DependencyGroup("dev".into()),
+        )
+        .unwrap_err();
+    }
 
     #[test]
     fn backend_failures_are_classified_without_echoing_output() {
