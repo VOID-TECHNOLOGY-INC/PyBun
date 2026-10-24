@@ -314,6 +314,29 @@ def measure_mcp_tool(
     )
 
 
+def benchmark_policy() -> str:
+    """Policy used by the latency benchmark.
+
+    doctor/resolve cannot enforce a sandbox boundary, so `require_sandbox`
+    must be false for them to run. This scenario measures tool latency, not
+    sandbox enforcement.
+    """
+    return (
+        "[tool.pybun.mcp.policy]\n"
+        "default_sandbox = false\n"
+        "require_sandbox = false\n"
+        "allow_network = true\n"
+        "max_execution_time_s = 0\n"
+        "allowed_working_directories = [\".\"]\n"
+        "allowed_backends = [\"uv\", \"native\"]\n"
+    )
+
+
+def benchmark_index() -> str:
+    """Local index consumed by the native-only pybun_resolve tool."""
+    return '[{"name": "requests", "version": "2.32.0", "dependencies": []}]'
+
+
 def mcp_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
     """Run MCP/JSON output benchmarks."""
     results: list[BenchResult] = []
@@ -332,8 +355,12 @@ def mcp_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
     
     tools = scenario_config.get("tools", ["doctor", "run", "resolve", "gc"])
     
-    with tempfile.TemporaryDirectory(prefix="pybun_mcp_bench_") as tmpdir:
+    with tempfile.TemporaryDirectory(prefix="pybun_mcp_bench_") as tmpdir, \
+            tempfile.TemporaryDirectory(prefix="pybun_mcp_home_") as homedir:
         tmp = Path(tmpdir)
+        # PYBUN_HOME must be outside the project write boundary, otherwise the
+        # MCP server rejects its own audit log path (Issue #541).
+        home = Path(homedir)
         
         # A policy is required before protected tools run. Keep it inside the
         # isolated working directory and start the server with cwd=tmp so
@@ -341,21 +368,20 @@ def mcp_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
         (tmp / "pyproject.toml").write_text(
             "[project]\nname = \"mcp-bench\"\nversion = \"0.1.0\"\ndependencies = []\n"
         )
+        # doctor/resolve cannot enforce a sandbox boundary, so a
+        # require_sandbox policy makes them fail with
+        # E_MCP_POLICY_UNSUPPORTED. This scenario measures tool latency, not
+        # sandbox enforcement.
         policy_path = tmp / "policy.toml"
-        policy_path.write_text(
-            "[tool.pybun.mcp.policy]\n"
-            "default_sandbox = true\n"
-            "require_sandbox = true\n"
-            "allow_network = false\n"
-            "max_execution_time_s = 30\n"
-            "allowed_working_directories = [\".\"]\n"
-            "allowed_backends = [\"uv\", \"native\"]\n"
-        )
+        policy_path.write_text(benchmark_policy())
         mcp_env = {
             "PYBUN_MCP_POLICY": str(policy_path),
-            "PYBUN_HOME": str(tmp / "home"),
+            "PYBUN_HOME": str(home),
         }
         mcp_cwd = str(tmp)
+        # pybun_resolve is native-only and reads a local JSON index.
+        index_path = tmp / "index.json"
+        index_path.write_text(benchmark_index())
 
         # Create a simple script for run tests
         test_script = tmp / "test.py"
@@ -435,7 +461,7 @@ def mcp_benchmark(config: dict, scenario_config: dict, base_dir: Path) -> list:
                 result = measure_mcp_tool(
                     pybun_path,
                     "pybun_resolve",
-                    {"requirements": ["requests>=2.28.0"]},
+                    {"requirements": ["requests>=2.28.0"], "index": str(index_path)},
                     iterations=iterations,
                     warmup=warmup,
                     env={**mcp_env, "PYBUN_BACKEND": "native"},

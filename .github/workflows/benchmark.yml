@@ -58,6 +58,11 @@ jobs:
           cd scripts/benchmark
           python bench.py -s run,uv_comparison --config config_ci.toml --format json -o results-ci
 
+      - name: MCP smoke (fail on any B8 error)
+        run: |
+          cd scripts/benchmark
+          python bench.py -s mcp --iterations 1 --warmup 0 --config config_ci.toml --format json -o results-mcp-smoke
+
       - name: UX gate
         run: |
           cd scripts/benchmark
