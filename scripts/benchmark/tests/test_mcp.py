@@ -206,3 +206,18 @@ class TestMcpScenario(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestBenchmarkPolicy(unittest.TestCase):
+    def test_policy_allows_unsandboxable_tools(self) -> None:
+        policy = mcp_scenario.benchmark_policy()
+        self.assertIn("require_sandbox = false", policy)
+        self.assertIn("default_sandbox = false", policy)
+        self.assertIn("allow_network = true", policy)
+        self.assertIn('allowed_backends = ["uv", "native"]', policy)
+
+    def test_index_is_valid_json(self) -> None:
+        import json
+
+        index = json.loads(mcp_scenario.benchmark_index())
+        self.assertEqual(index[0]["name"], "requests")
