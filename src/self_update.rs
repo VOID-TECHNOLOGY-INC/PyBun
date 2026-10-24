@@ -3,7 +3,7 @@ use crate::security::{sha256_file, verify_ed25519_signature};
 use reqwest::blocking::Client;
 use std::fmt::{Display, Formatter};
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -32,6 +32,30 @@ impl std::error::Error for ApplyError {}
 
 type ApplyResult<T> = std::result::Result<T, ApplyError>;
 
+/// Upper bound for a self-update artifact. Release archives are tens of MiB;
+/// this prevents an attacker-controlled endpoint from filling the disk.
+const MAX_ASSET_BYTES: u64 = 512 * 1024 * 1024;
+
+/// Trusted minisign key shipped with the binary (same key as `scripts/install.sh`).
+/// The manifest must not be able to supply its own verification key.
+const TRUSTED_MINISIGN_PUBLIC_KEY: &str =
+    "RWQtfZNEyNnATcgzxfwDB+iNwGwW8bwflfnjHMizq6H84B1VRXO92yZ5";
+
+/// Debug/test-only key override. Release binaries ignore this environment
+/// variable so a manifest attacker cannot replace the trust root.
+fn debug_trusted_public_key() -> Option<String> {
+    #[cfg(debug_assertions)]
+    {
+        std::env::var("PYBUN_SELF_UPDATE_TRUSTED_PUBLIC_KEY")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        None
+    }
+}
+
 #[derive(Debug)]
 struct AtomicSwapOutcome {
     rollback_performed: bool,
@@ -49,7 +73,15 @@ pub fn apply_update_for_asset(
         .prefix("pybun-self-update-")
         .tempdir()
         .map_err(|e| err(format!("failed to create temp dir: {e}")))?;
-    let archive_path = temp.path().join(&asset.name);
+    let file_name = Path::new(&asset.name)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| err("manifest asset name is not a plain file name"))?;
+    if Path::new(file_name) != Path::new(&asset.name) {
+        return Err(err("manifest asset name must not contain path components"));
+    }
+    let archive_path = temp.path().join(file_name);
 
     download_asset(&asset.url, &archive_path)?;
     verify_asset(&archive_path, asset)?;
@@ -95,29 +127,56 @@ fn resolve_install_path(install_path_override: Option<PathBuf>) -> ApplyResult<P
 
 fn download_asset(url: &str, destination: &Path) -> ApplyResult<()> {
     if let Some(path) = url.strip_prefix("file://") {
+        if fs::metadata(path).map(|meta| meta.len()).unwrap_or(0) > MAX_ASSET_BYTES {
+            return Err(err("local asset exceeds the self-update size limit"));
+        }
         fs::copy(path, destination)
             .map_err(|e| err(format!("failed to copy local asset from {path}: {e}")))?;
         return Ok(());
     }
 
-    if url.starts_with("http://") || url.starts_with("https://") {
+    if url.starts_with("http://") {
+        return Err(err(
+            "insecure asset URL: http is not allowed for self update",
+        ));
+    }
+    if url.starts_with("https://") {
         let client = Client::builder()
             .timeout(Duration::from_secs(300))
+            .redirect(reqwest::redirect::Policy::custom(|attempt| {
+                if attempt.previous().len() >= 5 {
+                    attempt.error("too many redirects")
+                } else if attempt.url().scheme() != "https" {
+                    attempt.error("redirect to a non-https URL is not allowed")
+                } else {
+                    attempt.follow()
+                }
+            }))
             .build()
             .map_err(|e| err(format!("failed to build http client: {e}")))?;
-        let mut response = client
+        let response = client
             .get(url)
             .send()
             .and_then(|resp| resp.error_for_status())
             .map_err(|e| err(format!("failed to download asset from {url}: {e}")))?;
+        if response
+            .content_length()
+            .is_some_and(|length| length > MAX_ASSET_BYTES)
+        {
+            return Err(err("asset exceeds the self-update size limit"));
+        }
         let mut file = fs::File::create(destination).map_err(|e| {
             err(format!(
                 "failed to create destination {}: {e}",
                 destination.display()
             ))
         })?;
-        io::copy(&mut response, &mut file)
+        let mut limited = response.take(MAX_ASSET_BYTES + 1);
+        let copied = io::copy(&mut limited, &mut file)
             .map_err(|e| err(format!("failed to write downloaded asset: {e}")))?;
+        if copied > MAX_ASSET_BYTES {
+            return Err(err("asset exceeds the self-update size limit"));
+        }
         file.flush()
             .map_err(|e| err(format!("failed to flush downloaded asset: {e}")))?;
         return Ok(());
@@ -134,10 +193,11 @@ fn download_asset(url: &str, destination: &Path) -> ApplyResult<()> {
 
 fn verify_asset(archive_path: &Path, asset: &ReleaseAsset) -> ApplyResult<()> {
     verify_checksum(archive_path, &asset.sha256)?;
-    if let Some(signature) = asset.signature.as_ref() {
-        verify_signature(archive_path, signature)?;
-    }
-    Ok(())
+    let signature = asset
+        .signature
+        .as_ref()
+        .ok_or_else(|| err("manifest asset is missing a signature; refusing to install"))?;
+    verify_signature(archive_path, signature)
 }
 
 fn verify_checksum(path: &Path, expected: &str) -> ApplyResult<()> {
@@ -160,17 +220,28 @@ fn verify_checksum(path: &Path, expected: &str) -> ApplyResult<()> {
 
 fn verify_signature(path: &Path, signature: &ReleaseSignature) -> ApplyResult<()> {
     match signature.signature_type.as_str() {
-        "ed25519" => verify_signature_ed25519(path, signature),
-        "minisign" => verify_signature_minisign(path, signature),
+        "ed25519" => {
+            let Some(public_key) = debug_trusted_public_key() else {
+                return Err(err(
+                    "unsupported signature type ed25519; release builds require minisign",
+                ));
+            };
+            verify_signature_ed25519(path, signature, &public_key)
+        }
+        "minisign" => {
+            let public_key = debug_trusted_public_key()
+                .unwrap_or_else(|| TRUSTED_MINISIGN_PUBLIC_KEY.to_string());
+            verify_signature_minisign(path, signature, &public_key)
+        }
         other => Err(err(format!("unsupported signature type: {other}"))),
     }
 }
 
-fn verify_signature_ed25519(path: &Path, signature: &ReleaseSignature) -> ApplyResult<()> {
-    let public_key = signature
-        .public_key
-        .as_deref()
-        .ok_or_else(|| err("signature missing public key for ed25519 verification"))?;
+fn verify_signature_ed25519(
+    path: &Path,
+    signature: &ReleaseSignature,
+    public_key: &str,
+) -> ApplyResult<()> {
     let payload = fs::read(path).map_err(|e| {
         err(format!(
             "failed to read asset for signature verification: {e}"
@@ -181,12 +252,11 @@ fn verify_signature_ed25519(path: &Path, signature: &ReleaseSignature) -> ApplyR
     Ok(())
 }
 
-fn verify_signature_minisign(path: &Path, signature: &ReleaseSignature) -> ApplyResult<()> {
-    let public_key = signature
-        .public_key
-        .as_deref()
-        .ok_or_else(|| err("signature missing public key for minisign verification"))?;
-
+fn verify_signature_minisign(
+    path: &Path,
+    signature: &ReleaseSignature,
+    public_key: &str,
+) -> ApplyResult<()> {
     let sig_dir = TempDir::new().map_err(|e| err(format!("failed to create sig temp dir: {e}")))?;
     let sig_path = sig_dir.path().join("asset.minisig");
     let pub_path = sig_dir.path().join("release.pub");

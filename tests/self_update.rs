@@ -480,6 +480,7 @@ fn self_update_applies_update_from_local_manifest() {
 
     let output = pybun_bin()
         .env("PYBUN_SELF_UPDATE_MANIFEST", &manifest_path)
+        .env("PYBUN_SELF_UPDATE_TRUSTED_PUBLIC_KEY", &public_key)
         .env("PYBUN_SELF_UPDATE_BIN", &current_binary)
         .args(["--format=json", "self", "update"])
         .output()
@@ -527,6 +528,7 @@ fn self_update_rejects_signature_mismatch() {
 
     let output = pybun_bin()
         .env("PYBUN_SELF_UPDATE_MANIFEST", &manifest_path)
+        .env("PYBUN_SELF_UPDATE_TRUSTED_PUBLIC_KEY", &public_key)
         .env("PYBUN_SELF_UPDATE_BIN", &current_binary)
         .args(["--format=json", "self", "update"])
         .output()
@@ -575,6 +577,7 @@ fn self_update_rolls_back_when_swap_fails() {
 
     let output = pybun_bin()
         .env("PYBUN_SELF_UPDATE_MANIFEST", &manifest_path)
+        .env("PYBUN_SELF_UPDATE_TRUSTED_PUBLIC_KEY", &public_key)
         .env("PYBUN_SELF_UPDATE_BIN", &current_binary)
         .env("PYBUN_SELF_UPDATE_TEST_FAIL_SWAP", "1")
         .args(["--format=json", "self", "update"])
@@ -623,6 +626,7 @@ fn self_update_applies_update_with_minisign_signature() {
 
     let output = pybun_bin()
         .env("PYBUN_SELF_UPDATE_MANIFEST", &manifest_path)
+        .env("PYBUN_SELF_UPDATE_TRUSTED_PUBLIC_KEY", &public_key)
         .env("PYBUN_SELF_UPDATE_BIN", &current_binary)
         .args(["--format=json", "self", "update"])
         .output()
@@ -640,4 +644,104 @@ fn self_update_applies_update_with_minisign_signature() {
     let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
     assert_eq!(json["status"], "ok");
     assert_eq!(json["detail"]["update_applied"].as_bool(), Some(true));
+}
+
+#[test]
+fn self_update_rejects_unsigned_manifest() {
+    let temp = tempdir().unwrap();
+    let target = current_release_target().expect("supported release target");
+    let manifest_path = temp.path().join("pybun-release.json");
+    let current_binary = temp.path().join(release_binary_name());
+    fs::write(&current_binary, b"old-version-binary").unwrap();
+    make_executable(&current_binary);
+
+    let archive_path = create_release_archive(temp.path(), &target, b"new-version-binary");
+    let sha256 = archive_sha256(&archive_path);
+    let archive_ext = if target.contains("windows") {
+        "zip"
+    } else {
+        "tar.gz"
+    };
+    let manifest = serde_json::json!({
+        "version": "9.9.9",
+        "channel": "stable",
+        "published_at": "2025-01-01T00:00:00Z",
+        "assets": [{
+            "name": format!("pybun-{}.{}", target, archive_ext),
+            "target": target,
+            "url": file_url(&archive_path),
+            "sha256": sha256,
+        }]
+    });
+    fs::write(
+        &manifest_path,
+        serde_json::to_string_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
+
+    let output = pybun_bin()
+        .env("PYBUN_SELF_UPDATE_MANIFEST", &manifest_path)
+        .env("PYBUN_SELF_UPDATE_BIN", &current_binary)
+        .args(["--format=json", "self", "update"])
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "unsigned manifest must be rejected"
+    );
+    assert_eq!(fs::read(&current_binary).unwrap(), b"old-version-binary");
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("valid JSON output");
+    let error = json["detail"]["error"].as_str().unwrap_or_default();
+    assert!(error.contains("signature"), "unexpected error: {error}");
+}
+
+#[test]
+fn self_update_rejects_asset_names_with_path_components() {
+    use pybun::release_manifest::ReleaseAsset;
+    let temp = tempdir().unwrap();
+    let current_binary = temp.path().join(release_binary_name());
+    fs::write(&current_binary, b"old-version-binary").unwrap();
+    make_executable(&current_binary);
+    let target = current_release_target().expect("supported release target");
+    let asset = ReleaseAsset {
+        name: "../escape.tar.gz".to_string(),
+        target: target.clone(),
+        url: file_url(&current_binary),
+        sha256: archive_sha256(&current_binary),
+        signature: None,
+    };
+    let error =
+        pybun::self_update::apply_update_for_asset(&asset, &target, Some(current_binary), false)
+            .unwrap_err();
+    assert!(
+        error.message.contains("path components"),
+        "unexpected error: {error}"
+    );
+    assert!(!temp.path().parent().unwrap().join("escape.tar.gz").exists());
+}
+
+#[test]
+fn self_update_rejects_plain_http_asset_urls() {
+    use pybun::release_manifest::ReleaseAsset;
+    let temp = tempdir().unwrap();
+    let current_binary = temp.path().join(release_binary_name());
+    fs::write(&current_binary, b"old-version-binary").unwrap();
+    make_executable(&current_binary);
+    let target = current_release_target().expect("supported release target");
+    let asset = ReleaseAsset {
+        name: format!("pybun-{target}.tar.gz"),
+        target: target.clone(),
+        url: "http://127.0.0.1:9/pybun.tar.gz".to_string(),
+        sha256: "00".to_string(),
+        signature: None,
+    };
+    let error =
+        pybun::self_update::apply_update_for_asset(&asset, &target, Some(current_binary), false)
+            .unwrap_err();
+    assert!(
+        error.message.contains("insecure asset URL"),
+        "unexpected error: {error}"
+    );
 }
