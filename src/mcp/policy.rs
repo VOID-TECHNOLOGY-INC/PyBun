@@ -461,6 +461,21 @@ impl Authorized {
     }
 }
 
+/// Files that keep the operator's authorization policy. Sandboxed MCP tools
+/// must never be able to rewrite these even when the project directory is
+/// writable, otherwise a tool can grant itself permissions for later calls.
+pub(super) fn protected_write_paths() -> Vec<String> {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let mut paths = vec![cwd.join("pyproject.toml"), cwd.join(".pybun/config.toml")];
+    if let Some(path) = std::env::var_os("PYBUN_MCP_POLICY") {
+        paths.push(PathBuf::from(path));
+    }
+    paths
+        .into_iter()
+        .map(|path| path.to_string_lossy().to_string())
+        .collect()
+}
+
 pub(crate) fn authorized_roots(args: &Value) -> Vec<PathBuf> {
     args["_authorized_roots"]
         .as_array()

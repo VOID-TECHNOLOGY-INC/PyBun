@@ -641,6 +641,10 @@ impl RedactionRules {
             current = query_redacted;
             redactions += count;
 
+            let (token_redacted, count) = redact_token_literals(&current);
+            current = token_redacted;
+            redactions += count;
+
             output.push_str(&current);
         }
         (output, redactions)
@@ -716,6 +720,46 @@ impl RedactionRules {
             .iter()
             .any(|pattern| glob_match(pattern, &uppercase))
     }
+}
+
+/// Redact well-known credential-shaped literals (GitHub, GitLab, Slack, AWS).
+/// Positional arguments such as `--pat ghp_...` have no key, so key-based
+/// redaction alone misses them.
+fn redact_token_literals(text: &str) -> (String, usize) {
+    const PREFIXES: &[&str] = &[
+        "ghp_",
+        "gho_",
+        "ghu_",
+        "ghs_",
+        "ghr_",
+        "github_pat_",
+        "glpat-",
+        "xoxb-",
+        "xoxp-",
+        "AKIA",
+    ];
+    let mut output = text.to_string();
+    let mut redactions = 0usize;
+    for prefix in PREFIXES {
+        let mut search = 0usize;
+        while let Some(relative) = output[search..].find(prefix) {
+            let start = search + relative;
+            let tail = &output[start + prefix.len()..];
+            let length = tail
+                .chars()
+                .take_while(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
+                .count();
+            if length < 8 {
+                search = start + prefix.len();
+                continue;
+            }
+            let end = start + prefix.len() + length;
+            output.replace_range(start..end, &format!("{prefix}<redacted>"));
+            redactions += 1;
+            search = start + prefix.len() + "<redacted>".len();
+        }
+    }
+    (output, redactions)
 }
 
 fn extract_key_delimiter(line: &str) -> Option<(String, String)> {
@@ -836,6 +880,22 @@ mod tests {
         assert_eq!(redacted["status"], "success");
         assert_eq!(redacted["lock"]["source"], "/tmp/uv.lock");
         assert_eq!(redacted["stdout"], "<redacted>\n");
+    }
+
+    #[test]
+    fn credential_shaped_literals_are_redacted_without_a_key() {
+        for token in [
+            "ghp_abcdefghijk",
+            "github_pat_11ABCDEFG_abcdefgh",
+            "glpat-abcdefghij",
+            "xoxb-1234567890-abcdef",
+            "AKIAABCDEFGHIJKLMNOP",
+        ] {
+            let text = format!("positional {token} trailing");
+            let redacted = super::redact_text(&text);
+            assert!(!redacted.contains(token), "{redacted}");
+            assert!(redacted.contains("<redacted>"), "{redacted}");
+        }
     }
 
     #[test]

@@ -1125,10 +1125,15 @@ pub(super) fn run_self_update(
                 });
                 return RenderDetail::error(summary, json_detail);
             };
-            let install_override = std::env::var("PYBUN_SELF_UPDATE_BIN")
-                .ok()
-                .map(PathBuf::from);
-            let fail_swap_for_test = std::env::var("PYBUN_SELF_UPDATE_TEST_FAIL_SWAP").is_ok();
+            let install_override = if cfg!(debug_assertions) {
+                std::env::var("PYBUN_SELF_UPDATE_BIN")
+                    .ok()
+                    .map(PathBuf::from)
+            } else {
+                None
+            };
+            let fail_swap_for_test =
+                cfg!(debug_assertions) && std::env::var("PYBUN_SELF_UPDATE_TEST_FAIL_SWAP").is_ok();
             let target_name = target
                 .as_deref()
                 .unwrap_or(asset.target.as_str())

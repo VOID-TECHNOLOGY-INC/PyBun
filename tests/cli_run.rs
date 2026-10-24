@@ -1377,3 +1377,32 @@ fn run_self_heals_from_corrupt_script_lockfile() {
         "corrupt lockfile should still be present on disk after a self-healed run"
     );
 }
+
+#[test]
+fn pep723_dependency_cannot_inject_installer_options() {
+    let temp = tempfile::tempdir().unwrap();
+    let script = temp.path().join("inject.py");
+    std::fs::write(
+        &script,
+        "# /// script\n# dependencies = [\"--index-url=http://127.0.0.1:9/simple\", \"zzpkg\"]\n# ///\nprint('should not run')\n",
+    )
+    .unwrap();
+    let output = bin()
+        .current_dir(temp.path())
+        .env("PYBUN_PEP723_BACKEND", "pybun")
+        .env("PYBUN_PEP723_DRY_RUN", "1")
+        .env("PYBUN_HOME", temp.path().join("home"))
+        .args(["--format=json", "run", script.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let value: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("valid JSON output");
+    let message = value["diagnostics"][0]["message"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        message.contains("must be a package requirement"),
+        "unexpected diagnostic: {value}"
+    );
+}

@@ -336,3 +336,35 @@ class MinisignPrerequisiteTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TrustedSignatureKeyTests(unittest.TestCase):
+    def test_signature_uses_the_pinned_key_not_the_manifest_key(self):
+        from unittest import mock
+        from types import SimpleNamespace
+
+        captured = {}
+
+        def fake_run(command, **kwargs):
+            pub_path = command[command.index("-p") + 1]
+            with open(pub_path, encoding="utf-8") as handle:
+                captured["public_key"] = handle.read()
+            return SimpleNamespace(returncode=0, stderr="")
+
+        with mock.patch.object(
+            bootstrap, "TRUSTED_MINISIGN_PUBLIC_KEY", "trusted-key-line"
+        ), mock.patch.object(
+            bootstrap.shutil, "which", return_value="/usr/bin/minisign"
+        ), mock.patch.object(
+            bootstrap.subprocess, "run", side_effect=fake_run
+        ):
+            bootstrap._verify_signature(
+                "archive.tar.gz",
+                {
+                    "type": "minisign",
+                    "value": "signature",
+                    "public_key": "attacker-controlled-key",
+                },
+            )
+        self.assertIn("trusted-key-line", captured["public_key"])
+        self.assertNotIn("attacker-controlled-key", captured["public_key"])

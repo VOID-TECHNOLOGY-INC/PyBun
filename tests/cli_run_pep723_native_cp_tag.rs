@@ -161,6 +161,7 @@ async fn run_pep723_native_cp_tag_child() {
             sandbox_cpu: 0,
             profile: "dev".to_string(),
             passthrough: Vec::new(),
+            deny_write: Vec::new(),
         }),
     };
 

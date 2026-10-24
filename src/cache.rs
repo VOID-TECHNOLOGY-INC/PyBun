@@ -240,8 +240,13 @@ impl Cache {
         let mut entries = Vec::new();
 
         // Collect from packages directory
-        if let Ok(dirs) = fs::read_dir(self.packages_dir()) {
+        if fs::symlink_metadata(self.packages_dir()).is_ok_and(|m| m.is_dir())
+            && let Ok(dirs) = fs::read_dir(self.packages_dir())
+        {
             for dir_entry in dirs.flatten() {
+                if dir_entry.file_type().is_ok_and(|kind| kind.is_symlink()) {
+                    continue;
+                }
                 if dir_entry.path().is_dir() {
                     self.collect_entries_from_dir(&dir_entry.path(), &mut entries)?;
                 }
@@ -249,8 +254,13 @@ impl Cache {
         }
 
         // Collect from build directory
-        if let Ok(files) = fs::read_dir(self.build_dir()) {
+        if fs::symlink_metadata(self.build_dir()).is_ok_and(|m| m.is_dir())
+            && let Ok(files) = fs::read_dir(self.build_dir())
+        {
             for file_entry in files.flatten() {
+                if file_entry.file_type().is_ok_and(|kind| kind.is_symlink()) {
+                    continue;
+                }
                 if let Some(entry) = self.entry_from_path(&file_entry.path())? {
                     entries.push(entry);
                 }
@@ -264,6 +274,9 @@ impl Cache {
         if let Ok(files) = fs::read_dir(dir) {
             for file_entry in files.flatten() {
                 let path = file_entry.path();
+                if file_entry.file_type().is_ok_and(|kind| kind.is_symlink()) {
+                    continue;
+                }
                 if path.is_file() {
                     if let Some(entry) = self.entry_from_path(&path)? {
                         entries.push(entry);
@@ -277,10 +290,15 @@ impl Cache {
     }
 
     fn entry_from_path(&self, path: &Path) -> Result<Option<CacheEntry>> {
-        let metadata = match fs::metadata(path) {
+        // symlink_metadata keeps the LRU walk from following a symlink out of
+        // the cache root; gc must never delete the link target.
+        let metadata = match fs::symlink_metadata(path) {
             Ok(m) => m,
             Err(_) => return Ok(None),
         };
+        if metadata.file_type().is_symlink() {
+            return Ok(None);
+        }
 
         if !metadata.is_file() {
             return Ok(None);
@@ -303,7 +321,10 @@ impl Cache {
     }
 
     fn remove_empty_dirs_recursive(&self, dir: &Path) -> Result<bool> {
-        if !dir.exists() || !dir.is_dir() {
+        let Ok(metadata) = fs::symlink_metadata(dir) else {
+            return Ok(false);
+        };
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
             return Ok(false);
         }
 
@@ -311,6 +332,9 @@ impl Cache {
         if let Ok(entries) = fs::read_dir(dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
+                if entry.file_type().is_ok_and(|kind| kind.is_symlink()) {
+                    continue;
+                }
                 if path.is_dir() {
                     if !self.remove_empty_dirs_recursive(&path)? {
                         is_empty = false;
@@ -506,5 +530,50 @@ mod tests {
         assert_eq!(format_size(1024), "1.00 KB");
         assert_eq!(format_size(1024 * 1024), "1.00 MB");
         assert_eq!(format_size(1024 * 1024 * 1024), "1.00 GB");
+    }
+}
+
+#[cfg(all(test, unix))]
+mod symlink_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn gc_does_not_follow_a_symlinked_packages_root() {
+        let temp = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        let keep = outside.path().join("keep.txt");
+        fs::write(&keep, b"do-not-delete").unwrap();
+        let cache = Cache::with_root(temp.path());
+        cache.ensure_dirs().unwrap();
+        fs::remove_dir_all(cache.packages_dir()).unwrap();
+        std::os::unix::fs::symlink(outside.path(), cache.packages_dir()).unwrap();
+
+        let result = cache.gc(Some(0), false).unwrap();
+        assert_eq!(result.files_removed, 0);
+        assert!(keep.exists(), "gc followed a symlinked packages root");
+    }
+
+    #[test]
+    fn gc_does_not_follow_symlinks_outside_the_cache_root() {
+        let temp = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        let keep = outside.path().join("keep.txt");
+        fs::write(&keep, b"do-not-delete").unwrap();
+        let cache = Cache::with_root(temp.path());
+        cache.ensure_dirs().unwrap();
+        let evil = cache.packages_dir().join("evil");
+        std::os::unix::fs::symlink(outside.path(), &evil).unwrap();
+        let big = cache.packages_dir().join("big").join("big.whl");
+        fs::create_dir_all(big.parent().unwrap()).unwrap();
+        fs::write(&big, vec![0u8; 4096]).unwrap();
+
+        let result = cache.gc(Some(1), false).unwrap();
+        assert_eq!(result.files_removed, 1);
+        assert!(
+            keep.exists(),
+            "gc followed a symlink outside the cache root"
+        );
+        assert_eq!(fs::read(&keep).unwrap(), b"do-not-delete");
     }
 }

@@ -205,10 +205,34 @@ pub(crate) fn call_doctor(args: Value) -> Result<String, String> {
     .to_string())
 }
 
+/// Validate an MCP tool's `script` argument before it reaches a child argv.
+///
+/// A value such as `--output-file=/outside/pwned` would otherwise be parsed as
+/// a tool option instead of a path. MCP path authorization already rejects
+/// traversal, but it cannot tell an option from a missing path (Issue: N1).
+fn authorized_script_arg(args: &Value) -> Result<Option<String>, String> {
+    let Some(raw) = args.get("script").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    if raw.starts_with('-') {
+        return Err("'script' must be a path, not a command-line option".to_string());
+    }
+    let metadata = std::fs::symlink_metadata(PathBuf::from(raw))
+        .map_err(|_| format!("Script not found: {raw}"))?;
+    if !metadata.file_type().is_file() {
+        return Err("'script' must be a regular file".to_string());
+    }
+    if metadata.len() > 2 * 1024 * 1024 {
+        return Err("'script' exceeds the 2 MiB limit".to_string());
+    }
+    Ok(Some(raw.to_string()))
+}
+
 pub(crate) fn call_lint(args: Value) -> Result<String, String> {
     use crate::env::find_python_env;
 
-    let script = args.get("script").and_then(|s| s.as_str());
+    let script_owned = authorized_script_arg(&args)?;
+    let script = script_owned.as_deref();
     let code = args.get("code").and_then(|c| c.as_str());
     let select: Vec<String> = args
         .get("select")
@@ -251,7 +275,7 @@ pub(crate) fn call_lint(args: Value) -> Result<String, String> {
             cmd.arg("--select");
             cmd.arg(select.join(","));
         }
-        cmd.arg(&target_path);
+        cmd.arg("--").arg(&target_path);
 
         let output = cmd
             .output()
@@ -327,7 +351,8 @@ pub(crate) fn call_lint(args: Value) -> Result<String, String> {
 pub(crate) fn call_type_check(args: Value) -> Result<String, String> {
     use crate::env::find_python_env;
 
-    let script = args.get("script").and_then(|s| s.as_str());
+    let script_owned = authorized_script_arg(&args)?;
+    let script = script_owned.as_deref();
     let code = args.get("code").and_then(|c| c.as_str());
     let strict = args
         .get("strict")
@@ -447,7 +472,8 @@ pub(crate) fn call_type_check(args: Value) -> Result<String, String> {
 pub(crate) fn call_profile(args: Value) -> Result<String, String> {
     use crate::env::find_python_env;
 
-    let script = args.get("script").and_then(|s| s.as_str());
+    let script_owned = authorized_script_arg(&args)?;
+    let script = script_owned.as_deref();
     let code = args.get("code").and_then(|c| c.as_str());
     let top_n = args.get("top_n").and_then(|n| n.as_u64()).unwrap_or(10) as usize;
 
@@ -573,9 +599,7 @@ pub(crate) fn call_profile(args: Value) -> Result<String, String> {
 }
 
 pub(crate) fn call_fix(args: Value) -> Result<String, String> {
-    let script = args
-        .get("script")
-        .and_then(|s| s.as_str())
+    let script = authorized_script_arg(&args)?
         .ok_or_else(|| "'script' is required for pybun_fix".to_string())?;
 
     let select: Vec<String> = args
@@ -592,11 +616,6 @@ pub(crate) fn call_fix(args: Value) -> Result<String, String> {
         .get("unsafe_fixes")
         .and_then(|u| u.as_bool())
         .unwrap_or(false);
-
-    let path = PathBuf::from(script);
-    if !path.exists() {
-        return Err(format!("Script not found: {}", script));
-    }
 
     let working_dir = current_working_dir()?;
     let Some(ruff_runner) = resolve_ruff_runner(&working_dir)? else {
@@ -617,7 +636,7 @@ pub(crate) fn call_fix(args: Value) -> Result<String, String> {
         check_cmd.arg("--select");
         check_cmd.arg(select.join(","));
     }
-    check_cmd.arg(script);
+    check_cmd.arg("--").arg(&script);
     let before_output = check_cmd.output().map_err(|e| e.to_string())?;
     let before_str = String::from_utf8_lossy(&before_output.stdout).to_string();
     let before_stderr = String::from_utf8_lossy(&before_output.stderr).to_string();
@@ -636,7 +655,7 @@ pub(crate) fn call_fix(args: Value) -> Result<String, String> {
         fix_cmd.arg("--select");
         fix_cmd.arg(select.join(","));
     }
-    fix_cmd.arg(script);
+    fix_cmd.arg("--").arg(&script);
 
     let fix_output = fix_cmd
         .output()
@@ -658,7 +677,7 @@ pub(crate) fn call_fix(args: Value) -> Result<String, String> {
         recheck_cmd.arg("--select");
         recheck_cmd.arg(select.join(","));
     }
-    recheck_cmd.arg(script);
+    recheck_cmd.arg("--").arg(&script);
     let after_output = recheck_cmd.output().map_err(|e| e.to_string())?;
     let after_str = String::from_utf8_lossy(&after_output.stdout).to_string();
     let after_stderr = String::from_utf8_lossy(&after_output.stderr).to_string();

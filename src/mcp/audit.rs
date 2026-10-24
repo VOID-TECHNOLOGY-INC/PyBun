@@ -717,6 +717,7 @@ pub(super) fn sandbox_policy_json(config: &crate::sandbox::SandboxConfig) -> Val
         "allow_run": config.allow_run,
         "allow_read": config.allow_read,
         "allow_write": config.allow_write,
+        "deny_write": config.deny_write,
         "allow_env": config.allow_env,
         "timeout_secs": config.timeout_secs,
         "memory_limit_mb": config.memory_limit_mb,

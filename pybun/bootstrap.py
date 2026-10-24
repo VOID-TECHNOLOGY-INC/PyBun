@@ -17,6 +17,15 @@ from typing import Any, Dict, Optional, Tuple
 DEFAULT_STABLE_MANIFEST = "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/latest/download/pybun-release.json"
 DEFAULT_NIGHTLY_MANIFEST = "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/nightly/pybun-release.json"
 
+# Trusted minisign key (same key as scripts/install.sh and src/self_update.rs).
+# The manifest must never supply its own verification key.
+TRUSTED_MINISIGN_PUBLIC_KEY = (
+    "untrusted comment: minisign public key\n"
+    "RWQtfZNEyNnATcgzxfwDB+iNwGwW8bwflfnjHMizq6H84B1VRXO92yZ5"
+)
+MAX_MANIFEST_BYTES = 4 * 1024 * 1024
+MAX_ASSET_BYTES = 512 * 1024 * 1024
+
 
 class BootstrapError(RuntimeError):
     pass
@@ -151,9 +160,15 @@ def load_manifest(source: str) -> Dict[str, Any]:
     if source.startswith("https://"):
         try:
             with urllib.request.urlopen(source, timeout=30) as resp:
-                body = resp.read()
+                if urllib.parse.urlparse(resp.geturl()).scheme != "https":
+                    raise BootstrapError("manifest redirect must stay on HTTPS")
+                body = resp.read(MAX_MANIFEST_BYTES + 1)
+        except BootstrapError:
+            raise
         except Exception as exc:
             raise BootstrapError(f"failed to fetch manifest: {exc}") from exc
+        if len(body) > MAX_MANIFEST_BYTES:
+            raise BootstrapError("manifest exceeds the size limit")
         try:
             return json.loads(body.decode("utf-8"))
         except json.JSONDecodeError as exc:
@@ -235,6 +250,8 @@ def _download_url(url: str, destination: str) -> None:
         path = urllib.request.url2pathname(parsed.path)
         if not os.path.exists(path):
             raise BootstrapError(f"local asset not found: {path}")
+        if os.path.getsize(path) > MAX_ASSET_BYTES:
+            raise BootstrapError("local asset exceeds the bootstrap size limit")
         shutil.copyfile(path, destination)
         return
 
@@ -248,7 +265,19 @@ def _download_url(url: str, destination: str) -> None:
             with urllib.request.urlopen(url, timeout=300) as resp, open(
                 destination, "wb"
             ) as handle:
-                shutil.copyfileobj(resp, handle)
+                if urllib.parse.urlparse(resp.geturl()).scheme != "https":
+                    raise BootstrapError("asset redirect must stay on HTTPS")
+                total = 0
+                while True:
+                    chunk = resp.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > MAX_ASSET_BYTES:
+                        raise BootstrapError("asset exceeds the bootstrap size limit")
+                    handle.write(chunk)
+        except BootstrapError:
+            raise
         except Exception as exc:
             raise BootstrapError(f"failed to download asset: {exc}") from exc
         return
@@ -276,11 +305,11 @@ def _verify_checksum(path: str, expected: Optional[str]) -> None:
 def _verify_signature(path: str, signature: Dict[str, Any]) -> None:
     sig_type = signature.get("type")
     sig_value = signature.get("value")
-    sig_pub = signature.get("public_key")
+    sig_pub = TRUSTED_MINISIGN_PUBLIC_KEY
     if sig_type != "minisign":
         raise BootstrapError(f"unsupported signature type: {sig_type}")
-    if not sig_value or not sig_pub:
-        raise BootstrapError("signature missing value or public key")
+    if not sig_value:
+        raise BootstrapError("signature missing value")
     if not shutil.which("minisign"):
         raise BootstrapError(
             "minisign is required for signature verification. Install it first: "
@@ -466,8 +495,9 @@ def ensure_binary() -> Tuple[str, Optional[Dict[str, Any]]]:
         if verify:
             _verify_checksum(archive_path, asset.get("sha256"))
             signature = asset.get("signature")
-            if signature:
-                _verify_signature(archive_path, signature)
+            if not signature:
+                raise BootstrapError("manifest asset is missing a signature")
+            _verify_signature(archive_path, signature)
         os.makedirs(install_root, exist_ok=True)
         _extract_archive(archive_path, install_root)
         if not os.path.exists(binary_path):

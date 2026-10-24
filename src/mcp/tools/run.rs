@@ -38,7 +38,10 @@ pub(crate) async fn call_run(args: Value) -> Result<String, String> {
         .get("sandbox_policy")
         .cloned()
         .unwrap_or_else(|| json!({}));
-    let effective_sandbox_config = mcp_sandbox_config_from_policy(&policy);
+    let mut effective_sandbox_config = mcp_sandbox_config_from_policy(&policy);
+    if use_sandbox {
+        effective_sandbox_config.deny_write = super::super::policy::protected_write_paths();
+    }
     let warnings = if unsafe_no_sandbox_requested && !unsafe_no_sandbox {
         unsafe_no_sandbox_denied_warning()
     } else {
@@ -117,6 +120,7 @@ pub(crate) async fn call_run(args: Value) -> Result<String, String> {
         sandbox_cpu: effective_sandbox_config.cpu_limit_secs,
         profile: "dev".to_string(),
         passthrough: run_args,
+        deny_write: effective_sandbox_config.deny_write.clone(),
     };
 
     if crate::backend::run_applicable(&run_args_struct) {
