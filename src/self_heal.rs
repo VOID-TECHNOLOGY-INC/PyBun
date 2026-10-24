@@ -123,6 +123,18 @@ pub fn diagnostics_for_resolve_error(
             );
             diags
         }
+        ResolveError::PackageNotFound { name, index } => {
+            vec![
+                Diagnostic::error(format!(
+                    "Package {name} was not found in the index {index}."
+                ))
+                .with_code("E_RESOLVE_PACKAGE_NOT_FOUND")
+                .with_suggestion(
+                    "Check the package name spelling and the configured index; if the package is private, pass the correct index.",
+                )
+                .with_context(json!({ "name": name, "index": index, "root_requirements": root_reqs })),
+            ]
+        }
         ResolveError::Io(msg) => {
             vec![
                 Diagnostic::error(format!(
@@ -243,6 +255,27 @@ mod tests {
             if let Some(suggestion) = &d.suggestion {
                 assert_ascii_only("suggestion", suggestion);
             }
+        }
+    }
+
+    #[test]
+    fn package_not_found_diagnostic_names_the_package_and_index() {
+        let requirements = vec![Requirement::any("definitely-missing")];
+        let err = ResolveError::PackageNotFound {
+            name: "definitely-missing".to_string(),
+            index: "https://pypi.org/simple/".to_string(),
+        };
+        let diags = diagnostics_for_resolve_error(&requirements, &err);
+        assert_eq!(
+            diags[0].code.as_deref(),
+            Some("E_RESOLVE_PACKAGE_NOT_FOUND")
+        );
+        assert!(diags[0].message.contains("definitely-missing"));
+        assert!(diags[0].message.contains("https://pypi.org/simple/"));
+        let suggestion = diags[0].suggestion.as_deref().unwrap_or_default();
+        assert!(!suggestion.contains("internet connection"));
+        for diagnostic in &diags {
+            assert_ascii_only("message", &diagnostic.message);
         }
     }
 

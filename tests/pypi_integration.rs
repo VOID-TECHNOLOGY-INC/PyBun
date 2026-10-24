@@ -981,3 +981,24 @@ dependencies = ["app==1.0.0"]
     let lock = Lockfile::load_from_path(temp.path().join("pybun.lockb")).unwrap();
     assert!(lock.packages.contains_key("app"));
 }
+
+#[tokio::test]
+async fn missing_package_404_is_package_not_found_not_io() {
+    let temp = tempdir().unwrap();
+    let server = MockServer::start();
+    let _mock = server.mock(|when, then| {
+        when.method(GET).path("/pypi/definitely-missing/json");
+        then.status(404).body("not found");
+    });
+    let client =
+        PyPiClient::with_config(&server.base_url(), temp.path().join("cache"), false).unwrap();
+    let index = PyPiIndex::new(client);
+    let error = index.all("definitely-missing").await.unwrap_err();
+    match error {
+        pybun::resolver::ResolveError::PackageNotFound { name, index } => {
+            assert_eq!(name, "definitely-missing");
+            assert!(index.contains(&server.base_url()));
+        }
+        other => panic!("unexpected error: {other}"),
+    }
+}
