@@ -1,5 +1,34 @@
 # Changelog
 
+## v0.2.4
+
+### Features
+- Add `--dev`, `--group`, and `--optional` to `pybun add`/`remove` and verify mutations in the correct pyproject table (#534, #545).
+- Capture `pybun x` child stdout/stderr in JSON mode and report `E_X_EXIT_NONZERO` on non-zero exits (#529).
+- Emit a JSON envelope with `E_CLI_USAGE` for clap argument errors when `--format=json` is set (#549).
+- Classify uv backend failures (`E_BACKEND_RESOLUTION`, `E_BACKEND_AUTH`, `E_BACKEND_NETWORK`, `E_BACKEND_ARGUMENT`) and promote structured runtime tracebacks on the uv run path (#532).
+- Map pytest exit codes to distinct `E_TEST_USAGE`, `E_TEST_NONE_COLLECTED`, `E_TEST_INTERRUPTED`, and `E_TEST_INTERNAL_ERROR` diagnostics (#547).
+- Report `E_RESOLVE_PACKAGE_NOT_FOUND` for index 404s on the native resolver (#548).
+
+### Fixes
+- Remove the extra interpreter launch from execution-history recording and read Python identity/inventory from `pyvenv.cfg` and `*.dist-info` (#528).
+- Parse `pyvenv.cfg` version keys exactly for uv/virtualenv environments (#531).
+- Keep support-bundle JSON valid when credential-like variables are redacted (#530).
+- Align MCP dry-run risk reasons with sandbox enforcement for process, network, deletion, and dynamic execution primitives (#535).
+- Fail fast with an actionable error for aarch64 musl instead of selecting a glibc binary (#533).
+- Use the PEP 706 `tar` filter so legitimate nested symlinks extract on affected CPython patch releases (#538).
+- Recommend runnable commands from `pybun build` and point `pybun outdated` at uv-native remediation on the uv backend (#534, #536).
+- Document the `minisign` prerequisite for the pip/uvx shim and make the error actionable (#537).
+- Make the MCP benchmark runnable end to end, isolate fixture locks, and report a geometric-mean speedup (#539, #546).
+
+### Security
+- Harden MCP policy/sandbox write boundaries and tool argument validation, pin the self-update signature key and require signed assets, reject insecure/oversized update inputs, skip symlinks during cache GC, reject PEP 723 option injection, and expand history redaction (#555).
+- Update `tokio` to 1.54.1 for RUSTSEC-2026-0386.
+
+### Known limitations
+- The uv adapter supports uv >=0.12,<0.13. `pybun outdated` remains a native `pybun.lockb` reader; uv-only projects must use uv's own inspection commands.
+- The Python-level sandbox cannot contain writes performed through C extensions or `ctypes`; an OS-level boundary is required for hostile MCP clients.
+
 ## v0.2.3
 
 ### Fixes
