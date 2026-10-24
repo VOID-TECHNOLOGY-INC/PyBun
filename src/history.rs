@@ -495,7 +495,24 @@ fn redact_args(args: impl IntoIterator<Item = String>) -> Vec<String> {
                 .trim_start_matches('-');
             if matches!(
                 key,
-                "c" | "code" | "token" | "password" | "secret" | "key" | "index" | "index-url"
+                "c" | "code"
+                    | "token"
+                    | "password"
+                    | "passwd"
+                    | "pwd"
+                    | "pass"
+                    | "db-pass"
+                    | "pat"
+                    | "api-key"
+                    | "auth"
+                    | "credential"
+                    | "private-key"
+                    | "access-token"
+                    | "refresh-token"
+                    | "secret"
+                    | "key"
+                    | "index"
+                    | "index-url"
             ) || crate::sandbox::is_credential_env_name(&key.replace('-', "_"))
             {
                 if arg.contains('=') {
@@ -851,6 +868,8 @@ mod tests {
             [
                 "--token",
                 "secret",
+                "--pat",
+                "ghp_SECRETARG",
                 "-c",
                 "print('secret')",
                 "https://user:pass@example.org/simple?token=hidden",
@@ -862,7 +881,8 @@ mod tests {
         assert!(
             !joined.contains("secret")
                 && !joined.contains("hidden")
-                && !joined.contains("user:pass"),
+                && !joined.contains("user:pass")
+                && !joined.contains("ghp_SECRETARG"),
             "{joined}"
         );
         assert!(joined.contains("--safe"));
