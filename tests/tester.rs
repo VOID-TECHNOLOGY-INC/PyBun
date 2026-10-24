@@ -2518,3 +2518,108 @@ fn native_structured_pytest_preserves_collection_skips() {
         );
     }
 }
+
+#[cfg(unix)]
+fn fake_pytest_project(exit_code: u8, stderr: &str) -> (TempDir, std::path::PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = TempDir::new().unwrap();
+    fs::write(
+        temp.path().join("test_demo.py"),
+        "def test_demo():\n    assert True\n",
+    )
+    .unwrap();
+    let python = temp.path().join("fake-python");
+    fs::write(
+        &python,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = \"-c\" ]; then exit 0; fi\nprintf '%s\\n' '{}' >&2\nexit {}\n",
+            stderr.replace('\'', "'\\''"),
+            exit_code
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&python, fs::Permissions::from_mode(0o755)).unwrap();
+    (temp, python)
+}
+
+#[cfg(unix)]
+#[test]
+fn pytest_usage_error_has_a_distinct_code_and_hint() {
+    let (temp, python) =
+        fake_pytest_project(4, "python -m pytest: error: unrecognized arguments: -n");
+    let output = pybun()
+        .current_dir(temp.path())
+        .env("PYBUN_BACKEND", "native")
+        .env("PYBUN_PYTHON", &python)
+        .args(["--format=json", "test", "-j", "2"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let diagnostic = value["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|diagnostic| diagnostic["code"] == "E_TEST_USAGE")
+        .unwrap_or_else(|| panic!("missing E_TEST_USAGE: {value}"));
+    assert!(
+        diagnostic["suggestion"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("pytest-xdist"),
+        "{value}"
+    );
+    assert_eq!(value["detail"]["exit_code"], 4, "{value}");
+}
+
+#[cfg(unix)]
+#[test]
+fn pytest_no_tests_collected_has_a_distinct_code() {
+    let (temp, python) = fake_pytest_project(5, "no tests ran in 0.01s");
+    let output = pybun()
+        .current_dir(temp.path())
+        .env("PYBUN_BACKEND", "native")
+        .env("PYBUN_PYTHON", &python)
+        .args(["--format=json", "test", "-k", "does_not_match"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let diagnostic = value["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|diagnostic| diagnostic["code"] == "E_TEST_NONE_COLLECTED")
+        .unwrap_or_else(|| panic!("missing E_TEST_NONE_COLLECTED: {value}"));
+    assert!(
+        diagnostic["suggestion"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("-k/--filter"),
+        "{value}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn pytest_failure_keeps_the_original_code() {
+    let (temp, python) = fake_pytest_project(1, "1 failed");
+    let output = pybun()
+        .current_dir(temp.path())
+        .env("PYBUN_BACKEND", "native")
+        .env("PYBUN_PYTHON", &python)
+        .args(["--format=json", "test"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(
+        value["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == "E_TEST_FAILED"),
+        "{value}"
+    );
+}

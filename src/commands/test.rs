@@ -764,7 +764,7 @@ fn run_tests_selected(
     let tests_failed = !output.status.success();
 
     let summary = if tests_failed {
-        format!("Tests failed (exit code {})", exit_code)
+        test_exit_summary(backend, exit_code)
     } else {
         "All tests passed".to_string()
     };
@@ -822,14 +822,71 @@ fn run_tests_selected(
     });
 
     if tests_failed {
-        collector.error_with_code(
-            "E_TEST_FAILED",
-            summary.clone(),
-            "Inspect stdout/stderr in the response for failing test output, fix the failing tests, and re-run `pybun test`.",
-        );
+        let (code, suggestion) = test_exit_diagnostic(backend, exit_code, &stderr);
+        collector.error_with_code(code, summary.clone(), suggestion);
         Ok(RenderDetail::error(summary, detail))
     } else {
         Ok(RenderDetail::with_json(summary, detail))
+    }
+}
+
+/// Human-readable summary for a non-zero pytest/unittest exit.
+fn test_exit_summary(backend: TestBackend, exit_code: i32) -> String {
+    if backend == TestBackend::Pytest {
+        match exit_code {
+            2 => "Tests interrupted (exit code 2)".to_string(),
+            3 => "pytest internal error (exit code 3)".to_string(),
+            4 => "pytest usage error (exit code 4)".to_string(),
+            5 => "No tests collected (exit code 5)".to_string(),
+            _ => format!("Tests failed (exit code {})", exit_code),
+        }
+    } else {
+        format!("Tests failed (exit code {})", exit_code)
+    }
+}
+
+/// Map a non-zero exit to a stable code and an actionable hint.
+///
+/// pytest reserves 1 for test failures, 2 interrupted, 3 internal error,
+/// 4 usage error, and 5 no tests collected. Collapsing 2-5 into
+/// `E_TEST_FAILED` sent agents to edit tests for a missing plugin or a bad
+/// argument (Issue #542).
+fn test_exit_diagnostic(
+    backend: TestBackend,
+    exit_code: i32,
+    stderr: &str,
+) -> (&'static str, &'static str) {
+    if backend != TestBackend::Pytest {
+        return (
+            "E_TEST_FAILED",
+            "Inspect stdout/stderr in the response for failing test output, fix the failing tests, and re-run `pybun test`.",
+        );
+    }
+    match exit_code {
+        2 => (
+            "E_TEST_INTERRUPTED",
+            "The test run was interrupted; re-run `pybun test` and inspect stderr if it repeats.",
+        ),
+        3 => (
+            "E_TEST_INTERNAL_ERROR",
+            "pytest hit an internal error; inspect stderr and re-run `pybun test`.",
+        ),
+        4 if stderr.contains("unrecognized arguments: -n") => (
+            "E_TEST_USAGE",
+            "pytest-xdist is required for -j/--parallel. Run `pybun add --dev pytest-xdist` or drop -j.",
+        ),
+        4 => (
+            "E_TEST_USAGE",
+            "Fix the pytest arguments or configuration shown in stderr, then re-run `pybun test`.",
+        ),
+        5 => (
+            "E_TEST_NONE_COLLECTED",
+            "No tests matched; check -k/--filter and the test paths, then re-run `pybun test`.",
+        ),
+        _ => (
+            "E_TEST_FAILED",
+            "Inspect stdout/stderr in the response for failing test output, fix the failing tests, and re-run `pybun test`.",
+        ),
     }
 }
 
