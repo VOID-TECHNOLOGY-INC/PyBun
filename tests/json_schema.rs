@@ -512,3 +512,49 @@ mod schema_version {
         assert_eq!(json["version"], "1", "Schema version should be '1'");
     }
 }
+
+#[test]
+fn clap_usage_errors_respect_format_json() {
+    for args in [
+        vec!["--format=json", "bogus"],
+        vec!["--format", "json", "bogus"],
+        vec!["--format=json", "add"],
+        vec!["--format=json", "add", "--nope", "pkg"],
+        vec!["--format=json", "run", "-c", "--", "x"],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_pybun"))
+            .args(&args)
+            .output()
+            .expect("failed to execute pybun");
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let json: serde_json::Value = serde_json::from_str(&stdout)
+            .unwrap_or_else(|error| panic!("{args:?}: invalid JSON: {error}\n{stdout}"));
+        assert_eq!(json["status"], "error", "{args:?}: {json}");
+        assert_eq!(json["version"], "1", "{args:?}: {json}");
+        let diagnostic = json["diagnostics"]
+            .as_array()
+            .and_then(|items| {
+                items
+                    .iter()
+                    .find(|diagnostic| diagnostic["code"] == "E_CLI_USAGE")
+            })
+            .unwrap_or_else(|| panic!("{args:?}: missing E_CLI_USAGE: {json}"));
+        assert!(!diagnostic["message"].as_str().unwrap_or("").is_empty());
+        assert!(
+            json["detail"]["kind"].as_str().is_some(),
+            "{args:?}: {json}"
+        );
+    }
+}
+
+#[test]
+fn clap_usage_errors_stay_text_without_json_flag() {
+    let output = Command::new(env!("CARGO_BIN_EXE_pybun"))
+        .arg("bogus")
+        .output()
+        .expect("failed to execute pybun");
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("unrecognized subcommand"));
+}

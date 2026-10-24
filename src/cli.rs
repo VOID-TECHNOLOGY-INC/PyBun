@@ -718,6 +718,88 @@ pub fn json_help_envelope(args: &[String]) -> Option<String> {
     Some(render_help_envelope(&command, &command_name.join(" ")))
 }
 
+/// Build a JSON envelope for clap-detected usage errors when the raw args
+/// requested `--format=json`.
+///
+/// Clap otherwise prints plain text to stderr and leaves stdout empty, which
+/// breaks the documented JSON contract for exactly the mistakes agents make
+/// most often (unknown subcommand/flag, missing argument). Help/version
+/// display requests are left to clap.
+pub fn json_usage_error_envelope(args: &[String], error: &clap::Error) -> Option<String> {
+    if matches!(
+        error.kind(),
+        clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+    ) {
+        return None;
+    }
+    if !args_want_json(args) {
+        return None;
+    }
+    let raw = error.to_string();
+    let mut usage = None;
+    let mut suggestion = None;
+    let mut message_lines = Vec::new();
+    for line in raw.lines() {
+        let trimmed = line.trim_start();
+        if let Some(rest) = trimmed.strip_prefix("Usage:") {
+            usage = Some(rest.trim().to_string());
+        } else if let Some(rest) = trimmed.strip_prefix("tip:") {
+            suggestion = Some(rest.trim().to_string());
+        } else if !line.contains("For more information, try") {
+            message_lines.push(line);
+        }
+    }
+    let message = message_lines
+        .join("\n")
+        .trim()
+        .strip_prefix("error: ")
+        .unwrap_or(message_lines.join("\n").trim())
+        .trim()
+        .to_string();
+    let message = if message.is_empty() {
+        "Invalid command-line arguments.".to_string()
+    } else {
+        message
+    };
+    let mut diagnostic = crate::schema::Diagnostic::error(message.clone())
+        .with_code("E_CLI_USAGE")
+        .with_context(json!({
+            "kind": format!("{:?}", error.kind()),
+            "usage": usage,
+        }));
+    if let Some(suggestion) = &suggestion {
+        diagnostic.suggestion = Some(suggestion.clone());
+    }
+    let mut envelope = crate::schema::JsonEnvelope::new(
+        "pybun",
+        crate::schema::Status::Error,
+        std::time::Duration::default(),
+        json!({
+            "usage": usage,
+            "kind": format!("{:?}", error.kind()),
+        }),
+    );
+    envelope.diagnostics.push(diagnostic);
+    Some(envelope.to_json())
+}
+
+fn args_want_json(args: &[String]) -> bool {
+    let mut iter = args.iter().peekable();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--format=json" => return true,
+            "--format" => {
+                if iter.peek().is_some_and(|value| value.as_str() == "json") {
+                    return true;
+                }
+                iter.next();
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
 /// Scan raw CLI arguments for `--help`/`-h`, `--format=json`, and the
 /// subcommand chain (e.g. `pybun mcp serve --help` resolves to the `serve`
 /// `clap::Command` and path `["mcp", "serve"]`).
