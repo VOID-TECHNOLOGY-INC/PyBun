@@ -13,11 +13,15 @@ fn main() -> Result<()> {
     }
 
     let cli = Cli::try_parse().unwrap_or_else(|error| {
-        let output = support_bundle::redact_text(&error.to_string());
-        if error.use_stderr() {
-            eprint!("{output}");
+        if let Some(envelope) = pybun::cli::json_usage_error_envelope(&raw_args, &error) {
+            println!("{}", support_bundle::redact_response(&envelope));
         } else {
-            print!("{output}");
+            let output = support_bundle::redact_text(&error.to_string());
+            if error.use_stderr() {
+                eprint!("{output}");
+            } else {
+                print!("{output}");
+            }
         }
         std::process::exit(error.exit_code());
     });
