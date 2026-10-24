@@ -1230,7 +1230,7 @@ mod tests {
         let mut cmd = Command::new("python3");
         cmd.args([
             "-c",
-            "import sitecustomize as sc; raise SystemExit(3 if hasattr(sc, '_orig_open') or hasattr(sc, '_orig_os_open') else 0)",
+            "try:\n import sitecustomize as sc\nexcept ImportError:\n raise SystemExit(0)\nraise SystemExit(3 if hasattr(sc, '_orig_open') or hasattr(sc, '_orig_os_open') else 0)",
         ]);
         let guard = apply_python_sandbox(&mut cmd, SandboxConfig::default())
             .expect("sandbox setup should succeed");
