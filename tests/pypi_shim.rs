@@ -96,6 +96,7 @@ fn pypi_shim_bootstraps_from_manifest() {
         .env("PYTHONPATH", repo_root)
         .env("PYBUN_PYPI_MANIFEST", &manifest_path)
         .env("PYBUN_HOME", &pybun_home)
+        .env("PYBUN_PYPI_NO_VERIFY", "1")
         .output()
         .expect("run python shim");
 
@@ -107,4 +108,20 @@ fn pypi_shim_bootstraps_from_manifest() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("pybun test"), "stdout: {}", stdout);
+
+    // Verification is fail-closed: the same unsigned manifest must be rejected
+    // when the insecure escape hatch is not set.
+    let strict_output = Command::new("python3")
+        .args(["-m", "pybun", "--version"])
+        .env("PYTHONPATH", repo_root)
+        .env("PYBUN_PYPI_MANIFEST", &manifest_path)
+        .env("PYBUN_HOME", temp.path().join("pybun-home-strict"))
+        .output()
+        .expect("run strict python shim");
+    assert!(!strict_output.status.success());
+    assert!(
+        String::from_utf8_lossy(&strict_output.stderr).contains("missing a signature"),
+        "stderr={}",
+        String::from_utf8_lossy(&strict_output.stderr)
+    );
 }
