@@ -775,6 +775,8 @@ pub fn json_usage_error_envelope(args: &[String], error: &clap::Error) -> Option
         crate::schema::Status::Error,
         std::time::Duration::default(),
         json!({
+            "error": message,
+            "message": message,
             "usage": usage,
             "kind": format!("{:?}", error.kind()),
         }),
