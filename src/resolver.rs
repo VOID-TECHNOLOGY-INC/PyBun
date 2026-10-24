@@ -634,6 +634,8 @@ pub enum ResolveError {
         #[allow(dead_code)]
         requested_chain: Vec<String>,
     },
+    #[error("package {name} was not found in the index {index}")]
+    PackageNotFound { name: String, index: String },
     #[error("io error: {0}")]
     Io(String),
     #[error(

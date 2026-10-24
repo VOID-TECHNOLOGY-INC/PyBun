@@ -21,6 +21,8 @@ pub enum PyPiError {
     OfflineCacheMiss(String),
     #[error("http error: {0}")]
     Http(String),
+    #[error("package {0} was not found on the index")]
+    NotFound(String),
     #[error("io error: {0}")]
     Io(String),
     #[error("parse error: {0}")]
@@ -40,6 +42,18 @@ impl From<reqwest::Error> for PyPiError {
 impl From<std::io::Error> for PyPiError {
     fn from(value: std::io::Error) -> Self {
         Self::Io(value.to_string())
+    }
+}
+
+/// Preserve the "missing package" meaning when crossing into resolver errors so
+/// callers do not suggest checking connectivity for an HTTP 404 (Issue #543).
+fn resolve_error(error: PyPiError, index: &Url) -> crate::resolver::ResolveError {
+    match error {
+        PyPiError::NotFound(name) => crate::resolver::ResolveError::PackageNotFound {
+            name,
+            index: index.to_string(),
+        },
+        other => crate::resolver::ResolveError::Io(other.to_string()),
     }
 }
 
@@ -81,7 +95,7 @@ impl PackageIndex for PyPiIndex {
                 .client
                 .get_or_fetch(&name, &this.memory)
                 .await
-                .map_err(|e| crate::resolver::ResolveError::Io(e.to_string()))?;
+                .map_err(|e| resolve_error(e, &this.client.base))?;
             let cached = packages.iter().find(|p| p.version == version);
             if cached.is_none() {
                 return Ok(None);
@@ -90,7 +104,7 @@ impl PackageIndex for PyPiIndex {
                 .client
                 .ensure_dependencies(&name, &version, &this.memory)
                 .await
-                .map_err(|e| crate::resolver::ResolveError::Io(e.to_string()))?;
+                .map_err(|e| resolve_error(e, &this.client.base))?;
             let source = this.client.package_source();
             let Some(cached) = cached else {
                 return Ok(None);
@@ -116,7 +130,7 @@ impl PackageIndex for PyPiIndex {
                 .client
                 .get_or_fetch(&name, &this.memory)
                 .await
-                .map_err(|e| crate::resolver::ResolveError::Io(e.to_string()))?;
+                .map_err(|e| resolve_error(e, &this.client.base))?;
             let source = this.client.package_source();
             Ok(cached
                 .iter()
@@ -268,6 +282,9 @@ impl PyPiClient {
         }
 
         if !resp.status().is_success() {
+            if resp.status() == StatusCode::NOT_FOUND {
+                return Err(PyPiError::NotFound(name.to_string()));
+            }
             return Err(PyPiError::Http(
                 resp.error_for_status().unwrap_err().to_string(),
             ));
@@ -322,6 +339,9 @@ impl PyPiClient {
             .map_err(|e| PyPiError::Parse(e.to_string()))?;
         let resp = self.http.get(url).send().await?;
         if !resp.status().is_success() {
+            if resp.status() == StatusCode::NOT_FOUND {
+                return Err(PyPiError::NotFound(format!("{name}=={version}")));
+            }
             return Err(PyPiError::Http(resp.status().to_string()));
         }
         let body: VersionResponse = resp.json().await?;
@@ -1098,6 +1118,19 @@ fn build_cached_packages(
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn http_404_maps_to_package_not_found() {
+        let index = Url::parse("https://example.org/simple/").unwrap();
+        let error = resolve_error(PyPiError::NotFound("missing".to_string()), &index);
+        match error {
+            crate::resolver::ResolveError::PackageNotFound { name, index } => {
+                assert_eq!(name, "missing");
+                assert_eq!(index, "https://example.org/simple/");
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+    }
 
     #[test]
     fn validate_package_name_accepts_pep503_names() {
