@@ -119,6 +119,18 @@ impl UvBackend {
             .as_ref()
             .filter(|target| script_metadata_or_lock(target))
             .map(PathBuf::from);
+        if let Some(script_path) = &script
+            && let Ok(Some(metadata)) = crate::pep723::parse_script_metadata(script_path)
+            && metadata
+                .dependencies
+                .iter()
+                .any(|requirement| requirement.trim_start().starts_with('-'))
+        {
+            return Err(error(
+                "E_BACKEND_ARGUMENT",
+                "PEP 723 dependencies must be package requirements, not installer options.",
+            ));
+        }
         let root = if script.is_none() {
             self.workspace_root()?
         } else {
@@ -206,6 +218,7 @@ impl UvBackend {
                         allow_run: args.allow_run.clone(),
                         allow_read: args.allow_read.clone(),
                         allow_write: args.allow_write.clone(),
+                        deny_write: args.deny_write.clone(),
                         allow_env: args.allow_env.clone(),
                         timeout_secs: args.sandbox_timeout,
                         memory_limit_mb: args.sandbox_memory,

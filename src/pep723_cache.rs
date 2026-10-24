@@ -19,6 +19,11 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use thiserror::Error;
 
+/// Dependency hashes are 16-byte SHA-256 prefixes encoded as 32 hex chars.
+fn safe_hash(hash: &str) -> bool {
+    hash.len() == 32 && hash.chars().all(|ch| ch.is_ascii_hexdigit())
+}
+
 const PEP723_ENVS_DIR: &str = "pep723-envs";
 
 #[derive(Debug, Error)]
@@ -495,12 +500,21 @@ impl Pep723Cache {
 
         for entry in fs::read_dir(&envs_dir)? {
             let entry = entry?;
-            if entry.path().is_dir() {
-                let info_path = entry.path().join("deps.json");
-                if info_path.exists()
-                    && let Ok(content) = fs::read_to_string(&info_path)
-                    && let Ok(info) = serde_json::from_str::<CachedEnvInfo>(&content)
-                {
+            let Ok(metadata) = fs::symlink_metadata(entry.path()) else {
+                continue;
+            };
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                continue;
+            }
+            let info_path = entry.path().join("deps.json");
+            if info_path.exists()
+                && let Ok(content) = fs::read_to_string(&info_path)
+                && let Ok(mut info) = serde_json::from_str::<CachedEnvInfo>(&content)
+            {
+                // Use the directory name, not attacker-writable deps.json, so
+                // gc can never be pointed at a path outside envs_dir.
+                info.hash = entry.file_name().to_string_lossy().to_string();
+                if safe_hash(&info.hash) {
                     envs.push(info);
                 }
             }
@@ -514,6 +528,9 @@ impl Pep723Cache {
 
     /// Remove a cached environment by hash.
     pub fn remove_env(&self, hash: &str) -> Result<bool> {
+        if !safe_hash(hash) {
+            return Ok(false);
+        }
         let cache_dir = self.cache_dir_for_hash(hash);
         if cache_dir.exists() {
             fs::remove_dir_all(&cache_dir)?;
@@ -564,6 +581,9 @@ impl Pep723Cache {
         for env in envs {
             if current_size <= max_bytes {
                 break;
+            }
+            if !safe_hash(&env.hash) {
+                continue;
             }
 
             let cache_dir = self.cache_dir_for_hash(&env.hash);
@@ -644,6 +664,33 @@ mod tests {
     use super::*;
     use std::fs::OpenOptions;
     use tempfile::tempdir;
+
+    #[test]
+    fn gc_ignores_hashes_from_attacker_writable_metadata() {
+        let temp = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        let keep = outside.path().join("keep.txt");
+        std::fs::write(&keep, b"do-not-delete").unwrap();
+        let cache = Pep723Cache::with_root(temp.path());
+        let env_dir = cache.envs_dir().join("a".repeat(32));
+        std::fs::create_dir_all(&env_dir).unwrap();
+        std::fs::write(
+            env_dir.join("deps.json"),
+            serde_json::json!({
+                "hash": outside.path().to_string_lossy(),
+                "dependencies": [],
+                "python_version": "3.11",
+                "created_at": 0,
+                "last_used": 0
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        cache.gc(Some(0), false).unwrap();
+        assert!(keep.exists(), "gc trusted deps.json for a deletion path");
+        assert!(!cache.remove_env("/absolute/path").unwrap());
+    }
 
     #[test]
     fn compute_deps_hash_deterministic() {

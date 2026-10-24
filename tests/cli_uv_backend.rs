@@ -606,3 +606,17 @@ fn dependency_group_mutations_are_verified_in_their_table() {
         assert!(pyproject.contains(expected), "{args:?}: {pyproject}");
     }
 }
+
+#[test]
+fn pep723_option_injection_is_rejected_before_backend_preparation() {
+    let dir = fixture("");
+    let script = dir.path().join("inject.py");
+    fs::write(
+        &script,
+        "# /// script\n# dependencies = [\"--index-url=http://127.0.0.1:9/simple\"]\n# ///\nprint('nope')\n",
+    )
+    .unwrap();
+    let (ok, value) = run(&dir, &["run", script.to_str().unwrap()]);
+    assert!(!ok, "{value}");
+    assert_eq!(value["detail"]["code"], "E_BACKEND_ARGUMENT", "{value}");
+}

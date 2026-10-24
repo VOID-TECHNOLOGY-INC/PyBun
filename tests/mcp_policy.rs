@@ -329,3 +329,31 @@ fn script_argument_cannot_be_smuggled_as_a_tool_option() {
         );
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn script_arguments_must_be_regular_files() {
+    let temp = tempfile::tempdir().unwrap();
+    configure(
+        temp.path(),
+        "default_sandbox=false\nrequire_sandbox=false\nallow_network=true\nmax_execution_time_s=0\n",
+    );
+    let fifo = temp.path().join("pipe.py");
+    assert!(
+        Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false),
+        "mkfifo unavailable"
+    );
+    let reply = call(
+        temp.path(),
+        "pybun_lint",
+        json!({"script": fifo.to_string_lossy()}),
+    );
+    let text = reply["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(text.contains("regular file"), "{reply}");
+}

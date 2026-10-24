@@ -47,6 +47,7 @@ const FIELDS: &[(&str, &[&str])] = &[
             "native_fallback",
             "allow_read",
             "allow_write",
+            "deny_write",
             "allow_env",
             "default_deny_write",
         ],
@@ -128,6 +129,7 @@ fn field_value(input: &Value, section: &str, key: &str) -> Result<Value, String>
             | "denied_tools"
             | "allow_read"
             | "allow_write"
+            | "deny_write"
             | "allow_env"
     );
     let boolean = matches!(

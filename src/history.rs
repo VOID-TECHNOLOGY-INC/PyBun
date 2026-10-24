@@ -492,9 +492,10 @@ fn redact_args(args: impl IntoIterator<Item = String>) -> Vec<String> {
                 .split('=')
                 .next()
                 .unwrap_or_default()
-                .trim_start_matches('-');
+                .trim_start_matches('-')
+                .to_ascii_lowercase();
             if matches!(
-                key,
+                key.as_str(),
                 "c" | "code"
                     | "token"
                     | "password"
@@ -509,6 +510,8 @@ fn redact_args(args: impl IntoIterator<Item = String>) -> Vec<String> {
                     | "private-key"
                     | "access-token"
                     | "refresh-token"
+                    | "header"
+                    | "cookie"
                     | "secret"
                     | "key"
                     | "index"

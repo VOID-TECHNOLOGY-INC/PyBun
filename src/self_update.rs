@@ -38,8 +38,7 @@ const MAX_ASSET_BYTES: u64 = 512 * 1024 * 1024;
 
 /// Trusted minisign key shipped with the binary (same key as `scripts/install.sh`).
 /// The manifest must not be able to supply its own verification key.
-const TRUSTED_MINISIGN_PUBLIC_KEY: &str =
-    "RWQtfZNEyNnATcgzxfwDB+iNwGwW8bwflfnjHMizq6H84B1VRXO92yZ5";
+const TRUSTED_MINISIGN_PUBLIC_KEY: &str = "untrusted comment: minisign public key\nRWQtfZNEyNnATcgzxfwDB+iNwGwW8bwflfnjHMizq6H84B1VRXO92yZ5";
 
 /// Debug/test-only key override. Release binaries ignore this environment
 /// variable so a manifest attacker cannot replace the trust root.
@@ -183,6 +182,9 @@ fn download_asset(url: &str, destination: &Path) -> ApplyResult<()> {
     }
 
     if Path::new(url).exists() {
+        if fs::metadata(url).map(|meta| meta.len()).unwrap_or(0) > MAX_ASSET_BYTES {
+            return Err(err("local asset exceeds the self-update size limit"));
+        }
         fs::copy(url, destination)
             .map_err(|e| err(format!("failed to copy local asset from {url}: {e}")))?;
         return Ok(());
@@ -526,5 +528,17 @@ mod tests {
 
         assert!(error.rollback_performed);
         assert_eq!(fs::read(&current).unwrap(), b"old");
+    }
+}
+
+#[cfg(test)]
+mod trust_tests {
+    use super::*;
+
+    #[test]
+    fn release_trusted_key_is_a_complete_minisign_public_key() {
+        assert!(TRUSTED_MINISIGN_PUBLIC_KEY.starts_with("untrusted comment:"));
+        let key_line = TRUSTED_MINISIGN_PUBLIC_KEY.lines().nth(1).unwrap_or("");
+        assert!(!key_line.is_empty());
     }
 }

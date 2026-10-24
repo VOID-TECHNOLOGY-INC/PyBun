@@ -82,6 +82,15 @@ impl ReleaseManifest {
     pub fn from_url(url: &str) -> Result<Self, ReleaseManifestError> {
         let client = reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(30))
+            .redirect(reqwest::redirect::Policy::custom(|attempt| {
+                if attempt.previous().len() >= 5 {
+                    attempt.error("too many redirects")
+                } else if attempt.url().scheme() != "https" {
+                    attempt.error("redirect to a non-https URL is not allowed")
+                } else {
+                    attempt.follow()
+                }
+            }))
             .build()
             .map_err(|source| ReleaseManifestError::Network {
                 url: url.to_string(),
@@ -101,6 +110,11 @@ impl ReleaseManifest {
                 url: url.to_string(),
                 source,
             })?;
+        if body.len() > 4 * 1024 * 1024 {
+            return Err(ReleaseManifestError::InsecureScheme(
+                "manifest exceeds the 4 MiB size limit".to_string(),
+            ));
+        }
         Self::from_json_str(&body)
     }
 

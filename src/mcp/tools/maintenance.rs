@@ -217,8 +217,13 @@ fn authorized_script_arg(args: &Value) -> Result<Option<String>, String> {
     if raw.starts_with('-') {
         return Err("'script' must be a path, not a command-line option".to_string());
     }
-    if !PathBuf::from(raw).exists() {
-        return Err(format!("Script not found: {raw}"));
+    let metadata = std::fs::symlink_metadata(PathBuf::from(raw))
+        .map_err(|_| format!("Script not found: {raw}"))?;
+    if !metadata.file_type().is_file() {
+        return Err("'script' must be a regular file".to_string());
+    }
+    if metadata.len() > 2 * 1024 * 1024 {
+        return Err("'script' exceeds the 2 MiB limit".to_string());
     }
     Ok(Some(raw.to_string()))
 }
