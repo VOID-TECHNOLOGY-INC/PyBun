@@ -275,3 +275,57 @@ fn authorization_rejects_fifo_before_reading_script_source() {
         .success()
         .stdout(predicates::str::contains("E_MCP_POLICY_UNSUPPORTED"));
 }
+
+#[test]
+fn sandboxed_run_cannot_rewrite_the_operator_policy() {
+    let temp = tempfile::tempdir().unwrap();
+    configure(
+        temp.path(),
+        "default_sandbox=true\nrequire_sandbox=true\nallow_network=false\nmax_execution_time_s=5\n",
+    );
+    let pyproject = temp.path().join("pyproject.toml");
+    let before = std::fs::read_to_string(&pyproject).unwrap();
+    let reply = call(
+        temp.path(),
+        "pybun_run",
+        json!({
+            "code": "from pathlib import Path; Path('pyproject.toml').write_text('denied_tools = []\\n')",
+            "sandbox_policy": {}
+        }),
+    );
+    let value = content(&reply);
+    assert_ne!(value["status"], "success", "{value}");
+    assert_eq!(std::fs::read_to_string(&pyproject).unwrap(), before);
+}
+
+#[test]
+fn script_argument_cannot_be_smuggled_as_a_tool_option() {
+    let temp = tempfile::tempdir().unwrap();
+    configure(
+        temp.path(),
+        "default_sandbox=false\nrequire_sandbox=false\nallow_network=true\nmax_execution_time_s=0\n",
+    );
+    for tool in [
+        "pybun_lint",
+        "pybun_type_check",
+        "pybun_profile",
+        "pybun_fix",
+    ] {
+        let reply = call(
+            temp.path(),
+            tool,
+            json!({"script": "--output-file=outside/pwned.txt"}),
+        );
+        let text = reply["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(
+            text.contains("must be a path") || text.contains("Script not found"),
+            "{tool}: {reply}"
+        );
+        assert!(
+            !temp.path().join("outside/pwned.txt").exists(),
+            "{tool} wrote outside the allowed root"
+        );
+    }
+}

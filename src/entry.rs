@@ -267,6 +267,7 @@ mod tests {
                 sandbox_cpu: 0,
                 profile: "dev".to_string(),
                 passthrough: Vec::new(),
+                deny_write: Vec::new(),
             }),
         };
         assert!(!requires_tokio_runtime(&cli));

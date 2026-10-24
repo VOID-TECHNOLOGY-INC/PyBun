@@ -274,6 +274,9 @@ pub struct RunArgs {
     /// Pass additional args to the target.
     #[arg(last = true)]
     pub passthrough: Vec<String>,
+    /// Internal deny list applied before `allow_write` (MCP protected files).
+    #[arg(skip)]
+    pub deny_write: Vec<String>,
 }
 
 #[derive(Args, Debug)]

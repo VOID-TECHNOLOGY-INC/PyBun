@@ -54,6 +54,9 @@ pub struct SandboxConfig {
     pub allow_read: Vec<String>,
     /// Paths allowed for writing. Empty = no write restriction (default deny applies).
     pub allow_write: Vec<String>,
+    /// Paths denied for writing even when `allow_write` would allow them.
+    /// Used by MCP to protect the operator policy file from sandboxed scripts.
+    pub deny_write: Vec<String>,
     /// Additional env var names to pass through into the sandbox beyond the safe default set.
     /// Sandbox always filters env vars to prevent secret leakage; this allowlist extends the
     /// default safe set (PATH, HOME, LANG, etc.) with caller-specified names.
@@ -78,6 +81,7 @@ impl Default for SandboxConfig {
             allow_run: Vec::new(),
             allow_read: Vec::new(),
             allow_write: Vec::new(),
+            deny_write: Vec::new(),
             allow_env: Vec::new(),
             timeout_secs: DEFAULT_SANDBOX_TIMEOUT_SECS,
             memory_limit_mb: 0,
@@ -343,6 +347,10 @@ pub fn apply_python_sandbox(cmd: &mut Command, config: SandboxConfig) -> Result<
     cmd.env(
         "PYBUN_SANDBOX_ALLOW_WRITE",
         serialize_policy_paths(&config.allow_write)?,
+    );
+    cmd.env(
+        "PYBUN_SANDBOX_DENY_WRITE",
+        serialize_policy_paths(&config.deny_write)?,
     );
 
     // When no explicit write policy is set, apply default system-path restrictions.
@@ -613,8 +621,10 @@ import socket
 import subprocess
 import builtins
 
-_orig_open = builtins.open  # save before any patching
-_orig_os_open = os.open  # save before any patching
+# Originals are captured as default arguments inside the patching functions
+# below, never as module globals: a sandboxed script can import sitecustomize
+# and would otherwise be able to call `sitecustomize._orig_open` to bypass
+# every read/write policy.
 
 ALLOW_NETWORK = os.environ.get("PYBUN_SANDBOX_ALLOW_NETWORK") == "1"
 _AUDIT_FILE = os.environ.get("PYBUN_SANDBOX_AUDIT_FILE", "")
@@ -654,10 +664,12 @@ def _path_within(path, allowed_root):
 
 _ALLOW_READ = [_normalize_path(p) for p in _load_policy_paths("PYBUN_SANDBOX_ALLOW_READ")]
 _ALLOW_WRITE = [_normalize_path(p) for p in _load_policy_paths("PYBUN_SANDBOX_ALLOW_WRITE")]
+_DENY_WRITE = [_normalize_path(p) for p in _load_policy_paths("PYBUN_SANDBOX_DENY_WRITE")]
 _DEFAULT_DENY_WRITE = [_normalize_path(p) for p in _load_policy_paths("PYBUN_SANDBOX_DEFAULT_DENY_WRITE")]
 _AUDIT_FILE_PATH = _normalize_path(_AUDIT_FILE) if _AUDIT_FILE else ""
 _HAS_READ_POLICY = bool(_ALLOW_READ)
 _HAS_WRITE_POLICY = bool(_ALLOW_WRITE)
+_HAS_DENY_WRITE = bool(_DENY_WRITE)
 _HAS_DEFAULT_DENY_WRITE = bool(_DEFAULT_DENY_WRITE)
 
 # Sys prefixes are always readable so Python imports keep working.
@@ -828,7 +840,7 @@ def _block_network():
             setattr(socket.socket, _name, _blocked_connect)
 
 
-def _patch_filesystem():
+def _patch_filesystem(orig_open=builtins.open, orig_os_open=os.open):
     def _check_write_path(path, action):
         if not isinstance(path, (str, bytes, os.PathLike)):
             return
@@ -837,6 +849,8 @@ def _patch_filesystem():
             return
         if _AUDIT_FILE_PATH and _normalize_path(decoded) == _AUDIT_FILE_PATH:
             _deny(action + " sandbox audit file", "blocked_file_writes")
+        if _HAS_DENY_WRITE and _is_in_denied(decoded, _DENY_WRITE):
+            _deny(action + " protected file " + decoded, "blocked_file_writes")
         if _HAS_WRITE_POLICY:
             if not _is_write_allowed(decoded):
                 _deny(action + " " + decoded, "blocked_file_writes")
@@ -847,16 +861,16 @@ def _patch_filesystem():
     def _checked_open(file, mode="r", *args, **kwargs):
         # File objects (e.g. from io) pass through unchanged.
         if not isinstance(file, (str, bytes, os.PathLike)):
-            return _orig_open(file, mode, *args, **kwargs)
+            return orig_open(file, mode, *args, **kwargs)
         path = os.fsdecode(os.fspath(file))
         if not path:
-            return _orig_open(file, mode, *args, **kwargs)
+            return orig_open(file, mode, *args, **kwargs)
         if _HAS_READ_POLICY and _mode_needs_read(mode):
             if not _is_read_allowed(path):
                 _deny("read from " + path, "blocked_file_reads")
         if _mode_needs_write(mode):
             _check_write_path(path, "write to")
-        return _orig_open(file, mode, *args, **kwargs)
+        return orig_open(file, mode, *args, **kwargs)
 
     builtins.open = _checked_open
     # io.open is the same underlying function as builtins.open in CPython,
@@ -877,14 +891,14 @@ def _patch_filesystem():
         wants_read = accmode in (os.O_RDONLY, os.O_RDWR)
         wants_write = accmode in (os.O_WRONLY, os.O_RDWR) or bool(flags & _WRITE_FLAGS)
         if not isinstance(path, (str, bytes, os.PathLike)):
-            return _orig_os_open(path, flags, *args, **kwargs)
+            return orig_os_open(path, flags, *args, **kwargs)
         decoded = os.fsdecode(os.fspath(path))
         if decoded:
             if _HAS_READ_POLICY and wants_read and not _is_read_allowed(decoded):
                 _deny("read from " + decoded, "blocked_file_reads")
             if wants_write:
                 _check_write_path(decoded, "write to")
-        return _orig_os_open(path, flags, *args, **kwargs)
+        return orig_os_open(path, flags, *args, **kwargs)
 
     os.open = _checked_os_open
 
@@ -933,10 +947,10 @@ def _patch_filesystem():
             setattr(os, _name, _wrap_link_mutation(getattr(os, _name), _action))
 
 
-def _write_audit():
+def _write_audit(orig_open=builtins.open):
     if _AUDIT_FILE:
         try:
-            with _orig_open(_AUDIT_FILE, "w") as _f:
+            with orig_open(_AUDIT_FILE, "w") as _f:
                 _f.write(json.dumps(_audit))
         except Exception:
             pass
@@ -945,17 +959,19 @@ def _write_audit():
 # GRANULAR_PERMISSIONS
 
 try:
-    atexit.register(_write_audit)
+    _audit_writer = _write_audit
+    atexit.register(_audit_writer)
+    del _write_audit
     _install_permissions()
     if not _ALLOW_RUN:
         _block_subprocesses()
     if not ALLOW_NETWORK and not _ALLOW_NET:
         _block_network()
-    if _HAS_READ_POLICY or _HAS_WRITE_POLICY or _HAS_DEFAULT_DENY_WRITE:
+    if _HAS_READ_POLICY or _HAS_WRITE_POLICY or _HAS_DEFAULT_DENY_WRITE or _HAS_DENY_WRITE:
         _patch_filesystem()
     sys.stderr.write(
         "[pybun] sandbox active (allow_network={}, read_policy={}, write_policy={}, default_deny_write={})\n".format(
-            ALLOW_NETWORK, _HAS_READ_POLICY, _HAS_WRITE_POLICY, _HAS_DEFAULT_DENY_WRITE
+            ALLOW_NETWORK, _HAS_READ_POLICY, _HAS_WRITE_POLICY, _HAS_DEFAULT_DENY_WRITE or _HAS_DENY_WRITE
         )
     )
 except Exception as exc:  # pragma: no cover - defensive, should not happen
@@ -1063,6 +1079,64 @@ mod tests {
     // so that a future change to sandboxed-vs-plain execution, timeout
     // handling, or output capture is guaranteed to affect both entry points
     // identically instead of silently diverging between them.
+
+    #[test]
+    fn sandbox_does_not_expose_original_open_functions() {
+        let mut cmd = Command::new("python3");
+        cmd.args([
+            "-c",
+            "import sitecustomize as sc; raise SystemExit(3 if hasattr(sc, '_orig_open') or hasattr(sc, '_orig_os_open') else 0)",
+        ]);
+        let guard = apply_python_sandbox(&mut cmd, SandboxConfig::default())
+            .expect("sandbox setup should succeed");
+        let result = execute_with_optional_sandbox(&mut cmd, Some(&guard), true)
+            .expect("sandboxed command should execute");
+        assert!(
+            result.status.success(),
+            "sandbox leaked an original open function"
+        );
+    }
+
+    #[test]
+    fn deny_write_overrides_allow_write() {
+        let temp = tempfile::tempdir().unwrap();
+        let protected = temp.path().join("policy.toml");
+        let allowed = temp.path().join("output.txt");
+        fs::write(&protected, "original").unwrap();
+        let mut cmd = Command::new("python3");
+        cmd.args([
+            "-c",
+            "import sys; open(sys.argv[1], 'w').write('overwritten')",
+            protected.to_str().unwrap(),
+        ]);
+        let config = SandboxConfig {
+            allow_write: vec![temp.path().to_string_lossy().to_string()],
+            deny_write: vec![protected.to_string_lossy().to_string()],
+            ..Default::default()
+        };
+        let guard = apply_python_sandbox(&mut cmd, config).expect("sandbox setup should succeed");
+        let result = execute_with_optional_sandbox(&mut cmd, Some(&guard), true)
+            .expect("sandboxed command should execute");
+        assert!(!result.status.success());
+        assert_eq!(fs::read_to_string(&protected).unwrap(), "original");
+
+        let mut cmd = Command::new("python3");
+        cmd.args([
+            "-c",
+            "import sys; open(sys.argv[1], 'w').write('allowed')",
+            allowed.to_str().unwrap(),
+        ]);
+        let config = SandboxConfig {
+            allow_write: vec![temp.path().to_string_lossy().to_string()],
+            deny_write: vec![protected.to_string_lossy().to_string()],
+            ..Default::default()
+        };
+        let guard = apply_python_sandbox(&mut cmd, config).expect("sandbox setup should succeed");
+        let result = execute_with_optional_sandbox(&mut cmd, Some(&guard), true)
+            .expect("sandboxed command should execute");
+        assert!(result.status.success());
+        assert_eq!(fs::read_to_string(&allowed).unwrap(), "allowed");
+    }
 
     #[test]
     fn execute_with_optional_sandbox_plain_no_capture_uses_status() {

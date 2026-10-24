@@ -202,6 +202,19 @@ pub(crate) async fn run_script(
         (pep723_deps.clone(), None)
     };
 
+    // PEP 723 dependencies are forwarded to uv/pip as argv. A value beginning
+    // with '-' would be parsed as an installer option (for example
+    // `--index-url=...`), so reject it before spawning anything.
+    if let Some(requirement) = install_deps
+        .iter()
+        .find(|requirement| requirement.trim_start().starts_with('-'))
+    {
+        return Err(eyre!(
+            "PEP 723 dependency must be a package requirement, not an option: {}",
+            requirement
+        ));
+    }
+
     let has_pep723_deps = !install_deps.is_empty();
 
     // Shared wheel cache directory for PEP 723 installs (align with uv cache use).
@@ -918,6 +931,7 @@ pub(crate) async fn run_script(
                 allow_run: args.allow_run.clone(),
                 allow_read: args.allow_read.clone(),
                 allow_write: args.allow_write.clone(),
+                deny_write: args.deny_write.clone(),
                 allow_env: args.allow_env.clone(),
                 timeout_secs: args.sandbox_timeout,
                 memory_limit_mb: args.sandbox_memory,
@@ -1212,6 +1226,7 @@ fn run_python_code(
                 allow_run: args.allow_run.clone(),
                 allow_read: args.allow_read.clone(),
                 allow_write: args.allow_write.clone(),
+                deny_write: args.deny_write.clone(),
                 allow_env: args.allow_env.clone(),
                 timeout_secs: args.sandbox_timeout,
                 memory_limit_mb: args.sandbox_memory,
