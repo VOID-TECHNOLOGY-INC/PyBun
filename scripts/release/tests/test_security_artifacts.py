@@ -28,7 +28,7 @@ class SecurityArtifactsTests(unittest.TestCase):
         artifacts.mkdir(parents=True, exist_ok=True)
         metadata.mkdir(parents=True, exist_ok=True)
 
-        artifact = artifacts / "pybun-x86_64-unknown-linux-gnu.tar.gz"
+        artifact = artifacts / "pybun-x86_64-unknown-linux-musl.tar.gz"
         artifact.write_bytes(b"artifact-bytes")
         signature = Path(str(artifact) + ".minisig")
         signature.write_text("trusted-signature")
@@ -50,7 +50,7 @@ class SecurityArtifactsTests(unittest.TestCase):
                     "assets": [
                         {
                             "name": artifact.name,
-                            "target": "x86_64-unknown-linux-gnu",
+                            "target": "x86_64-unknown-linux-musl",
                             "url": f"https://example.com/{artifact.name}",
                             "sha256": sha256(artifact),
                             "signature": {

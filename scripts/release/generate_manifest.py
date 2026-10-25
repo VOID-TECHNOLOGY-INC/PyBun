@@ -2,6 +2,12 @@
 import argparse
 import hashlib
 import json
+import os
+import re
+import struct
+import subprocess
+import tarfile
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -60,6 +66,33 @@ def write_sha256sums(output: Path, assets):
     output.write_text("\n".join(lines) + "\n")
 
 
+def glibc_requirement(archive: Path, target: str) -> str:
+    """Read the packaged ELF's version requirements, independently per target."""
+    machines = {"x86_64-unknown-linux-gnu": 62, "aarch64-unknown-linux-gnu": 183}
+    with tarfile.open(archive, "r:gz") as bundle, tempfile.TemporaryDirectory() as tmp:
+        member = bundle.getmember(f"pybun-{target}/pybun")
+        if not member.isfile():
+            raise ValueError(f"Expected a regular ELF binary in {archive.name}")
+        data = bundle.extractfile(member).read()
+        if (len(data) < 20 or data[:6] != b"\x7fELF\x02\x01"
+                or struct.unpack_from("<H", data, 18)[0] != machines.get(target)):
+            raise ValueError(f"ELF architecture does not match {target}")
+        binary = Path(tmp) / "pybun"
+        binary.write_bytes(data)
+        result = subprocess.run(
+            ["readelf", "--version-info", "--wide", str(binary)],
+            check=True, capture_output=True, text=True, timeout=30,
+            env=dict(os.environ, LC_ALL="C"),
+        )
+    # Ignore exported version definitions and the symbol table; only requirements
+    # in .gnu.version_r describe the runtime libraries this executable needs.
+    needs = result.stdout.partition("Version needs section")[2]
+    versions = re.findall(r"Name:\s+GLIBC_([\w.]+)", needs)
+    if not versions or any(not re.fullmatch(r"\d+(?:\.\d+)+", v) for v in versions):
+        raise ValueError(f"Missing or unsupported GLIBC requirements in {archive.name}")
+    return max(versions, key=lambda v: tuple(map(int, v.split("."))))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate PyBun release manifest and checksums.")
     parser.add_argument("--assets-dir", required=True, type=Path)
@@ -105,8 +138,7 @@ def main() -> None:
         if target.endswith("-unknown-linux-musl"):
             compat = {"libc": "musl"}
         elif target.endswith("-unknown-linux-gnu"):
-            # Baseline set to Ubuntu 20.04 (glibc 2.31) when built on 20.04 runners
-            compat = {"libc": "glibc", "min_glibc": "2.31"}
+            compat = {"libc": "glibc", "min_glibc": glibc_requirement(path, target)}
         if compat:
             asset["compat"] = compat
         if signature_ext:

@@ -5,6 +5,7 @@ import os
 import tarfile
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from pybun import bootstrap
 
@@ -122,6 +123,19 @@ class FallbackSelectionTests(unittest.TestCase):
             self.assertEqual(asset["target"], "x86_64-unknown-linux-musl")
         finally:
             bootstrap.detect_glibc_version = orig_detect
+
+
+    def test_glibc_234_fallback_boundary(self):
+        manifest = {"assets": [
+            {"target": "x86_64-unknown-linux-gnu", "compat": {"min_glibc": "2.34"}},
+            {"target": "x86_64-unknown-linux-musl"},
+        ]}
+        with patch.dict(os.environ, {"PYBUN_PYPI_PREFER_MUSL": "0", "PYBUN_PYPI_NO_FALLBACK": "0"}):
+            for version, expected in [("2.31", "musl"), ("2.33", "musl"),
+                                      ("2.34", "gnu"), ("2.35", "gnu")]:
+                with self.subTest(version=version), patch.object(bootstrap, "detect_glibc_version", return_value=version):
+                    asset = bootstrap.select_asset_with_fallback(manifest, "x86_64-unknown-linux-gnu")
+                    self.assertTrue(asset["target"].endswith(expected), asset)
 
 
 class VerifyChecksumTests(unittest.TestCase):

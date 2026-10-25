@@ -267,6 +267,40 @@ jobs:
         # here plus docs/PLAN.md) manually — there is no automation for raising the ratchet.
         run: cargo llvm-cov report --fail-under-lines 83
 
+  linux-compatibility:
+    name: Linux runtime compatibility (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: linux-compatibility-${{ matrix.target }}
+      - name: Build and smoke the packaged GNU binary
+        run: |
+          cargo build --locked --release --target ${{ matrix.target }}
+          mkdir -p dist/pybun-${{ matrix.target }}
+          cp target/${{ matrix.target }}/release/pybun dist/pybun-${{ matrix.target }}/pybun
+          tar -czf dist/pybun-${{ matrix.target }}.tar.gz -C dist pybun-${{ matrix.target }}
+          python3 scripts/release/generate_manifest.py \
+            --assets-dir dist --version 0.0.0 --channel ci --base-url https://example.invalid \
+            --output dist/compat.json --checksums dist/SHA256SUMS
+          python3 scripts/release/smoke_linux_compat.py \
+            --archive dist/pybun-${{ matrix.target }}.tar.gz --target ${{ matrix.target }}
+
   windows-check:
     name: windows compile check
     runs-on: windows-latest

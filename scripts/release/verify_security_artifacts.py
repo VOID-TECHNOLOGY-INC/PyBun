@@ -11,9 +11,13 @@ import argparse
 import hashlib
 import json
 import sys
+import subprocess
+import tarfile
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
+
+import generate_manifest
 
 
 def sha256(path: Path) -> str:
@@ -90,6 +94,15 @@ def validate_assets(
         if not artifact_path:
             errors.append(f"Artifact not found for {name} under {artifacts_dir}")
             continue
+
+        target = asset.get("target", "")
+        if isinstance(target, str) and target.endswith("-unknown-linux-gnu"):
+            try:
+                actual_glibc = generate_manifest.glibc_requirement(artifact_path, target)
+                if asset.get("compat") != {"libc": "glibc", "min_glibc": actual_glibc}:
+                    errors.append(f"GLIBC compatibility mismatch for {name}: ELF requires {actual_glibc}")
+            except (OSError, ValueError, KeyError, tarfile.TarError, subprocess.SubprocessError) as exc:
+                errors.append(f"Cannot verify GLIBC compatibility for {name}: {exc}")
 
         expected_sha = asset.get("sha256")
         if expected_sha:

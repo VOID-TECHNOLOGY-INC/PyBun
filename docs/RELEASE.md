@@ -9,6 +9,32 @@ Releases are tag-driven. Pushing a `v*` tag to `main` triggers `release.yml`, wh
 - GitHub Secrets:
   - `PYBUN_MINISIGN_PRIVATE_KEY` — minisign private key for artifact signing
 - PyPI Trusted Publisher configured for `VOID-TECHNOLOGY-INC/PyBun` on the `pybun-cli` project
+- GNU/Linux metadata generation requires GNU binutils `readelf` (Ubuntu runners include it).
+  `generate_manifest.py` reads each packaged ELF's version requirements independently;
+  `verify_security_artifacts.py` rejects compatibility metadata that disagrees with the ELF.
+
+## Linux compatibility
+
+The GNU/Linux release baseline is GLIBC 2.34 for x86_64 and aarch64. The old
+hard-coded GLIBC 2.31 declaration did not match the released binary requirements.
+The manifest now records the actual requirement for each target. On older x86_64
+glibc hosts the Python shim selects the musl archive; no aarch64 musl archive is
+currently published.
+
+PR CI and release builds run the packaged GNU binaries in a digest-pinned
+AlmaLinux 9 container with GLIBC 2.34, and reject binaries requiring a newer
+version. Both architectures use native Ubuntu 22.04 runners. For a local check:
+
+```sh
+python3 scripts/release/smoke_linux_compat.py \
+  --archive dist/pybun-x86_64-unknown-linux-gnu.tar.gz \
+  --target x86_64-unknown-linux-gnu
+```
+
+This needs Docker and `readelf`; cross-architecture local checks also need
+container emulation. Change the baseline only with a documented compatibility
+decision and matching runtime smoke tests. Generated release metadata and package
+manager files remain CI-owned.
 
 ## Step-by-Step
 
