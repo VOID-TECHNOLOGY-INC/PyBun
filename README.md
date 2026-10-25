@@ -945,6 +945,10 @@ Environment override: `PYBUN_TELEMETRY=0|1`
 
 ## Execution history, environment diff, and dependency provenance
 
+A [reproducible agent-scheduler investigation](examples/agent_scheduler_evidence/README.md)
+shows a successful task, an intentional dependency failure, and the evidence used
+to investigate it.
+
 These read-only surfaces answer the evidence questions an agent or reviewer
 usually asks after a command: what ran, what changed, and why is this package
 here.
