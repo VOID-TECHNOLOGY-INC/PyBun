@@ -75,9 +75,10 @@ Standalone MCP native resolution also requires this opt-in.
 
 For private registries and index authentication, see [PRIVATE_INDEXES.md](PRIVATE_INDEXES.md).
 
-Native fixture/compatibility tests explicitly select native; uv contract tests
-select uv and use hermetic fake executables. Network E2E can be enabled with
-`PYBUN_E2E_NETWORK=1 cargo test --test cli_uv_backend`.
+Native fixture/compatibility tests explicitly select native. UV error-contract
+fixtures and deterministic real-uv E2E tests run normally; see
+[Real-backend regression tests](#real-backend-regression-tests) for the supported
+uv prerequisite and the separate opt-in live-PyPI command.
 
 
 ### Project snapshots and native locks

@@ -43,6 +43,13 @@ fn real_uv(dir: &TempDir) -> assert_cmd::Command {
         .current_dir(dir.path())
         .env("PYBUN_BACKEND", "uv")
         .env_remove("PYBUN_UV")
+        .env_remove("UV_PROJECT_ENVIRONMENT")
+        .env_remove("UV_PROJECT")
+        .env_remove("UV_WORKING_DIRECTORY")
+        .env_remove("UV_CONFIG_FILE")
+        .env_remove("VIRTUAL_ENV")
+        .env("XDG_CONFIG_HOME", dir.path().join("config"))
+        .env("UV_NO_CONFIG", "false")
         .env("PYBUN_HOME", dir.path().join("home"))
         .env("PYBUN_HISTORY", "0")
         .env("UV_CACHE_DIR", dir.path().join("uv-cache"))
@@ -377,6 +384,42 @@ fn real_uv_workspace_member_uses_shared_root_lock() {
     assert!(output.status.success(), "{value}");
     assert!(dir.path().join("uv.lock").exists());
     assert!(!dir.path().join("member/uv.lock").exists());
+}
+
+#[test]
+fn real_uv_tests_leave_ambient_project_and_environment_unchanged() {
+    let outside = TempDir::new().unwrap();
+    let project = outside.path().join("pyproject.toml");
+    let content = "[project]\nname='outside-sentinel'\nversion='0.1.0'\ndependencies=[]\n";
+    fs::write(&project, content).unwrap();
+    let config = outside.path().join("uv.toml");
+    fs::write(&config, "offline='invalid-sentinel'\n").unwrap();
+    for (key, value) in [
+        ("UV_PROJECT", outside.path().to_path_buf()),
+        ("UV_WORKING_DIRECTORY", outside.path().to_path_buf()),
+        ("UV_PROJECT_ENVIRONMENT", outside.path().join("outside-env")),
+        ("UV_CONFIG_FILE", config.clone()),
+    ] {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "real_uv_local_path_add_reports_the_actual_mutation",
+                "--exact",
+            ])
+            .env_remove("UV_PROJECT")
+            .env_remove("UV_WORKING_DIRECTORY")
+            .env_remove("UV_PROJECT_ENVIRONMENT")
+            .env_remove("UV_CONFIG_FILE")
+            .env(key, value)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{key}: {output:?}");
+    }
+    assert_eq!(fs::read_to_string(&project).unwrap(), content);
+    assert_eq!(
+        fs::read_to_string(&config).unwrap(),
+        "offline='invalid-sentinel'\n"
+    );
+    assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 2);
 }
 
 #[test]
