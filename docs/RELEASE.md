@@ -12,6 +12,12 @@ Releases are tag-driven. Pushing a `v*` tag to `main` triggers `release.yml`, wh
 - GNU/Linux metadata generation requires GNU binutils `readelf` (Ubuntu runners include it).
   `generate_manifest.py` reads each packaged ELF's version requirements independently;
   `verify_security_artifacts.py` rejects compatibility metadata that disagrees with the ELF.
+- Each target build records Cargo's compiler artifact messages. `generate_sbom.py`
+  combines those messages with `cargo metadata --locked` and `Cargo.lock` to
+  publish the crates actually compiled for each archive. The generated CycloneDX
+  document binds each target inventory to its archive digest and rejects empty
+  inventories. It describes compiled dependencies, including build tools; it
+  is not a byte-level inventory of code linked into the executable.
 
 ## Linux compatibility
 
