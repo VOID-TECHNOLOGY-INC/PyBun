@@ -341,3 +341,85 @@ fn init_with_python_version() {
         "should have python version specification"
     );
 }
+
+#[test]
+fn init_metadata_round_trips_and_project_is_consumable() {
+    for value in [
+        "ordinary metadata",
+        "A \"quoted\" value",
+        r"C:\Users\demo",
+        "first\nsecond",
+        "日本語 🥔",
+    ] {
+        let temp = tempdir().unwrap();
+        bin()
+            .current_dir(temp.path())
+            .args([
+                "init",
+                "--yes",
+                "--name",
+                "demo-project",
+                "--description",
+                value,
+                "--author",
+                value,
+                "--format=json",
+            ])
+            .assert()
+            .success();
+        let document: toml::Value =
+            toml::from_str(&fs::read_to_string(temp.path().join("pyproject.toml")).unwrap())
+                .unwrap();
+        assert_eq!(document["project"]["description"].as_str(), Some(value));
+        assert_eq!(
+            document["project"]["authors"][0]["name"].as_str(),
+            Some(value)
+        );
+        assert_eq!(document["project"]["name"].as_str(), Some("demo-project"));
+        pybun::project::Project::discover(temp.path()).unwrap();
+        let output = std::process::Command::new("python3")
+            .current_dir(temp.path())
+            .args([
+                "-c",
+                "import tomllib; tomllib.load(open('pyproject.toml', 'rb'))",
+            ])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+    }
+}
+
+#[test]
+fn init_rejects_invalid_metadata_before_writing_files() {
+    for (flag, value) in [
+        ("--name", ""),
+        ("--name", "bad name"),
+        ("--name", "../escape"),
+        ("--name", "quoted\"name"),
+        ("--name", "-leading"),
+        ("--name", "trailing_"),
+        ("--name", "日本語"),
+        ("--python", ""),
+        ("--python", "3.12\""),
+        ("--python", "not-a-version"),
+        ("--python", ">=3.12"),
+    ] {
+        let temp = tempdir().unwrap();
+        fs::write(temp.path().join("README.md"), "sentinel").unwrap();
+        let output = bin()
+            .current_dir(temp.path())
+            .args(["init", "--yes", flag, value, "--format=json"])
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{flag}={value:?} must fail");
+        let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(report["status"], "error");
+        assert!(!temp.path().join("pyproject.toml").exists());
+        assert!(!temp.path().join("src").exists());
+        assert!(!temp.path().join(".gitignore").exists());
+        assert_eq!(
+            fs::read_to_string(temp.path().join("README.md")).unwrap(),
+            "sentinel"
+        );
+    }
+}

@@ -26,6 +26,41 @@ pub(super) fn sanitize_project_name(name: &str) -> String {
     }
 }
 
+fn init_metadata(
+    name: &str,
+    description: Option<&str>,
+    python: Option<&str>,
+    author: Option<&str>,
+) -> Result<String> {
+    if !name.starts_with(|c: char| c.is_ascii_alphanumeric())
+        || !name.ends_with(|c: char| c.is_ascii_alphanumeric())
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))
+    {
+        return Err(eyre!(
+            "Invalid project name: use ASCII letters, digits, dots, underscores or hyphens, starting and ending with a letter or digit"
+        ));
+    }
+    let mut project = json!({"name": name, "version": "0.1.0", "dependencies": []});
+    if let Some(value) = description {
+        project["description"] = json!(value);
+    }
+    if let Some(value) = python {
+        crate::pep440::Pep440Version::parse(value)
+            .filter(|version| version.local.is_empty())
+            .ok_or_else(|| eyre!("Invalid Python version: expected a version such as 3.12"))?;
+        project["requires-python"] = json!(format!(">={}", value.trim()));
+    }
+    if let Some(value) = author {
+        project["authors"] = json!([{"name": value}]);
+    }
+    Ok(toml::to_string_pretty(&json!({
+        "project": project,
+        "build-system": {"requires": ["hatchling"], "build-backend": "hatchling.build"},
+    }))?)
+}
+
 pub(super) fn init_project(
     args: &InitArgs,
     collector: &mut EventCollector,
@@ -39,7 +74,7 @@ pub(super) fn init_project(
     let default_name = cwd
         .file_name()
         .and_then(|n| n.to_str())
-        .map(sanitize_project_name)
+        .map(|name| sanitize_project_name(name).trim_matches('_').to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "my_project".to_string());
 
@@ -135,28 +170,12 @@ pub(super) fn init_project(
         ));
     }
 
-    // Build pyproject.toml content
-    let mut pyproject = String::new();
-    pyproject.push_str("[project]\n");
-    pyproject.push_str(&format!("name = \"{}\"\n", name));
-    pyproject.push_str("version = \"0.1.0\"\n");
-
-    if let Some(desc) = &description {
-        pyproject.push_str(&format!("description = \"{}\"\n", desc));
-    }
-
-    if let Some(py) = &python {
-        pyproject.push_str(&format!("requires-python = \">={}\"\n", py));
-    }
-
-    if let Some(auth) = &author {
-        pyproject.push_str(&format!("authors = [{{ name = \"{}\" }}]\n", auth));
-    }
-
-    pyproject.push_str("dependencies = []\n");
-    pyproject.push_str("\n[build-system]\n");
-    pyproject.push_str("requires = [\"hatchling\"]\n");
-    pyproject.push_str("build-backend = \"hatchling.build\"\n");
+    let pyproject = init_metadata(
+        &name,
+        description.as_deref(),
+        python.as_deref(),
+        author.as_deref(),
+    )?;
 
     // Write pyproject.toml
     fs::write(&pyproject_path, &pyproject)
@@ -340,4 +359,38 @@ pub(super) fn run_drift(args: &DriftArgs, collector: &mut EventCollector) -> Res
             "files_scanned": result.files_scanned,
         }),
     ))
+}
+
+#[cfg(test)]
+mod init_tests {
+    use super::init_metadata;
+
+    #[test]
+    fn serializes_free_form_metadata() {
+        let value = "quoted \"value\"\nC:\\demo 日本語";
+        let encoded = init_metadata("123-demo", Some(value), Some("3.12"), Some(value)).unwrap();
+        let parsed: toml::Value = toml::from_str(&encoded).unwrap();
+        assert_eq!(parsed["project"]["description"].as_str(), Some(value));
+        assert_eq!(
+            parsed["project"]["authors"][0]["name"].as_str(),
+            Some(value)
+        );
+        assert_eq!(
+            parsed["project"]["requires-python"].as_str(),
+            Some(">=3.12")
+        );
+    }
+
+    #[test]
+    fn validates_distribution_names_and_python_requirements() {
+        for name in ["demo", "123-demo", "A.b_c-d"] {
+            assert!(init_metadata(name, None, Some("3.12.0rc1"), None).is_ok());
+        }
+        for name in ["", "_demo", "demo-", "../demo", "bad name", "日本語"] {
+            assert!(init_metadata(name, None, None, None).is_err());
+        }
+        for version in ["", ">=3.12", "3.12+local", "3.12\nother", "3.12\""] {
+            assert!(init_metadata("demo", None, Some(version), None).is_err());
+        }
+    }
 }

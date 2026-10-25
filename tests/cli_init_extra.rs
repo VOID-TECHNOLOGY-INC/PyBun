@@ -74,7 +74,7 @@ fn init_sanitizes_leading_numbers() {
 
     let pyproject = project_dir.join("pyproject.toml");
     let content = fs::read_to_string(&pyproject).unwrap();
-    assert!(content.contains("name = \"_123test\""));
+    assert!(content.contains("name = \"123test\""));
 }
 
 #[test]
