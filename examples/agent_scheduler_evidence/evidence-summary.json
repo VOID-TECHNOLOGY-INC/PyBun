@@ -10,17 +10,28 @@
     "success_exit_code": 0,
     "intentional_failure_exit_code": 23,
     "dependency": "evidence-helper",
-    "provenance_before": ["direct", "workspace"],
-    "why_after_code": "E_WHY_PACKAGE_NOT_FOUND"
+    "provenance_before": [
+      "direct",
+      "workspace"
+    ],
+    "why_after_code": "E_WHY_PACKAGE_NOT_FOUND",
+    "restored_exit_code": 0
   },
   "environment_diff": {
-    "reason_codes": ["LOCK_CHANGED", "PACKAGE_REMOVED"],
+    "reason_codes": [
+      "LOCK_CHANGED",
+      "PACKAGE_REMOVED"
+    ],
     "complete": false,
     "causality": "not_inferred"
   },
   "investigation": {
     "measured_cli_seconds": 0.314,
-    "timed_commands": ["history", "environment diff", "why"],
+    "timed_commands": [
+      "history",
+      "environment diff",
+      "why"
+    ],
     "human_review_seconds": null,
     "human_decision": "Decide whether restoring the helper matches the task requirement"
   },
