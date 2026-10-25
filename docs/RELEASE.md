@@ -20,6 +20,11 @@ Releases are tag-driven. Pushing a `v*` tag to `main` triggers `release.yml`, wh
   is not a byte-level inventory of code linked into the executable. The
   Cargo.lock digest normalizes CRLF to LF so Windows and Unix checkouts agree.
   Each CycloneDX document has a serial number required by the attestation action.
+- `verify_security_artifacts.py` requires a nonempty manifest, matching archive
+  and attachment SHA-256 values, a complete requested `SHA256SUMS`, the public
+  minisign key, cryptographically valid archive signatures, and provenance
+  subjects matching every archive. It also checks the generated SBOM inventory
+  against the manifest. A failure stops before SBOM attestation or metadata upload.
 
 ## Linux compatibility
 
