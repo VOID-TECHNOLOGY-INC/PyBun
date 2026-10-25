@@ -42,7 +42,7 @@ jobs:
           - os: macos-latest
             target: aarch64-apple-darwin
             artifact_name: pybun-aarch64-apple-darwin
-          # Linux x86_64 (glibc) — build on 22.04 to target glibc 2.35 baseline (20.04 deprecated)
+          # Linux x86_64 (glibc) — Ubuntu 22.04 build, GLIBC 2.34 runtime smoke
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             artifact_name: pybun-x86_64-unknown-linux-gnu
@@ -50,8 +50,8 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
             artifact_name: pybun-x86_64-unknown-linux-musl
-          # Linux ARM64 (glibc) — cross on 22.04 (20.04 deprecated)
-          - os: ubuntu-22.04
+          # Linux ARM64 (glibc) — native runner, same supported runtime baseline
+          - os: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
             artifact_name: pybun-aarch64-unknown-linux-gnu
           # Windows x86_64 (stub for API stability)
@@ -67,12 +67,6 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Install cross-compilation tools (Linux ARM64)
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
-
       - name: Install musl tools
         if: matrix.target == 'x86_64-unknown-linux-musl'
         run: |
@@ -87,8 +81,6 @@ jobs:
 
       - name: Build release binary
         if: runner.os != 'Windows'
-        env:
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
         run: |
           cargo build --release --target ${{ matrix.target }}
 
@@ -127,6 +119,13 @@ jobs:
         run: |
           cd dist
           Compress-Archive -Path ${{ matrix.artifact_name }} -DestinationPath ${{ matrix.artifact_name }}.zip
+
+      - name: Verify GNU runtime compatibility
+        if: endsWith(matrix.target, '-unknown-linux-gnu')
+        run: |
+          python3 scripts/release/smoke_linux_compat.py \
+            --archive dist/${{ matrix.artifact_name }}.tar.gz \
+            --target ${{ matrix.target }}
 
       - name: Attest build provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
