@@ -321,3 +321,63 @@ fn gc_dry_run_shows_what_would_be_deleted() {
     // Dry-run must not actually delete the file.
     assert!(pkg_dir.join("old-package-1.0.0-py3-none-any.whl").exists());
 }
+
+#[test]
+fn gc_evicts_complete_build_entries_after_accurate_dry_run() {
+    use pybun::build::BuildCache;
+    let temp = tempdir().unwrap();
+    let home = temp.path().join("home");
+    let cache = BuildCache::with_root(home.join("build"));
+    let dist = temp.path().join("dist");
+    fs::create_dir(&dist).unwrap();
+    fs::write(dist.join("demo.whl"), vec![0; 4096]).unwrap();
+    cache.store_dist("example-key", &dist).unwrap();
+    let entry = cache.cache_dir_for_key("example-key");
+    fs::create_dir_all(entry.join("target/release")).unwrap();
+    fs::write(entry.join("target/release/backend.o"), vec![0; 1024]).unwrap();
+    let sentinel = temp.path().join("external");
+    fs::create_dir(&sentinel).unwrap();
+    fs::write(sentinel.join("keep"), b"outside").unwrap();
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&sentinel, entry.join("external-link")).unwrap();
+        std::os::unix::fs::symlink(&sentinel, home.join("build/linked-key")).unwrap();
+    }
+    let run = |dry_run: bool| {
+        let mut command = pybun_bin();
+        command
+            .env("PYBUN_HOME", &home)
+            .env("PYBUN_PYPI_CACHE_DIR", temp.path().join("pypi"))
+            .args(["gc", "--max-size", "1", "--format=json"]);
+        if dry_run {
+            command.arg("--dry-run");
+        }
+        let output = command.output().unwrap();
+        assert!(output.status.success(), "{output:?}");
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap()["detail"].clone()
+    };
+    let dry = run(true);
+    assert_eq!(dry["size_before"], 5120);
+    assert_eq!(dry["size_after"], 0);
+    assert_eq!(dry["freed_bytes"], 5120);
+    assert_eq!(dry["would_remove"], serde_json::json!([entry]));
+    assert!(
+        cache
+            .restore_dist("example-key", &temp.path().join("restored"))
+            .unwrap()
+    );
+    assert!(entry.join("target/release/backend.o").exists());
+    let actual = run(false);
+    assert_eq!(actual["size_before"], dry["size_before"]);
+    assert_eq!(actual["size_after"], dry["size_after"]);
+    assert_eq!(actual["freed_bytes"], dry["freed_bytes"]);
+    assert_eq!(actual["files_removed"], 2);
+    assert!(!entry.exists());
+    assert!(
+        !cache
+            .restore_dist("example-key", &temp.path().join("missing"))
+            .unwrap()
+    );
+    assert_eq!(fs::read(sentinel.join("keep")).unwrap(), b"outside");
+    assert_eq!(run(true)["size_before"], 0);
+}
