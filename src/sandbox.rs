@@ -687,6 +687,11 @@ for _attr in ("prefix", "exec_prefix", "base_prefix"):
         _SYS_PREFIXES.append(_normalize_path(_v))
 if hasattr(sys, "real_prefix"):
     _SYS_PREFIXES.append(_normalize_path(sys.real_prefix))
+# Before site.main(), Python <=3.13 with -S still reports the base prefixes.
+# The interpreter's own venv must be readable to initialize pyvenv.cfg and imports.
+_venv_prefix = os.path.dirname(os.path.dirname(sys.executable))
+if os.path.isfile(os.path.join(_venv_prefix, "pyvenv.cfg")):
+    _SYS_PREFIXES.append(_normalize_path(_venv_prefix))
 
 _ALWAYS_ALLOW_READ = list(_SYS_PREFIXES)
 if _HELPER_DIR:
@@ -1240,6 +1245,34 @@ mod tests {
             result.status.success(),
             "sandbox leaked an original open function"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn external_venv_is_readable_before_site_initialization() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().join("project");
+        let venv = temp.path().join("venv");
+        fs::create_dir(&project).unwrap();
+        let created = Command::new("python3")
+            .args(["-m", "venv", "--without-pip"])
+            .arg(&venv)
+            .output()
+            .unwrap();
+        assert!(created.status.success(), "{created:?}");
+        let mut cmd = Command::new(venv.join("bin/python"));
+        cmd.current_dir(&project).args(["-S", "-c", "import runpy, os; runpy.run_path(os.path.join(os.environ['PYBUN_SANDBOX_HELPER_DIR'], 'sitecustomize.py')); import site; site.main(); print('runtime-ok')"]);
+        let guard = apply_python_sandbox(
+            &mut cmd,
+            SandboxConfig {
+                allow_read: vec![project.to_string_lossy().into_owned()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let result = execute_with_optional_sandbox(&mut cmd, Some(&guard), true).unwrap();
+        assert!(result.status.success(), "{:?}", result.stderr);
+        assert_eq!(result.stdout.as_deref(), Some(b"runtime-ok\n".as_slice()));
     }
 
     #[test]

@@ -238,12 +238,13 @@ impl UvBackend {
         };
         if args.sandbox {
             // Install the guard before site.main() can execute environment startup hooks.
-            // Drop the code-mode cwd entry before importing the trusted guard.
+            // Drop the cwd entry, then execute the guard outside the import lifecycle: it
+            // deliberately removes sitecustomize from sys.modules to hide its policy globals.
             command.args(["-S", "-c"]);
             if let Some(code) = &args.code {
-                command.arg("import sys; sys.path.pop(0); import sitecustomize, site; site.main(); code=sys.argv[1]; sys.argv=['-c']+sys.argv[2:]; exec(compile(code, '<string>', 'exec'))").arg(code);
+                command.arg("import sys; sys.path.pop(0); import runpy, os; runpy.run_path(os.path.join(os.environ['PYBUN_SANDBOX_HELPER_DIR'], 'sitecustomize.py')); import site; site.main(); code=sys.argv[1]; sys.argv=['-c']+sys.argv[2:]; exec(compile(code, '<string>', 'exec'))").arg(code);
             } else if let Some(target) = &args.target {
-                command.arg("import sys; sys.path.pop(0); import sitecustomize, site, runpy, os; site.main(); sys.argv=sys.argv[1:]; sys.path.insert(0, os.path.dirname(os.path.abspath(sys.argv[0]))); runpy.run_path(sys.argv[0], run_name='__main__')").arg(target);
+                command.arg("import sys; sys.path.pop(0); import runpy, os; runpy.run_path(os.path.join(os.environ['PYBUN_SANDBOX_HELPER_DIR'], 'sitecustomize.py')); import site; site.main(); sys.argv=sys.argv[1:]; sys.path.insert(0, os.path.dirname(os.path.abspath(sys.argv[0]))); runpy.run_path(sys.argv[0], run_name='__main__')").arg(target);
             }
         } else if let Some(code) = &args.code {
             command.arg("-c").arg(code);
