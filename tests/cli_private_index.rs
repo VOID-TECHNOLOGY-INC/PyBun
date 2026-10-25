@@ -98,9 +98,6 @@ fn native_index_selector_is_rejected_before_project_mutation() {
 
 #[test]
 fn real_uv_authenticates_private_index_without_persisting_credentials() {
-    if std::env::var("PYBUN_E2E_NETWORK").as_deref() != Ok("1") {
-        return;
-    }
     use httpmock::prelude::*;
     use std::io::{Cursor, Write};
     let server = MockServer::start();
@@ -154,6 +151,13 @@ fn real_uv_authenticates_private_index_without_persisting_credentials() {
             cmd.current_dir(dir.path())
                 .env("PYBUN_BACKEND", "uv")
                 .env_remove("PYBUN_UV")
+                .env_remove("UV_PROJECT_ENVIRONMENT")
+                .env_remove("UV_PROJECT")
+                .env_remove("UV_WORKING_DIRECTORY")
+                .env_remove("UV_CONFIG_FILE")
+                .env_remove("VIRTUAL_ENV")
+                .env("XDG_CONFIG_HOME", dir.path().join("config"))
+                .env("UV_OFFLINE", "0")
                 .env_remove("UV_INDEX_URL")
                 .env_remove("UV_DEFAULT_INDEX")
                 .env_remove("UV_INDEX")
@@ -162,6 +166,9 @@ fn real_uv_authenticates_private_index_without_persisting_credentials() {
                 .env_remove("PIP_EXTRA_INDEX_URL")
                 .env("UV_CACHE_DIR", dir.path().join(format!("cache-{password}")))
                 .env("UV_NO_CONFIG", "false")
+                .env("UV_PYTHON", "python3")
+                .env("UV_PYTHON_DOWNLOADS", "never")
+                .env("PYBUN_HOME", dir.path().join("home"))
                 .env("UV_INDEX_PRIVATE_USERNAME", "sentinel-user")
                 .env("UV_INDEX_PRIVATE_PASSWORD", password);
             if !named {
