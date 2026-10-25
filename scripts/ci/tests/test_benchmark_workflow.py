@@ -32,6 +32,22 @@ class BenchmarkWorkflowTests(unittest.TestCase):
         self.assertFalse(gate.get("continue-on-error", False))
         self.assertIn("${{ matrix.os }}", upload["with"]["name"])
 
+    def test_mcp_smoke_results_are_retained_independently(self):
+        workflow = yaml.safe_load((ROOT / ".github/workflows/benchmark.yml").read_text())
+        steps = workflow["jobs"]["ux-gate"]["steps"]
+        smoke = next(step for step in steps if step.get("name", "").startswith("MCP smoke"))
+        self.assertIn("-o results-mcp-smoke", smoke["run"])
+        self.assertFalse(smoke.get("continue-on-error", False))
+        uploads = [step for step in steps
+                   if step.get("uses", "").startswith("actions/upload-artifact@")]
+        upload = next(step for step in uploads
+                      if step["with"]["path"] == "scripts/benchmark/results-mcp-smoke/")
+        self.assertEqual(upload["if"],
+                         "${{ !cancelled() && hashFiles('scripts/benchmark/results-mcp-smoke/**') != '' }}")
+        self.assertEqual(upload["with"]["if-no-files-found"], "error")
+        self.assertIn("${{ matrix.os }}", upload["with"]["name"])
+        self.assertEqual(len({step["with"]["name"] for step in uploads}), len(uploads))
+
 
 if __name__ == "__main__":
     unittest.main()

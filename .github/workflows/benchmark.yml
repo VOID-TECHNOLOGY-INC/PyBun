@@ -75,3 +75,11 @@ jobs:
           name: benchmark-results-${{ matrix.os }}
           path: scripts/benchmark/results-ci/
           if-no-files-found: error
+
+      - name: Upload MCP smoke results
+        if: ${{ !cancelled() && hashFiles('scripts/benchmark/results-mcp-smoke/**') != '' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: mcp-smoke-results-${{ matrix.os }}
+          path: scripts/benchmark/results-mcp-smoke/
+          if-no-files-found: error
