@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.2.5
+
+### Fixes
+- Restore sandboxed inline and script execution on the uv backend across CLI and MCP by installing the guard outside Python's import lifecycle, before startup hooks (#558, #567).
+- Initialize external virtual environments under read restrictions on Python <=3.13 while preserving sandbox write, network, process, and helper-global protections (#558, #567).
+- Derive each GNU/Linux artifact's GLIBC requirement from its ELF and reject mismatched release metadata. Enforce the GLIBC 2.34 baseline for both x86_64 and ARM64 (#562, #569).
+
+### Testing and maintenance
+- Install supported uv 0.12.13 in ordinary Linux/macOS test and coverage CI; execute deterministic real-uv CLI/MCP and private-index regressions with isolated fixtures (#559, #568).
+- Preserve failed MCP smoke JSON in independent CI artifacts (#565, #566).
+- Build ARM64 GNU releases natively and smoke both packaged GNU binaries on GLIBC 2.34 in PR CI and release builds (#562, #569).
+
+### Known limitations
+- Existing benchmark UX ratio thresholds remain unmet; this release preserves those thresholds. MCP smoke executes all six cases successfully on Linux and macOS.
+- The uv adapter supports uv >=0.12,<0.13. Older x86_64 glibc hosts use the musl fallback; no ARM64 musl artifact is published.
+- The Python-level sandbox requires an OS-level boundary to contain hostile C extensions or ctypes.
+- Release SBOM dependency inventory and broader integrity-verifier hardening remain tracked in #563 and #564.
+
 ## v0.2.4
 
 ### Features
