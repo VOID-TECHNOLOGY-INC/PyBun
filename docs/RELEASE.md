@@ -19,6 +19,7 @@ Releases are tag-driven. Pushing a `v*` tag to `main` triggers `release.yml`, wh
   inventories. It describes compiled dependencies, including build tools; it
   is not a byte-level inventory of code linked into the executable. The
   Cargo.lock digest normalizes CRLF to LF so Windows and Unix checkouts agree.
+  Each CycloneDX document has a serial number required by the attestation action.
 
 ## Linux compatibility
 

@@ -10,6 +10,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from uuid import uuid4
 
 import tomllib
 
@@ -31,6 +32,8 @@ def property_value(component: dict, name: str) -> str | None:
 def validate_bom(bom: dict) -> tuple[dict, list[dict]]:
     if not isinstance(bom, dict) or bom.get("bomFormat") != "CycloneDX" or bom.get("specVersion") != "1.6":
         raise ValueError("Expected CycloneDX 1.6 SBOM")
+    if not re.fullmatch(r"urn:uuid:[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", str(bom.get("serialNumber"))):
+        raise ValueError("SBOM requires an RFC-4122 serial number")
     metadata = bom.get("metadata")
     root = metadata.get("component") if isinstance(metadata, dict) else None
     components = bom.get("components")
@@ -151,6 +154,7 @@ def build(args: argparse.Namespace) -> None:
     ]
     bom = {
         "bomFormat": "CycloneDX", "specVersion": "1.6", "version": 1,
+        "serialNumber": f"urn:uuid:{uuid4()}",
         "metadata": {"component": root}, "components": components, "dependencies": dependencies,
     }
     validate_bom(bom)
@@ -194,6 +198,7 @@ def merge(args: argparse.Namespace) -> None:
     release_root = {"type": "application", "name": "pybun", "version": version,
                     "bom-ref": f"pkg:cargo/pybun@{version}", "purl": f"pkg:cargo/pybun@{version}"}
     combined = {"bomFormat": "CycloneDX", "specVersion": "1.6", "version": 1,
+                "serialNumber": f"urn:uuid:{uuid4()}",
                 "metadata": {"component": release_root},
                 "components": sorted([*roots, *components], key=lambda item: item["bom-ref"]),
                 "dependencies": [{"ref": release_root["bom-ref"],

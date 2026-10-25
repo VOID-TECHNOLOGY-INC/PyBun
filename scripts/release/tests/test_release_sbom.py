@@ -54,6 +54,7 @@ class ReleaseSbomTests(unittest.TestCase):
         bom = json.loads(self.output.read_text())
         self.assertEqual(bom["bomFormat"], "CycloneDX")
         self.assertEqual(bom["specVersion"], "1.6")
+        self.assertRegex(bom["serialNumber"], r"^urn:uuid:[0-9a-f-]{36}$")
         by_name = {component["name"]: component for component in bom["components"]}
         self.assertEqual(set(by_name), {"clap", "clap_builder"})
         self.assertEqual(by_name["clap"]["version"], "4.5.0")
@@ -82,6 +83,7 @@ class ReleaseSbomTests(unittest.TestCase):
         result = subprocess.run(command, capture_output=True, text=True, check=False)
         self.assertEqual(result.returncode, 0, result.stderr)
         bom = json.loads(merged.read_text())
+        self.assertRegex(bom["serialNumber"], r"^urn:uuid:[0-9a-f-]{36}$")
         self.assertEqual(len(bom["components"]), 6)
         self.assertEqual(bom["metadata"]["component"]["bom-ref"], "pkg:cargo/pybun@0.2.6")
         names = {entry["bom-ref"] for entry in bom["components"]}
@@ -108,6 +110,11 @@ class ReleaseSbomTests(unittest.TestCase):
         self.assertFalse(output.exists())
         invalid = json.loads(json.dumps(valid))
         invalid["metadata"]["component"]["properties"] = [item for item in invalid["metadata"]["component"]["properties"] if item["name"] != "pybun:cargo_lock_sha256"]
+        self.output.write_text(json.dumps(invalid))
+        self.assertNotEqual(subprocess.run(command, capture_output=True, check=False).returncode, 0)
+        self.assertFalse(output.exists())
+        invalid = json.loads(json.dumps(valid))
+        del invalid["serialNumber"]
         self.output.write_text(json.dumps(invalid))
         self.assertNotEqual(subprocess.run(command, capture_output=True, check=False).returncode, 0)
         self.assertFalse(output.exists())
