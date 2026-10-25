@@ -86,13 +86,14 @@ class ManifestCompatibilityTests(unittest.TestCase):
             artifact = self.archive(root, "x86_64-unknown-linux-gnu", 62)
             signature = Path(str(artifact) + ".minisig")
             signature.write_text("fixture")
-            asset = {"name": artifact.name, "target": "x86_64-unknown-linux-gnu",
+            public_key = root / "release.pub"
+            public_key.write_text("fixture")
+            asset = {"name": artifact.name, "url": "https://example.org/" + artifact.name,
+                     "sha256": verify.digest(artifact), "target": "x86_64-unknown-linux-gnu",
                      "compat": {"libc": "glibc", "min_glibc": "2.31"},
                      "signature": {"url": "https://example.org/" + signature.name}}
-            errors = []
-            with patch("generate_manifest.glibc_requirement", return_value="2.34"):
-                verify.validate_assets(root, {"assets": [asset]}, {}, None, errors)
-            self.assertTrue(any("GLIBC" in error for error in errors), errors)
+            with patch("generate_manifest.glibc_requirement", return_value="2.34"), self.assertRaisesRegex(ValueError, "GLIBC"):
+                verify.verify_assets(root, [asset], None, public_key)
 
 
 if __name__ == "__main__":
