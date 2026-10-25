@@ -1,0 +1,12 @@
+.venv/
+.pybun-home/
+.pypi-cache/
+uv.lock
+helper/build/
+helper/dist/
+helper/*.egg-info/
+before.json
+after.json
+history-*.json
+why-success.json
+diff.json
