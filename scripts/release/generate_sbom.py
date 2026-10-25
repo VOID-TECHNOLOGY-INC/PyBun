@@ -18,6 +18,11 @@ def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def lock_digest(path: Path) -> str:
+    # Windows Git checkouts use CRLF for the same Cargo.lock contents.
+    return hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+
+
 def property_value(component: dict, name: str) -> str | None:
     return next((item.get("value") for item in component.get("properties", [])
                  if item.get("name") == name), None)
@@ -123,7 +128,7 @@ def build(args: argparse.Namespace) -> None:
         "hashes": [{"alg": "SHA-256", "content": digest(args.artifact)}],
         "properties": [
             {"name": "pybun:release_target", "value": args.target},
-            {"name": "pybun:cargo_lock_sha256", "value": digest(args.lockfile)},
+            {"name": "pybun:cargo_lock_sha256", "value": lock_digest(args.lockfile)},
             {"name": "pybun:archive", "value": args.artifact.name},
         ],
     }

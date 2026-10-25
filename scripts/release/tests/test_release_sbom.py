@@ -74,6 +74,7 @@ class ReleaseSbomTests(unittest.TestCase):
         other.write_bytes(b"different release archive")
         self.artifact = other
         self.output = self.root / "windows.sbom.json"
+        self.lock.write_bytes(self.lock.read_bytes().replace(b"\n", b"\r\n"))
         result = subprocess.run([sys.executable, str(SCRIPT), "build", "--metadata", str(self.metadata), "--messages", str(self.messages), "--lockfile", str(self.lock), "--artifact", str(other), "--target", "x86_64-pc-windows-msvc", "--output", str(self.output)], capture_output=True, text=True, check=False)
         self.assertEqual(result.returncode, 0, result.stderr)
         merged = self.root / "merged.json"

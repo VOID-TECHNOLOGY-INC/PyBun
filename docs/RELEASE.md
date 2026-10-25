@@ -17,7 +17,8 @@ Releases are tag-driven. Pushing a `v*` tag to `main` triggers `release.yml`, wh
   publish the crates actually compiled for each archive. The generated CycloneDX
   document binds each target inventory to its archive digest and rejects empty
   inventories. It describes compiled dependencies, including build tools; it
-  is not a byte-level inventory of code linked into the executable.
+  is not a byte-level inventory of code linked into the executable. The
+  Cargo.lock digest normalizes CRLF to LF so Windows and Unix checkouts agree.
 
 ## Linux compatibility
 
