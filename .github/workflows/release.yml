@@ -67,6 +67,11 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - name: Set up Python for release SBOM generation
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.11'
+
       - name: Install musl tools
         if: matrix.target == 'x86_64-unknown-linux-musl'
         run: |
@@ -82,13 +87,13 @@ jobs:
       - name: Build release binary
         if: runner.os != 'Windows'
         run: |
-          cargo build --release --target ${{ matrix.target }}
+          cargo build --release --locked --target ${{ matrix.target }} --message-format=json > build-messages.jsonl
 
       - name: Build release binary (Windows, no default features)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          cargo build --release --target ${{ matrix.target }} --no-default-features
+          cargo build --release --locked --target ${{ matrix.target }} --no-default-features --message-format=json > build-messages.jsonl
 
       - name: Create artifact directory
         shell: bash
@@ -127,6 +132,19 @@ jobs:
             --archive dist/${{ matrix.artifact_name }}.tar.gz \
             --target ${{ matrix.target }}
 
+      - name: Generate target SBOM from compiled crates
+        shell: bash
+        run: |
+          options=()
+          if [[ "$RUNNER_OS" == "Windows" ]]; then options+=(--no-default-features); fi
+          python scripts/release/generate_sbom.py build \
+            --messages build-messages.jsonl \
+            --lockfile Cargo.lock \
+            --artifact "dist/${{ matrix.artifact_name }}${{ runner.os == 'Windows' && '.zip' || '.tar.gz' }}" \
+            --target "${{ matrix.target }}" \
+            --output "dist/${{ matrix.artifact_name }}.sbom.json" \
+            "${options[@]}"
+
       - name: Attest build provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
         with:
@@ -139,6 +157,7 @@ jobs:
           path: |
             dist/${{ matrix.artifact_name }}.tar.gz
             dist/${{ matrix.artifact_name }}.zip
+            dist/${{ matrix.artifact_name }}.sbom.json
           if-no-files-found: error
 
   # Artifact size check
@@ -250,11 +269,14 @@ jobs:
           done < <(find artifacts -type f \( -name "*.tar.gz" -o -name "*.zip" \))
 
       - name: Generate SBOM
-        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
-        with:
-          path: artifacts
-          format: cyclonedx-json
-          output-file: pybun-sbom.json
+        shell: bash
+        run: |
+          shopt -s globstar nullglob
+          sboms=(artifacts/**/*.sbom.json)
+          python3 scripts/release/generate_sbom.py merge \
+            --input "${sboms[@]}" \
+            --artifacts-dir artifacts \
+            --output pybun-sbom.json
 
       - name: Generate provenance
         run: |
