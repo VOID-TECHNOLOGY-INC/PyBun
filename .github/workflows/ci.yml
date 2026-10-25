@@ -88,6 +88,10 @@ jobs:
           python-version: "3.11"
       - name: Install pytest for runtime integration tests
         run: python3 -m pip install pytest
+      - name: Install supported uv for real backend regressions
+        run: |
+          python3 -m pip install "uv==0.12.13"
+          uv --version
       - name: test
         run: cargo test
 
@@ -222,6 +226,10 @@ jobs:
           python-version: "3.11"
       - name: Install pytest for runtime integration tests
         run: python3 -m pip install pytest
+      - name: Install supported uv for real backend regressions
+        run: |
+          python3 -m pip install "uv==0.12.13"
+          uv --version
       - name: Generate coverage report
         run: |
           cargo llvm-cov \

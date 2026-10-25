@@ -124,3 +124,26 @@ Native interpreter discovery reevaluates local and ancestor `.python-version`
 selectors before reusing cached system discovery. Version-selected entries are
 not reused after the selector is removed. Adding, changing, or removing version
 files therefore takes effect without deleting `env_cache.json`.
+
+### Real-backend regression tests
+
+Regular Linux/macOS test and coverage jobs install `uv==0.12.13` and execute the
+real-backend tests as part of `cargo test`. For local development, install that
+supported uv version and pytest, then run:
+
+```sh
+cargo test --test cli_uv_backend --test cli_private_index
+```
+
+The deterministic suite uses local wheels, local authenticated HTTP fixtures,
+dependency-free scripts and workspace/path dependencies. Offline cases forbid
+Python downloads and external index access. It checks CLI/MCP execution,
+sandbox positive/negative controls and the package lifecycle without the
+`PYBUN_E2E_NETWORK` opt-in. Fake-backend error/contract tests remain alongside it.
+
+The separate live-PyPI lifecycle test is explicitly ignored by default. Run it
+only when live network access is intended:
+
+```sh
+cargo test --test cli_uv_backend real_uv_package_lifecycle_and_existing_project_adoption -- --ignored --exact
+```

@@ -37,6 +37,21 @@ fn run(dir: &TempDir, args: &[&str]) -> (bool, Value) {
     )
 }
 
+fn real_uv(dir: &TempDir) -> assert_cmd::Command {
+    let mut command = cargo_bin_cmd!("pybun");
+    command
+        .current_dir(dir.path())
+        .env("PYBUN_BACKEND", "uv")
+        .env_remove("PYBUN_UV")
+        .env("PYBUN_HOME", dir.path().join("home"))
+        .env("PYBUN_HISTORY", "0")
+        .env("UV_CACHE_DIR", dir.path().join("uv-cache"))
+        .env("UV_PYTHON", "python3")
+        .env("UV_PYTHON_DOWNLOADS", "never")
+        .env("UV_OFFLINE", "1");
+    command
+}
+
 #[test]
 fn default_lock_uses_uv_and_preserves_legacy_lock() {
     let dir = fixture(
@@ -169,9 +184,6 @@ fn cli_and_mcp_use_the_same_lock_contract() {
 
 #[test]
 fn real_uv_project_and_pep723_run_use_versioned_backend() {
-    if !std::env::var("PYBUN_E2E_NETWORK").is_ok_and(|v| v == "1") {
-        return;
-    }
     let dir = TempDir::new().unwrap();
     fs::write(
         dir.path().join("pyproject.toml"),
@@ -185,9 +197,7 @@ fn real_uv_project_and_pep723_run_use_versioned_backend() {
     )
     .unwrap();
     for (target, output) in [("hello.py", "project-ok"), ("inline.py", "script-ok")] {
-        let result = cargo_bin_cmd!("pybun")
-            .current_dir(dir.path())
-            .env("PYBUN_BACKEND", "uv")
+        let result = real_uv(&dir)
             .args(["run", target, "--format=json"])
             .output()
             .unwrap();
@@ -202,9 +212,6 @@ fn real_uv_project_and_pep723_run_use_versioned_backend() {
 
 #[test]
 fn real_uv_run_preserves_sandbox_network_denial() {
-    if !std::env::var("PYBUN_E2E_NETWORK").is_ok_and(|v| v == "1") {
-        return;
-    }
     let dir = TempDir::new().unwrap();
     fs::write(
         dir.path().join("pyproject.toml"),
@@ -216,9 +223,7 @@ fn real_uv_run_preserves_sandbox_network_denial() {
         "import socket\nsocket.create_connection(('127.0.0.1', 80))\n",
     )
     .unwrap();
-    let output = cargo_bin_cmd!("pybun")
-        .current_dir(dir.path())
-        .env("PYBUN_BACKEND", "uv")
+    let output = real_uv(&dir)
         .args(["run", "network.py", "--sandbox", "--format=json"])
         .output()
         .unwrap();
@@ -276,10 +281,8 @@ fn mcp_context_inspects_uv_lock_without_binary_conversion() {
 }
 
 #[test]
+#[ignore = "Requires live PyPI; run explicitly with --ignored"]
 fn real_uv_package_lifecycle_and_existing_project_adoption() {
-    if !std::env::var("PYBUN_E2E_NETWORK").is_ok_and(|v| v == "1") {
-        return;
-    }
     let dir = TempDir::new().unwrap();
     fs::write(
         dir.path().join("pyproject.toml"),
@@ -325,9 +328,6 @@ fn real_uv_package_lifecycle_and_existing_project_adoption() {
 
 #[test]
 fn real_uv_local_path_add_reports_the_actual_mutation() {
-    if !std::env::var("PYBUN_E2E_NETWORK").is_ok_and(|v| v == "1") {
-        return;
-    }
     let dir = TempDir::new().unwrap();
     fs::write(
         dir.path().join("pyproject.toml"),
@@ -340,9 +340,7 @@ fn real_uv_local_path_add_reports_the_actual_mutation() {
         "[project]\nname='local-demo'\nversion='0.1.0'\n[tool.uv]\npackage=false\n",
     )
     .unwrap();
-    let output = cargo_bin_cmd!("pybun")
-        .current_dir(dir.path())
-        .env("PYBUN_BACKEND", "uv")
+    let output = real_uv(&dir)
         .args(["add", "./dep", "--offline", "--format=json"])
         .output()
         .unwrap();
@@ -358,9 +356,6 @@ fn real_uv_local_path_add_reports_the_actual_mutation() {
 
 #[test]
 fn real_uv_workspace_member_uses_shared_root_lock() {
-    if !std::env::var("PYBUN_E2E_NETWORK").is_ok_and(|v| v == "1") {
-        return;
-    }
     let dir = TempDir::new().unwrap();
     fs::write(
         dir.path().join("pyproject.toml"),
@@ -373,9 +368,8 @@ fn real_uv_workspace_member_uses_shared_root_lock() {
         "[project]\nname='member'\nversion='0.1.0'\ndependencies=[]\n",
     )
     .unwrap();
-    let output = cargo_bin_cmd!("pybun")
+    let output = real_uv(&dir)
         .current_dir(dir.path().join("member"))
-        .env("PYBUN_BACKEND", "uv")
         .args(["install", "--offline", "--format=json"])
         .output()
         .unwrap();
@@ -383,6 +377,128 @@ fn real_uv_workspace_member_uses_shared_root_lock() {
     assert!(output.status.success(), "{value}");
     assert!(dir.path().join("uv.lock").exists());
     assert!(!dir.path().join("member/uv.lock").exists());
+}
+
+#[test]
+fn real_uv_offline_wheel_lifecycle_records_actual_execution() {
+    use std::io::{Cursor, Write};
+    let dir = TempDir::new().unwrap();
+    let mut wheel = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    for (name, content) in [
+        ("offline_demo.py", "VALUE = 42\n"),
+        (
+            "offline_demo-1.0.0.dist-info/METADATA",
+            "Metadata-Version: 2.1\nName: offline-demo\nVersion: 1.0.0\n",
+        ),
+        (
+            "offline_demo-1.0.0.dist-info/WHEEL",
+            "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+        ),
+        (
+            "offline_demo-1.0.0.dist-info/RECORD",
+            "offline_demo.py,,\noffline_demo-1.0.0.dist-info/METADATA,,\noffline_demo-1.0.0.dist-info/WHEEL,,\noffline_demo-1.0.0.dist-info/RECORD,,\n",
+        ),
+    ] {
+        wheel
+            .start_file(name, zip::write::SimpleFileOptions::default())
+            .unwrap();
+        wheel.write_all(content.as_bytes()).unwrap();
+    }
+    fs::write(
+        dir.path().join("offline_demo-1.0.0-py3-none-any.whl"),
+        wheel.finish().unwrap().into_inner(),
+    )
+    .unwrap();
+    fs::write(dir.path().join("pyproject.toml"), "[project]\nname='demo'\nversion='0.1.0'\nrequires-python='>=3.10'\ndependencies=[]\n[tool.uv.sources]\noffline-demo={path='offline_demo-1.0.0-py3-none-any.whl'}\n").unwrap();
+    for args in [
+        vec!["lock"],
+        vec!["install"],
+        vec!["add", "offline-demo"],
+        vec![
+            "run",
+            "--code",
+            "import offline_demo; assert offline_demo.VALUE == 42; print('offline-ok')",
+        ],
+        vec!["upgrade", "offline-demo"],
+        vec!["remove", "offline-demo"],
+    ] {
+        let output = real_uv(&dir)
+            .arg("--format=json")
+            .args(&args)
+            .output()
+            .unwrap();
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert!(output.status.success(), "{args:?}: {value}");
+        assert!(value["detail"]["receipt_id"].is_string(), "{value}");
+        if args[0] == "run" {
+            assert_eq!(value["detail"]["stdout"], "offline-ok\n");
+        }
+    }
+    let project: toml::Value =
+        toml::from_str(&fs::read_to_string(dir.path().join("pyproject.toml")).unwrap()).unwrap();
+    assert!(
+        project["project"]["dependencies"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        fs::read_dir(dir.path().join(".pybun/receipts"))
+            .unwrap()
+            .count(),
+        6
+    );
+    assert!(!dir.path().join("pybun.lockb").exists());
+}
+
+#[test]
+fn real_uv_mcp_runs_and_denies_network_in_the_prepared_environment() {
+    use serde_json::json;
+    let dir = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    fs::write(
+        dir.path().join("pyproject.toml"),
+        "[project]\nname='demo'\nversion='0.1.0'\ndependencies=[]\n",
+    )
+    .unwrap();
+    fs::write(dir.path().join("hello.py"), "print('mcp-real-ok')\n").unwrap();
+    let policy = dir.path().join("policy.toml");
+    fs::write(&policy, "[tool.pybun.mcp.policy]\nrequire_sandbox=false\nallow_network=true\nmax_execution_time_s=0\nallowed_working_directories=['.']\n").unwrap();
+    for (arguments, succeeds) in [
+        (json!({"code":"print('mcp-real-ok')"}), true),
+        (json!({"script":"hello.py"}), true),
+        (
+            json!({"code":"import socket; socket.create_connection(('127.0.0.1', 1))"}),
+            false,
+        ),
+    ] {
+        let input = format!(
+            "{}\n{}\n",
+            json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
+            json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"pybun_run","arguments":arguments}})
+        );
+        let output = real_uv(&dir)
+            .env("PYBUN_MCP_POLICY", &policy)
+            .env("PYBUN_HOME", home.path())
+            .args(["mcp", "serve", "--stdio"])
+            .write_stdin(input)
+            .output()
+            .unwrap();
+        let text = String::from_utf8(output.stdout).unwrap();
+        let reply: Value = serde_json::from_str(text.lines().last().unwrap()).unwrap();
+        let value: Value =
+            serde_json::from_str(reply["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(value["sandboxed"], true, "{value}");
+        assert_eq!(value["status"] == "success", succeeds, "{value}");
+        if succeeds {
+            assert_eq!(value["stdout"], "mcp-real-ok\n");
+        } else {
+            assert!(
+                value["stderr"].as_str().unwrap().contains("blocked"),
+                "{value}"
+            );
+        }
+    }
 }
 
 #[test]
