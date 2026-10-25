@@ -172,6 +172,8 @@ struct CacheEntry {
     path: PathBuf,
     size: u64,
     accessed: SystemTime,
+    directory: bool,
+    files: usize,
 }
 
 impl Cache {
@@ -203,12 +205,25 @@ impl Cache {
             if dry_run {
                 result.would_remove.push(entry.path.clone());
             } else {
-                if let Err(e) = fs::remove_file(&entry.path) {
+                let removal = if entry.directory {
+                    // Detach first so failed or concurrent cleanup cannot leave
+                    // a partially reusable build key at its lookup path.
+                    let trash = tempfile::Builder::new()
+                        .prefix(".gc-")
+                        .tempdir_in(self.build_dir())?;
+                    let detached = trash.path().join("entry");
+                    fs::rename(&entry.path, &detached)?;
+                    fs::remove_dir_all(&detached)?;
+                    Ok(())
+                } else {
+                    fs::remove_file(&entry.path)
+                };
+                if let Err(e) = removal {
                     // Log but don't fail on individual file errors
                     eprintln!("warning: failed to remove {}: {}", entry.path.display(), e);
                     continue;
                 }
-                result.files_removed += 1;
+                result.files_removed += entry.files;
             }
 
             result.freed_bytes += entry.size;
@@ -261,7 +276,7 @@ impl Cache {
                 if file_entry.file_type().is_ok_and(|kind| kind.is_symlink()) {
                     continue;
                 }
-                if let Some(entry) = self.entry_from_path(&file_entry.path())? {
+                if let Some(entry) = Self::entry_from_path(&file_entry.path())? {
                     entries.push(entry);
                 }
             }
@@ -278,7 +293,7 @@ impl Cache {
                     continue;
                 }
                 if path.is_file() {
-                    if let Some(entry) = self.entry_from_path(&path)? {
+                    if let Some(entry) = Self::entry_from_path(&path)? {
                         entries.push(entry);
                     }
                 } else if path.is_dir() {
@@ -289,7 +304,7 @@ impl Cache {
         Ok(())
     }
 
-    fn entry_from_path(&self, path: &Path) -> Result<Option<CacheEntry>> {
+    fn entry_from_path(path: &Path) -> Result<Option<CacheEntry>> {
         // symlink_metadata keeps the LRU walk from following a symlink out of
         // the cache root; gc must never delete the link target.
         let metadata = match fs::symlink_metadata(path) {
@@ -300,6 +315,27 @@ impl Cache {
             return Ok(None);
         }
 
+        if metadata.is_dir() {
+            // A build key is one eviction unit: retaining only part of dist/
+            // could leave a cache hit with missing artifacts. Never follow links.
+            let mut children = Vec::new();
+            for child in fs::read_dir(path)? {
+                if let Some(entry) = Self::entry_from_path(&child?.path())? {
+                    children.push(entry);
+                }
+            }
+            return Ok(Some(CacheEntry {
+                path: path.to_path_buf(),
+                size: children.iter().map(|entry| entry.size).sum(),
+                accessed: children
+                    .iter()
+                    .map(|entry| entry.accessed)
+                    .max()
+                    .unwrap_or_else(|| metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH)),
+                directory: true,
+                files: children.iter().map(|entry| entry.files).sum(),
+            }));
+        }
         if !metadata.is_file() {
             return Ok(None);
         }
@@ -311,6 +347,8 @@ impl Cache {
             path: path.to_path_buf(),
             size: metadata.len(),
             accessed,
+            directory: false,
+            files: 1,
         }))
     }
 
@@ -507,6 +545,64 @@ mod tests {
     }
 
     #[test]
+    fn gc_accounts_for_and_evicts_a_whole_build_key() {
+        let temp = tempdir().unwrap();
+        let cache = Cache::with_root(temp.path());
+        cache.ensure_dirs().unwrap();
+        let dist = temp.path().join("source-dist");
+        fs::create_dir(&dist).unwrap();
+        fs::write(dist.join("demo.whl"), vec![0; 4096]).unwrap();
+        let build = crate::build::BuildCache::with_root(cache.build_dir());
+        build.store_dist("key", &dist).unwrap();
+        let key = build.cache_dir_for_key("key");
+        fs::create_dir_all(key.join("target/debug")).unwrap();
+        fs::write(key.join("target/debug/backend.o"), vec![0; 1024]).unwrap();
+        assert_eq!(cache.total_size().unwrap(), 5120);
+        let dry = cache.gc(Some(4096), true).unwrap();
+        assert_eq!(dry.size_before, 5120);
+        assert_eq!(dry.size_after, 0);
+        assert_eq!(dry.would_remove, vec![key.clone()]);
+        assert!(key.join("dist/demo.whl").exists());
+        let actual = cache.gc(Some(4096), false).unwrap();
+        assert_eq!(actual.freed_bytes, dry.freed_bytes);
+        assert_eq!(actual.files_removed, 2);
+        assert_eq!(cache.total_size().unwrap(), actual.size_after);
+        assert!(!key.exists());
+        assert!(!build.restore_dist("key", &temp.path().join("out")).unwrap());
+    }
+
+    #[test]
+    fn build_lru_uses_newest_descendant_and_keeps_flat_file_support() {
+        use std::fs::FileTimes;
+        use std::time::Duration;
+        let temp = tempdir().unwrap();
+        let cache = Cache::with_root(temp.path());
+        let key = cache.build_dir().join("key");
+        fs::create_dir_all(key.join("dist")).unwrap();
+        let old = key.join("dist/old.whl");
+        let recent = key.join("dist/recent.whl");
+        let flat = cache.build_dir().join("legacy.o");
+        for (path, seconds) in [(&old, 1), (&flat, 2), (&recent, 3)] {
+            fs::write(path, vec![0; 1024]).unwrap();
+            fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_times(
+                    FileTimes::new()
+                        .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(seconds)),
+                )
+                .unwrap();
+        }
+        let result = cache.gc(Some(2048), false).unwrap();
+        assert_eq!(result.size_before, 3072);
+        assert_eq!(result.size_after, 2048);
+        assert_eq!(result.files_removed, 1);
+        assert!(!flat.exists());
+        assert!(old.exists() && recent.exists());
+    }
+
+    #[test]
     fn parse_size_various_formats() {
         assert_eq!(parse_size("100").unwrap(), 100);
         assert_eq!(parse_size("1K").unwrap(), 1024);
@@ -537,6 +633,44 @@ mod tests {
 mod symlink_tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn failed_build_cleanup_leaves_no_reusable_key() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempdir().unwrap();
+        let cache = Cache::with_root(temp.path());
+        let dist = cache.build_dir().join("key/dist");
+        fs::create_dir_all(&dist).unwrap();
+        fs::write(dist.join("demo.whl"), vec![0; 4096]).unwrap();
+        fs::set_permissions(&dist, fs::Permissions::from_mode(0o555)).unwrap();
+        assert!(cache.gc(Some(0), false).is_err());
+        let build = crate::build::BuildCache::with_root(cache.build_dir());
+        assert!(!build.restore_dist("key", &temp.path().join("out")).unwrap());
+        let trash = fs::read_dir(cache.build_dir())
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let detached_dist = trash.join("entry/dist");
+        assert!(detached_dist.join("demo.whl").exists());
+        assert_eq!(cache.total_size().unwrap(), 4096);
+        fs::set_permissions(&detached_dist, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(cache.gc(Some(0), false).unwrap().freed_bytes, 4096);
+    }
+
+    #[test]
+    fn gc_does_not_follow_a_symlinked_build_root() {
+        let temp = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        let keep = outside.path().join("key/dist/keep.whl");
+        fs::create_dir_all(keep.parent().unwrap()).unwrap();
+        fs::write(&keep, b"keep").unwrap();
+        let cache = Cache::with_root(temp.path());
+        std::os::unix::fs::symlink(outside.path(), cache.build_dir()).unwrap();
+        assert_eq!(cache.gc(Some(0), false).unwrap().size_before, 0);
+        assert_eq!(fs::read(keep).unwrap(), b"keep");
+    }
 
     #[test]
     fn gc_does_not_follow_a_symlinked_packages_root() {
