@@ -155,21 +155,25 @@ fn effective_timeout_and_network_policy_are_enforced_during_real_execution() {
     let temp = tempfile::tempdir().unwrap();
     configure(temp.path(), "allow_network=false\nmax_execution_time_s=1\n");
     let start = std::time::Instant::now();
-    let result = content(&call(
+    let reply = call(
         temp.path(),
         "pybun_run",
         json!({"code":"import time; time.sleep(5)","unsafe_no_sandbox":true,"sandbox_policy":{"timeout_secs":0}}),
-    ));
+    );
+    assert_eq!(reply["result"]["isError"], true, "{reply}");
+    let result = content(&reply);
     assert!(
         start.elapsed() < std::time::Duration::from_secs(4),
         "{result}"
     );
     assert!(result.to_string().contains("E_SANDBOX_TIMEOUT"), "{result}");
-    let result = content(&call(
+    let reply = call(
         temp.path(),
         "pybun_run",
         json!({"code":"import socket; socket.socket().connect(('127.0.0.1',1))","sandbox_policy":{"allow_network":true,"allow_net":["127.0.0.1:1"]}}),
-    ));
+    );
+    assert_eq!(reply["result"]["isError"], true, "{reply}");
+    let result = content(&reply);
     assert_eq!(result["exit_code"], 1, "{result}");
     assert!(
         result.to_string().contains("E_SANDBOX_NET_DENIED"),
@@ -356,4 +360,77 @@ fn script_arguments_must_be_regular_files() {
         .as_str()
         .unwrap_or_default();
     assert!(text.contains("regular file"), "{reply}");
+}
+
+#[test]
+fn executed_tool_failures_set_is_error_without_changing_payloads() {
+    let temp = tempfile::tempdir().unwrap();
+    configure(
+        temp.path(),
+        "default_sandbox=false\nrequire_sandbox=false\nallow_network=true\nmax_execution_time_s=0\n",
+    );
+    for (code, expected_exit) in [("print('ok')", 0), ("import sys; sys.exit(3)", 3)] {
+        let reply = call(
+            temp.path(),
+            "pybun_run",
+            json!({"code":code,"unsafe_no_sandbox":true}),
+        );
+        let result = content(&reply);
+        assert_eq!(result["exit_code"], expected_exit, "{reply}");
+        assert_eq!(
+            reply["result"]["isError"].as_bool().unwrap_or(false),
+            expected_exit != 0,
+            "{reply}"
+        );
+    }
+    // Test failures are returned as a summary rather than a top-level status.
+    std::fs::write(
+        temp.path().join("test_demo.py"),
+        "def test_failure():\n    assert False\n",
+    )
+    .unwrap();
+    let reply = call(temp.path(), "pybun_test", json!({}));
+    assert_eq!(content(&reply)["summary"]["failed"], 1, "{reply}");
+    assert_eq!(reply["result"]["isError"], true, "{reply}");
+}
+
+#[cfg(unix)]
+#[test]
+fn v2_backend_failure_sets_is_error_and_preserves_envelope() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = tempfile::tempdir().unwrap();
+    configure(
+        temp.path(),
+        "default_sandbox=false\nrequire_sandbox=false\nallow_network=true\nmax_execution_time_s=0\n",
+    );
+    let uv = temp.path().join("uv");
+    std::fs::write(&uv, "#!/bin/sh\nif [ \"$1\" = '--version' ]; then echo 'uv 0.12.13'; exit 0; fi\nif [ \"$1\" = 'workspace' ]; then pwd; exit 0; fi\nexit 0\n").unwrap();
+    std::fs::write(
+        temp.path().join("uv.lock"),
+        "version=1\n[[package]]\nname='demo'\nversion='0.1.0'\nsource={virtual='.'}\n",
+    )
+    .unwrap();
+    let venv = Command::new("python3")
+        .args(["-m", "venv", "--without-pip"])
+        .arg(temp.path().join(".venv"))
+        .output()
+        .unwrap();
+    assert!(
+        venv.status.success(),
+        "{}",
+        String::from_utf8_lossy(&venv.stderr)
+    );
+    std::fs::set_permissions(&uv, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let reply = rpc_backend(
+        temp.path(),
+        "tools/call",
+        json!({"name":"pybun_run","arguments":{"code":"import sys; sys.exit(3)","unsafe_no_sandbox":true}}),
+        "uv",
+    );
+    let result = content(&reply);
+    assert_eq!(result["contract_version"], "2", "{reply}");
+    assert_eq!(result["exit_code"], 3, "{reply}");
+    assert!(result["receipt_id"].is_string(), "{reply}");
+    assert_eq!(result["status"], "error", "{reply}");
+    assert_eq!(reply["result"]["isError"], true, "{reply}");
 }

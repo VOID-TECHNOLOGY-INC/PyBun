@@ -2,6 +2,19 @@
 use super::*;
 use std::time::Instant;
 
+// Tool handlers may return a failed execution inside an otherwise valid payload.
+fn tool_content_failed(tool: &str, value: &Value) -> bool {
+    value["status"] == "error"
+        || (matches!(tool, "pybun_run" | "pybun_test")
+            && value["exit_code"].as_i64().is_some_and(|code| code != 0))
+        || (tool == "pybun_test"
+            && ["failed", "errors", "timeouts"].iter().any(|field| {
+                value["summary"][field]
+                    .as_u64()
+                    .is_some_and(|count| count > 0)
+            }))
+}
+
 impl McpServer {
     fn rate_config(&self) -> rate_limit::Config {
         self.policy
@@ -128,15 +141,17 @@ impl McpServer {
         self.audit_log.record(audit_entry);
 
         match result {
-            Ok(content) => JsonRpcResponse::success(
-                id,
-                json!({
-                    "content": [{
-                        "type": "text",
-                        "text": content
-                    }]
-                }),
-            ),
+            Ok(content) => {
+                let failed = serde_json::from_str::<Value>(&content)
+                    .is_ok_and(|value| tool_content_failed(tool_name, &value));
+                let mut result = json!({
+                    "content": [{"type": "text", "text": content}]
+                });
+                if failed {
+                    result["isError"] = json!(true);
+                }
+                JsonRpcResponse::success(id, result)
+            }
             Err(e) => JsonRpcResponse::success(
                 id,
                 json!({
@@ -211,6 +226,39 @@ impl McpServer {
                 }),
             ),
             Err(e) => JsonRpcResponse::error(id, -32602, e),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tool_failure_classification_preserves_successful_observations() {
+        for value in [
+            json!({"contract_version":"2","status":"error"}),
+            json!({"status":"error","exit_code":0}),
+        ] {
+            assert!(tool_content_failed("pybun_doctor", &value));
+        }
+        for tool in ["pybun_run", "pybun_test"] {
+            assert!(tool_content_failed(tool, &json!({"exit_code":3})));
+            assert!(!tool_content_failed(tool, &json!({"exit_code":0})));
+        }
+        for field in ["failed", "errors", "timeouts"] {
+            let value = json!({"summary":{field:1}});
+            assert!(tool_content_failed("pybun_test", &value));
+            assert!(!tool_content_failed("pybun_context", &value));
+        }
+        for value in [
+            json!({"contract_version":"2","status":"success","exit_code":0}),
+            json!({"status":"dry_run"}),
+            json!({"status":"issues_found","checks":[{"status":"error"}]}),
+            json!({"summary":{"failed":0,"errors":0,"timeouts":0,"skipped":1,"xfail":1,"xpass":1}}),
+            json!({"stdout":"error"}),
+        ] {
+            assert!(!tool_content_failed("pybun_test", &value), "{value}");
         }
     }
 }
