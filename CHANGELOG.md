@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.2.7
+
+### Fixes
+- Mark failed MCP tool executions with `isError`, including error envelopes, nonzero run/test exits, and failed test summaries (#576, #583).
+- Report CPU-limit termination with a signal-derived exit code and `E_SANDBOX_CPU_LIMIT`, without misclassifying partial interpreter stderr as a user exception (#577, #584).
+- Preserve ordinary stdout and diagnostics when AWS settings or short credential values are present, while retaining credential, authenticated URL, and token redaction (#578, #585).
+
+### Known limitations
+- Existing warm PEP 723 execution ratios remain above the Benchmark UX Gate thresholds on Linux and macOS; this release does not lower those thresholds. Performance work remains planned for v0.2.8 (#579, #580).
+- The uv adapter supports uv >=0.12,<0.13. Older x86_64 glibc hosts use the musl fallback; no ARM64 musl artifact is published.
+- The Python-level sandbox requires an OS-level boundary to contain hostile C extensions or ctypes.
+
 ## v0.2.6
 
 ### Fixes
