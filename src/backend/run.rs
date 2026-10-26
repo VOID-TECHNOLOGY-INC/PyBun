@@ -271,12 +271,22 @@ impl UvBackend {
                     "Could not execute the prepared Python environment.",
                 )
             })?;
-        let exit_code = result.status.code().unwrap_or(1);
+        let exit_code = sandbox::execution_exit_code(&result.status);
         let stdout =
             String::from_utf8_lossy(result.stdout.as_deref().unwrap_or_default()).to_string();
         let stderr =
             String::from_utf8_lossy(result.stderr.as_deref().unwrap_or_default()).to_string();
-        let diagnostics = if exit_code != 0 {
+        let diagnostics = if args.sandbox
+            && args.sandbox_cpu > 0
+            && sandbox::cpu_limit_exceeded(&result.status)
+        {
+            vec![crate::schema::Diagnostic::error(format!(
+                "sandboxed process killed after exceeding --sandbox-cpu={}s of CPU time",
+                args.sandbox_cpu
+            ))
+            .with_code("E_SANDBOX_CPU_LIMIT")
+            .with_suggestion("increase --sandbox-cpu, set --sandbox-cpu=0 to disable, or optimize the script to use less CPU time")]
+        } else if exit_code != 0 {
             vec![runtime_diagnostic(&stderr)]
         } else {
             Vec::new()

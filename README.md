@@ -536,6 +536,11 @@ connects, and DNS lookups are checked. Denials identify the target with
 `E_SANDBOX_NET_DENIED` or `E_SANDBOX_RUN_DENIED` and a permission hint.
 MCP `sandbox_policy` supports matching `allow_net` and `allow_run` arrays.
 
+On Unix, a process killed by `--sandbox-cpu` reports `E_SANDBOX_CPU_LIMIT`
+and `exit_code: 128 + SIGXCPU` in CLI/MCP output. Stderr remains available as
+captured evidence; partial interpreter errors are not added as user-code
+exception diagnostics after a CPU-limit kill.
+
 Executable names are resolved from the initial PATH and pinned to their real
 paths. Subprocess PATH/cwd overrides cannot authorize a different executable.
 Use explicit paths for direct exec/posix_spawn calls; raw fork and shell-command

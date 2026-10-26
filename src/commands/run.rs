@@ -43,6 +43,7 @@ pub(crate) struct SandboxInfo {
     pub(crate) audit: Option<sandbox::SandboxAudit>,
     pub(crate) resource_limits: sandbox::ResourceLimits,
     pub(crate) timed_out: bool,
+    pub(crate) cpu_limit_exceeded: bool,
 }
 
 #[derive(Debug)]
@@ -954,6 +955,7 @@ pub(crate) async fn run_script(
             audit: None,
             resource_limits: guard.resource_limits.clone(),
             timed_out: false,
+            cpu_limit_exceeded: false,
         });
         sandbox_guard = Some(guard);
     }
@@ -1034,6 +1036,7 @@ pub(crate) async fn run_script(
     if let (Some(guard), Some(info)) = (&sandbox_guard, &mut sandbox_info) {
         info.audit = Some(guard.read_audit());
         info.timed_out = timed_out;
+        info.cpu_limit_exceeded = args.sandbox_cpu > 0 && sandbox::cpu_limit_exceeded(&status);
     }
     drop(sandbox_guard);
 
@@ -1057,7 +1060,7 @@ pub(crate) async fn run_script(
         );
     }
 
-    let exit_code = status.code().unwrap_or(-1);
+    let exit_code = sandbox::execution_exit_code(&status);
 
     let summary = if status.success() {
         format!("executed {} successfully", script_path.display())
@@ -1249,6 +1252,7 @@ fn run_python_code(
             audit: None,
             resource_limits: guard.resource_limits.clone(),
             timed_out: false,
+            cpu_limit_exceeded: false,
         });
         sandbox_guard = Some(guard);
     }
@@ -1311,6 +1315,7 @@ fn run_python_code(
     if let (Some(guard), Some(info)) = (&sandbox_guard, &mut sandbox_info) {
         info.audit = Some(guard.read_audit());
         info.timed_out = timed_out;
+        info.cpu_limit_exceeded = args.sandbox_cpu > 0 && sandbox::cpu_limit_exceeded(&status);
     }
     drop(sandbox_guard);
 
@@ -1334,7 +1339,7 @@ fn run_python_code(
         );
     }
 
-    let exit_code = status.code().unwrap_or(-1);
+    let exit_code = sandbox::execution_exit_code(&status);
 
     let summary = if status.success() {
         if args.sandbox {

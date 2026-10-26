@@ -213,3 +213,24 @@ fn mcp_uv_sandbox_runs_inline_and_script() {
         assert_eq!(value["stdout"], "mcp-ok\n");
     }
 }
+
+#[test]
+fn uv_cpu_kill_has_signal_exit_and_ignores_partial_python_errors() {
+    let dir = project();
+    let (ok, value) = cli(
+        &dir,
+        &[
+            "--sandbox-cpu=1",
+            "--sandbox-timeout=20",
+            "-c",
+            "import sys\nsys.stderr.write(\"KeyError: 'sitecustomize'\\n\")\nwhile True: pass",
+        ],
+    );
+    assert!(!ok, "{value}");
+    assert_eq!(value["detail"]["exit_code"], 128 + libc::SIGXCPU, "{value}");
+    assert_eq!(value["diagnostics"].as_array().unwrap().len(), 1, "{value}");
+    assert_eq!(
+        value["diagnostics"][0]["code"], "E_SANDBOX_CPU_LIMIT",
+        "{value}"
+    );
+}
