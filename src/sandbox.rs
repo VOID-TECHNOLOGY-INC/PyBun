@@ -162,8 +162,15 @@ pub fn default_safe_env_vars() -> &'static [&'static str] {
 /// Returns true when an environment variable name is likely to carry credentials
 /// and must not be passed through even if a caller includes it in allow_env.
 pub fn is_credential_env_name(name: &str) -> bool {
+    name.to_ascii_uppercase().starts_with("AWS_") || is_secret_env_name(name)
+}
+
+/// Names whose values may contain secrets, rather than ordinary AWS settings.
+/// Sandbox filtering intentionally denies the wider AWS_* family above.
+pub(crate) fn is_secret_env_name(name: &str) -> bool {
     let upper = name.to_ascii_uppercase();
-    upper.starts_with("AWS_")
+    upper == "AWS_ACCESS_KEY_ID"
+        || upper.starts_with("AWS_BEARER_TOKEN_")
         || upper.contains("_SECRET")
         || upper.ends_with("_TOKEN")
         || upper.ends_with("_KEY")
@@ -1095,6 +1102,31 @@ mod tests {
             let mut cmd = Command::new("cmd");
             cmd.arg("/C").arg("ping -n 6 127.0.0.1 >NUL");
             cmd
+        }
+    }
+
+    #[test]
+    fn aws_settings_remain_filtered_without_becoming_secret_values() {
+        for name in [
+            "AWS_PROFILE",
+            "AWS_DEFAULT_OUTPUT",
+            "AWS_PAGER",
+            "AWS_REGION",
+        ] {
+            assert!(is_credential_env_name(name));
+            assert!(!is_secret_env_name(name));
+        }
+        for name in [
+            "AWS_ACCESS_KEY_ID",
+            "AWS_BEARER_TOKEN_BEDROCK",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_SESSION_TOKEN",
+            "AWS_SECURITY_TOKEN",
+            "SECRET_API_KEY",
+            "UV_INDEX_PRIVATE_PASSWORD",
+        ] {
+            assert!(is_credential_env_name(name));
+            assert!(is_secret_env_name(name));
         }
     }
 

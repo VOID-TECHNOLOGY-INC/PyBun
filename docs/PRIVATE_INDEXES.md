@@ -43,7 +43,13 @@ Backend stdout/stderr remains withheld on errors, protecting credentials from
 providers whose secret values are unavailable to PyBun. CLI JSON/text, argument
 errors, MCP output and audit inputs, execution receipts and support bundles
 redact authenticated URL user information, credential keys and known credential
-environment values. User stdout/stderr retains its whitespace. Index-related
+environment values. Ordinary AWS settings such as `AWS_PROFILE`, `AWS_PAGER`
+and `AWS_DEFAULT_OUTPUT` do not supply secret values. Credential values shorter
+than eight bytes are masked as whole tokens (letters, digits and underscores
+form words); longer values are masked even inside other text. Replacement
+markers are not scanned again for environment values. Explicit credential
+fields, authenticated URLs and recognizable token literals remain protected.
+User stdout/stderr retains its whitespace. Index-related
 environment variables are removed before executing user Python, including when
 listed in sandbox `allow_env`; they remain available to uv preparation.
 
