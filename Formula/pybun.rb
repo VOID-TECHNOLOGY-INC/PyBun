@@ -2,7 +2,7 @@
 class Pybun < Formula
   desc "Rust-based single-binary Python toolchain."
   homepage "https://github.com/VOID-TECHNOLOGY-INC/PyBun"
-  version "0.2.6"
+  version "0.2.7"
   license "MIT"
 
   if ENV["HOMEBREW_PYBUN_TEST_TARBALL"]
@@ -11,21 +11,21 @@ class Pybun < Formula
   else
     on_macos do
       if Hardware::CPU.arm?
-        url "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.2.6/pybun-aarch64-apple-darwin.tar.gz"
-        sha256 "2ef88984d4b1ca8a4fe4b7e8eaafc5dee51a27c304d5bfbd5bb2b04ae182a454"
+        url "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.2.7/pybun-aarch64-apple-darwin.tar.gz"
+        sha256 "e53f149ccae5ac6dd7199ef30073d7fcc4908c02a26a845ca186383ed301bd11"
       else
-        url "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.2.6/pybun-x86_64-apple-darwin.tar.gz"
-        sha256 "51a93d14a9cf8cc48d17c62ab6f6608e4a1b6b91145dfc9ece4ff510770b58ab"
+        url "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.2.7/pybun-x86_64-apple-darwin.tar.gz"
+        sha256 "b848866405e9cef5042a3dd4980cc0ed45ca066b2cdfce7b12d403ecb9dc5f1f"
       end
     end
 
     on_linux do
       if Hardware::CPU.arm?
-        url "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.2.6/pybun-aarch64-unknown-linux-gnu.tar.gz"
-        sha256 "ab9aeb57ab7cce30bc0219f57d1156ec86102efdc4375dc4ce17b04ef0fe9db7"
+        url "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.2.7/pybun-aarch64-unknown-linux-gnu.tar.gz"
+        sha256 "ae00d5ebb230d1238aff1546cbd46655669aa3a223d907aeb6177e91be8c7738"
       else
-        url "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.2.6/pybun-x86_64-unknown-linux-gnu.tar.gz"
-        sha256 "c491db09f7a4565ef84d4d6c843216276232df9ac026caf5e5d2a5fe0b8afbfa"
+        url "https://github.com/VOID-TECHNOLOGY-INC/PyBun/releases/download/v0.2.7/pybun-x86_64-unknown-linux-gnu.tar.gz"
+        sha256 "142424b4d1865736fadec51854ba8168d75601e4485944dfde60ef69a84c8ff5"
       end
     end
   end
