@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.2.6
+
+### Fixes
+- Serialize and validate project metadata as TOML before creating a project, preserving quotes, backslashes, newlines, and Unicode (#560).
+- Account for complete nested build-cache entries during GC, with accurate dry-run reporting and symlink containment (#561).
+
+### Release integrity
+- Generate target-bound CycloneDX inventories of the Rust dependencies compiled for each release archive (#563).
+- Reject incomplete or inconsistent release manifests, checksums, signatures, SBOM inventories, and provenance subjects before publication (#564).
+
+### Documentation
+- Add a reproducible agent-scheduler example that records a successful run, an intentional failure, and the evidence used to investigate it (#497).
+
+### Known limitations
+- Existing benchmark UX ratio thresholds remain unmet; this release does not lower them.
+- The uv adapter supports uv >=0.12,<0.13. Older x86_64 glibc hosts use the musl fallback; no ARM64 musl artifact is published.
+- The Python-level sandbox requires an OS-level boundary to contain hostile C extensions or ctypes.
+
 ## v0.2.5
 
 ### Fixes
