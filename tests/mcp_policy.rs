@@ -434,3 +434,25 @@ fn v2_backend_failure_sets_is_error_and_preserves_envelope() {
     assert_eq!(result["status"], "error", "{reply}");
     assert_eq!(reply["result"]["isError"], true, "{reply}");
 }
+
+#[cfg(unix)]
+#[test]
+fn mcp_cpu_kill_reports_only_cpu_failure_with_signal_exit() {
+    let temp = tempfile::tempdir().unwrap();
+    configure(temp.path(), "max_cpu_time_s=1\nmax_execution_time_s=20\n");
+    let reply = call(
+        temp.path(),
+        "pybun_run",
+        json!({"code":"import sys\nsys.stderr.write(\"KeyError: 'sitecustomize'\\n\")\nwhile True: pass", "sandbox_policy":{"cpu_limit_secs":1}}),
+    );
+    let value = content(&reply);
+    assert_eq!(value["exit_code"], 128 + libc::SIGXCPU, "{reply}");
+    let errors: Vec<_> = value["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|d| d["level"] == "error")
+        .collect();
+    assert_eq!(errors.len(), 1, "{reply}");
+    assert_eq!(errors[0]["code"], "E_SANDBOX_CPU_LIMIT", "{reply}");
+}

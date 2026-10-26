@@ -1111,3 +1111,43 @@ assert blocked == len(calls), "expected all os.spawn* variants to be blocked, go
     .success()
     .stdout(predicate::str::contains("\"blocked_subprocesses\":8"));
 }
+
+#[cfg(unix)]
+#[test]
+fn cpu_kill_has_signal_exit_and_only_the_cpu_failure_diagnostic() {
+    let temp = tempdir().unwrap();
+    let code = "import sys\nsys.stderr.write(\"KeyError: 'sitecustomize'\\n\")\nwhile True: pass\n";
+    fs::write(temp.path().join("busy.py"), code).unwrap();
+    for target in [vec!["-c", code], vec!["busy.py"]] {
+        let output = bin()
+            .current_dir(temp.path())
+            .env("PYBUN_HISTORY", "0")
+            .args([
+                "--format=json",
+                "run",
+                "--sandbox",
+                "--sandbox-cpu=1",
+                "--sandbox-timeout=20",
+            ])
+            .args(target)
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["detail"]["exit_code"], 128 + libc::SIGXCPU, "{value}");
+        let errors: Vec<_> = value["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|d| d["level"] == "error")
+            .collect();
+        assert_eq!(errors.len(), 1, "{value}");
+        assert_eq!(errors[0]["code"], "E_SANDBOX_CPU_LIMIT", "{value}");
+        assert!(
+            value["detail"]["stderr"]
+                .as_str()
+                .unwrap()
+                .contains("KeyError")
+        );
+    }
+}

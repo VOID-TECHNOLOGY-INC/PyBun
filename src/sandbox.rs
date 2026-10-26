@@ -528,6 +528,21 @@ pub fn timeout_exit_status() -> ExitStatus {
     }
 }
 
+/// Preserve normal exits and encode Unix signal termination using shell convention.
+pub(crate) fn execution_exit_code(status: &ExitStatus) -> i32 {
+    if let Some(code) = status.code() {
+        return code;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(signal) = status.signal() {
+            return 128 + signal;
+        }
+    }
+    1
+}
+
 /// Returns true if `status` indicates the process was terminated by `SIGXCPU`,
 /// i.e. it exceeded the CPU time limit configured via `--sandbox-cpu`
 /// (enforced through `RLIMIT_CPU`, see [`cpu_limit_supported`]).
@@ -1401,6 +1416,7 @@ mod tests {
         use std::os::unix::process::ExitStatusExt;
         let killed_by_sigxcpu = ExitStatus::from_raw(libc::SIGXCPU);
         assert!(cpu_limit_exceeded(&killed_by_sigxcpu));
+        assert_eq!(execution_exit_code(&killed_by_sigxcpu), 128 + libc::SIGXCPU);
     }
 
     #[cfg(unix)]
@@ -1409,8 +1425,11 @@ mod tests {
         use std::os::unix::process::ExitStatusExt;
         let killed_by_sigterm = ExitStatus::from_raw(libc::SIGTERM);
         assert!(!cpu_limit_exceeded(&killed_by_sigterm));
+        assert_eq!(execution_exit_code(&killed_by_sigterm), 128 + libc::SIGTERM);
 
         let exited_zero = ExitStatus::from_raw(0);
         assert!(!cpu_limit_exceeded(&exited_zero));
+        assert_eq!(execution_exit_code(&exited_zero), 0);
+        assert_eq!(execution_exit_code(&ExitStatus::from_raw(3 << 8)), 3);
     }
 }

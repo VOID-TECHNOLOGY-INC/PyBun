@@ -605,7 +605,7 @@ async fn dispatch_execution(
                     // stderr (e.g. a plain `sys.exit(N)`), still emit a diagnostic so
                     // `diagnostics[]` is never empty on a failed run (Issue #266) — callers
                     // should not have to fall back to inspecting `detail.exit_code` alone.
-                    if exit_code != 0 {
+                    if exit_code != 0 && !sandbox.as_ref().is_some_and(|s| s.cpu_limit_exceeded) {
                         match stderr.as_deref().and_then(crate::traceback::parse) {
                             Some(tb) => {
                                 let mut diag = Diagnostic::error(tb.message.clone());

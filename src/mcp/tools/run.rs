@@ -156,6 +156,10 @@ pub(crate) async fn call_run(args: Value) -> Result<String, String> {
             // Enrich diagnostics with a structured traceback when the script
             // failed, mirroring the CLI `pybun run` dispatcher (Issue #266).
             if outcome.exit_code != 0
+                && !outcome
+                    .sandbox
+                    .as_ref()
+                    .is_some_and(|s| s.cpu_limit_exceeded)
                 && let Some(tb) = outcome.stderr.as_deref().and_then(crate::traceback::parse)
             {
                 let mut diag = crate::schema::Diagnostic::error(tb.message.clone());
