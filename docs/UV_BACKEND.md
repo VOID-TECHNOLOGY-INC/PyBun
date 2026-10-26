@@ -56,6 +56,14 @@ policy, duration, diagnostics, and a persisted receipt identifier. Receipts live
 under `.pybun/receipts/<id>.json` and omit execution stdout/stderr. Invalid expected
 artifacts do not produce a receipt or successful result.
 
+MCP `tools/call` sets `result.isError: true` for policy/argument errors and
+executed tools whose payload has top-level `status: "error"`. A nonzero
+`exit_code` from `pybun_run`/`pybun_test`, or nonzero `failed`, `errors`, or
+`timeouts` in a `pybun_test` summary, also marks a failed call. This applies to
+both native payloads and v2 envelopes; the text payload is preserved. Successful
+calls and dry runs omit `isError`. Nested diagnostic observations (for example,
+`pybun_doctor` checks) alone do not mark a tool call as failed.
+
 `pybun schema print --schema-version 2` prints the new schema. Schema v1 remains
 frozen and is still available with the default `schema print` / `schema check`.
 Backend stdout/stderr is private: fixed diagnostics protect credentials from
