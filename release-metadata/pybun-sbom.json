@@ -8725,11 +8725,11 @@
       "version": "1.0.106"
     },
     {
-      "bom-ref": "pkg:cargo/pybun@0.2.6?target=aarch64-apple-darwin",
+      "bom-ref": "pkg:cargo/pybun@0.2.7?target=aarch64-apple-darwin",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "2ef88984d4b1ca8a4fe4b7e8eaafc5dee51a27c304d5bfbd5bb2b04ae182a454"
+          "content": "e53f149ccae5ac6dd7199ef30073d7fcc4908c02a26a845ca186383ed301bd11"
         }
       ],
       "name": "pybun",
@@ -8740,23 +8740,23 @@
         },
         {
           "name": "pybun:cargo_lock_sha256",
-          "value": "b2bfe793b23436a46eba0dc7de24367817ee01ca966becc41261038c2bedf2f3"
+          "value": "4fbd9329abcb503f6c0e8267cafa6f673124dc0cf3f5977734806af5cb5ae7df"
         },
         {
           "name": "pybun:archive",
           "value": "pybun-aarch64-apple-darwin.tar.gz"
         }
       ],
-      "purl": "pkg:cargo/pybun@0.2.6",
+      "purl": "pkg:cargo/pybun@0.2.7",
       "type": "application",
-      "version": "0.2.6"
+      "version": "0.2.7"
     },
     {
-      "bom-ref": "pkg:cargo/pybun@0.2.6?target=aarch64-unknown-linux-gnu",
+      "bom-ref": "pkg:cargo/pybun@0.2.7?target=aarch64-unknown-linux-gnu",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "ab9aeb57ab7cce30bc0219f57d1156ec86102efdc4375dc4ce17b04ef0fe9db7"
+          "content": "ae00d5ebb230d1238aff1546cbd46655669aa3a223d907aeb6177e91be8c7738"
         }
       ],
       "name": "pybun",
@@ -8767,23 +8767,23 @@
         },
         {
           "name": "pybun:cargo_lock_sha256",
-          "value": "b2bfe793b23436a46eba0dc7de24367817ee01ca966becc41261038c2bedf2f3"
+          "value": "4fbd9329abcb503f6c0e8267cafa6f673124dc0cf3f5977734806af5cb5ae7df"
         },
         {
           "name": "pybun:archive",
           "value": "pybun-aarch64-unknown-linux-gnu.tar.gz"
         }
       ],
-      "purl": "pkg:cargo/pybun@0.2.6",
+      "purl": "pkg:cargo/pybun@0.2.7",
       "type": "application",
-      "version": "0.2.6"
+      "version": "0.2.7"
     },
     {
-      "bom-ref": "pkg:cargo/pybun@0.2.6?target=x86_64-apple-darwin",
+      "bom-ref": "pkg:cargo/pybun@0.2.7?target=x86_64-apple-darwin",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "51a93d14a9cf8cc48d17c62ab6f6608e4a1b6b91145dfc9ece4ff510770b58ab"
+          "content": "b848866405e9cef5042a3dd4980cc0ed45ca066b2cdfce7b12d403ecb9dc5f1f"
         }
       ],
       "name": "pybun",
@@ -8794,23 +8794,23 @@
         },
         {
           "name": "pybun:cargo_lock_sha256",
-          "value": "b2bfe793b23436a46eba0dc7de24367817ee01ca966becc41261038c2bedf2f3"
+          "value": "4fbd9329abcb503f6c0e8267cafa6f673124dc0cf3f5977734806af5cb5ae7df"
         },
         {
           "name": "pybun:archive",
           "value": "pybun-x86_64-apple-darwin.tar.gz"
         }
       ],
-      "purl": "pkg:cargo/pybun@0.2.6",
+      "purl": "pkg:cargo/pybun@0.2.7",
       "type": "application",
-      "version": "0.2.6"
+      "version": "0.2.7"
     },
     {
-      "bom-ref": "pkg:cargo/pybun@0.2.6?target=x86_64-pc-windows-msvc",
+      "bom-ref": "pkg:cargo/pybun@0.2.7?target=x86_64-pc-windows-msvc",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "d4da57aff49316371842220f253d8a82d1ab93273f4d5bca2ca95ec2eceeed11"
+          "content": "ca1eb3297446ebb99ace317ec91f5b78bdaf7754573a4edbcf41db818bfcd0f1"
         }
       ],
       "name": "pybun",
@@ -8821,23 +8821,23 @@
         },
         {
           "name": "pybun:cargo_lock_sha256",
-          "value": "b2bfe793b23436a46eba0dc7de24367817ee01ca966becc41261038c2bedf2f3"
+          "value": "4fbd9329abcb503f6c0e8267cafa6f673124dc0cf3f5977734806af5cb5ae7df"
         },
         {
           "name": "pybun:archive",
           "value": "pybun-x86_64-pc-windows-msvc.zip"
         }
       ],
-      "purl": "pkg:cargo/pybun@0.2.6",
+      "purl": "pkg:cargo/pybun@0.2.7",
       "type": "application",
-      "version": "0.2.6"
+      "version": "0.2.7"
     },
     {
-      "bom-ref": "pkg:cargo/pybun@0.2.6?target=x86_64-unknown-linux-gnu",
+      "bom-ref": "pkg:cargo/pybun@0.2.7?target=x86_64-unknown-linux-gnu",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "c491db09f7a4565ef84d4d6c843216276232df9ac026caf5e5d2a5fe0b8afbfa"
+          "content": "142424b4d1865736fadec51854ba8168d75601e4485944dfde60ef69a84c8ff5"
         }
       ],
       "name": "pybun",
@@ -8848,23 +8848,23 @@
         },
         {
           "name": "pybun:cargo_lock_sha256",
-          "value": "b2bfe793b23436a46eba0dc7de24367817ee01ca966becc41261038c2bedf2f3"
+          "value": "4fbd9329abcb503f6c0e8267cafa6f673124dc0cf3f5977734806af5cb5ae7df"
         },
         {
           "name": "pybun:archive",
           "value": "pybun-x86_64-unknown-linux-gnu.tar.gz"
         }
       ],
-      "purl": "pkg:cargo/pybun@0.2.6",
+      "purl": "pkg:cargo/pybun@0.2.7",
       "type": "application",
-      "version": "0.2.6"
+      "version": "0.2.7"
     },
     {
-      "bom-ref": "pkg:cargo/pybun@0.2.6?target=x86_64-unknown-linux-musl",
+      "bom-ref": "pkg:cargo/pybun@0.2.7?target=x86_64-unknown-linux-musl",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "847537d7c6cf714c3c4b3074fe7cfdd89452d40226174157c7cb8df5d0d8baab"
+          "content": "1b40901d738722966718cc54b81e954335e891fa63cac494ecd0cbb2bee29f61"
         }
       ],
       "name": "pybun",
@@ -8875,16 +8875,16 @@
         },
         {
           "name": "pybun:cargo_lock_sha256",
-          "value": "b2bfe793b23436a46eba0dc7de24367817ee01ca966becc41261038c2bedf2f3"
+          "value": "4fbd9329abcb503f6c0e8267cafa6f673124dc0cf3f5977734806af5cb5ae7df"
         },
         {
           "name": "pybun:archive",
           "value": "pybun-x86_64-unknown-linux-musl.tar.gz"
         }
       ],
-      "purl": "pkg:cargo/pybun@0.2.6",
+      "purl": "pkg:cargo/pybun@0.2.7",
       "type": "application",
-      "version": "0.2.6"
+      "version": "0.2.7"
     },
     {
       "bom-ref": "pkg:cargo/quote@1.0.46?target=aarch64-apple-darwin",
@@ -15481,14 +15481,14 @@
   "dependencies": [
     {
       "dependsOn": [
-        "pkg:cargo/pybun@0.2.6?target=aarch64-apple-darwin",
-        "pkg:cargo/pybun@0.2.6?target=aarch64-unknown-linux-gnu",
-        "pkg:cargo/pybun@0.2.6?target=x86_64-apple-darwin",
-        "pkg:cargo/pybun@0.2.6?target=x86_64-pc-windows-msvc",
-        "pkg:cargo/pybun@0.2.6?target=x86_64-unknown-linux-gnu",
-        "pkg:cargo/pybun@0.2.6?target=x86_64-unknown-linux-musl"
+        "pkg:cargo/pybun@0.2.7?target=aarch64-apple-darwin",
+        "pkg:cargo/pybun@0.2.7?target=aarch64-unknown-linux-gnu",
+        "pkg:cargo/pybun@0.2.7?target=x86_64-apple-darwin",
+        "pkg:cargo/pybun@0.2.7?target=x86_64-pc-windows-msvc",
+        "pkg:cargo/pybun@0.2.7?target=x86_64-unknown-linux-gnu",
+        "pkg:cargo/pybun@0.2.7?target=x86_64-unknown-linux-musl"
       ],
-      "ref": "pkg:cargo/pybun@0.2.6"
+      "ref": "pkg:cargo/pybun@0.2.7"
     },
     {
       "dependsOn": [
@@ -16266,7 +16266,7 @@
         "pkg:cargo/uuid@1.28.0?target=aarch64-apple-darwin",
         "pkg:cargo/zip@9.0.5?target=aarch64-apple-darwin"
       ],
-      "ref": "pkg:cargo/pybun@0.2.6?target=aarch64-apple-darwin"
+      "ref": "pkg:cargo/pybun@0.2.7?target=aarch64-apple-darwin"
     },
     {
       "dependsOn": [
@@ -17604,7 +17604,7 @@
         "pkg:cargo/uuid@1.28.0?target=aarch64-unknown-linux-gnu",
         "pkg:cargo/zip@9.0.5?target=aarch64-unknown-linux-gnu"
       ],
-      "ref": "pkg:cargo/pybun@0.2.6?target=aarch64-unknown-linux-gnu"
+      "ref": "pkg:cargo/pybun@0.2.7?target=aarch64-unknown-linux-gnu"
     },
     {
       "dependsOn": [
@@ -18965,7 +18965,7 @@
         "pkg:cargo/uuid@1.28.0?target=x86_64-apple-darwin",
         "pkg:cargo/zip@9.0.5?target=x86_64-apple-darwin"
       ],
-      "ref": "pkg:cargo/pybun@0.2.6?target=x86_64-apple-darwin"
+      "ref": "pkg:cargo/pybun@0.2.7?target=x86_64-apple-darwin"
     },
     {
       "dependsOn": [
@@ -20302,7 +20302,7 @@
         "pkg:cargo/uuid@1.28.0?target=x86_64-pc-windows-msvc",
         "pkg:cargo/zip@9.0.5?target=x86_64-pc-windows-msvc"
       ],
-      "ref": "pkg:cargo/pybun@0.2.6?target=x86_64-pc-windows-msvc"
+      "ref": "pkg:cargo/pybun@0.2.7?target=x86_64-pc-windows-msvc"
     },
     {
       "dependsOn": [
@@ -21659,7 +21659,7 @@
         "pkg:cargo/uuid@1.28.0?target=x86_64-unknown-linux-gnu",
         "pkg:cargo/zip@9.0.5?target=x86_64-unknown-linux-gnu"
       ],
-      "ref": "pkg:cargo/pybun@0.2.6?target=x86_64-unknown-linux-gnu"
+      "ref": "pkg:cargo/pybun@0.2.7?target=x86_64-unknown-linux-gnu"
     },
     {
       "dependsOn": [
@@ -23005,7 +23005,7 @@
         "pkg:cargo/uuid@1.28.0?target=x86_64-unknown-linux-musl",
         "pkg:cargo/zip@9.0.5?target=x86_64-unknown-linux-musl"
       ],
-      "ref": "pkg:cargo/pybun@0.2.6?target=x86_64-unknown-linux-musl"
+      "ref": "pkg:cargo/pybun@0.2.7?target=x86_64-unknown-linux-musl"
     },
     {
       "dependsOn": [
@@ -23584,14 +23584,14 @@
   ],
   "metadata": {
     "component": {
-      "bom-ref": "pkg:cargo/pybun@0.2.6",
+      "bom-ref": "pkg:cargo/pybun@0.2.7",
       "name": "pybun",
-      "purl": "pkg:cargo/pybun@0.2.6",
+      "purl": "pkg:cargo/pybun@0.2.7",
       "type": "application",
-      "version": "0.2.6"
+      "version": "0.2.7"
     }
   },
-  "serialNumber": "urn:uuid:b059ee05-2db2-4bab-8838-9846748c667d",
+  "serialNumber": "urn:uuid:c7324276-aab1-4794-8b5d-9becf87a90cf",
   "specVersion": "1.6",
   "version": 1
 }
