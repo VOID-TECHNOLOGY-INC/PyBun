@@ -556,7 +556,7 @@ impl Default for RedactionRules {
         ]);
         let mut secret_values = Vec::new();
         for (name, value) in std::env::vars() {
-            if crate::sandbox::is_credential_env_name(&name) && !value.is_empty() {
+            if crate::sandbox::is_secret_env_name(&name) && !value.is_empty() {
                 if !crate::sandbox::is_index_env_name(&name)
                     || name.to_ascii_uppercase().ends_with("_USERNAME")
                     || name.to_ascii_uppercase().ends_with("_PASSWORD")
@@ -630,13 +630,6 @@ impl RedactionRules {
             current = url_redacted;
             redactions += count;
 
-            for secret in &self.secret_values {
-                if current.contains(secret) {
-                    current = current.replace(secret, "<redacted>");
-                    redactions += 1;
-                }
-            }
-
             let (query_redacted, count) = redact_query_params(&current);
             current = query_redacted;
             redactions += count;
@@ -645,7 +638,43 @@ impl RedactionRules {
             current = token_redacted;
             redactions += count;
 
+            let (current, count) = self.redact_secret_values(&current);
+            redactions += count;
             output.push_str(&current);
+        }
+        (output, redactions)
+    }
+
+    fn redact_secret_values(&self, text: &str) -> (String, usize) {
+        let mut output = String::with_capacity(text.len());
+        let mut cursor = 0;
+        let mut redactions = 0;
+        let is_word = |ch: char| ch.is_alphanumeric() || ch == '_';
+        while cursor < text.len() {
+            let remaining = &text[cursor..];
+            // Long credentials stay protected even when embedded in other text.
+            // Short values must be whole tokens to avoid corrupting ordinary words.
+            let matched = self.secret_values.iter().find(|secret| {
+                remaining.starts_with(secret.as_str())
+                    && (secret.len() >= 8
+                        || (!text[..cursor].chars().next_back().is_some_and(is_word)
+                            && !remaining[secret.len()..]
+                                .chars()
+                                .next()
+                                .is_some_and(is_word)))
+            });
+            if let Some(secret) = matched {
+                output.push_str("<redacted>");
+                cursor += secret.len();
+                redactions += 1;
+            } else if remaining.starts_with("<redacted>") {
+                output.push_str("<redacted>");
+                cursor += "<redacted>".len();
+            } else {
+                let ch = remaining.chars().next().unwrap();
+                output.push(ch);
+                cursor += ch.len_utf8();
+            }
         }
         (output, redactions)
     }
@@ -868,6 +897,53 @@ fn redact_query_params(input: &str) -> (String, usize) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn short_credentials_match_whole_tokens_without_rewriting_replacements() {
+        let rules = super::RedactionRules {
+            patterns: vec![],
+            secret_values: vec![
+                "long-private-value".into(),
+                "redacted".into(),
+                "x".into(),
+                "a".into(),
+                "é".into(),
+            ],
+        };
+        assert_eq!(
+            rules
+                .redact_text("sandbox database café 'é' x a prefixlong-private-valuesuffix")
+                .0,
+            "sandbox database café '<redacted>' <redacted> <redacted> prefix<redacted>suffix"
+        );
+        assert_eq!(
+            rules.redact_text("x x\nx\r\n").0,
+            "<redacted> <redacted>\n<redacted>\r\n"
+        );
+    }
+
+    #[test]
+    fn short_secret_punctuation_cannot_break_structural_redaction() {
+        let rules = super::RedactionRules {
+            patterns: vec!["*TOKEN*".into()],
+            secret_values: vec!["redacted".into(), "/".into(), "?".into()],
+        };
+        let text = rules
+            .redact_text("https://user:private-pass@example.org/path?token=private-query")
+            .0;
+        for secret in ["user", "private-pass", "private-query"] {
+            assert!(!text.contains(secret), "{text}");
+        }
+        assert!(!text.contains("<<redacted>>"), "{text}");
+        let text = rules.redact_text("TOKEN=private-value\n").0;
+        assert!(!text.contains("private-value"), "{text}");
+        assert!(!text.contains("<<redacted>>"), "{text}");
+        let rules = super::RedactionRules {
+            patterns: vec![],
+            secret_values: vec!["<redacted>actual-secret".into()],
+        };
+        assert_eq!(rules.redact_text("<redacted>actual-secret").0, "<redacted>");
+    }
+
     #[test]
     fn auth_values_do_not_corrupt_protocol_fields() {
         let rules = super::RedactionRules {
