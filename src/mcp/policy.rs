@@ -400,16 +400,12 @@ impl ServerPolicy {
             }
             if sandboxed {
                 for key in ["allow_read", "allow_write"] {
-                    let values = sandbox
-                        .get(key)
-                        .map(|v| v.as_array().ok_or_else(invalid))
-                        .transpose()?;
-                    if let Some(values) = values {
-                        for value in values {
-                            self.path(policy, value.as_str().ok_or_else(invalid)?)?;
-                        }
+                    let values = super::audit::filesystem_array_arg(&sandbox, key)
+                        .map_err(|message| Denied("E_MCP_POLICY_ARGUMENT", message))?;
+                    for value in &values {
+                        self.path(policy, value)?;
                     }
-                    if values.is_none_or(Vec::is_empty) {
+                    if values.is_empty() {
                         sandbox[key] = json!([self.root]);
                     }
                 }

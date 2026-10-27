@@ -668,6 +668,10 @@ permission also removes granular network and executable grants. Sandbox reads
 and writes default to the startup project boundary; explicit paths, symlinks,
 backend-derived workspaces and environment/lock outputs are checked against the
 operator's authorized directories. System-environment installation is denied.
+For sandboxed `pybun_run`, omitted or empty `allow_read` / `allow_write` arrays
+use the startup project boundary. Nonempty arrays must contain nonempty path
+strings without NUL bytes; malformed entries return `E_MCP_POLICY_ARGUMENT`
+before execution. Paths containing `=` are valid and retain their restrictions.
 Write snapshots skip symlinks and generated trees (`target`, `.git`, `.venv`,
 `venv`, `__pycache__`, `node_modules`), and are bounded to 2,000 entries, depth
 32, 4 MiB per file and 16 MiB read per snapshot. Audit records expose

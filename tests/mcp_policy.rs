@@ -456,3 +456,106 @@ fn mcp_cpu_kill_reports_only_cpu_failure_with_signal_exit() {
     assert_eq!(errors.len(), 1, "{reply}");
     assert_eq!(errors[0]["code"], "E_SANDBOX_CPU_LIMIT", "{reply}");
 }
+
+#[test]
+fn malformed_filesystem_permissions_are_rejected_before_execution() {
+    let temp = tempfile::tempdir().unwrap();
+    configure(temp.path(), "require_sandbox=true\n");
+    for key in ["allow_read", "allow_write"] {
+        for paths in [
+            json!([""]),
+            json!([".", ""]),
+            json!(["nul\0path"]),
+            json!([1]),
+            json!("."),
+        ] {
+            let mut policy = json!({});
+            policy[key] = paths;
+            let reply = call(
+                temp.path(),
+                "pybun_run",
+                json!({
+                    "code": "open('marker', 'w').write('executed')",
+                    "sandbox_policy": policy
+                }),
+            );
+            assert_eq!(reply["result"]["isError"], true, "{reply}");
+            assert_eq!(
+                content(&reply)["diagnostics"][0]["code"],
+                "E_MCP_POLICY_ARGUMENT",
+                "{reply}"
+            );
+            assert!(!temp.path().join("marker").exists());
+        }
+    }
+}
+
+#[test]
+fn filesystem_permissions_with_equals_enforce_read_and_write_boundaries() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("project=task");
+    std::fs::create_dir(&root).unwrap();
+    std::fs::create_dir(root.join(".cache=task")).unwrap();
+    configure(
+        &root,
+        "require_sandbox=true\nallowed_working_directories=['.']\n",
+    );
+    let outside = temp.path().join("outside");
+    std::fs::create_dir(&outside).unwrap();
+    let secret = outside.join("read.txt");
+    std::fs::write(&secret, "fixture-data").unwrap();
+    std::fs::write(root.join(".cache=task/read.txt"), "allowed-data").unwrap();
+    for requested in [None, Some(json!([])), Some(json!([".cache=task"]))] {
+        let mut policy = json!({});
+        if let Some(paths) = &requested {
+            policy["allow_read"] = paths.clone();
+            policy["allow_write"] = paths.clone();
+        }
+        let code = format!(
+            "open({}, 'w').write('escaped')",
+            serde_json::to_string(&outside.join("write.txt")).unwrap()
+        );
+        let reply = call(
+            &root,
+            "pybun_run",
+            json!({"code":code, "sandbox_policy":policy}),
+        );
+        assert_eq!(content(&reply)["exit_code"], 1, "{reply}");
+        assert!(!outside.join("write.txt").exists());
+        let code = format!(
+            "print(open({}).read())",
+            serde_json::to_string(&secret).unwrap()
+        );
+        let reply = call(
+            &root,
+            "pybun_run",
+            json!({"code":code, "sandbox_policy":policy}),
+        );
+        assert_eq!(content(&reply)["exit_code"], 1, "{reply}");
+        let reply = call(
+            &root,
+            "pybun_run",
+            json!({
+                "code":"print(open('.cache=task/read.txt').read()); open('.cache=task/write.txt','w').write('allowed')",
+                "sandbox_policy":policy
+            }),
+        );
+        let value = content(&reply);
+        assert_eq!(value["exit_code"], 0, "{reply}");
+        assert_eq!(value["stdout"], "allowed-data\n", "{reply}");
+        assert_eq!(
+            std::fs::read_to_string(root.join(".cache=task/write.txt")).unwrap(),
+            "allowed"
+        );
+        let expected = requested.unwrap_or_else(|| json!([root.canonicalize().unwrap()]));
+        let expected = if expected == json!([]) {
+            json!([root.canonicalize().unwrap()])
+        } else {
+            expected
+        };
+        assert_eq!(
+            value["policy_applied"]["sandbox_policy"]["allow_write"], expected,
+            "{reply}"
+        );
+    }
+}

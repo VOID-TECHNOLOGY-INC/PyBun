@@ -779,3 +779,53 @@ fn pep723_option_injection_is_rejected_before_backend_preparation() {
     assert!(!ok, "{value}");
     assert_eq!(value["detail"]["code"], "E_BACKEND_ARGUMENT", "{value}");
 }
+
+#[test]
+fn real_uv_mcp_filesystem_permissions_preserve_equals_paths() {
+    use serde_json::json;
+    let dir = TempDir::with_prefix("pybun=paths-").unwrap();
+    let outside = TempDir::new().unwrap();
+    fs::create_dir(dir.path().join(".cache=task")).unwrap();
+    fs::write(dir.path().join(".cache=task/read.txt"), "allowed-data").unwrap();
+    fs::write(outside.path().join("read.txt"), "fixture-data").unwrap();
+    fs::write(
+        dir.path().join("pyproject.toml"),
+        "[project]\nname='demo'\nversion='0.1.0'\ndependencies=[]\n",
+    )
+    .unwrap();
+    let policy_file = dir.path().join("policy.toml");
+    fs::write(&policy_file, "[tool.pybun.mcp.policy]\nrequire_sandbox=true\nallow_network=true\nmax_execution_time_s=0\nallowed_working_directories=['.']\n").unwrap();
+    for (paths, code, succeeds) in [
+        (json!([".cache=task"]), format!("open({},'w').write('escaped')", json!(outside.path().join("write.txt"))), false),
+        (json!([".cache=task"]), format!("print(open({}).read())", json!(outside.path().join("read.txt"))), false),
+        (json!([".cache=task"]), "print(open('.cache=task/read.txt').read()); open('.cache=task/write.txt','w').write('allowed')".into(), true),
+        (json!([]), format!("open({},'w').write('escaped')", json!(outside.path().join("write.txt"))), false),
+        (json!([""]), "open('.cache=task/invalid.txt','w').write('executed')".into(), false),
+    ] {
+        let input = format!("{}\n", json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{
+            "name":"pybun_run","arguments":{"code":code,"sandbox_policy":{"allow_read":paths,"allow_write":paths}}
+        }}));
+        let output = real_uv(&dir)
+            .env("PYBUN_MCP_POLICY", &policy_file)
+            .env("PYBUN_AUDIT_LOG", outside.path().join("audit.jsonl"))
+            .args(["mcp", "serve", "--stdio"])
+            .write_stdin(input)
+            .output().unwrap();
+        let text = String::from_utf8(output.stdout).unwrap();
+        let reply: Value = serde_json::from_str(text.lines().last().unwrap()).unwrap();
+        assert_eq!(reply["result"]["isError"].as_bool().unwrap_or(false), !succeeds, "{reply}");
+        assert!(!outside.path().join("write.txt").exists());
+        assert!(!dir.path().join(".cache=task/invalid.txt").exists());
+        let value: Value = serde_json::from_str(reply["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+        if paths == json!([""]) {
+            assert_eq!(value["diagnostics"][0]["code"], "E_MCP_POLICY_ARGUMENT", "{value}");
+        } else {
+            assert_eq!(value["exit_code"], if succeeds {0} else {1}, "{value}");
+            if succeeds {
+                assert_eq!(value["stdout"], "allowed-data\n");
+                assert_eq!(fs::read_to_string(dir.path().join(".cache=task/write.txt")).unwrap(), "allowed");
+                assert_eq!(value["policy_applied"]["sandbox_policy"]["allow_write"], paths);
+            }
+        }
+    }
+}
