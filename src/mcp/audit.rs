@@ -680,16 +680,39 @@ fn string_array_arg(value: &Value, key: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-pub(super) fn mcp_sandbox_config_from_policy(policy: &Value) -> crate::sandbox::SandboxConfig {
-    crate::sandbox::SandboxConfig {
+// Filesystem paths must not use the environment-name filter: '=' is valid in
+// paths, and silently dropping entries can turn an allowlist into no restriction.
+pub(super) fn filesystem_array_arg(policy: &Value, key: &str) -> Result<Vec<String>, &'static str> {
+    let invalid = "Filesystem permissions must be arrays of nonempty paths without NUL bytes.";
+    let Some(value) = policy.get(key) else {
+        return Ok(Vec::new());
+    };
+    value
+        .as_array()
+        .ok_or(invalid)?
+        .iter()
+        .map(|value| {
+            let path = value.as_str().ok_or(invalid)?;
+            if path.is_empty() || path.contains('\0') {
+                return Err(invalid);
+            }
+            Ok(path.to_string())
+        })
+        .collect()
+}
+
+pub(super) fn mcp_sandbox_config_from_policy(
+    policy: &Value,
+) -> Result<crate::sandbox::SandboxConfig, &'static str> {
+    Ok(crate::sandbox::SandboxConfig {
         allow_network: policy
             .get("allow_network")
             .and_then(|v| v.as_bool())
             .unwrap_or(false),
         allow_net: string_array_arg(policy, "allow_net"),
         allow_run: string_array_arg(policy, "allow_run"),
-        allow_read: string_array_arg(policy, "allow_read"),
-        allow_write: string_array_arg(policy, "allow_write"),
+        allow_read: filesystem_array_arg(policy, "allow_read")?,
+        allow_write: filesystem_array_arg(policy, "allow_write")?,
         allow_env: string_array_arg(policy, "allow_env")
             .into_iter()
             .filter(|name| !crate::sandbox::is_credential_env_name(name))
@@ -707,7 +730,7 @@ pub(super) fn mcp_sandbox_config_from_policy(policy: &Value) -> crate::sandbox::
             .and_then(|v| v.as_u64())
             .unwrap_or(crate::sandbox::DEFAULT_SANDBOX_TIMEOUT_SECS),
         ..Default::default()
-    }
+    })
 }
 
 pub(super) fn sandbox_policy_json(config: &crate::sandbox::SandboxConfig) -> Value {
@@ -981,6 +1004,44 @@ pub(super) fn diff_file_writes(before: &FileSnapshot, after: &FileSnapshot) -> A
 #[cfg(test)]
 mod snapshot_tests {
     use super::*;
+    #[test]
+    fn filesystem_permissions_fail_closed_on_malformed_values() {
+        for key in ["allow_read", "allow_write"] {
+            for value in [
+                json!([""]),
+                json!([".", ""]),
+                json!(["a\0b"]),
+                json!([".", 1]),
+                json!(null),
+                json!("."),
+            ] {
+                let mut policy = json!({});
+                policy[key] = value;
+                assert!(mcp_sandbox_config_from_policy(&policy).is_err(), "{policy}");
+            }
+        }
+        for policy in [json!({}), json!({"allow_read":[], "allow_write":[]})] {
+            let config = mcp_sandbox_config_from_policy(&policy).unwrap();
+            assert!(config.allow_read.is_empty());
+            assert!(config.allow_write.is_empty());
+        }
+        let config =
+            mcp_sandbox_config_from_policy(&json!({"allow_env":["SAFE", "A=B", "", "a\0b"]}))
+                .unwrap();
+        assert_eq!(config.allow_env, ["SAFE"]);
+    }
+
+    #[test]
+    fn filesystem_permissions_preserve_equals_paths() {
+        let config = mcp_sandbox_config_from_policy(&json!({
+            "allow_read": [".cache=task", "with space/日本語"],
+            "allow_write": ["project=task/output"]
+        }))
+        .unwrap();
+        assert_eq!(config.allow_read, [".cache=task", "with space/日本語"]);
+        assert_eq!(config.allow_write, ["project=task/output"]);
+    }
+
     #[test]
     fn partial_baselines_do_not_claim_preexisting_unobserved_files_were_written() {
         let temp = tempfile::tempdir().unwrap();

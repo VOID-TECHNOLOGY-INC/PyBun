@@ -38,7 +38,7 @@ pub(crate) async fn call_run(args: Value) -> Result<String, String> {
         .get("sandbox_policy")
         .cloned()
         .unwrap_or_else(|| json!({}));
-    let mut effective_sandbox_config = mcp_sandbox_config_from_policy(&policy);
+    let mut effective_sandbox_config = mcp_sandbox_config_from_policy(&policy)?;
     if use_sandbox {
         effective_sandbox_config.deny_write = super::super::policy::protected_write_paths();
     }
