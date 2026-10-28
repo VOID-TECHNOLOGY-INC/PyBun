@@ -66,6 +66,6 @@ assert_cmd = "2.0"
 proptest = "1.6"
 predicates = "3.1"
 tempfile = "3.14"
-httpmock = "0.8"
+httpmock = "0.9"
 regex = "1.11"
 tokio = { version = "1.48.0", default-features = false, features = ["macros", "net"] }
