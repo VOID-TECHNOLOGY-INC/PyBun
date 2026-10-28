@@ -25,7 +25,7 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.11"
       - name: Install minisign for release verifier fixtures
@@ -72,7 +72,7 @@ jobs:
             brew install minisign
           fi
       - name: Set up Python for pytest marker regressions
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.12"
       - name: Install pytest for runtime marker evaluation
@@ -83,7 +83,7 @@ jobs:
           toolchain: ${{ matrix.rust }}
           components: rustfmt, clippy
       - name: Cache cargo
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           cache-targets: true
           cache-on-failure: true
@@ -92,7 +92,7 @@ jobs:
       - name: clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
       - name: Set up Python for runtime integration tests
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.11"
       - name: Install pytest for runtime integration tests
@@ -183,7 +183,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
       - name: Cache cargo
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           cache-targets: true
           cache-on-failure: true
@@ -213,7 +213,7 @@ jobs:
         # Required so self_update integration tests cover the minisign verification path
         run: sudo apt-get update && sudo apt-get install -y minisign
       - name: Set up Python for pytest marker regressions
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.12"
       - name: Install pytest for runtime marker evaluation
@@ -223,14 +223,14 @@ jobs:
         with:
           components: llvm-tools-preview
       - name: Cache cargo
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           cache-targets: true
           cache-on-failure: true
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@4e14a60b36eb62630dcc25614f0be0659ab8830c # cargo-llvm-cov
       - name: Set up Python for runtime integration tests
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.11"
       - name: Install pytest for runtime integration tests
@@ -295,7 +295,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           key: linux-compatibility-${{ matrix.target }}
       - name: Build and smoke the packaged GNU binary
@@ -323,7 +323,7 @@ jobs:
         with:
           components: clippy
       - name: Cache cargo
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           cache-targets: true
           cache-on-failure: true
