@@ -12,7 +12,7 @@ use crate::lazy_import::{
 use crate::module_finder::{ModuleFinder, ModuleFinderConfig};
 use crate::profiles::{Profile, ProfileConfig, ProfileManager};
 use crate::release_manifest::{ReleaseManifest, current_release_target};
-use crate::schema::EventCollector;
+use crate::schema::{EventCollector, EventType};
 use crate::self_update::apply_update_for_asset;
 use color_eyre::eyre::{Result, eyre};
 use serde_json::{Value, json};
@@ -739,7 +739,7 @@ pub(super) struct XOutcome {
     pub(super) package: String,
     pub(super) version: Option<String>,
     pub(super) passthrough: Vec<String>,
-    pub(super) temp_env: String,
+    pub(super) temp_env: Option<String>,
     pub(super) python_version: String,
     pub(super) exit_code: i32,
     pub(super) cleanup: bool,
@@ -796,7 +796,7 @@ fn capture_stdio(bytes: &[u8]) -> Option<String> {
 
 pub(super) fn execute_tool(
     args: &crate::cli::ToolArgs,
-    _collector: &mut EventCollector,
+    collector: &mut EventCollector,
     format: OutputFormat,
 ) -> Result<XOutcome> {
     let capture = format == OutputFormat::Json;
@@ -813,12 +813,84 @@ pub(super) fn execute_tool(
     let dry_run = std::env::var("PYBUN_X_DRY_RUN").is_ok();
 
     // Find Python interpreter
+    // x retains the frozen v1 envelope: extension stages use custom events.
+    collector.event_with_data(EventType::Custom, json!({"stage": "env_lookup"}));
     let working_dir = std::env::current_dir()?;
     let env = find_python_env(&working_dir)?;
     let python_path = env.python_path.to_string_lossy().to_string();
     let python_version = env.version.clone().unwrap_or_else(|| "unknown".to_string());
 
+    if !dry_run
+        && let Some(uv_path) = std::env::var_os("PYBUN_UV")
+            .map(PathBuf::from)
+            .or_else(crate::env::find_uv_executable)
+    {
+        // uv's tool cache keys the environment by requirement and interpreter.
+        // --isolated ignores globally installed tools while still reusing that
+        // cache. Keep the existing console-script-first/module fallback contract,
+        // and look only inside the prepared environment (never the caller's PATH).
+        let launch_dir = tempfile::tempdir()?;
+        let launch_marker = launch_dir.path().join("started");
+        let mut command = ProcessCommand::new(uv_path);
+        command
+            .args(["tool", "run", "--quiet", "--isolated", "--from"])
+            .arg(package_spec)
+            .arg("--python")
+            .arg(&python_path)
+            .args(["--", "python", "-I", "-c"])
+            .arg(
+                r#"import os, runpy, sys, sysconfig
+name, marker = sys.argv[1:3]
+sys.argv = [name] + sys.argv[3:]
+entry = os.path.join(sysconfig.get_path('scripts'), name + ('.exe' if os.name == 'nt' else ''))
+with open(marker, 'w'): pass
+if os.path.isfile(entry):
+    os.execv(entry, [entry] + sys.argv[1:])
+else:
+    runpy.run_module(name, run_name='__main__', alter_sys=True)
+"#,
+            )
+            .arg(&package_name)
+            .arg(&launch_marker)
+            .args(&args.passthrough);
+        collector.event_with_data(
+            EventType::EnvCreate,
+            json!({"managed_by": "uv", "cache_hit": null}),
+        );
+        collector.event_with_data(EventType::Custom, json!({"stage": "spawn"}));
+        let (exit_code, stdout, stderr) =
+            run_tool_command(command, capture, "failed to execute tool with uv")?;
+        if !launch_marker.is_file() {
+            let detail = stderr
+                .as_deref()
+                .map(crate::support_bundle::redact_text)
+                .unwrap_or_default();
+            return Err(eyre!(
+                "failed to prepare tool {} with uv: {}",
+                package_spec,
+                detail.trim()
+            ));
+        }
+        return Ok(XOutcome {
+            summary: if exit_code == 0 {
+                format!("executed {} successfully", package_name)
+            } else {
+                format!("{} exited with code {}", package_name, exit_code)
+            },
+            package: package_name,
+            version,
+            passthrough: args.passthrough.clone(),
+            temp_env: None,
+            python_version,
+            exit_code,
+            cleanup: false,
+            stdout,
+            stderr,
+        });
+    }
+
     // Create temporary environment
+    collector.event(EventType::EnvCreate);
     let temp_dir =
         tempfile::tempdir().map_err(|e| eyre!("failed to create temp directory: {}", e))?;
     let temp_env_path = temp_dir.path().to_string_lossy().to_string();
@@ -836,7 +908,7 @@ pub(super) fn execute_tool(
             package: package_name,
             version,
             passthrough: args.passthrough.clone(),
-            temp_env: temp_env_path,
+            temp_env: Some(temp_env_path),
             python_version,
             exit_code,
             cleanup: true,
@@ -920,6 +992,7 @@ pub(super) fn execute_tool(
         venv_path.join("bin").join(&package_name)
     };
 
+    collector.event_with_data(EventType::Custom, json!({"stage": "spawn"}));
     let (exit_code, stdout, stderr) = if entry_point.exists() {
         // Execute the console script directly
         eprintln!("info: executing {}...", entry_point.display());
@@ -955,7 +1028,7 @@ pub(super) fn execute_tool(
         package: package_name,
         version,
         passthrough: args.passthrough.clone(),
-        temp_env: temp_env_path,
+        temp_env: Some(temp_env_path),
         python_version,
         exit_code,
         cleanup: true,

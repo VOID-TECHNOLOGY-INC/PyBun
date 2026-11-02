@@ -15,8 +15,8 @@ mod graph;
 pub(crate) use graph::provenance_graph_scoped;
 pub use graph::{GraphEvidence, provenance_graph};
 mod run;
-pub(crate) use run::run_scoped;
 pub use run::{applicable as run_applicable, run};
+pub(crate) use run::{run_observed, run_scoped};
 
 #[derive(Debug, thiserror::Error)]
 #[error("{message}")]

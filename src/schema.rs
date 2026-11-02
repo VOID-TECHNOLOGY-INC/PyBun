@@ -244,8 +244,10 @@ pub enum EventType {
     InstallComplete,
 
     // Runtime events
+    EnvLookup,
     EnvCreate,
     EnvActivate,
+    Spawn,
     ScriptStart,
     ScriptEnd,
 

@@ -1,6 +1,7 @@
 use super::*;
 use crate::cli::RunArgs;
 use crate::sandbox::{self, SandboxConfig};
+use crate::schema::{EventCollector, EventType};
 
 /// Build the same structured traceback diagnostic the native path emits,
 /// including the `next_action` self-healing hint. `dispatch_execution`
@@ -59,42 +60,89 @@ fn script_metadata_or_lock(target: &str) -> bool {
 pub async fn run(args: &RunArgs) -> Result<Value, BackendError> {
     run_scoped(args, Vec::new()).await
 }
+
+pub(crate) async fn run_observed(
+    args: &RunArgs,
+    collector: &mut EventCollector,
+) -> Result<Value, BackendError> {
+    let offset = collector.event(EventType::EnvLookup).timestamp_ms;
+    let (result, events) = run_with_events(args, Vec::new()).await;
+    // The backend runs on a blocking worker. Replay its stage timestamps
+    // relative to command_start, preserving collector listeners as well.
+    for (event_type, timestamp_ms) in events {
+        collector.event_with(event_type, |event| {
+            event.timestamp_ms = offset + timestamp_ms;
+        });
+    }
+    collector.event(EventType::ScriptEnd);
+    result
+}
+
 pub(crate) async fn run_scoped(args: &RunArgs, roots: Vec<PathBuf>) -> Result<Value, BackendError> {
+    run_with_events(args, roots).await.0
+}
+
+async fn run_with_events(
+    args: &RunArgs,
+    roots: Vec<PathBuf>,
+) -> (Result<Value, BackendError>, Vec<(EventType, u64)>) {
+    let start = Instant::now();
     let args = args.clone();
-    let root = std::env::current_dir().map_err(|_| {
-        error(
-            "E_BACKEND_PROJECT",
-            "Cannot locate the current project directory.",
-        )
-    })?;
+    let worker = move || {
+        let mut events = Vec::new();
+        let result = (|| {
+            let root = std::env::current_dir().map_err(|_| {
+                error(
+                    "E_BACKEND_PROJECT",
+                    "Cannot locate the current project directory.",
+                )
+            })?;
+            UvBackend::discover(&root)?
+                .scoped(roots)
+                .run_python(&args, &mut events, start)
+        })();
+        (result, events)
+    };
     if tokio::runtime::Handle::try_current().is_ok() {
-        tokio::task::spawn_blocking(move || {
-            UvBackend::discover(&root)?.scoped(roots).run_python(&args)
-        })
-        .await
-        .map_err(|_| {
-            error(
-                "E_BACKEND_FAILED",
-                "Backend worker terminated unexpectedly.",
-            )
-        })?
+        tokio::task::spawn_blocking(worker)
+            .await
+            .unwrap_or_else(|_| {
+                (
+                    Err(error(
+                        "E_BACKEND_FAILED",
+                        "Backend worker terminated unexpectedly.",
+                    )),
+                    Vec::new(),
+                )
+            })
     } else {
-        UvBackend::discover(&root)?.scoped(roots).run_python(&args)
+        worker()
     }
 }
 
 impl UvBackend {
-    fn run_python(&self, args: &RunArgs) -> Result<Value, BackendError> {
+    fn run_python(
+        &self,
+        args: &RunArgs,
+        events: &mut Vec<(EventType, u64)>,
+        command_start: Instant,
+    ) -> Result<Value, BackendError> {
         let start = Instant::now();
-        self.run_checked(args).map_err(|mut error| {
-            error.detected_version = Some(self.version.clone());
-            error.operation = Some("run");
-            error.duration_ms = start.elapsed().as_millis().min(u64::MAX as u128) as u64;
-            error
-        })
+        self.run_checked(args, events, command_start)
+            .map_err(|mut error| {
+                error.detected_version = Some(self.version.clone());
+                error.operation = Some("run");
+                error.duration_ms = start.elapsed().as_millis().min(u64::MAX as u128) as u64;
+                error
+            })
     }
 
-    fn run_checked(&self, args: &RunArgs) -> Result<Value, BackendError> {
+    fn run_checked(
+        &self,
+        args: &RunArgs,
+        events: &mut Vec<(EventType, u64)>,
+        command_start: Instant,
+    ) -> Result<Value, BackendError> {
         let start = Instant::now();
         if args.code.is_none()
             && !args
@@ -148,11 +196,14 @@ impl UvBackend {
         if script.is_some() && lock_path.exists() {
             read_lock(&lock_path)?;
         }
-        // Project sync already updates the lock and checks the environment. Keep
-        // that check on every run so edits and removed environments are observed,
-        // without paying for a separate lock subprocess. Script and sandbox
-        // preparation retain their explicit lock validation before locked sync.
-        let locked_preparation = script.is_some() || args.sandbox;
+        events.push((
+            EventType::EnvCreate,
+            command_start.elapsed().as_millis() as u64,
+        ));
+        // uv sync updates an existing script lock, but does not create a missing
+        // one. Preserve initial lock creation and sandbox pre-install validation;
+        // existing script locks were checked above before uv can overwrite them.
+        let locked_preparation = args.sandbox || (script.is_some() && !lock_path.exists());
         let prepared_lock = if locked_preparation {
             let mut lock = self.command("lock");
             if let Some(script) = &script {
@@ -280,6 +331,7 @@ impl UvBackend {
         for (key, value) in &profile_config.env_vars {
             command.env(key, value);
         }
+        events.push((EventType::Spawn, command_start.elapsed().as_millis() as u64));
         let result = sandbox::execute_with_optional_sandbox(&mut command, guard.as_ref(), true)
             .map_err(|_| {
                 error(
@@ -311,7 +363,12 @@ impl UvBackend {
             "contract_version": "2", "status": if exit_code == 0 { "success" } else { "error" },
             "backend": { "name": "uv", "version": self.version, "operation": "run" },
             "environment": { "fingerprint": fingerprint(&root, &python), "python": python.display().to_string(),
-                "preparation": if script.is_some() { "uv sync --script --locked --inexact" } else if locked_preparation { "uv sync --locked --inexact" } else { "uv sync --inexact" } },
+                "preparation": match (script.is_some(), locked_preparation) {
+                    (true, true) => "uv sync --script --locked --inexact",
+                    (true, false) => "uv sync --script --inexact",
+                    (false, true) => "uv sync --locked --inexact",
+                    (false, false) => "uv sync --inexact",
+                } },
             "lock": { "source": lock_path.display().to_string(), "digest": digest },
             "packages": packages, "target": args.target, "exit_code": exit_code,
             "stdout": stdout, "stderr": stderr, "sandboxed": args.sandbox,
