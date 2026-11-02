@@ -8725,11 +8725,11 @@
       "version": "1.0.106"
     },
     {
-      "bom-ref": "pkg:cargo/pybun@0.2.7?target=aarch64-apple-darwin",
+      "bom-ref": "pkg:cargo/pybun@0.2.8?target=aarch64-apple-darwin",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "e53f149ccae5ac6dd7199ef30073d7fcc4908c02a26a845ca186383ed301bd11"
+          "content": "8960313f01efd65b3db22af4da3d90db5cee6e22c36d949eef8ca9fb1989b828"
         }
       ],
       "name": "pybun",
@@ -8740,23 +8740,23 @@
         },
         {
           "name": "pybun:cargo_lock_sha256",
-          "value": "4fbd9329abcb503f6c0e8267cafa6f673124dc0cf3f5977734806af5cb5ae7df"
+          "value": "bccc9052034e84ee98557de91bacb78ff34e8b215e2e447bb1add351ef8747f3"
         },
         {
           "name": "pybun:archive",
           "value": "pybun-aarch64-apple-darwin.tar.gz"
         }
       ],
-      "purl": "pkg:cargo/pybun@0.2.7",
+      "purl": "pkg:cargo/pybun@0.2.8",
       "type": "application",
-      "version": "0.2.7"
+      "version": "0.2.8"
     },
     {
-      "bom-ref": "pkg:cargo/pybun@0.2.7?target=aarch64-unknown-linux-gnu",
+      "bom-ref": "pkg:cargo/pybun@0.2.8?target=aarch64-unknown-linux-gnu",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "ae00d5ebb230d1238aff1546cbd46655669aa3a223d907aeb6177e91be8c7738"
+          "content": "3eec7dcc605c47c0d752310dfe82abcbf620c061916d1a9b63fac296cf674607"
         }
       ],
       "name": "pybun",
@@ -8767,23 +8767,23 @@
         },
         {
           "name": "pybun:cargo_lock_sha256",
-          "value": "4fbd9329abcb503f6c0e8267cafa6f673124dc0cf3f5977734806af5cb5ae7df"
+          "value": "bccc9052034e84ee98557de91bacb78ff34e8b215e2e447bb1add351ef8747f3"
         },
         {
           "name": "pybun:archive",
           "value": "pybun-aarch64-unknown-linux-gnu.tar.gz"
         }
       ],
-      "purl": "pkg:cargo/pybun@0.2.7",
+      "purl": "pkg:cargo/pybun@0.2.8",
       "type": "application",
-      "version": "0.2.7"
+      "version": "0.2.8"
     },
     {
-      "bom-ref": "pkg:cargo/pybun@0.2.7?target=x86_64-apple-darwin",
+      "bom-ref": "pkg:cargo/pybun@0.2.8?target=x86_64-apple-darwin",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "b848866405e9cef5042a3dd4980cc0ed45ca066b2cdfce7b12d403ecb9dc5f1f"
+          "content": "dcab9ada57b8479f379e6d975294d7760b05ed1322d13c7fa0da0ac40874051a"
         }
       ],
       "name": "pybun",
@@ -8794,23 +8794,23 @@
         },
         {
           "name": "pybun:cargo_lock_sha256",
-          "value": "4fbd9329abcb503f6c0e8267cafa6f673124dc0cf3f5977734806af5cb5ae7df"
+          "value": "bccc9052034e84ee98557de91bacb78ff34e8b215e2e447bb1add351ef8747f3"
         },
         {
           "name": "pybun:archive",
           "value": "pybun-x86_64-apple-darwin.tar.gz"
         }
       ],
-      "purl": "pkg:cargo/pybun@0.2.7",
+      "purl": "pkg:cargo/pybun@0.2.8",
       "type": "application",
-      "version": "0.2.7"
+      "version": "0.2.8"
     },
     {
-      "bom-ref": "pkg:cargo/pybun@0.2.7?target=x86_64-pc-windows-msvc",
+      "bom-ref": "pkg:cargo/pybun@0.2.8?target=x86_64-pc-windows-msvc",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "ca1eb3297446ebb99ace317ec91f5b78bdaf7754573a4edbcf41db818bfcd0f1"
+          "content": "1cb63af604faba21bda20b55d015c8e32f49a18f8365ec1367175d0367d64510"
         }
       ],
       "name": "pybun",
@@ -8821,23 +8821,23 @@
         },
         {
           "name": "pybun:cargo_lock_sha256",
-          "value": "4fbd9329abcb503f6c0e8267cafa6f673124dc0cf3f5977734806af5cb5ae7df"
+          "value": "bccc9052034e84ee98557de91bacb78ff34e8b215e2e447bb1add351ef8747f3"
         },
         {
           "name": "pybun:archive",
           "value": "pybun-x86_64-pc-windows-msvc.zip"
         }
       ],
-      "purl": "pkg:cargo/pybun@0.2.7",
+      "purl": "pkg:cargo/pybun@0.2.8",
       "type": "application",
-      "version": "0.2.7"
+      "version": "0.2.8"
     },
     {
-      "bom-ref": "pkg:cargo/pybun@0.2.7?target=x86_64-unknown-linux-gnu",
+      "bom-ref": "pkg:cargo/pybun@0.2.8?target=x86_64-unknown-linux-gnu",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "142424b4d1865736fadec51854ba8168d75601e4485944dfde60ef69a84c8ff5"
+          "content": "53a2dc4107fc2d1ac18594af27fcd6174ae6673b1deef531a209ffa9fff9f744"
         }
       ],
       "name": "pybun",
@@ -8848,23 +8848,23 @@
         },
         {
           "name": "pybun:cargo_lock_sha256",
-          "value": "4fbd9329abcb503f6c0e8267cafa6f673124dc0cf3f5977734806af5cb5ae7df"
+          "value": "bccc9052034e84ee98557de91bacb78ff34e8b215e2e447bb1add351ef8747f3"
         },
         {
           "name": "pybun:archive",
           "value": "pybun-x86_64-unknown-linux-gnu.tar.gz"
         }
       ],
-      "purl": "pkg:cargo/pybun@0.2.7",
+      "purl": "pkg:cargo/pybun@0.2.8",
       "type": "application",
-      "version": "0.2.7"
+      "version": "0.2.8"
     },
     {
-      "bom-ref": "pkg:cargo/pybun@0.2.7?target=x86_64-unknown-linux-musl",
+      "bom-ref": "pkg:cargo/pybun@0.2.8?target=x86_64-unknown-linux-musl",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "1b40901d738722966718cc54b81e954335e891fa63cac494ecd0cbb2bee29f61"
+          "content": "f18a1faca2ec71bd5afc72db28858ef3c86e6928564c57e37aea276bfe3242f3"
         }
       ],
       "name": "pybun",
@@ -8875,16 +8875,16 @@
         },
         {
           "name": "pybun:cargo_lock_sha256",
-          "value": "4fbd9329abcb503f6c0e8267cafa6f673124dc0cf3f5977734806af5cb5ae7df"
+          "value": "bccc9052034e84ee98557de91bacb78ff34e8b215e2e447bb1add351ef8747f3"
         },
         {
           "name": "pybun:archive",
           "value": "pybun-x86_64-unknown-linux-musl.tar.gz"
         }
       ],
-      "purl": "pkg:cargo/pybun@0.2.7",
+      "purl": "pkg:cargo/pybun@0.2.8",
       "type": "application",
-      "version": "0.2.7"
+      "version": "0.2.8"
     },
     {
       "bom-ref": "pkg:cargo/quote@1.0.46?target=aarch64-apple-darwin",
@@ -13372,82 +13372,82 @@
       "version": "0.2.5"
     },
     {
-      "bom-ref": "pkg:cargo/typed-path@0.12.3?target=aarch64-apple-darwin",
+      "bom-ref": "pkg:cargo/typed-path@0.13.0?target=aarch64-apple-darwin",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "8e28f89b80c87b8fb0cf04ab448d5dd0dd0ade2f8891bae878de66a75a28600e"
+          "content": "9ce898823d8cd0f028662d2f349694b1af0a5cc9be83f1d213a00d3147445e1e"
         }
       ],
       "name": "typed-path",
-      "purl": "pkg:cargo/typed-path@0.12.3",
+      "purl": "pkg:cargo/typed-path@0.13.0",
       "type": "library",
-      "version": "0.12.3"
+      "version": "0.13.0"
     },
     {
-      "bom-ref": "pkg:cargo/typed-path@0.12.3?target=aarch64-unknown-linux-gnu",
+      "bom-ref": "pkg:cargo/typed-path@0.13.0?target=aarch64-unknown-linux-gnu",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "8e28f89b80c87b8fb0cf04ab448d5dd0dd0ade2f8891bae878de66a75a28600e"
+          "content": "9ce898823d8cd0f028662d2f349694b1af0a5cc9be83f1d213a00d3147445e1e"
         }
       ],
       "name": "typed-path",
-      "purl": "pkg:cargo/typed-path@0.12.3",
+      "purl": "pkg:cargo/typed-path@0.13.0",
       "type": "library",
-      "version": "0.12.3"
+      "version": "0.13.0"
     },
     {
-      "bom-ref": "pkg:cargo/typed-path@0.12.3?target=x86_64-apple-darwin",
+      "bom-ref": "pkg:cargo/typed-path@0.13.0?target=x86_64-apple-darwin",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "8e28f89b80c87b8fb0cf04ab448d5dd0dd0ade2f8891bae878de66a75a28600e"
+          "content": "9ce898823d8cd0f028662d2f349694b1af0a5cc9be83f1d213a00d3147445e1e"
         }
       ],
       "name": "typed-path",
-      "purl": "pkg:cargo/typed-path@0.12.3",
+      "purl": "pkg:cargo/typed-path@0.13.0",
       "type": "library",
-      "version": "0.12.3"
+      "version": "0.13.0"
     },
     {
-      "bom-ref": "pkg:cargo/typed-path@0.12.3?target=x86_64-pc-windows-msvc",
+      "bom-ref": "pkg:cargo/typed-path@0.13.0?target=x86_64-pc-windows-msvc",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "8e28f89b80c87b8fb0cf04ab448d5dd0dd0ade2f8891bae878de66a75a28600e"
+          "content": "9ce898823d8cd0f028662d2f349694b1af0a5cc9be83f1d213a00d3147445e1e"
         }
       ],
       "name": "typed-path",
-      "purl": "pkg:cargo/typed-path@0.12.3",
+      "purl": "pkg:cargo/typed-path@0.13.0",
       "type": "library",
-      "version": "0.12.3"
+      "version": "0.13.0"
     },
     {
-      "bom-ref": "pkg:cargo/typed-path@0.12.3?target=x86_64-unknown-linux-gnu",
+      "bom-ref": "pkg:cargo/typed-path@0.13.0?target=x86_64-unknown-linux-gnu",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "8e28f89b80c87b8fb0cf04ab448d5dd0dd0ade2f8891bae878de66a75a28600e"
+          "content": "9ce898823d8cd0f028662d2f349694b1af0a5cc9be83f1d213a00d3147445e1e"
         }
       ],
       "name": "typed-path",
-      "purl": "pkg:cargo/typed-path@0.12.3",
+      "purl": "pkg:cargo/typed-path@0.13.0",
       "type": "library",
-      "version": "0.12.3"
+      "version": "0.13.0"
     },
     {
-      "bom-ref": "pkg:cargo/typed-path@0.12.3?target=x86_64-unknown-linux-musl",
+      "bom-ref": "pkg:cargo/typed-path@0.13.0?target=x86_64-unknown-linux-musl",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "8e28f89b80c87b8fb0cf04ab448d5dd0dd0ade2f8891bae878de66a75a28600e"
+          "content": "9ce898823d8cd0f028662d2f349694b1af0a5cc9be83f1d213a00d3147445e1e"
         }
       ],
       "name": "typed-path",
-      "purl": "pkg:cargo/typed-path@0.12.3",
+      "purl": "pkg:cargo/typed-path@0.13.0",
       "type": "library",
-      "version": "0.12.3"
+      "version": "0.13.0"
     },
     {
       "bom-ref": "pkg:cargo/typenum@1.20.1?target=aarch64-apple-darwin",
@@ -13996,82 +13996,82 @@
       "version": "0.2.2"
     },
     {
-      "bom-ref": "pkg:cargo/uuid@1.28.0?target=aarch64-apple-darwin",
+      "bom-ref": "pkg:cargo/uuid@1.29.0?target=aarch64-apple-darwin",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "7cc1186384beb7dd8eedea376413fd654937285ea6c9cfbb928dc3043ea4b606"
+          "content": "4a0e2d11620c50695fe12bbbfde96b3477fe606e7284c22d505c12ce51214514"
         }
       ],
       "name": "uuid",
-      "purl": "pkg:cargo/uuid@1.28.0",
+      "purl": "pkg:cargo/uuid@1.29.0",
       "type": "library",
-      "version": "1.28.0"
+      "version": "1.29.0"
     },
     {
-      "bom-ref": "pkg:cargo/uuid@1.28.0?target=aarch64-unknown-linux-gnu",
+      "bom-ref": "pkg:cargo/uuid@1.29.0?target=aarch64-unknown-linux-gnu",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "7cc1186384beb7dd8eedea376413fd654937285ea6c9cfbb928dc3043ea4b606"
+          "content": "4a0e2d11620c50695fe12bbbfde96b3477fe606e7284c22d505c12ce51214514"
         }
       ],
       "name": "uuid",
-      "purl": "pkg:cargo/uuid@1.28.0",
+      "purl": "pkg:cargo/uuid@1.29.0",
       "type": "library",
-      "version": "1.28.0"
+      "version": "1.29.0"
     },
     {
-      "bom-ref": "pkg:cargo/uuid@1.28.0?target=x86_64-apple-darwin",
+      "bom-ref": "pkg:cargo/uuid@1.29.0?target=x86_64-apple-darwin",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "7cc1186384beb7dd8eedea376413fd654937285ea6c9cfbb928dc3043ea4b606"
+          "content": "4a0e2d11620c50695fe12bbbfde96b3477fe606e7284c22d505c12ce51214514"
         }
       ],
       "name": "uuid",
-      "purl": "pkg:cargo/uuid@1.28.0",
+      "purl": "pkg:cargo/uuid@1.29.0",
       "type": "library",
-      "version": "1.28.0"
+      "version": "1.29.0"
     },
     {
-      "bom-ref": "pkg:cargo/uuid@1.28.0?target=x86_64-pc-windows-msvc",
+      "bom-ref": "pkg:cargo/uuid@1.29.0?target=x86_64-pc-windows-msvc",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "7cc1186384beb7dd8eedea376413fd654937285ea6c9cfbb928dc3043ea4b606"
+          "content": "4a0e2d11620c50695fe12bbbfde96b3477fe606e7284c22d505c12ce51214514"
         }
       ],
       "name": "uuid",
-      "purl": "pkg:cargo/uuid@1.28.0",
+      "purl": "pkg:cargo/uuid@1.29.0",
       "type": "library",
-      "version": "1.28.0"
+      "version": "1.29.0"
     },
     {
-      "bom-ref": "pkg:cargo/uuid@1.28.0?target=x86_64-unknown-linux-gnu",
+      "bom-ref": "pkg:cargo/uuid@1.29.0?target=x86_64-unknown-linux-gnu",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "7cc1186384beb7dd8eedea376413fd654937285ea6c9cfbb928dc3043ea4b606"
+          "content": "4a0e2d11620c50695fe12bbbfde96b3477fe606e7284c22d505c12ce51214514"
         }
       ],
       "name": "uuid",
-      "purl": "pkg:cargo/uuid@1.28.0",
+      "purl": "pkg:cargo/uuid@1.29.0",
       "type": "library",
-      "version": "1.28.0"
+      "version": "1.29.0"
     },
     {
-      "bom-ref": "pkg:cargo/uuid@1.28.0?target=x86_64-unknown-linux-musl",
+      "bom-ref": "pkg:cargo/uuid@1.29.0?target=x86_64-unknown-linux-musl",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "7cc1186384beb7dd8eedea376413fd654937285ea6c9cfbb928dc3043ea4b606"
+          "content": "4a0e2d11620c50695fe12bbbfde96b3477fe606e7284c22d505c12ce51214514"
         }
       ],
       "name": "uuid",
-      "purl": "pkg:cargo/uuid@1.28.0",
+      "purl": "pkg:cargo/uuid@1.29.0",
       "type": "library",
-      "version": "1.28.0"
+      "version": "1.29.0"
     },
     {
       "bom-ref": "pkg:cargo/version_check@0.9.5?target=aarch64-apple-darwin",
@@ -14334,19 +14334,6 @@
       "version": "0.2.1"
     },
     {
-      "bom-ref": "pkg:cargo/windows-sys@0.52.0?target=x86_64-pc-windows-msvc",
-      "hashes": [
-        {
-          "alg": "SHA-256",
-          "content": "282be5f36a8ce781fad8c8ae18fa3f9beff57ec1b52cb3de0789201425d9a33d"
-        }
-      ],
-      "name": "windows-sys",
-      "purl": "pkg:cargo/windows-sys@0.52.0",
-      "type": "library",
-      "version": "0.52.0"
-    },
-    {
       "bom-ref": "pkg:cargo/windows-sys@0.61.2?target=x86_64-pc-windows-msvc",
       "hashes": [
         {
@@ -14358,32 +14345,6 @@
       "purl": "pkg:cargo/windows-sys@0.61.2",
       "type": "library",
       "version": "0.61.2"
-    },
-    {
-      "bom-ref": "pkg:cargo/windows-targets@0.52.6?target=x86_64-pc-windows-msvc",
-      "hashes": [
-        {
-          "alg": "SHA-256",
-          "content": "9b724f72796e036ab90c1021d4780d4d3d648aca59e491e6b98e725b84e99973"
-        }
-      ],
-      "name": "windows-targets",
-      "purl": "pkg:cargo/windows-targets@0.52.6",
-      "type": "library",
-      "version": "0.52.6"
-    },
-    {
-      "bom-ref": "pkg:cargo/windows_x86_64_msvc@0.52.6?target=x86_64-pc-windows-msvc",
-      "hashes": [
-        {
-          "alg": "SHA-256",
-          "content": "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
-        }
-      ],
-      "name": "windows_x86_64_msvc",
-      "purl": "pkg:cargo/windows_x86_64_msvc@0.52.6",
-      "type": "library",
-      "version": "0.52.6"
     },
     {
       "bom-ref": "pkg:cargo/winnow@1.0.3?target=aarch64-apple-darwin",
@@ -15166,82 +15127,82 @@
       "version": "0.11.5"
     },
     {
-      "bom-ref": "pkg:cargo/zip@9.0.5?target=aarch64-apple-darwin",
+      "bom-ref": "pkg:cargo/zip@9.1.1?target=aarch64-apple-darwin",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "6e04976da629d3b04204ba8105b396a193af8ad2583b2c79bfb3ab8af580a11e"
+          "content": "518b847fd864440c379748ad684c449f293af68978a485a4ff16f7c901c1f7c4"
         }
       ],
       "name": "zip",
-      "purl": "pkg:cargo/zip@9.0.5",
+      "purl": "pkg:cargo/zip@9.1.1",
       "type": "library",
-      "version": "9.0.5"
+      "version": "9.1.1"
     },
     {
-      "bom-ref": "pkg:cargo/zip@9.0.5?target=aarch64-unknown-linux-gnu",
+      "bom-ref": "pkg:cargo/zip@9.1.1?target=aarch64-unknown-linux-gnu",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "6e04976da629d3b04204ba8105b396a193af8ad2583b2c79bfb3ab8af580a11e"
+          "content": "518b847fd864440c379748ad684c449f293af68978a485a4ff16f7c901c1f7c4"
         }
       ],
       "name": "zip",
-      "purl": "pkg:cargo/zip@9.0.5",
+      "purl": "pkg:cargo/zip@9.1.1",
       "type": "library",
-      "version": "9.0.5"
+      "version": "9.1.1"
     },
     {
-      "bom-ref": "pkg:cargo/zip@9.0.5?target=x86_64-apple-darwin",
+      "bom-ref": "pkg:cargo/zip@9.1.1?target=x86_64-apple-darwin",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "6e04976da629d3b04204ba8105b396a193af8ad2583b2c79bfb3ab8af580a11e"
+          "content": "518b847fd864440c379748ad684c449f293af68978a485a4ff16f7c901c1f7c4"
         }
       ],
       "name": "zip",
-      "purl": "pkg:cargo/zip@9.0.5",
+      "purl": "pkg:cargo/zip@9.1.1",
       "type": "library",
-      "version": "9.0.5"
+      "version": "9.1.1"
     },
     {
-      "bom-ref": "pkg:cargo/zip@9.0.5?target=x86_64-pc-windows-msvc",
+      "bom-ref": "pkg:cargo/zip@9.1.1?target=x86_64-pc-windows-msvc",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "6e04976da629d3b04204ba8105b396a193af8ad2583b2c79bfb3ab8af580a11e"
+          "content": "518b847fd864440c379748ad684c449f293af68978a485a4ff16f7c901c1f7c4"
         }
       ],
       "name": "zip",
-      "purl": "pkg:cargo/zip@9.0.5",
+      "purl": "pkg:cargo/zip@9.1.1",
       "type": "library",
-      "version": "9.0.5"
+      "version": "9.1.1"
     },
     {
-      "bom-ref": "pkg:cargo/zip@9.0.5?target=x86_64-unknown-linux-gnu",
+      "bom-ref": "pkg:cargo/zip@9.1.1?target=x86_64-unknown-linux-gnu",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "6e04976da629d3b04204ba8105b396a193af8ad2583b2c79bfb3ab8af580a11e"
+          "content": "518b847fd864440c379748ad684c449f293af68978a485a4ff16f7c901c1f7c4"
         }
       ],
       "name": "zip",
-      "purl": "pkg:cargo/zip@9.0.5",
+      "purl": "pkg:cargo/zip@9.1.1",
       "type": "library",
-      "version": "9.0.5"
+      "version": "9.1.1"
     },
     {
-      "bom-ref": "pkg:cargo/zip@9.0.5?target=x86_64-unknown-linux-musl",
+      "bom-ref": "pkg:cargo/zip@9.1.1?target=x86_64-unknown-linux-musl",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "6e04976da629d3b04204ba8105b396a193af8ad2583b2c79bfb3ab8af580a11e"
+          "content": "518b847fd864440c379748ad684c449f293af68978a485a4ff16f7c901c1f7c4"
         }
       ],
       "name": "zip",
-      "purl": "pkg:cargo/zip@9.0.5",
+      "purl": "pkg:cargo/zip@9.1.1",
       "type": "library",
-      "version": "9.0.5"
+      "version": "9.1.1"
     },
     {
       "bom-ref": "pkg:cargo/zlib-rs@0.5.5?target=aarch64-apple-darwin",
@@ -15481,14 +15442,14 @@
   "dependencies": [
     {
       "dependsOn": [
-        "pkg:cargo/pybun@0.2.7?target=aarch64-apple-darwin",
-        "pkg:cargo/pybun@0.2.7?target=aarch64-unknown-linux-gnu",
-        "pkg:cargo/pybun@0.2.7?target=x86_64-apple-darwin",
-        "pkg:cargo/pybun@0.2.7?target=x86_64-pc-windows-msvc",
-        "pkg:cargo/pybun@0.2.7?target=x86_64-unknown-linux-gnu",
-        "pkg:cargo/pybun@0.2.7?target=x86_64-unknown-linux-musl"
+        "pkg:cargo/pybun@0.2.8?target=aarch64-apple-darwin",
+        "pkg:cargo/pybun@0.2.8?target=aarch64-unknown-linux-gnu",
+        "pkg:cargo/pybun@0.2.8?target=x86_64-apple-darwin",
+        "pkg:cargo/pybun@0.2.8?target=x86_64-pc-windows-msvc",
+        "pkg:cargo/pybun@0.2.8?target=x86_64-unknown-linux-gnu",
+        "pkg:cargo/pybun@0.2.8?target=x86_64-unknown-linux-musl"
       ],
-      "ref": "pkg:cargo/pybun@0.2.7"
+      "ref": "pkg:cargo/pybun@0.2.8"
     },
     {
       "dependsOn": [
@@ -16263,10 +16224,10 @@
         "pkg:cargo/tikv-jemallocator@0.7.0?target=aarch64-apple-darwin",
         "pkg:cargo/tokio@1.54.1?target=aarch64-apple-darwin",
         "pkg:cargo/toml@1.1.8+spec-1.1.0?target=aarch64-apple-darwin",
-        "pkg:cargo/uuid@1.28.0?target=aarch64-apple-darwin",
-        "pkg:cargo/zip@9.0.5?target=aarch64-apple-darwin"
+        "pkg:cargo/uuid@1.29.0?target=aarch64-apple-darwin",
+        "pkg:cargo/zip@9.1.1?target=aarch64-apple-darwin"
       ],
-      "ref": "pkg:cargo/pybun@0.2.7?target=aarch64-apple-darwin"
+      "ref": "pkg:cargo/pybun@0.2.8?target=aarch64-apple-darwin"
     },
     {
       "dependsOn": [
@@ -16687,7 +16648,7 @@
     },
     {
       "dependsOn": [],
-      "ref": "pkg:cargo/typed-path@0.12.3?target=aarch64-apple-darwin"
+      "ref": "pkg:cargo/typed-path@0.13.0?target=aarch64-apple-darwin"
     },
     {
       "dependsOn": [],
@@ -16726,7 +16687,7 @@
       "dependsOn": [
         "pkg:cargo/getrandom@0.4.2?target=aarch64-apple-darwin"
       ],
-      "ref": "pkg:cargo/uuid@1.28.0?target=aarch64-apple-darwin"
+      "ref": "pkg:cargo/uuid@1.29.0?target=aarch64-apple-darwin"
     },
     {
       "dependsOn": [],
@@ -16818,13 +16779,14 @@
       "dependsOn": [
         "pkg:cargo/crc32fast@1.5.0?target=aarch64-apple-darwin",
         "pkg:cargo/flate2@1.1.5?target=aarch64-apple-darwin",
+        "pkg:cargo/getrandom@0.4.2?target=aarch64-apple-darwin",
         "pkg:cargo/indexmap@2.14.0?target=aarch64-apple-darwin",
         "pkg:cargo/memchr@2.7.6?target=aarch64-apple-darwin",
         "pkg:cargo/nix@0.31.3?target=aarch64-apple-darwin",
-        "pkg:cargo/typed-path@0.12.3?target=aarch64-apple-darwin",
+        "pkg:cargo/typed-path@0.13.0?target=aarch64-apple-darwin",
         "pkg:cargo/zopfli@0.8.3?target=aarch64-apple-darwin"
       ],
-      "ref": "pkg:cargo/zip@9.0.5?target=aarch64-apple-darwin"
+      "ref": "pkg:cargo/zip@9.1.1?target=aarch64-apple-darwin"
     },
     {
       "dependsOn": [],
@@ -17601,10 +17563,10 @@
         "pkg:cargo/tikv-jemallocator@0.7.0?target=aarch64-unknown-linux-gnu",
         "pkg:cargo/tokio@1.54.1?target=aarch64-unknown-linux-gnu",
         "pkg:cargo/toml@1.1.8+spec-1.1.0?target=aarch64-unknown-linux-gnu",
-        "pkg:cargo/uuid@1.28.0?target=aarch64-unknown-linux-gnu",
-        "pkg:cargo/zip@9.0.5?target=aarch64-unknown-linux-gnu"
+        "pkg:cargo/uuid@1.29.0?target=aarch64-unknown-linux-gnu",
+        "pkg:cargo/zip@9.1.1?target=aarch64-unknown-linux-gnu"
       ],
-      "ref": "pkg:cargo/pybun@0.2.7?target=aarch64-unknown-linux-gnu"
+      "ref": "pkg:cargo/pybun@0.2.8?target=aarch64-unknown-linux-gnu"
     },
     {
       "dependsOn": [
@@ -18025,7 +17987,7 @@
     },
     {
       "dependsOn": [],
-      "ref": "pkg:cargo/typed-path@0.12.3?target=aarch64-unknown-linux-gnu"
+      "ref": "pkg:cargo/typed-path@0.13.0?target=aarch64-unknown-linux-gnu"
     },
     {
       "dependsOn": [],
@@ -18064,7 +18026,7 @@
       "dependsOn": [
         "pkg:cargo/getrandom@0.4.2?target=aarch64-unknown-linux-gnu"
       ],
-      "ref": "pkg:cargo/uuid@1.28.0?target=aarch64-unknown-linux-gnu"
+      "ref": "pkg:cargo/uuid@1.29.0?target=aarch64-unknown-linux-gnu"
     },
     {
       "dependsOn": [],
@@ -18156,12 +18118,13 @@
       "dependsOn": [
         "pkg:cargo/crc32fast@1.5.0?target=aarch64-unknown-linux-gnu",
         "pkg:cargo/flate2@1.1.5?target=aarch64-unknown-linux-gnu",
+        "pkg:cargo/getrandom@0.4.2?target=aarch64-unknown-linux-gnu",
         "pkg:cargo/indexmap@2.14.0?target=aarch64-unknown-linux-gnu",
         "pkg:cargo/memchr@2.7.6?target=aarch64-unknown-linux-gnu",
-        "pkg:cargo/typed-path@0.12.3?target=aarch64-unknown-linux-gnu",
+        "pkg:cargo/typed-path@0.13.0?target=aarch64-unknown-linux-gnu",
         "pkg:cargo/zopfli@0.8.3?target=aarch64-unknown-linux-gnu"
       ],
-      "ref": "pkg:cargo/zip@9.0.5?target=aarch64-unknown-linux-gnu"
+      "ref": "pkg:cargo/zip@9.1.1?target=aarch64-unknown-linux-gnu"
     },
     {
       "dependsOn": [],
@@ -18962,10 +18925,10 @@
         "pkg:cargo/tikv-jemallocator@0.7.0?target=x86_64-apple-darwin",
         "pkg:cargo/tokio@1.54.1?target=x86_64-apple-darwin",
         "pkg:cargo/toml@1.1.8+spec-1.1.0?target=x86_64-apple-darwin",
-        "pkg:cargo/uuid@1.28.0?target=x86_64-apple-darwin",
-        "pkg:cargo/zip@9.0.5?target=x86_64-apple-darwin"
+        "pkg:cargo/uuid@1.29.0?target=x86_64-apple-darwin",
+        "pkg:cargo/zip@9.1.1?target=x86_64-apple-darwin"
       ],
-      "ref": "pkg:cargo/pybun@0.2.7?target=x86_64-apple-darwin"
+      "ref": "pkg:cargo/pybun@0.2.8?target=x86_64-apple-darwin"
     },
     {
       "dependsOn": [
@@ -19386,7 +19349,7 @@
     },
     {
       "dependsOn": [],
-      "ref": "pkg:cargo/typed-path@0.12.3?target=x86_64-apple-darwin"
+      "ref": "pkg:cargo/typed-path@0.13.0?target=x86_64-apple-darwin"
     },
     {
       "dependsOn": [],
@@ -19425,7 +19388,7 @@
       "dependsOn": [
         "pkg:cargo/getrandom@0.4.2?target=x86_64-apple-darwin"
       ],
-      "ref": "pkg:cargo/uuid@1.28.0?target=x86_64-apple-darwin"
+      "ref": "pkg:cargo/uuid@1.29.0?target=x86_64-apple-darwin"
     },
     {
       "dependsOn": [],
@@ -19517,13 +19480,14 @@
       "dependsOn": [
         "pkg:cargo/crc32fast@1.5.0?target=x86_64-apple-darwin",
         "pkg:cargo/flate2@1.1.5?target=x86_64-apple-darwin",
+        "pkg:cargo/getrandom@0.4.2?target=x86_64-apple-darwin",
         "pkg:cargo/indexmap@2.14.0?target=x86_64-apple-darwin",
         "pkg:cargo/memchr@2.7.6?target=x86_64-apple-darwin",
         "pkg:cargo/nix@0.31.3?target=x86_64-apple-darwin",
-        "pkg:cargo/typed-path@0.12.3?target=x86_64-apple-darwin",
+        "pkg:cargo/typed-path@0.13.0?target=x86_64-apple-darwin",
         "pkg:cargo/zopfli@0.8.3?target=x86_64-apple-darwin"
       ],
-      "ref": "pkg:cargo/zip@9.0.5?target=x86_64-apple-darwin"
+      "ref": "pkg:cargo/zip@9.1.1?target=x86_64-apple-darwin"
     },
     {
       "dependsOn": [],
@@ -20299,10 +20263,10 @@
         "pkg:cargo/thiserror@2.0.21?target=x86_64-pc-windows-msvc",
         "pkg:cargo/tokio@1.54.1?target=x86_64-pc-windows-msvc",
         "pkg:cargo/toml@1.1.8+spec-1.1.0?target=x86_64-pc-windows-msvc",
-        "pkg:cargo/uuid@1.28.0?target=x86_64-pc-windows-msvc",
-        "pkg:cargo/zip@9.0.5?target=x86_64-pc-windows-msvc"
+        "pkg:cargo/uuid@1.29.0?target=x86_64-pc-windows-msvc",
+        "pkg:cargo/zip@9.1.1?target=x86_64-pc-windows-msvc"
       ],
-      "ref": "pkg:cargo/pybun@0.2.7?target=x86_64-pc-windows-msvc"
+      "ref": "pkg:cargo/pybun@0.2.8?target=x86_64-pc-windows-msvc"
     },
     {
       "dependsOn": [
@@ -20349,8 +20313,7 @@
         "pkg:cargo/cfg-if@1.0.4?target=x86_64-pc-windows-msvc",
         "pkg:cargo/getrandom@0.2.16?target=x86_64-pc-windows-msvc",
         "pkg:cargo/libc@0.2.191?target=x86_64-pc-windows-msvc",
-        "pkg:cargo/untrusted@0.9.0?target=x86_64-pc-windows-msvc",
-        "pkg:cargo/windows-sys@0.52.0?target=x86_64-pc-windows-msvc"
+        "pkg:cargo/untrusted@0.9.0?target=x86_64-pc-windows-msvc"
       ],
       "ref": "pkg:cargo/ring@0.17.14?target=x86_64-pc-windows-msvc"
     },
@@ -20547,7 +20510,7 @@
         "pkg:cargo/fastrand@2.3.0?target=x86_64-pc-windows-msvc",
         "pkg:cargo/getrandom@0.4.2?target=x86_64-pc-windows-msvc",
         "pkg:cargo/once_cell@1.21.4?target=x86_64-pc-windows-msvc",
-        "pkg:cargo/windows-sys@0.52.0?target=x86_64-pc-windows-msvc"
+        "pkg:cargo/windows-sys@0.61.2?target=x86_64-pc-windows-msvc"
       ],
       "ref": "pkg:cargo/tempfile@3.27.0?target=x86_64-pc-windows-msvc"
     },
@@ -20704,7 +20667,7 @@
     },
     {
       "dependsOn": [],
-      "ref": "pkg:cargo/typed-path@0.12.3?target=x86_64-pc-windows-msvc"
+      "ref": "pkg:cargo/typed-path@0.13.0?target=x86_64-pc-windows-msvc"
     },
     {
       "dependsOn": [],
@@ -20743,7 +20706,7 @@
       "dependsOn": [
         "pkg:cargo/getrandom@0.4.2?target=x86_64-pc-windows-msvc"
       ],
-      "ref": "pkg:cargo/uuid@1.28.0?target=x86_64-pc-windows-msvc"
+      "ref": "pkg:cargo/uuid@1.29.0?target=x86_64-pc-windows-msvc"
     },
     {
       "dependsOn": [],
@@ -20771,25 +20734,9 @@
     },
     {
       "dependsOn": [
-        "pkg:cargo/windows-targets@0.52.6?target=x86_64-pc-windows-msvc"
-      ],
-      "ref": "pkg:cargo/windows-sys@0.52.0?target=x86_64-pc-windows-msvc"
-    },
-    {
-      "dependsOn": [
         "pkg:cargo/windows-link@0.2.1?target=x86_64-pc-windows-msvc"
       ],
       "ref": "pkg:cargo/windows-sys@0.61.2?target=x86_64-pc-windows-msvc"
-    },
-    {
-      "dependsOn": [
-        "pkg:cargo/windows_x86_64_msvc@0.52.6?target=x86_64-pc-windows-msvc"
-      ],
-      "ref": "pkg:cargo/windows-targets@0.52.6?target=x86_64-pc-windows-msvc"
-    },
-    {
-      "dependsOn": [],
-      "ref": "pkg:cargo/windows_x86_64_msvc@0.52.6?target=x86_64-pc-windows-msvc"
     },
     {
       "dependsOn": [
@@ -20865,12 +20812,14 @@
       "dependsOn": [
         "pkg:cargo/crc32fast@1.5.0?target=x86_64-pc-windows-msvc",
         "pkg:cargo/flate2@1.1.5?target=x86_64-pc-windows-msvc",
+        "pkg:cargo/getrandom@0.4.2?target=x86_64-pc-windows-msvc",
         "pkg:cargo/indexmap@2.14.0?target=x86_64-pc-windows-msvc",
         "pkg:cargo/memchr@2.7.6?target=x86_64-pc-windows-msvc",
-        "pkg:cargo/typed-path@0.12.3?target=x86_64-pc-windows-msvc",
+        "pkg:cargo/typed-path@0.13.0?target=x86_64-pc-windows-msvc",
+        "pkg:cargo/windows-sys@0.61.2?target=x86_64-pc-windows-msvc",
         "pkg:cargo/zopfli@0.8.3?target=x86_64-pc-windows-msvc"
       ],
-      "ref": "pkg:cargo/zip@9.0.5?target=x86_64-pc-windows-msvc"
+      "ref": "pkg:cargo/zip@9.1.1?target=x86_64-pc-windows-msvc"
     },
     {
       "dependsOn": [],
@@ -21656,10 +21605,10 @@
         "pkg:cargo/tikv-jemallocator@0.7.0?target=x86_64-unknown-linux-gnu",
         "pkg:cargo/tokio@1.54.1?target=x86_64-unknown-linux-gnu",
         "pkg:cargo/toml@1.1.8+spec-1.1.0?target=x86_64-unknown-linux-gnu",
-        "pkg:cargo/uuid@1.28.0?target=x86_64-unknown-linux-gnu",
-        "pkg:cargo/zip@9.0.5?target=x86_64-unknown-linux-gnu"
+        "pkg:cargo/uuid@1.29.0?target=x86_64-unknown-linux-gnu",
+        "pkg:cargo/zip@9.1.1?target=x86_64-unknown-linux-gnu"
       ],
-      "ref": "pkg:cargo/pybun@0.2.7?target=x86_64-unknown-linux-gnu"
+      "ref": "pkg:cargo/pybun@0.2.8?target=x86_64-unknown-linux-gnu"
     },
     {
       "dependsOn": [
@@ -22080,7 +22029,7 @@
     },
     {
       "dependsOn": [],
-      "ref": "pkg:cargo/typed-path@0.12.3?target=x86_64-unknown-linux-gnu"
+      "ref": "pkg:cargo/typed-path@0.13.0?target=x86_64-unknown-linux-gnu"
     },
     {
       "dependsOn": [],
@@ -22119,7 +22068,7 @@
       "dependsOn": [
         "pkg:cargo/getrandom@0.4.2?target=x86_64-unknown-linux-gnu"
       ],
-      "ref": "pkg:cargo/uuid@1.28.0?target=x86_64-unknown-linux-gnu"
+      "ref": "pkg:cargo/uuid@1.29.0?target=x86_64-unknown-linux-gnu"
     },
     {
       "dependsOn": [],
@@ -22211,12 +22160,13 @@
       "dependsOn": [
         "pkg:cargo/crc32fast@1.5.0?target=x86_64-unknown-linux-gnu",
         "pkg:cargo/flate2@1.1.5?target=x86_64-unknown-linux-gnu",
+        "pkg:cargo/getrandom@0.4.2?target=x86_64-unknown-linux-gnu",
         "pkg:cargo/indexmap@2.14.0?target=x86_64-unknown-linux-gnu",
         "pkg:cargo/memchr@2.7.6?target=x86_64-unknown-linux-gnu",
-        "pkg:cargo/typed-path@0.12.3?target=x86_64-unknown-linux-gnu",
+        "pkg:cargo/typed-path@0.13.0?target=x86_64-unknown-linux-gnu",
         "pkg:cargo/zopfli@0.8.3?target=x86_64-unknown-linux-gnu"
       ],
-      "ref": "pkg:cargo/zip@9.0.5?target=x86_64-unknown-linux-gnu"
+      "ref": "pkg:cargo/zip@9.1.1?target=x86_64-unknown-linux-gnu"
     },
     {
       "dependsOn": [],
@@ -23002,10 +22952,10 @@
         "pkg:cargo/tikv-jemallocator@0.7.0?target=x86_64-unknown-linux-musl",
         "pkg:cargo/tokio@1.54.1?target=x86_64-unknown-linux-musl",
         "pkg:cargo/toml@1.1.8+spec-1.1.0?target=x86_64-unknown-linux-musl",
-        "pkg:cargo/uuid@1.28.0?target=x86_64-unknown-linux-musl",
-        "pkg:cargo/zip@9.0.5?target=x86_64-unknown-linux-musl"
+        "pkg:cargo/uuid@1.29.0?target=x86_64-unknown-linux-musl",
+        "pkg:cargo/zip@9.1.1?target=x86_64-unknown-linux-musl"
       ],
-      "ref": "pkg:cargo/pybun@0.2.7?target=x86_64-unknown-linux-musl"
+      "ref": "pkg:cargo/pybun@0.2.8?target=x86_64-unknown-linux-musl"
     },
     {
       "dependsOn": [
@@ -23426,7 +23376,7 @@
     },
     {
       "dependsOn": [],
-      "ref": "pkg:cargo/typed-path@0.12.3?target=x86_64-unknown-linux-musl"
+      "ref": "pkg:cargo/typed-path@0.13.0?target=x86_64-unknown-linux-musl"
     },
     {
       "dependsOn": [],
@@ -23465,7 +23415,7 @@
       "dependsOn": [
         "pkg:cargo/getrandom@0.4.2?target=x86_64-unknown-linux-musl"
       ],
-      "ref": "pkg:cargo/uuid@1.28.0?target=x86_64-unknown-linux-musl"
+      "ref": "pkg:cargo/uuid@1.29.0?target=x86_64-unknown-linux-musl"
     },
     {
       "dependsOn": [],
@@ -23557,12 +23507,13 @@
       "dependsOn": [
         "pkg:cargo/crc32fast@1.5.0?target=x86_64-unknown-linux-musl",
         "pkg:cargo/flate2@1.1.5?target=x86_64-unknown-linux-musl",
+        "pkg:cargo/getrandom@0.4.2?target=x86_64-unknown-linux-musl",
         "pkg:cargo/indexmap@2.14.0?target=x86_64-unknown-linux-musl",
         "pkg:cargo/memchr@2.7.6?target=x86_64-unknown-linux-musl",
-        "pkg:cargo/typed-path@0.12.3?target=x86_64-unknown-linux-musl",
+        "pkg:cargo/typed-path@0.13.0?target=x86_64-unknown-linux-musl",
         "pkg:cargo/zopfli@0.8.3?target=x86_64-unknown-linux-musl"
       ],
-      "ref": "pkg:cargo/zip@9.0.5?target=x86_64-unknown-linux-musl"
+      "ref": "pkg:cargo/zip@9.1.1?target=x86_64-unknown-linux-musl"
     },
     {
       "dependsOn": [],
@@ -23584,14 +23535,14 @@
   ],
   "metadata": {
     "component": {
-      "bom-ref": "pkg:cargo/pybun@0.2.7",
+      "bom-ref": "pkg:cargo/pybun@0.2.8",
       "name": "pybun",
-      "purl": "pkg:cargo/pybun@0.2.7",
+      "purl": "pkg:cargo/pybun@0.2.8",
       "type": "application",
-      "version": "0.2.7"
+      "version": "0.2.8"
     }
   },
-  "serialNumber": "urn:uuid:c7324276-aab1-4794-8b5d-9becf87a90cf",
+  "serialNumber": "urn:uuid:67338fe8-a2f6-4c2b-9bb1-6d85ffefe70a",
   "specVersion": "1.6",
   "version": 1
 }
