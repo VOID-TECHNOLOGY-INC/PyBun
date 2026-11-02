@@ -71,10 +71,16 @@ pub fn spawn_with_timeout(
     let stderr_handle = child.stderr.take().map(spawn_pipe_reader);
 
     let timeout = timeout_secs.map(Duration::from_secs);
-    let poll_interval = Duration::from_millis(50);
+    // Fast uv/Python probes often finish in a few milliseconds. Start with a
+    // short wait so each probe does not pay a fixed 50ms floor, then back off
+    // for long-running children to keep timeout polling inexpensive.
+    let mut poll_interval = Duration::from_millis(1);
     let start = Instant::now();
 
     let status = loop {
+        if timeout.is_none() {
+            break child.wait()?;
+        }
         if let Some(status) = child.try_wait()? {
             break status;
         }
@@ -90,6 +96,9 @@ pub fn spawn_with_timeout(
         }
 
         thread::sleep(poll_interval);
+        if start.elapsed() >= Duration::from_millis(20) {
+            poll_interval = (poll_interval * 2).min(Duration::from_millis(50));
+        }
     };
 
     let stdout = join_pipe_reader(stdout_handle);
@@ -309,6 +318,29 @@ pub(crate) mod tests {
         match outcome {
             ProcExecOutcome::Completed { status, .. } => assert!(status.success()),
             ProcExecOutcome::TimedOut => panic!("no timeout must mean unlimited"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn no_timeout_drains_large_pipes_and_preserves_failure() {
+        let mut command = Command::new("sh");
+        command.args([
+            "-c",
+            "head -c 131072 /dev/zero; head -c 131072 /dev/zero >&2; exit 7",
+        ]);
+        let outcome = spawn_with_timeout(&mut command, None, true).unwrap();
+        match outcome {
+            ProcExecOutcome::Completed {
+                status,
+                stdout,
+                stderr,
+            } => {
+                assert_eq!(status.code(), Some(7));
+                assert_eq!(stdout.unwrap().len(), 131072);
+                assert_eq!(stderr.unwrap().len(), 131072);
+            }
+            ProcExecOutcome::TimedOut => panic!("unlimited wait cannot time out"),
         }
     }
 }

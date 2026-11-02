@@ -537,7 +537,7 @@ async fn dispatch_execution(
                     .unwrap_or(false);
             }
             if crate::backend::run_applicable(&args) {
-                let detail = match crate::backend::run(&args).await {
+                let detail = match crate::backend::run_observed(&args, collector).await {
                     Ok(value) => {
                         let code = value["exit_code"].as_i64().unwrap_or(1) as i32;
                         if code != 0 {
@@ -761,7 +761,6 @@ async fn dispatch_tooling(
 ) -> (String, RenderDetail) {
     match command {
         Commands::X(args) => {
-            collector.event(EventType::EnvCreate);
             let result = tooling::execute_tool(args, collector, format);
             match result {
                 Ok(tooling::XOutcome {
@@ -798,6 +797,7 @@ async fn dispatch_tooling(
                                 "python_version": python_version,
                                 "exit_code": exit_code,
                                 "cleanup": cleanup,
+                                "cache_hit": null,
                                 "stdout": stdout,
                                 "stderr": stderr,
                             }),

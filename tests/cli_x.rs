@@ -192,6 +192,14 @@ fn fake_uv_environment(temp: &std::path::Path) -> (std::path::PathBuf, std::path
         &uv,
         r#"#!/bin/sh
 set -e
+if [ "$1" = "tool" ] && [ "$2" = "run" ]; then
+  while [ "$1" != "-c" ]; do shift; done
+  shift; shift; shift
+  touch "$1"
+  echo '{"ok":true}'
+  echo 'tool stderr line' >&2
+  exit "${FAKE_TOOL_EXIT:-0}"
+fi
 if [ "$1" = "pip" ] && [ "$2" = "install" ]; then
   venv="$5"
   package="$6"

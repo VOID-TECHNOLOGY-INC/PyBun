@@ -12,7 +12,7 @@ falls back to its native resolver automatically.
 | `lock` | `uv lock`; `--script` selects a PEP 723 script |
 | `upgrade [packages]` | `uv lock --upgrade` / `--upgrade-package`: update the lock without syncing |
 | project `run` | `uv sync --inexact` (updates the lock), then the prepared Python |
-| PEP 723 `run` | `uv lock --script`, `uv sync --script --locked --inexact`, then that script's Python |
+| PEP 723 `run` | Initial/sandboxed: lock + locked sync; otherwise `uv sync --script --inexact`, then that script's Python |
 
 `outdated` is not delegated: it remains a native reader of `pybun.lockb`, even
 when other commands use uv.
@@ -221,3 +221,107 @@ subprocess subject to the existing 50 ms process-exit polling interval. The
 remaining gap to uv is still visible; the shared runner and script/tool stages
 are investigated separately in Issue #580. These observations do not change
 benchmark thresholds.
+
+### Warm script and tool execution
+
+Default uv `run` emits `env_lookup`, `env_create`, `spawn`, and `script_end`
+events in the v2 JSON envelope. Their timestamps are milliseconds since command
+start: lookup covers backend/interpreter discovery, creation covers environment
+preparation (including reuse), and spawn marks the start of user-code execution.
+The blocking backend worker records stage times and returns them to the CLI
+collector after execution; these are timing observations, not live notifications.
+
+`x` keeps the frozen v1 schema. It uses existing `custom` events with
+`data.stage` set to `env_lookup` or `spawn`, plus the existing `env_create` event.
+With uv available, `x` delegates preparation and execution to
+`uv tool run --quiet --isolated --from <requirement> --python <selected-python>`.
+The uv-managed environment is reusable across calls, isolated from the current
+project, and ignores globally installed tools. The launcher preserves console
+entry points, module fallback, arguments, output capture, and the tool's exit
+code. Preparation failures remain `E_X_FAILED`; they do not become tool exits.
+Without uv, the disposable venv/pip path remains available.
+
+For delegated `x`, `env_create` and `spawn` mark the uv delegation boundary;
+uv's internal lookup/create/execute times cannot be separated by these events.
+`env_create.data.managed_by` is `uv` and its `cache_hit` is `null`. Likewise,
+`detail.cache_hit` is `null`: repeated successful calls do not prove that uv
+actually reused an environment. `temp_env: null` and `cleanup: false` mean no
+disposable tool environment was created or removed by PyBun; uv owns its cache.
+
+Fast subprocess probes previously paid a fixed 50ms polling interval. Timeout
+polling now stays at 1ms for the first 20ms and then backs off to 50ms for
+long-running children. After initial lock creation, unsandboxed script
+preparation uses a single `uv sync --script --inexact`, which refreshes the lock
+and environment. Existing script locks are validated before uv runs. A script
+without a lock, and sandboxed preparation, retain separate lock/locked-sync steps.
+Calls without a timeout wait directly for completion while pipe readers drain
+stdout/stderr concurrently. Process-group timeout termination is unchanged.
+
+The offline regression suite builds local wheels and checks warm environment
+reuse, version isolation, module fallback, preparation errors, credentials,
+output/exit behavior, and timestamped stages:
+
+```sh
+cargo test --test cli_warm_execution --test cli_x
+cargo test --lib proc_exec::tests
+```
+
+### Warm execution measurements (Issue #580)
+
+Measured on macOS arm64 with uv 0.12.13, release binaries, and baseline
+`5821cc5`. The PEP 723 script imports `six==1.17.0`; the tool command is
+`pybun --format=json x ruff==0.14.0 -- --version`. Each warm cell is p50 / p95
+in milliseconds over 15 runs, with nearest-rank p95 (the maximum at this sample
+count). Baseline, updated PyBun, and uv run in rotating order on each round,
+after one warm-up per command, using the same working directory and cache.
+History is disabled with `PYBUN_HISTORY=0`, Python downloads are disabled, and
+timed warm runs have no tracing wrapper.
+
+| Warm command | Baseline PyBun | Updated PyBun | uv control |
+| --- | ---: | ---: | ---: |
+| PEP 723 `run p.py` | 328.96 / 438.03 | 96.21 / 221.92 | 37.43 / 111.59 |
+| `x ruff==0.14.0 -- --version` | 575.18 / 684.15 | 53.97 / 87.50 | 25.27 / 55.52 |
+
+The controls are `uv run --script p.py` and
+`uv tool run --from ruff==0.14.0 ruff --version`. The script contains:
+
+```python
+# /// script
+# dependencies = ["six==1.17.0"]
+# ///
+import six
+print(six.__version__)
+```
+
+Warm medians improve, with measurable overhead remaining relative to uv. The
+PEP 723 tail is variable: the updated sample maximum is 221.92ms and the uv
+maximum is 111.59ms. These small local samples do not establish that a UX ratio
+threshold has been reached, and no benchmark thresholds were relaxed.
+
+Separate cold measurements clear `UV_CACHE_DIR` and `PYBUN_HOME`, and remove
+the script lock before each run. They use three runs per command, sequential
+baseline/updated batches, and a `PYBUN_UV`/PATH wrapper that records actual uv
+arguments before executing the same real uv binary:
+
+| Cold command | Baseline PyBun p50 / p95 | Updated PyBun p50 / p95 |
+| --- | ---: | ---: |
+| PEP 723 `run p.py` | 492.68 / 957.23 | 675.23 / 1164.16 |
+| `x ruff==0.14.0 -- --version` | 1746.77 / 1968.29 | 1973.66 / 2114.80 |
+
+Cold samples include downloads and network variance; they show no cold-start
+improvement and are not directly comparable to the untraced warm table.
+Traces show PEP 723 calls `--version`, `lock`, `sync`, and `python find` on
+initial preparation, then `--version`, `sync`, and `python find` with an existing
+valid lock. The tool path changes from creating a venv and calling `uv pip
+install` on every run to one `uv tool run` delegation per call. The offline
+regression suite checks the script call sequence and actual tool environment
+reuse independently of the timing observations.
+
+The initial repository benchmark run (`run` and `uv_comparison` scenarios,
+`scripts/benchmark/config_ci.toml`, five iterations) completed all 20 command
+measurements successfully. Evaluating the unchanged eight UX rules still
+failed one rule: B3.1 simple startup measured 39.69ms for PyBun versus 26.27ms
+for Python, a ratio of 1.511 against a maximum of 1.5. The PEP 723 C1 warm
+comparison measured 146.82ms versus 83.10ms, ratio 1.77, within its 2.0 limit.
+Successful benchmark subprocesses therefore do not mean every UX criterion
+passed; the initial UX result remains a failure despite the warm-path gains.
