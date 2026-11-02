@@ -384,6 +384,20 @@ fn real_uv_workspace_member_uses_shared_root_lock() {
     assert!(output.status.success(), "{value}");
     assert!(dir.path().join("uv.lock").exists());
     assert!(!dir.path().join("member/uv.lock").exists());
+    let output = real_uv(&dir)
+        .current_dir(dir.path().join("member"))
+        .args(["run", "-c", "print('workspace-ok')", "--format=json"])
+        .output()
+        .unwrap();
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(output.status.success(), "{value}");
+    assert_eq!(value["detail"]["stdout"], "workspace-ok\n");
+    let source = std::path::Path::new(value["detail"]["lock"]["source"].as_str().unwrap());
+    assert_eq!(
+        source.canonicalize().unwrap(),
+        dir.path().join("uv.lock").canonicalize().unwrap()
+    );
+    assert!(!dir.path().join("member/.venv").exists());
 }
 
 #[test]
@@ -624,8 +638,7 @@ fn uv_run_promotes_the_traceback_diagnostic() {
     let script = r#"#!/bin/sh
 if [ "$1" = '--version' ]; then echo 'uv 0.12.13'; exit 0; fi
 if [ "$1" = 'workspace' ]; then pwd; exit 0; fi
-if [ "$1" = 'lock' ]; then printf "version = 1\n[[package]]\nname = 'demo'\nversion = '0.1.0'\nsource = { virtual = '.' }\n" > uv.lock; exit 0; fi
-if [ "$1" = 'sync' ]; then exit 0; fi
+if [ "$1" = 'lock' ] || [ "$1" = 'sync' ]; then printf "version = 1\n[[package]]\nname = 'demo'\nversion = '0.1.0'\nsource = { virtual = '.' }\n" > uv.lock; exit 0; fi
 echo "unexpected uv args: $*" >&2
 exit 2
 "#;
@@ -828,4 +841,103 @@ fn real_uv_mcp_filesystem_permissions_preserve_equals_paths() {
             }
         }
     }
+}
+
+#[test]
+fn project_run_prepares_with_one_sync_and_preserves_execution_contract() {
+    let dir = fixture(
+        r#"
+printf '%s\n' "$*" >> calls
+if [ "$1" = 'lock' ]; then echo 'unexpected lock' >&2; exit 1; fi
+if [ "$1" = 'sync' ]; then
+    printf "version = 1\\n[[package]]\\nname = 'demo'\\nversion = '0.1.0'\\nsource = { virtual = '.' }\\n" > uv.lock
+    exit 0
+fi
+exit 2
+"#,
+    );
+    assert!(
+        std::process::Command::new("python3")
+            .args(["-m", "venv", "--without-pip"])
+            .arg(dir.path().join(".venv"))
+            .status()
+            .unwrap()
+            .success()
+    );
+    fs::write(
+        dir.path().join("hello.py"),
+        "import sys; print(sys.argv[1]); print('err', file=sys.stderr); sys.exit(7)\n",
+    )
+    .unwrap();
+    let (ok, value) = run(&dir, &["run", "hello.py", "--", "argument"]);
+    assert!(!ok, "{value}");
+    assert_eq!(value["detail"]["exit_code"], 7, "{value}");
+    assert_eq!(value["detail"]["stdout"], "argument\n");
+    assert_eq!(value["detail"]["stderr"], "err\n");
+    assert_eq!(
+        value["detail"]["environment"]["preparation"],
+        "uv sync --inexact"
+    );
+    assert!(value["detail"]["lock"]["digest"].is_string());
+    assert!(value["detail"]["receipt_id"].is_string());
+    assert_eq!(
+        fs::read_to_string(dir.path().join("calls")).unwrap(),
+        "sync --no-progress --inexact\n"
+    );
+}
+
+#[test]
+fn project_run_does_not_execute_or_publish_after_invalid_sync() {
+    for body in [
+        "exit 1",
+        "echo 'not = [valid' > uv.lock",
+        "printf 'version = 1\\n' > uv.lock",
+    ] {
+        let dir = fixture(body);
+        fs::write(
+            dir.path().join("hello.py"),
+            "open('executed', 'w').close()\n",
+        )
+        .unwrap();
+        let (ok, value) = run(&dir, &["run", "hello.py"]);
+        assert!(!ok, "{value}");
+        assert!(value["detail"]["receipt_id"].is_null());
+        assert!(!dir.path().join("executed").exists());
+        assert!(!dir.path().join(".pybun/receipts").exists());
+    }
+}
+
+#[test]
+fn real_uv_project_run_refreshes_lock_and_recreates_environment() {
+    let dir = fixture("");
+    fs::write(dir.path().join("hello.py"), "print('run-ok')\n").unwrap();
+    let first = real_uv(&dir)
+        .args(["run", "hello.py", "--format=json"])
+        .output()
+        .unwrap();
+    let first_value: Value = serde_json::from_slice(&first.stdout).unwrap();
+    assert!(first.status.success(), "{first_value}");
+    let old_digest = first_value["detail"]["lock"]["digest"].clone();
+    fs::create_dir(dir.path().join("dep")).unwrap();
+    fs::write(
+        dir.path().join("dep/pyproject.toml"),
+        "[project]\nname='local-dep'\nversion='1.0.0'\n[tool.uv]\npackage=false\n",
+    )
+    .unwrap();
+    fs::write(dir.path().join("pyproject.toml"), "[project]\nname='demo'\nversion='0.1.0'\ndependencies=['local-dep']\n[tool.uv.sources]\nlocal-dep={path='dep'}\n").unwrap();
+    fs::remove_dir_all(dir.path().join(".venv")).unwrap();
+    let second = real_uv(&dir)
+        .args(["run", "hello.py", "--format=json"])
+        .output()
+        .unwrap();
+    let value: Value = serde_json::from_slice(&second.stdout).unwrap();
+    assert!(second.status.success(), "{value}");
+    assert_eq!(value["detail"]["stdout"], "run-ok\n");
+    assert_ne!(value["detail"]["lock"]["digest"], old_digest);
+    assert!(
+        fs::read_to_string(dir.path().join("uv.lock"))
+            .unwrap()
+            .contains("local-dep")
+    );
+    assert!(dir.path().join(".venv/pyvenv.cfg").is_file());
 }

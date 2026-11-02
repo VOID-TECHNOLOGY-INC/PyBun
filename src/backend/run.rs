@@ -148,20 +148,32 @@ impl UvBackend {
         if script.is_some() && lock_path.exists() {
             read_lock(&lock_path)?;
         }
-        let mut lock = self.command("lock");
-        if let Some(script) = &script {
-            lock.arg("--script").arg(script);
-        }
-        if offline {
-            lock.arg("--offline").arg("--no-python-downloads");
-        }
-        if args.sandbox {
-            lock.arg("--no-build");
-        }
-        self.spawn(&mut lock, true)?;
-        let (digest, packages) = read_lock(&lock_path)?;
+        // Project sync already updates the lock and checks the environment. Keep
+        // that check on every run so edits and removed environments are observed,
+        // without paying for a separate lock subprocess. Script and sandbox
+        // preparation retain their explicit lock validation before locked sync.
+        let locked_preparation = script.is_some() || args.sandbox;
+        let prepared_lock = if locked_preparation {
+            let mut lock = self.command("lock");
+            if let Some(script) = &script {
+                lock.arg("--script").arg(script);
+            }
+            if offline {
+                lock.arg("--offline").arg("--no-python-downloads");
+            }
+            if args.sandbox {
+                lock.arg("--no-build");
+            }
+            self.spawn(&mut lock, true)?;
+            Some(read_lock(&lock_path)?)
+        } else {
+            None
+        };
         let mut sync = self.command("sync");
-        sync.args(["--locked", "--inexact"]);
+        if locked_preparation {
+            sync.arg("--locked");
+        }
+        sync.arg("--inexact");
         if let Some(script) = &script {
             sync.arg("--script").arg(script);
         }
@@ -175,6 +187,10 @@ impl UvBackend {
             }
         }
         self.spawn(&mut sync, true)?;
+        let (digest, packages) = match prepared_lock {
+            Some(lock) => lock,
+            None => read_lock(&lock_path)?,
+        };
         let python = if let Some(script) = &script {
             let mut find = self.command("python");
             find.args(["find", "--script"]).arg(script).arg("--offline");
@@ -295,7 +311,7 @@ impl UvBackend {
             "contract_version": "2", "status": if exit_code == 0 { "success" } else { "error" },
             "backend": { "name": "uv", "version": self.version, "operation": "run" },
             "environment": { "fingerprint": fingerprint(&root, &python), "python": python.display().to_string(),
-                "preparation": if script.is_some() { "uv sync --script --locked --inexact" } else { "uv sync --locked --inexact" } },
+                "preparation": if script.is_some() { "uv sync --script --locked --inexact" } else if locked_preparation { "uv sync --locked --inexact" } else { "uv sync --inexact" } },
             "lock": { "source": lock_path.display().to_string(), "digest": digest },
             "packages": packages, "target": args.target, "exit_code": exit_code,
             "stdout": stdout, "stderr": stderr, "sandboxed": args.sandbox,
