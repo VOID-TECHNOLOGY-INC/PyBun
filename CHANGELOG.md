@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.2.8
+
+### Performance
+- Prepare ordinary project runs with one `uv sync --inexact`, retaining lock freshness, workspace resolution, environment validation, and sandbox preparation safeguards (#579, #598).
+- Reuse isolated uv tool environments for `pybun x`, preserving console entry points, module fallback, output, exit status, and preparation-error redaction (#580, #599).
+- Reduce short subprocess exit-wait overhead and avoid redundant locking for warm PEP 723 runs with an existing validated script lock; initial and sandboxed preparation retain explicit locking (#580, #599).
+
+### Observability
+- Expose timestamped environment lookup/preparation and spawn stages. Preserve schema v1 extension events for `x`, and report unknown uv cache hits as null (#580, #599).
+
+### Fixes and maintenance
+- Preserve MCP filesystem permission paths containing `=`, and reject malformed permission lists before authorization or execution (#594).
+- Update Rust dependencies and GitHub Actions (#595, #597).
+
+### Known limitations
+- The local plain-script startup UX ratio remains marginally above its 1.5 threshold in the full benchmark suite (1.509 in the 20-sample run). Warm PEP 723 criteria passed locally; this release does not claim that every UX criterion passes or lower any threshold. Cold-cache/network measurements do not establish a cold-start improvement.
+- The uv adapter supports uv >=0.12,<0.13. Older x86_64 glibc hosts use the musl fallback; no ARM64 musl artifact is published.
+- The Python-level sandbox requires an OS-level boundary to contain hostile C extensions or ctypes.
+
 ## v0.2.7
 
 ### Fixes
