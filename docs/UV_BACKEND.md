@@ -11,11 +11,17 @@ falls back to its native resolver automatically.
 | `add` / `remove` | `uv add` / `uv remove`: mutate project metadata, lock and environment |
 | `lock` | `uv lock`; `--script` selects a PEP 723 script |
 | `upgrade [packages]` | `uv lock --upgrade` / `--upgrade-package`: update the lock without syncing |
-| project `run` | `uv lock`, then `uv sync --locked --inexact`, then the prepared Python |
+| project `run` | `uv sync --inexact` (updates the lock), then the prepared Python |
 | PEP 723 `run` | `uv lock --script`, `uv sync --script --locked --inexact`, then that script's Python |
 
 `outdated` is not delegated: it remains a native reader of `pybun.lockb`, even
 when other commands use uv.
+
+Project run always asks uv to check the lock and environment; it does not use a
+PyBun freshness cache. Changes to project metadata, workspace members, Python
+selection, uv configuration, and a missing environment remain uv's responsibility.
+Version compatibility and workspace-root probes are retained. Lock contents and
+the prepared interpreter are validated before execution and receipt publication.
 
 Run preserves extra installed packages, as uv's run semantics do. Install
 intentionally removes extras. Python execution retains PyBun's sandbox, timeout
@@ -23,6 +29,7 @@ and launch-profile optimization settings. The uv path reports lazy import
 injection as disabled. Standalone scripts without project or PEP 723 metadata
 continue to use the existing interpreter path.
 
+Sandboxed runs retain explicit `uv lock` followed by `uv sync --locked --inexact`.
 For sandboxed runs, environment preparation prohibits source builds and skips
 project/workspace installation. When network is denied, preparation is also
 offline and cannot download Python. The Python guard is installed before site
@@ -156,3 +163,61 @@ only when live network access is intended:
 ```sh
 cargo test --test cli_uv_backend real_uv_package_lifecycle_and_existing_project_adoption -- --ignored --exact
 ```
+
+### Project run preparation measurement (Issue #579)
+
+Measured on macOS arm64 with uv 0.12.13 (Homebrew), release binaries, and
+baseline `5821cc5`. Each cell is p50 / p95 in milliseconds over 15 subprocess
+runs; p95 uses nearest rank (the maximum at this sample count).
+
+| Command | Baseline cold | Updated cold | Baseline warm | Updated warm |
+| --- | ---: | ---: | ---: | ---: |
+| `pybun run hello.py` | 330.18 / 791.94 | 279.60 / 327.65 | 324.18 / 336.19 | 272.05 / 281.36 |
+| `uv run hello.py` (control) | 43.65 / 49.91 | 40.38 / 44.07 | 38.43 / 40.02 | 35.97 / 38.95 |
+
+To reproduce, build each revision with `cargo build --release --locked` and
+copy the binaries before switching revisions. Use an empty directory outside
+the repository containing this project and `hello.py` with `print('hello')`:
+
+```toml
+[project]
+name = "demo"
+version = "0.1.0"
+dependencies = []
+```
+
+Set separate `PYBUN_HOME` and `UV_CACHE_DIR` directories for each revision,
+`PYBUN_HISTORY=0`, `UV_PYTHON` to the same absolute `python3` executable, and
+`UV_PYTHON_DOWNLOADS=never`. Unset `PYBUN_UV`, `PYBUN_BACKEND`,
+`UV_PROJECT_ENVIRONMENT`, `UV_PROJECT`, `UV_WORKING_DIRECTORY`, and `VIRTUAL_ENV`.
+Time each command using Python `time.perf_counter()` around
+`subprocess.run(..., check=True)`, discarding stdout/stderr. Run the cold series
+first, deleting `.venv` and `uv.lock` before each invocation. Then warm up once
+and run the warm series without deleting either. Cold here means a missing
+project lock and environment, not a flushed package cache; this fixture has no
+external dependencies. The first baseline cold sample was a 792 ms outlier.
+
+For a separate trace, point `PYBUN_UV` at a shell wrapper that appends `"$*"`
+to a file and then executes the absolute uv binary with `"$@"`. Exclude the
+wrapper from timed samples. The baseline trace was:
+
+```text
+--version
+workspace --no-progress dir --offline
+lock --no-progress
+sync --no-progress --locked --inexact
+```
+
+The updated trace is:
+
+```text
+--version
+workspace --no-progress dir --offline
+sync --no-progress --inexact
+```
+
+The warm median decreases by about 52 ms, consistent with removing one
+subprocess subject to the existing 50 ms process-exit polling interval. The
+remaining gap to uv is still visible; the shared runner and script/tool stages
+are investigated separately in Issue #580. These observations do not change
+benchmark thresholds.
