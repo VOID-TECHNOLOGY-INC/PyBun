@@ -218,6 +218,46 @@ fn complete_published_candidate_and_constraint_facts_match_across_transports() {
     assert!(!root.path().join("forbidden-audit").exists());
 }
 #[test]
+fn late_provider_timeout_preserves_observed_threshold_matches_in_both_transports() {
+    let server = MockServer::start();
+    let (root, config) = setup(&server, true);
+    let config = config.replace("total_timeout_ms=5000", "total_timeout_ms=1000");
+    server.reset();
+    server.mock(|when, then| {
+        when.method(GET).path("/simple/six/");
+        then.json_body(
+            json!({"meta":{"api-version":"1.4"},"name":"six","versions":["2"],"files":[]}),
+        );
+    });
+    server.mock(|when, then| {
+        when.method(POST).path("/v1/querybatch");
+        then.respond_with(|request| {
+            let body: Value = serde_json::from_slice(request.body_ref()).unwrap();
+            let results: Vec<_> = body["queries"].as_array().unwrap().iter().map(|query| {
+                json!({"vulns":[{"id":if query["version"] == "1.0" {"FIX-SIX"} else {"ZZ-SLOW"}}]})
+            }).collect();
+            httpmock::HttpMockResponse::builder()
+                .status(200)
+                .body(json!({"results":results}).to_string())
+                .build()
+        });
+    });
+    public_advisories(&server);
+    let slow = server.mock(|when, then| {
+        when.method(GET).path("/v1/vulns/ZZ-SLOW");
+        then.delay(std::time::Duration::from_secs(2))
+            .json_body(json!({"id":"ZZ-SLOW","affected":[]}));
+    });
+    let (code, left) = cli(root.path(), &config, &["--fail-on", "high"]);
+    let right = mcp(root.path(), &config, json!({"fail_on":"high"}));
+    assert_eq!(code, 3);
+    assert_eq!(right["exit_code"], 3);
+    assert_eq!(left["threshold_match_count"], 1, "{left}");
+    assert_eq!(right["threshold_match_count"], 1, "{right}");
+    assert_equal(left, right);
+    slow.assert_calls(2);
+}
+#[test]
 fn validated_empty_inventory_is_complete_in_both_transports() {
     let server = MockServer::start();
     let (root, config) = setup(&server, false);

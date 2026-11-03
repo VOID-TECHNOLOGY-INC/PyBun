@@ -236,8 +236,16 @@ pub async fn run_check(
             service::{AssessmentOptions, assess_project},
         },
     };
+    // Stop observation before the whole-request deadline so partial evidence and
+    // traversal progress can still be projected into a bounded response. This
+    // reserve narrows I/O time; it never extends the authorized total duration.
+    let remaining = authorized
+        .deadline
+        .saturating_duration_since(std::time::Instant::now());
+    let reserve = (remaining / 10).min(std::time::Duration::from_millis(250));
+    let observation_deadline = authorized.deadline - reserve;
     let session = match HttpSession::new(authorized.inventory.limits.clone(), observed_at)
-        .and_then(|session| session.with_deadline(authorized.deadline))
+        .and_then(|session| session.with_deadline(observation_deadline))
         .and_then(|session| session.with_max_cache_age_seconds(authorized.max_cache_age_seconds))
     {
         Ok(session) => session,

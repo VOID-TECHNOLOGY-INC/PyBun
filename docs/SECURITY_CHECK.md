@@ -134,6 +134,10 @@ inventory/helper work, bounded HTTP, optional provenance, semantic finalization,
 and result preparation. Effective limits are the minimum of the request, service
 defaults, profile, and applicable server cap. Smaller byte/request/deadline caps
 are restrictions; they are not claims of OS memory, CPU, or sandbox enforcement.
+After authorization, observation reserves ten percent of the remaining duration
+(at most 250 ms) for finalizing partial evidence. A late provider timeout can
+therefore return already observed threshold matches and traversal progress
+without extending the whole-request deadline.
 
 ## MCP setup
 
