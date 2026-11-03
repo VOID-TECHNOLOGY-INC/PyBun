@@ -38,6 +38,7 @@ pub mod sandbox;
 pub mod sbom;
 pub mod schema;
 pub mod security;
+pub mod security_assessment;
 pub mod self_heal;
 pub mod self_update;
 pub mod snapshot;

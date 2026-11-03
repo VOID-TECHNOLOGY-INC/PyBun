@@ -115,7 +115,7 @@ pub fn spawn_with_timeout(
 /// (which — because `spawn_with_timeout` calls `setpgid(0, 0)` in `pre_exec` —
 /// contains the child and any subprocesses it spawned). On non-Unix
 /// platforms this only terminates the direct child.
-fn kill_process_tree(child: &mut std::process::Child) {
+pub(crate) fn kill_process_tree(child: &mut std::process::Child) {
     #[cfg(unix)]
     {
         // The child's pid is also its process group id, since we `setpgid(0, 0)`
