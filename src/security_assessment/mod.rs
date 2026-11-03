@@ -5,6 +5,7 @@ pub mod config;
 pub mod http;
 pub mod inventory;
 pub mod model;
+pub mod monitor;
 pub mod osv;
 pub mod qualification;
 pub mod semantic;
