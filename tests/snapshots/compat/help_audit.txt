@@ -1,16 +1,21 @@
 Scan installed packages for known vulnerabilities using the OSV database
 
 Usage: pybun audit [OPTIONS]
+       pybun audit <COMMAND>
+
+Commands:
+  check-updates  Observe published security update candidates without changing the environment
+  help           Print this message or the help of the given subcommand(s)
 
 Options:
       --format <FORMAT>
           Output format for machine readability [default: text] [possible values: text, json]
+      --progress <PROGRESS>
+          Progress UI mode (auto hides on non-TTY) [env: PYBUN_PROGRESS=] [default: auto] [possible values: auto, always, never]
       --severity-threshold <SEVERITY_THRESHOLD>
           Only report vulnerabilities at or above this severity level [default: low] [possible values: low, medium, high, critical]
       --fail-on <LEVEL>
           Exit with a non-zero status (and JSON status: "error") when vulnerabilities at or above this severity are found. Useful for CI gating (e.g. `pybun audit --fail-on=high`). Off by default [possible values: low, medium, high, critical]
-      --progress <PROGRESS>
-          Progress UI mode (auto hides on non-TTY) [env: PYBUN_PROGRESS=] [default: auto] [possible values: auto, always, never]
       --no-progress
           Disable progress UI
       --system

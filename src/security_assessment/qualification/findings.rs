@@ -11,14 +11,51 @@ use pep440_rs::Version;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum FindingSeverity {
+    Low,
+    Medium,
+    High,
+    Critical,
+    #[default]
     Unknown,
+}
+impl FindingSeverity {
+    /// Unknown is deliberately outside the ordered known severity levels.
+    pub fn rank(self) -> Option<u8> {
+        match self {
+            Self::Low => Some(0),
+            Self::Medium => Some(1),
+            Self::High => Some(2),
+            Self::Critical => Some(3),
+            Self::Unknown => None,
+        }
+    }
+}
+
+/// Preserve explicit provider labels without estimating a CVSS score or parsing
+/// arbitrary severity prose. Other evidence formats remain unknown.
+pub(crate) fn provider_declared_severity(payload: &serde_json::Value) -> FindingSeverity {
+    match payload
+        .pointer("/database_specific/severity")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .map(str::to_ascii_uppercase)
+        .as_deref()
+    {
+        Some("LOW") => FindingSeverity::Low,
+        Some("MEDIUM" | "MODERATE") => FindingSeverity::Medium,
+        Some("HIGH") => FindingSeverity::High,
+        Some("CRITICAL") => FindingSeverity::Critical,
+        _ => FindingSeverity::Unknown,
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FindingRecordEvidence {
+    #[serde(default)]
+    pub severity: FindingSeverity,
     pub provider_id: String,
     pub record_id: String,
     pub payload_digest: String,
@@ -195,6 +232,7 @@ pub fn assess_findings_with_related(
             }
             complete &= evaluation.complete;
             records.push(FindingRecordEvidence {
+                severity: provider_declared_severity(&record.payload),
                 provider_id: (*provider).into(),
                 record_id: record.id.clone(),
                 payload_digest: record.payload_digest.clone(),
@@ -295,6 +333,7 @@ pub fn assess_findings_with_related(
                 (
                     &record.provider_id,
                     &record.record_id,
+                    record.severity,
                     &evaluation.aliases,
                     evaluation.affected,
                     evaluation.complete,
@@ -315,13 +354,25 @@ pub fn assess_findings_with_related(
             &semantic_records,
             &reasons,
         ));
+        let severity = if records
+            .iter()
+            .any(|record| record.severity == FindingSeverity::Unknown)
+        {
+            FindingSeverity::Unknown
+        } else {
+            records
+                .iter()
+                .map(|record| record.severity)
+                .max_by_key(|severity| severity.rank())
+                .unwrap_or(FindingSeverity::Unknown)
+        };
         clusters.push(FindingCluster {
             ids,
             aliases,
             cluster_digest: digest,
             affected,
             complete,
-            severity: FindingSeverity::Unknown,
+            severity,
             records,
             diagnostics: reasons,
         });

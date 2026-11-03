@@ -27,6 +27,7 @@ mod maintenance;
 mod project;
 mod python;
 mod run;
+mod security;
 use run::{SandboxInfo, get_python_version, script_lock_path};
 pub(crate) use run::{find_python_interpreter, run_script};
 mod test;
@@ -170,7 +171,9 @@ fn render(
         }
     };
     // Schema print contains only bundled definitions, never user/authentication data.
-    if command == "schema print" {
+    if command == "schema print" || command == "audit check-updates" {
+        // The shared check sanitizes external evidence before assigning its
+        // digests; a second blanket redaction would change transport parity.
         return Some(output);
     }
     Some(match format {

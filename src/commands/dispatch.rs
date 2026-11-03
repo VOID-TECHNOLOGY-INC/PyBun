@@ -1121,6 +1121,12 @@ async fn dispatch_maintenance(
             }
         }
         Commands::Audit(args) => {
+            if let Some(crate::cli::AuditCommands::CheckUpdates(check)) = &args.command {
+                return (
+                    "audit check-updates".into(),
+                    super::security::check_updates(check).await,
+                );
+            }
             collector.info("Scanning installed packages for known vulnerabilities");
             let detail = maintenance::run_audit(args, collector).await;
             ("audit".to_string(), detail)

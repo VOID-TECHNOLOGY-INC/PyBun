@@ -1054,7 +1054,7 @@ fn bounded_trusted_digest(path: &Path) -> Result<String, ObservationDiagnostic> 
     Ok(crate::security::sha256_bytes(&bytes))
 }
 
-fn direct_constraints(
+pub(crate) fn direct_constraints(
     project: &toml::Value,
     scope: &InventoryScope,
     bytes: &[u8],

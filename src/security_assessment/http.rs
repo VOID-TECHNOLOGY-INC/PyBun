@@ -215,6 +215,7 @@ pub struct HttpSession {
     client: reqwest::Client,
     limits: ObservationLimits,
     started: Instant,
+    deadline: Instant,
     observed_at: u64,
     requests: AtomicUsize,
     retained_evidence: AtomicUsize,
@@ -222,6 +223,7 @@ pub struct HttpSession {
     pages: Mutex<BTreeMap<String, usize>>,
     cache: Option<super::qualification::cache::ObservationCache>,
     mode: ObservationMode,
+    max_cache_age_seconds: u64,
     cache_diagnostics: Mutex<Vec<ObservationDiagnostic>>,
 }
 
@@ -236,10 +238,12 @@ impl HttpSession {
             .build()
             .map_err(|_| endpoint_error())?;
         let admission = Semaphore::new(limits.concurrency);
+        let deadline = started + Duration::from_millis(limits.total_timeout_ms);
         Ok(Self {
             client,
             limits,
             started,
+            deadline,
             observed_at,
             requests: AtomicUsize::new(0),
             retained_evidence: AtomicUsize::new(0),
@@ -247,8 +251,31 @@ impl HttpSession {
             pages: Mutex::new(BTreeMap::new()),
             cache: None,
             mode: ObservationMode::Online,
+            max_cache_age_seconds: 86_400,
             cache_diagnostics: Mutex::new(vec![]),
         })
+    }
+
+    /// Carry an earlier request deadline across authorization and observation.
+    pub fn with_deadline(mut self, deadline: Instant) -> Result<Self, ObservationDiagnostic> {
+        self.deadline = self.deadline.min(deadline);
+        self.remaining()?;
+        Ok(self)
+    }
+
+    /// Narrow the cache age ceiling independently of cached evidence authority.
+    pub fn with_max_cache_age_seconds(
+        mut self,
+        seconds: u64,
+    ) -> Result<Self, ObservationDiagnostic> {
+        if seconds > 86_400 {
+            return Err(ObservationDiagnostic::new(
+                "E_SECURITY_LIMIT",
+                "Cache age may not exceed the service freshness ceiling.",
+            ));
+        }
+        self.max_cache_age_seconds = seconds;
+        Ok(self)
     }
 
     pub fn with_cache(
@@ -366,8 +393,8 @@ impl HttpSession {
     }
 
     pub fn remaining(&self) -> Result<Duration, ObservationDiagnostic> {
-        Duration::from_millis(self.limits.total_timeout_ms)
-            .checked_sub(self.started.elapsed())
+        self.deadline
+            .checked_duration_since(Instant::now())
             .filter(|left| !left.is_zero())
             .ok_or_else(deadline_error)
     }
@@ -421,12 +448,16 @@ impl HttpSession {
             self.remaining()?;
             let cache = self.cache.as_ref().ok_or_else(cache_miss)?;
             let mut evidence = cache.read(&key, self.observed_at)?.ok_or_else(cache_miss)?;
+            let age_seconds = self.observed_at.saturating_sub(evidence.fetched_at);
+            if age_seconds > self.max_cache_age_seconds {
+                return Err(ObservationDiagnostic::new(
+                    "E_SECURITY_CACHE_EXPIRED",
+                    "Cached evidence exceeds the authorized age ceiling.",
+                ));
+            }
             evidence.value = endpoint.redact_value(&evidence.value);
             self.remaining()?;
-            evidence.freshness = EvidenceFreshness {
-                kind,
-                age_seconds: self.observed_at.saturating_sub(evidence.fetched_at),
-            };
+            evidence.freshness = EvidenceFreshness { kind, age_seconds };
             Ok(evidence)
         };
         if self.mode == ObservationMode::Offline {

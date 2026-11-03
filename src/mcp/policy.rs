@@ -1,9 +1,21 @@
 //! Frozen operator policy. Authorization precedes snapshots, audit setup and tools.
+use crate::security_assessment::{
+    InventoryBackend, ObservationDiagnostic,
+    check::{CheckMode, CheckUpdatesRequest},
+    config::{PreparedCheck, SecurityAuthority},
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::fs::OpenOptions;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum SecurityCapability {
+    AuthorizedTargetMetadataRead,
+    ApprovedProviderHttp,
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
@@ -19,6 +31,10 @@ pub(super) struct Policy {
     pub denied_tools: Vec<String>,
     pub allowed_working_directories: Vec<PathBuf>,
     pub allowed_backends: Vec<String>,
+    pub allowed_security_capabilities: Vec<SecurityCapability>,
+    // A policy response must not enumerate profiles the caller cannot select.
+    #[serde(skip_serializing)]
+    pub allowed_security_profiles: Vec<String>,
 }
 impl Default for Policy {
     fn default() -> Self {
@@ -33,6 +49,8 @@ impl Default for Policy {
             denied_tools: vec![],
             allowed_working_directories: vec![PathBuf::from(".")],
             allowed_backends: vec!["uv".into(), "native".into()],
+            allowed_security_capabilities: vec![],
+            allowed_security_profiles: vec![],
         }
     }
 }
@@ -88,14 +106,31 @@ pub(super) fn preparation_source(path: &Path) -> Result<String, Denied> {
 pub(super) struct ServerPolicy {
     pub root: PathBuf,
     pub effective: Result<Policy, Denied>,
+    security_authority: Result<SecurityAuthority, ObservationDiagnostic>,
 }
 impl ServerPolicy {
     pub fn load(root: &Path, override_path: Option<&Path>) -> Self {
         let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-        let effective = Self::read(&root, override_path);
-        Self { root, effective }
+        let (effective, security_authority) = match Self::read(&root, override_path) {
+            Ok((policy, authority)) => (Ok(policy), authority),
+            Err(denied) => (
+                Err(denied),
+                Err(ObservationDiagnostic::new(
+                    "E_SECURITY_AUTHORITY",
+                    "Security-check authority is unavailable.",
+                )),
+            ),
+        };
+        Self {
+            root,
+            effective,
+            security_authority,
+        }
     }
-    fn read(root: &Path, override_path: Option<&Path>) -> Result<Policy, Denied> {
+    fn read(
+        root: &Path,
+        override_path: Option<&Path>,
+    ) -> Result<(Policy, Result<SecurityAuthority, ObservationDiagnostic>), Denied> {
         let local = root.join(".pybun/config.toml");
         let path = override_path.map(PathBuf::from).unwrap_or_else(|| {
             if local.exists() {
@@ -124,9 +159,8 @@ impl ServerPolicy {
         if bytes.len() > 1024 * 1024 {
             return Err(invalid());
         }
-        let value: toml::Value =
-            toml::from_str(std::str::from_utf8(&bytes).map_err(|_| invalid())?)
-                .map_err(|_| invalid())?;
+        let text = std::str::from_utf8(&bytes).map_err(|_| invalid())?;
+        let value: toml::Value = toml::from_str(text).map_err(|_| invalid())?;
         let section = value
             .get("tool")
             .and_then(|v| v.get("pybun"))
@@ -168,7 +202,14 @@ impl ServerPolicy {
                 .canonicalize()
                 .map_err(|_| invalid())?;
         }
-        Ok(policy)
+        // Parse both sections from the same bounded startup snapshot. Reopening
+        // the policy file could freeze permissions and profiles from different edits.
+        let base = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or(root);
+        let authority = SecurityAuthority::from_toml(text, base);
+        Ok((policy, authority))
     }
     pub fn denial_value(&self, denied: &Denied) -> Value {
         let mut value = denied.value();
@@ -211,6 +252,131 @@ impl ServerPolicy {
             return Err(deny());
         }
         Ok(())
+    }
+
+    /// Pure checks over frozen grants; current filesystem identity is checked
+    /// only after admission, so rate-rejected calls cannot force target reads.
+    pub fn security_check_grant(
+        &self,
+        request: &CheckUpdatesRequest,
+    ) -> Result<SecurityCheckGrant, ObservationDiagnostic> {
+        let diagnostic = |denied: Denied| ObservationDiagnostic::new(denied.0, denied.1);
+        let policy = self
+            .effective
+            .as_ref()
+            .map_err(|denied| diagnostic(denied.clone()))?;
+        if policy
+            .denied_tools
+            .iter()
+            .any(|tool| tool == "pybun_security_check")
+        {
+            return Err(diagnostic(Denied(
+                "E_MCP_POLICY_TOOL_DENIED",
+                "This tool is denied by the server operator.",
+            )));
+        }
+        let metadata = SecurityCapability::AuthorizedTargetMetadataRead;
+        let http = SecurityCapability::ApprovedProviderHttp;
+        if !policy.allowed_security_capabilities.contains(&metadata)
+            || (request.mode != CheckMode::Offline
+                && !policy.allowed_security_capabilities.contains(&http))
+        {
+            return Err(diagnostic(Denied(
+                "E_MCP_POLICY_CAPABILITY_DENIED",
+                "The server has not granted the required security-check capabilities.",
+            )));
+        }
+        if policy.require_sandbox || policy.max_memory_mb > 0 || policy.max_cpu_time_s > 0 {
+            return Err(diagnostic(capability()));
+        }
+        if request.mode != CheckMode::Offline && !policy.allow_network {
+            return Err(diagnostic(Denied(
+                "E_MCP_POLICY_NETWORK_DENIED",
+                "Online security checks require the operator's network permission.",
+            )));
+        }
+        let profile_denied = || {
+            diagnostic(Denied(
+                "E_MCP_POLICY_PROFILE_DENIED",
+                "The requested security-check profile is not available to this caller.",
+            ))
+        };
+        if request
+            .profile
+            .as_ref()
+            .is_some_and(|id| !policy.allowed_security_profiles.contains(id))
+        {
+            return Err(profile_denied());
+        }
+        let authority = self.security_authority.as_ref().map_err(Clone::clone)?;
+        let profile = authority
+            .profile_permissions(request.profile.as_deref())
+            .map_err(|_| profile_denied())?;
+        if !policy.allowed_security_profiles.contains(&profile.id) {
+            return Err(profile_denied());
+        }
+        let backend = match profile.backend {
+            InventoryBackend::Uv => "uv",
+            InventoryBackend::Native => "native",
+        };
+        if !policy
+            .allowed_backends
+            .iter()
+            .any(|allowed| allowed == backend)
+        {
+            return Err(diagnostic(Denied(
+                "E_MCP_POLICY_BACKEND_DENIED",
+                "The profile backend is not allowed by the server operator.",
+            )));
+        }
+        let lexical_path = |path: &Path| {
+            if path
+                .components()
+                .any(|part| matches!(part, Component::ParentDir))
+                || !policy
+                    .allowed_working_directories
+                    .iter()
+                    .any(|root| path.starts_with(root))
+            {
+                return Err(diagnostic(Denied(
+                    "E_MCP_POLICY_PATH_DENIED",
+                    "A requested path is outside the operator's working-directory boundary.",
+                )));
+            }
+            Ok(())
+        };
+        for path in [&self.root, &profile.project_root, &profile.environment_root] {
+            lexical_path(path)?;
+        }
+        if let Some(project) = &request.project {
+            lexical_path(&self.root.join(project))?;
+        }
+        let timeout = (policy.max_execution_time_s > 0)
+            .then(|| policy.max_execution_time_s.saturating_mul(1000));
+        let capabilities = if request.mode == CheckMode::Offline {
+            vec![metadata]
+        } else {
+            vec![metadata, http]
+        };
+        let applied = json!({"authorized":true,"sandboxed":false,"allow_network":policy.allow_network,
+            "max_execution_time_s":policy.max_execution_time_s,"max_memory_mb":0,"max_cpu_time_s":0,
+            "capabilities":capabilities});
+        Ok(SecurityCheckGrant { timeout, applied })
+    }
+
+    /// Bind pure profile/request limits to an absolute deadline. Current path,
+    /// inode and executable revalidation occurs inside the shared async driver.
+    pub fn prepare_security_check(
+        &self,
+        request: &CheckUpdatesRequest,
+        grant: SecurityCheckGrant,
+    ) -> Result<PreparedSecurityCheck, ObservationDiagnostic> {
+        let authority = self.security_authority.as_ref().map_err(Clone::clone)?;
+        let check = authority.prepare(request, grant.timeout)?;
+        let mut applied = grant.applied;
+        applied["effective_total_timeout_ms"] = json!(check.limits().total_timeout_ms);
+        applied["effective_http_timeout_ms"] = json!(check.limits().http_timeout_ms);
+        Ok(PreparedSecurityCheck { check, applied })
     }
     pub fn authorize(
         &self,
@@ -428,6 +594,14 @@ impl ServerPolicy {
         Ok(Authorized { args, applied })
     }
 }
+pub(super) struct SecurityCheckGrant {
+    timeout: Option<u64>,
+    applied: Value,
+}
+pub(super) struct PreparedSecurityCheck {
+    pub check: PreparedCheck,
+    pub applied: Value,
+}
 pub(super) struct Authorized {
     pub args: Value,
     pub applied: Value,
@@ -489,6 +663,7 @@ mod tests {
     fn bounded_preparation_is_rejected_when_it_cannot_be_enforced() {
         let root = std::env::current_dir().unwrap().canonicalize().unwrap();
         let policy = ServerPolicy {
+            security_authority: SecurityAuthority::from_toml("", Path::new(".")),
             root: root.clone(),
             effective: Ok(Policy {
                 allow_network: true,
@@ -571,6 +746,7 @@ mod tests {
         let tools = super::super::schema::build_tools_list();
         let names = tools.iter().map(|tool| tool.name.clone()).collect();
         let server = ServerPolicy {
+            security_authority: SecurityAuthority::from_toml("", Path::new(".")),
             root: root.clone(),
             effective: Ok(Policy {
                 denied_tools: names,
@@ -601,6 +777,7 @@ mod tests {
             ..Default::default()
         };
         let server = ServerPolicy {
+            security_authority: SecurityAuthority::from_toml("", Path::new(".")),
             root,
             effective: Ok(policy.clone()),
         };
@@ -612,6 +789,7 @@ mod tests {
     fn flag_like_package_arguments_cannot_inject_typed_paths() {
         let root = std::env::current_dir().unwrap().canonicalize().unwrap();
         let server = ServerPolicy {
+            security_authority: SecurityAuthority::from_toml("", Path::new(".")),
             root: root.clone(),
             effective: Ok(Policy {
                 require_sandbox: false,
@@ -645,6 +823,7 @@ mod tests {
             ..Default::default()
         };
         let server = ServerPolicy {
+            security_authority: SecurityAuthority::from_toml("", Path::new(".")),
             root,
             effective: Ok(policy.clone()),
         };

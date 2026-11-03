@@ -8,6 +8,7 @@ pub(crate) use backend::call_project;
 mod maintenance;
 mod resolve;
 mod run;
+mod security;
 
 pub(crate) use install::call_install;
 pub(crate) use maintenance::{
@@ -16,3 +17,4 @@ pub(crate) use maintenance::{
 };
 pub(crate) use resolve::call_resolve;
 pub(crate) use run::call_run;
+pub(crate) use security::call_security_check;

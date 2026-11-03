@@ -2,9 +2,98 @@
 use super::*;
 use std::time::Instant;
 
+const SECURITY_FAILURE_BYTES: usize = 4096;
+// Fixed JSON-RPC/content framing, excluding the caller-supplied request ID.
+const SECURITY_RPC_RESERVE: usize = 128;
+
+fn bounded_security_body(value: Value, max_bytes: usize) -> Value {
+    use crate::security_assessment::{
+        ObservationDiagnostic,
+        check::{CheckOmissions, check_json, check_wire_fits, failed_check},
+    };
+    let fits = |value: &Value| check_wire_fits(value, max_bytes, SECURITY_RPC_RESERVE);
+    if fits(&value) {
+        return value;
+    }
+    let len = |value: &Value| value.as_array().map_or(0, Vec::len);
+    let omitted = |field: &str| value["omitted"][field].as_u64().unwrap_or(0) as usize;
+    let packages = value["assessment"]["packages"]
+        .as_array()
+        .into_iter()
+        .flatten();
+    let total = value["threshold_match_count"].as_u64().unwrap_or(0) as usize;
+    let mut summary = failed_check(
+        ObservationDiagnostic::new(
+            "E_SECURITY_OUTPUT_LIMIT",
+            "The MCP output exceeded its authorized wire size; omitted evidence and matches are counted.",
+        ),
+        3,
+    );
+    summary.threshold_match_count = total;
+    summary.omitted = Some(CheckOmissions {
+        inventory_instances: omitted("inventory_instances")
+            + len(&value["assessment"]["inventory"]["packages"]),
+        advisory_records: omitted("advisory_records")
+            + value["assessment"]["providers"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .flat_map(|provider| provider["instances"].as_array().into_iter().flatten())
+                .map(|instance| len(&instance["records"]))
+                .sum::<usize>(),
+        finding_clusters: omitted("finding_clusters")
+            + packages
+                .clone()
+                .map(|package| len(&package["installed"]["clusters"]))
+                .sum::<usize>(),
+        candidate_checks: omitted("candidate_checks")
+            + packages
+                .map(|package| len(&package["candidates"]))
+                .sum::<usize>(),
+        threshold_matches: total,
+    });
+    let mut summary = check_json(&summary);
+    for field in [
+        "assessment_id",
+        "observation_id",
+        "profile_id",
+        "policy_digest",
+        "policy_applied",
+        "rate_limit_applied",
+    ] {
+        if let Some(metadata) = value.get(field) {
+            let previous = summary.get(field).cloned();
+            summary[field] = metadata.clone();
+            if !fits(&summary) {
+                if let Some(previous) = previous {
+                    summary[field] = previous;
+                } else {
+                    summary.as_object_mut().unwrap().remove(field);
+                }
+            }
+        }
+    }
+    for matched in value["threshold_matches"].as_array().into_iter().flatten() {
+        summary["threshold_matches"]
+            .as_array_mut()
+            .unwrap()
+            .push(matched.clone());
+        let remaining = summary["omitted"]["threshold_matches"].as_u64().unwrap();
+        summary["omitted"]["threshold_matches"] = json!(remaining.saturating_sub(1));
+        if !fits(&summary) {
+            summary["threshold_matches"].as_array_mut().unwrap().pop();
+            summary["omitted"]["threshold_matches"] = json!(remaining);
+            break;
+        }
+    }
+    summary
+}
+
 // Tool handlers may return a failed execution inside an otherwise valid payload.
 fn tool_content_failed(tool: &str, value: &Value) -> bool {
     value["status"] == "error"
+        || (tool == "pybun_security_check"
+            && (value["status"] != "complete" || value["exit_code"] != 0))
         || (matches!(tool, "pybun_run" | "pybun_test")
             && value["exit_code"].as_i64().is_some_and(|code| code != 0))
         || (tool == "pybun_test"
@@ -32,7 +121,9 @@ impl McpServer {
         {
             let result = Err(rejected.value(&config, tool).to_string());
             // A rejected call may persist its security audit event, but never enters a tool.
-            if let Err(error) = self.audit_log.prepare_for_call(&json!({})) {
+            if tool != "pybun_security_check"
+                && let Err(error) = self.audit_log.prepare_for_call(&json!({}))
+            {
                 eprintln!("warning: failed to prepare rate-limit audit: {error}");
             }
             let entry = audit::build_audit_entry(
@@ -41,10 +132,17 @@ impl McpServer {
                 args,
                 &result,
                 self.audit_log.config.hash_inputs,
-                audit::AuditDiff::default(),
+                audit::AuditDiff {
+                    complete: tool != "pybun_security_check",
+                    ..Default::default()
+                },
                 0,
             );
-            self.audit_log.record(entry);
+            if tool == "pybun_security_check" {
+                self.audit_log.record_memory(entry);
+            } else {
+                self.audit_log.record(entry);
+            }
             return result.map(|_| ());
         }
         Ok(())
@@ -65,6 +163,10 @@ impl McpServer {
     pub(super) async fn handle_tools_call(&mut self, id: Value, params: Value) -> JsonRpcResponse {
         let tool_name = params.get("name").and_then(|n| n.as_str()).unwrap_or("");
         let tool_args = params.get("arguments").cloned().unwrap_or(json!({}));
+
+        if tool_name == "pybun_security_check" {
+            return self.handle_security_check(id, tool_args).await;
+        }
 
         let backend = if crate::backend::native_selected() {
             "native"
@@ -165,6 +267,144 @@ impl McpServer {
         }
     }
 
+    async fn handle_security_check(&mut self, id: Value, requested: Value) -> JsonRpcResponse {
+        use crate::security_assessment::{
+            ObservationDiagnostic,
+            check::{CheckUpdatesRequest, check_json, failed_check},
+            qualification::schedule::AssessmentContinuation,
+        };
+        let start = Instant::now();
+        let request = serde_json::from_value::<CheckUpdatesRequest>(requested.clone());
+        let request = match request {
+            Ok(request) => request,
+            Err(_) => {
+                let value = check_json(&failed_check(
+                    ObservationDiagnostic::new(
+                        "E_SECURITY_REQUEST",
+                        "Security-check arguments are invalid or contain unsupported fields.",
+                    ),
+                    2,
+                ));
+                return self.finish_security_check(
+                    id,
+                    &requested,
+                    value,
+                    start.elapsed().as_millis() as u64,
+                    SECURITY_FAILURE_BYTES,
+                );
+            }
+        };
+        if let Some(cursor) = &request.continuation
+            && let Err(diagnostic) = AssessmentContinuation::parse(cursor.as_str())
+        {
+            let value = check_json(&failed_check(diagnostic, 2));
+            return self.finish_security_check(
+                id,
+                &requested,
+                value,
+                start.elapsed().as_millis() as u64,
+                SECURITY_FAILURE_BYTES,
+            );
+        }
+        let grant = match self.policy.security_check_grant(&request) {
+            Ok(grant) => grant,
+            Err(diagnostic) => {
+                let mut value = check_json(&failed_check(diagnostic, 3));
+                value["policy_applied"] = json!({"authorized":false});
+                return self.finish_security_check(
+                    id,
+                    &requested,
+                    value,
+                    start.elapsed().as_millis() as u64,
+                    SECURITY_FAILURE_BYTES,
+                );
+            }
+        };
+        let prepared = match self.policy.prepare_security_check(&request, grant) {
+            Ok(prepared) => prepared,
+            Err(diagnostic) => {
+                let mut value = check_json(&failed_check(diagnostic, 3));
+                value["policy_applied"] = json!({"authorized":false});
+                return self.finish_security_check(
+                    id,
+                    &requested,
+                    value,
+                    start.elapsed().as_millis() as u64,
+                    SECURITY_FAILURE_BYTES,
+                );
+            }
+        };
+        let max_output_bytes = prepared.check.max_output_bytes();
+        if let Err(rejected) = self.admit_tool("pybun_security_check", &requested) {
+            // admit_tool already retained this denial in memory, never on disk.
+            let rejected: Value = serde_json::from_str(&rejected).expect("rate rejection is JSON");
+            let mut value = check_json(&failed_check(
+                ObservationDiagnostic::new(
+                    "mcp.rate_limit_exceeded",
+                    "The MCP call rate limit was exceeded.",
+                ),
+                3,
+            ));
+            for key in ["retry_after_ms", "rate_limit_applied"] {
+                if let Some(decoration) = rejected.get(key) {
+                    value[key] = decoration.clone();
+                }
+            }
+            let value = bounded_security_body(value, max_output_bytes);
+            return JsonRpcResponse::success(
+                id,
+                json!({"content":[{"type":"text","text":value.to_string()}],"isError":true}),
+            );
+        }
+        let mut value = tools::call_security_check(prepared.check).await;
+        value["policy_applied"] = prepared.applied;
+        value["rate_limit_applied"] =
+            json!({"admitted":true,"limits":self.rate_config().describe("pybun_security_check")});
+        self.finish_security_check(
+            id,
+            &requested,
+            value,
+            start.elapsed().as_millis() as u64,
+            max_output_bytes,
+        )
+    }
+
+    fn finish_security_check(
+        &mut self,
+        id: Value,
+        requested: &Value,
+        value: Value,
+        duration_ms: u64,
+        max_output_bytes: usize,
+    ) -> JsonRpcResponse {
+        let value = bounded_security_body(value, max_output_bytes);
+        let failed = tool_content_failed("pybun_security_check", &value);
+        let text = value.to_string();
+        let recorded = if failed {
+            Err(text.clone())
+        } else {
+            Ok(text.clone())
+        };
+        let entry = audit::build_audit_entry(
+            &self.session_id,
+            "pybun_security_check",
+            requested,
+            &recorded,
+            self.audit_log.config.hash_inputs,
+            audit::AuditDiff {
+                writes: vec![],
+                complete: false,
+            },
+            duration_ms,
+        );
+        self.audit_log.record_memory(entry);
+        let mut result = json!({"content":[{"type":"text","text":text}]});
+        if failed {
+            result["isError"] = json!(true);
+        }
+        JsonRpcResponse::success(id, result)
+    }
+
     pub(super) fn handle_resources_read(&mut self, id: Value, params: Value) -> JsonRpcResponse {
         let uri = params.get("uri").and_then(|u| u.as_str()).unwrap_or("");
 
@@ -260,5 +500,47 @@ mod tests {
         ] {
             assert!(!tool_content_failed("pybun_test", &value), "{value}");
         }
+    }
+
+    #[test]
+    fn security_check_failure_classification_distinguishes_findings_and_incomplete_evidence() {
+        assert!(!tool_content_failed(
+            "pybun_security_check",
+            &json!({"status":"complete","exit_code":0,"threshold_matches":[]})
+        ));
+        for value in [
+            json!({"status":"complete","exit_code":1,"threshold_matches":[{}]}),
+            json!({"status":"partial","exit_code":3,"threshold_matches":[{}]}),
+            json!({"status":"error","exit_code":3}),
+        ] {
+            assert!(tool_content_failed("pybun_security_check", &value));
+        }
+        assert!(!tool_content_failed(
+            "pybun_audit",
+            &json!({"status":"partial","exit_code":3})
+        ));
+    }
+
+    #[test]
+    fn final_wire_fallback_keeps_match_totals_and_explicit_omissions() {
+        let body = json!({"contract_version":"2","status":"complete","exit_code":1,
+            "assessment_id":"semantic-id","threshold_match_count":2,
+            "threshold_matches":[{"instance_id":"a","advisory_ids":["TEST-1"]},{"instance_id":"b","advisory_ids":["TEST-2"]}],
+            "assessment":{"inventory":{"packages":[{},{}]},"providers":[{"instances":[{"records":[{},{},{}]}]}],"packages":[{"installed":{"clusters":[{},{}]},"candidates":[{}]}]},
+            "policy_applied":{"large_metadata":"x".repeat(20_000)}});
+        let bounded = bounded_security_body(body, 4096);
+        assert_eq!(bounded["diagnostics"][0]["code"], "E_SECURITY_OUTPUT_LIMIT");
+        assert_eq!(bounded["exit_code"], 3);
+        assert_eq!(bounded["threshold_match_count"], 2);
+        assert_eq!(bounded["omitted"]["inventory_instances"], 2);
+        assert_eq!(bounded["omitted"]["advisory_records"], 3);
+        assert_eq!(bounded["omitted"]["finding_clusters"], 2);
+        assert_eq!(bounded["omitted"]["candidate_checks"], 1);
+        assert_eq!(bounded["assessment_id"], "semantic-id");
+        assert!(crate::security_assessment::check::check_wire_fits(
+            &bounded,
+            4096,
+            SECURITY_RPC_RESERVE
+        ));
     }
 }

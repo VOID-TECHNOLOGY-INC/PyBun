@@ -8,7 +8,35 @@ use super::Tool;
 use serde_json::json;
 
 pub(super) fn build_tools_list() -> Vec<Tool> {
+    let limits =
+        serde_json::to_value(crate::security_assessment::ObservationLimits::default()).unwrap();
+    let limit_properties: serde_json::Map<String, serde_json::Value> = limits
+        .as_object()
+        .unwrap()
+        .iter()
+        .map(|(name, cap)| {
+            (
+                name.clone(),
+                json!({"type":"integer","minimum":1,"maximum":cap}),
+            )
+        })
+        .collect();
+    let required_limits: Vec<_> = limit_properties.keys().cloned().collect();
     let mut tools = vec![
+        Tool {
+            name: "pybun_security_check".into(),
+            description: "Read-only security update assessment of an explicitly granted, frozen operator profile. Does not install, resolve, update, or register a monitor. Default denied; requires compatible metadata/HTTP capabilities. Offline mode makes no provider requests.".into(),
+            input_schema: json!({"type":"object","additionalProperties":false,"properties":{
+                "profile":{"type":["string","null"],"description":"Operator-granted profile selector; unavailable profiles are not enumerated."},
+                "project":{"type":["string","null"],"description":"Optional project selection; must match the frozen profile exactly."},
+                "target":{"type":"string","enum":["installed","locked"],"default":"installed","description":"Locked inventory is currently an explicit unsupported result; never falls back."},
+                "mode":{"type":"string","enum":["online","offline","online_with_cache_fallback"],"default":"online"},
+                "limits":{"type":["object","null"],"additionalProperties":false,"properties":limit_properties,"required":required_limits},
+                "max_cache_age_seconds":{"type":["integer","null"],"minimum":0},
+                "fail_on":{"enum":["low","medium","high","critical",null]},
+                "continuation":{"type":["string","null"],"maxLength":524288,"description":"Named assessment continuation, not a monitor event cursor."}
+            }}),
+        },
         Tool {
             name: "pybun_why".into(),
             description: "Explain every known path to a package from the active backend's frozen lock graph; does not resolve or sync. Reports conditional/extra/group/workspace and unknown provenance.".into(),

@@ -1,0 +1,198 @@
+{
+  "command": "pybun audit check-updates",
+  "detail": {
+    "assessment": {
+      "assessment_version": 1,
+      "continuation": "eyJzY2hlbWFfdmVyc2lvbiI6MSwiZG9tYWluX2RpZ2VzdCI6IjM1ZmY5YmExODNiODU4OGRlNWJmZGI4Mjk2OWM1ZTA1ZDRkOWUwMzEzMzliZTQ4OWI0ZDY2ZDBlZTBhZGNhNzkiLCJuZXh0X3BhY2thZ2UiOjAsImFkbWlzc2lvbl93aWR0aCI6MTAwLCJwYWNrYWdlcyI6W119",
+      "coverage": {
+        "complete": 0,
+        "errors": 0,
+        "partial": 0,
+        "reasons": [],
+        "requested": 0,
+        "status": "complete",
+        "unsupported": 0
+      },
+      "diagnostics": [],
+      "evidence_coverage": {
+        "advisory_records": {
+          "complete": 0,
+          "errors": 0,
+          "partial": 0,
+          "reasons": [],
+          "requested": 0,
+          "status": "complete",
+          "unsupported": 0
+        },
+        "candidate_checks": {
+          "complete": 0,
+          "errors": 0,
+          "partial": 0,
+          "reasons": [],
+          "requested": 0,
+          "status": "complete",
+          "unsupported": 0
+        },
+        "finding_clusters": {
+          "complete": 0,
+          "errors": 0,
+          "partial": 0,
+          "reasons": [],
+          "requested": 0,
+          "status": "complete",
+          "unsupported": 0
+        },
+        "inventory_instances": {
+          "complete": 0,
+          "errors": 0,
+          "partial": 0,
+          "reasons": [],
+          "requested": 0,
+          "status": "complete",
+          "unsupported": 0
+        }
+      },
+      "invalidated_instances": [],
+      "inventory": {
+        "coverage": {
+          "advisory_records": {
+            "complete": 0,
+            "errors": 0,
+            "partial": 0,
+            "reasons": [],
+            "requested": 0,
+            "status": "complete",
+            "unsupported": 0
+          },
+          "candidate_checks": {
+            "complete": 0,
+            "errors": 0,
+            "partial": 0,
+            "reasons": [],
+            "requested": 0,
+            "status": "complete",
+            "unsupported": 0
+          },
+          "finding_clusters": {
+            "complete": 0,
+            "errors": 0,
+            "partial": 0,
+            "reasons": [],
+            "requested": 0,
+            "status": "complete",
+            "unsupported": 0
+          },
+          "inventory_instances": {
+            "complete": 0,
+            "errors": 0,
+            "partial": 0,
+            "reasons": [],
+            "requested": 0,
+            "status": "complete",
+            "unsupported": 0
+          }
+        },
+        "diagnostics": [],
+        "direct_constraints": [],
+        "inventory_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "observation_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "observation_version": 1,
+        "observed_at": 20,
+        "packages": [],
+        "target": {
+          "backend": "uv",
+          "environment_fingerprint": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "environment_root": "/fixture/.venv",
+          "inspector": "/operator/python",
+          "interpreter": "/fixture/.venv/bin/python",
+          "interpreter_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "interpreter_identity_evidence": "controlled_fixture",
+          "kind": "installed",
+          "lock_digest": null,
+          "marker_environment": {
+            "implementation_name": "cpython",
+            "implementation_version": "3.13.0",
+            "os_name": "posix",
+            "platform_machine": "x86_64",
+            "platform_python_implementation": "CPython",
+            "platform_release": "fixture",
+            "platform_system": "Linux",
+            "platform_version": "fixture",
+            "python_full_version": "3.13.0",
+            "python_version": "3.13",
+            "sys_platform": "linux"
+          },
+          "project_digest": null,
+          "project_root": "/fixture",
+          "scope": {
+            "extras": [],
+            "groups": [],
+            "members": []
+          },
+          "tag_profile": {
+            "architecture": "x86_64",
+            "deployment": null,
+            "digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "generator": "controlled_fixture",
+            "generator_version": "1",
+            "implementation": "cpython",
+            "libc": "glibc-2.34",
+            "os": "linux",
+            "profile_version": 1,
+            "python_version": "3.13.0",
+            "tags": [
+              "py3-none-any"
+            ]
+          }
+        }
+      },
+      "packages": [],
+      "provenance": null,
+      "providers": [
+        {
+          "advisory_records": {
+            "complete": 0,
+            "errors": 0,
+            "partial": 0,
+            "reasons": [],
+            "requested": 0,
+            "status": "complete",
+            "unsupported": 0
+          },
+          "coverage": {
+            "complete": 0,
+            "errors": 0,
+            "partial": 0,
+            "reasons": [],
+            "requested": 0,
+            "status": "complete",
+            "unsupported": 0
+          },
+          "diagnostics": [],
+          "instances": [],
+          "observation_version": 1,
+          "observed_at": 20,
+          "provider_id": "fixture-advisory"
+        }
+      ],
+      "unknown_remainder": false
+    },
+    "assessment_id": "dbc6401d82b415c911a43766bd693d2f3f9fbce3b66eebcb9d9c41f0c44f1528",
+    "assessment_version": 1,
+    "contract_version": "2",
+    "diagnostics": [],
+    "exit_code": 0,
+    "observation_id": "8bce3b864414f9eafe534423dbb9aa5af8846fb2c6b603de0068de4b4f21a161",
+    "operation": "security_check",
+    "policy_digest": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "profile_id": "fixture-profile",
+    "status": "complete",
+    "threshold_match_count": 0,
+    "threshold_matches": []
+  },
+  "diagnostics": [],
+  "duration_ms": 0,
+  "events": [],
+  "status": "ok",
+  "version": "2"
+}
