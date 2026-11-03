@@ -1,4 +1,8 @@
 //! Explicit monitor operations shared by CLI and MCP. Persist before rendering.
+mod blocking;
+#[cfg(test)]
+mod blocking_tests;
+use blocking::task;
 mod request;
 mod result;
 pub use request::MonitorRequest;
@@ -93,30 +97,57 @@ fn configuration(profile: &DeclaredMonitorProfile, name: String) -> MonitorConfi
     }
 }
 
-async fn task<T: Send + 'static>(
+fn prepare_authorized_ticket(
+    store: &MonitorStore,
+    expected: Registration,
+    replacement: Option<MonitorConfig>,
+) -> MonitorResult<PreparedCheck> {
+    let expected = if let Some(config) = replacement {
+        store.configure(&expected.monitor_id, expected.config_revision, config)?
+    } else {
+        expected
+    };
+    store.prepare_check_expected(&expected)
+}
+
+fn narrow_store_deadline(
+    mut store: Arc<MonitorStore>,
     deadline: Instant,
-    write: bool,
-    operation: impl FnOnce() -> MonitorResult<T> + Send + 'static,
-) -> MonitorResult<T> {
-    let work = tokio::task::spawn_blocking(move || {
-        if Instant::now() >= deadline {
-            return Err(MonitorError::new("E_SECURITY_DEADLINE"));
-        }
-        operation()
-    });
-    if write {
-        // Wait for an in-flight atomic operation to classify its actual result.
-        // The queued entry and every store mutation still use the original
-        // deadline; cancellation must not detach a state-writing worker.
-        return work
-            .await
-            .unwrap_or_else(|_| Err(MonitorError::new("E_MONITOR_STATE").indeterminate()));
+) -> MonitorResult<Arc<MonitorStore>> {
+    let unique =
+        Arc::get_mut(&mut store).ok_or_else(|| MonitorError::new("E_MONITOR_STATE_BUSY"))?;
+    unique.options.deadline = Some(
+        unique
+            .options
+            .deadline
+            .map_or(deadline, |existing| existing.min(deadline)),
+    );
+    Ok(store)
+}
+
+fn read_authorized_events(
+    store: &MonitorStore,
+    expected: &Registration,
+    after: Option<&EventReplayCursor>,
+) -> MonitorResult<ReplayPage> {
+    store.events_expected(expected, after)
+}
+fn remove_authorized_registration(
+    store: &MonitorStore,
+    expected: &Registration,
+) -> MonitorResult<bool> {
+    store.remove_expected(expected)
+}
+fn configure_authorized_registration(
+    store: &MonitorStore,
+    expected: &Registration,
+    client_revision: u64,
+    replacement: MonitorConfig,
+) -> MonitorResult<Registration> {
+    if client_revision != expected.config_revision {
+        return Err(MonitorError::new("E_MONITOR_STALE_CONFIG"));
     }
-    match tokio::time::timeout_at(deadline.into(), work).await {
-        Ok(Ok(result)) => result,
-        Ok(Err(_)) => Err(MonitorError::new("E_MONITOR_STATE")),
-        Err(_) => Err(MonitorError::new("E_SECURITY_DEADLINE")),
-    }
+    store.configure(&expected.monitor_id, expected.config_revision, replacement)
 }
 
 /// The caller has already completed transport admission. No durable audit or
@@ -390,7 +421,7 @@ async fn execute_inner(
         Ok(current) if scope.permits(&current) => current,
         _ => return unavailable(&request),
     };
-    let changed = declared(&current) != registration.config.domain.declared();
+    let changed = configuration(&current, registration.config.name.clone()) != registration.config;
     if changed
         && !matches!(
             request,
@@ -402,17 +433,20 @@ async fn execute_inner(
     let profile_deadline =
         (started + Duration::from_millis(current.limits.total_timeout_ms)).min(deadline);
     let output_limit = current.max_output_bytes;
+    let store = match narrow_store_deadline(store, profile_deadline) {
+        Ok(store) => store,
+        Err(error) => return MonitorResponse::error(action, error),
+    };
     if malformed_cursor {
         if changed {
             return unavailable(&request);
         }
-        let id = registration.monitor_id.clone();
         let mut response = match task(profile_deadline, false, move || {
             current
                 .authorize(profile_deadline)
                 .map_err(|error| MonitorError::new(&error.code))?;
             let mut error = MonitorError::new("E_MONITOR_CURSOR_SCOPE");
-            error.replay = match store.events(&id, None) {
+            error.replay = match read_authorized_events(&store, &registration, None) {
                 Ok(replay) => Some(Box::new(replay)),
                 Err(existing) if existing.replay.is_some() => existing.replay,
                 Err(existing) => return Err(existing),
@@ -428,12 +462,12 @@ async fn execute_inner(
         return response;
     }
     let mut response = match request {
-        MonitorRequest::Events { monitor_id, .. } => {
+        MonitorRequest::Events { .. } => {
             match task(profile_deadline, false, move || {
                 current
                     .authorize(profile_deadline)
                     .map_err(|error| MonitorError::new(&error.code))?;
-                store.events(&monitor_id, after.as_ref())
+                read_authorized_events(&store, &registration, after.as_ref())
             })
             .await
             {
@@ -445,16 +479,17 @@ async fn execute_inner(
                     }
                     result.current = Some(replay.current.clone());
                     result.replay = Some(replay);
+                    result.require_resynchronization();
                     result
                 }
                 Err(error) => MonitorResponse::error(action, error),
             }
         }
-        MonitorRequest::Remove { monitor_id, .. } => match task(profile_deadline, true, move || {
+        MonitorRequest::Remove { .. } => match task(profile_deadline, true, move || {
             current
                 .authorize(profile_deadline)
                 .map_err(|error| MonitorError::new(&error.code))?;
-            store.remove(&monitor_id)
+            remove_authorized_registration(&store, &registration)
         })
         .await
         {
@@ -467,7 +502,6 @@ async fn execute_inner(
             Err(error) => MonitorResponse::error(action, error),
         },
         MonitorRequest::Configure {
-            monitor_id,
             expected_revision,
             profile,
             ..
@@ -481,7 +515,7 @@ async fn execute_inner(
                 Ok(profile) if scope.permits(&profile) => profile,
                 _ => return MonitorResponse::failure(action, inaccessible(), 3),
             };
-            let config = configuration(&replacement, registration.config.name);
+            let config = configuration(&replacement, registration.config.name.clone());
             match task(profile_deadline, true, move || {
                 current
                     .authorize(profile_deadline)
@@ -489,7 +523,7 @@ async fn execute_inner(
                 replacement
                     .authorize(profile_deadline)
                     .map_err(|error| MonitorError::new(&error.code))?;
-                store.configure(&monitor_id, expected_revision, config)
+                configure_authorized_registration(&store, &registration, expected_revision, config)
             })
             .await
             {
@@ -503,7 +537,6 @@ async fn execute_inner(
             }
         }
         MonitorRequest::Check {
-            monitor_id,
             mode,
             fail_on,
             max_cache_age_seconds,
@@ -528,7 +561,9 @@ async fn execute_inner(
             };
             let ticket = match task(profile_deadline, true, {
                 let store = store.clone();
-                move || store.prepare_check(&monitor_id)
+                let replacement =
+                    changed.then(|| configuration(&current, registration.config.name.clone()));
+                move || prepare_authorized_ticket(&store, registration, replacement)
             })
             .await
             {
@@ -670,33 +705,59 @@ async fn check_observation(
         context.domain.runtime = Some(RuntimeIdentity::from_target(target));
     }
     let max_output_bytes = raw.authorized.max_output_bytes;
-    let completed = tokio::task::spawn_blocking(move || {
-        // Always return observed facts, even if this worker was queued past the
-        // deadline or a stale generation rejects the subsequent state commit.
-        let check = raw.prepare_observed(assessment);
-        let outcome = if Instant::now() >= deadline {
-            Err(MonitorError::new("E_SECURITY_DEADLINE"))
-        } else {
-            store.commit_check(
-                &ticket,
-                check
-                    .assessment
-                    .as_ref()
-                    .expect("unbounded prepared assessment"),
-                context,
-                after.as_ref(),
-            )
-        };
-        (check, outcome)
+    let fail_on = raw.authorized.fail_on;
+    let check = match raw.prepare_observed(assessment).await {
+        Ok(check) => check,
+        Err(check) => {
+            let error = check
+                .diagnostics
+                .first()
+                .cloned()
+                .unwrap_or_else(|| diagnostic("E_SECURITY_DEADLINE"));
+            let mut response = MonitorResponse::failure("check", error, 3);
+            response.status = "partial".into();
+            response.check = Some(crate::security_assessment::check::bound_output(
+                *check,
+                max_output_bytes,
+            ));
+            return response;
+        }
+    };
+    let mut fallback = crate::security_assessment::check::deferred_observation_summary(
+        check
+            .assessment
+            .as_ref()
+            .expect("completed unbounded assessment"),
+        check.profile_id.as_deref().expect("authorized profile"),
+        check.policy_digest.as_deref().expect("authorized policy"),
+        fail_on,
+        max_output_bytes,
+        diagnostic("E_SECURITY_DEADLINE"),
+    );
+    fallback.assessment_id = check.assessment_id.clone();
+    fallback.observation_id = check.observation_id.clone();
+    let completed = task(deadline, true, move || {
+        let outcome = store.commit_check(
+            &ticket,
+            check
+                .assessment
+                .as_ref()
+                .expect("unbounded prepared assessment"),
+            context,
+            after.as_ref(),
+        );
+        Ok((check, outcome))
     })
     .await;
     let (check, outcome) = match completed {
         Ok(completed) => completed,
-        Err(_) => {
-            return MonitorResponse::error(
-                "check",
-                MonitorError::new("E_MONITOR_STATE").indeterminate(),
-            );
+        Err(error) => {
+            let mut response = MonitorResponse::error("check", error);
+            response.check = Some(crate::security_assessment::check::bound_output(
+                fallback,
+                max_output_bytes,
+            ));
+            return response;
         }
     };
     let check = crate::security_assessment::check::bound_output(check, max_output_bytes);

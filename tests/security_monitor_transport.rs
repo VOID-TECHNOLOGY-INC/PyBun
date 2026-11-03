@@ -416,7 +416,11 @@ fn operator_provider_change_resets_without_old_evidence_or_resolution() {
     );
     let mut session = fixture::Session::start(root.path(), &config);
     let reset = session.call(json!({"action":"check","monitor_id":id}));
-    assert_eq!(reset["exit_code"], 0, "{reset}");
+    assert_eq!(
+        reset["exit_code"], 3,
+        "a new epoch requires explicit consumer resynchronization: {reset}"
+    );
+    assert_eq!(reset["current"]["complete"], true);
     assert_ne!(
         reset["current"]["epoch_id"],
         baseline["current"]["epoch_id"]
@@ -449,4 +453,56 @@ fn operator_provider_change_resets_without_old_evidence_or_resolution() {
     old_query.assert_calls(1);
     new_query.assert_calls(1);
     old_id_leak.assert_calls(0);
+}
+
+#[test]
+fn lost_checkpoint_recovery_returns_its_authorized_new_epoch_not_a_stale_ticket() {
+    let server = MockServer::start();
+    let (root, state, config) = fixture::fixture(&server, true);
+    server.mock(|when, then| {
+        when.method(POST).path("/v1/querybatch");
+        then.json_body(json!({"results":[{}]}));
+    });
+    let mut session = fixture::Session::start(root.path(), &config);
+    let added = session.call(json!({"action":"add","name":"app","profile":"app"}));
+    let id = added["registration"]["monitor_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let baseline = session.call(json!({"action":"check","monitor_id":id}));
+    assert_eq!(baseline["exit_code"], 0, "{baseline}");
+    let checkpoints: Vec<_> = fs::read_dir(state.path().join("state"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "json")
+                && path.file_name().unwrap() != "registry.json"
+        })
+        .collect();
+    assert_eq!(checkpoints.len(), 1);
+    fs::remove_file(&checkpoints[0]).unwrap();
+    let recovered = session.call(json!({"action":"check","monitor_id":id}));
+    assert_eq!(recovered["exit_code"], 3, "{recovered}");
+    assert_eq!(recovered["commit_status"], "committed", "{recovered}");
+    assert_ne!(
+        recovered["current"]["epoch_id"],
+        baseline["current"]["epoch_id"]
+    );
+    assert_eq!(recovered["current"]["complete"], true);
+    assert!(
+        recovered["newly_committed_events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| event["event_type"] == "observation_reset")
+    );
+    assert!(
+        !recovered["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == "E_MONITOR_STALE_CHECK")
+    );
+    session.finish();
 }

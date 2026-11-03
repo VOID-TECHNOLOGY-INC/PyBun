@@ -302,16 +302,19 @@ impl RawCheckContext {
         })
     }
 
-    pub(crate) fn prepare_observed(
+    pub(crate) async fn prepare_observed(
         self,
         assessment: super::qualification::service::SecurityAssessment,
-    ) -> CheckUpdatesResult {
-        prepare_assessment(
+    ) -> Result<CheckUpdatesResult, Box<CheckUpdatesResult>> {
+        prepare_monitor_assessment(
             assessment,
             self.authorized.profile_id,
             self.authorized.policy_digest,
             self.authorized.fail_on,
+            self.authorized.max_output_bytes,
+            self.authorized.deadline,
         )
+        .await
     }
 
     pub(crate) async fn finish(
@@ -371,8 +374,20 @@ fn prepare_assessment(
     policy_digest: String,
     fail_on: Option<CheckSeverityThreshold>,
 ) -> CheckUpdatesResult {
-    use super::{CoverageStatus, qualification::evidence::AffectedStatus};
-    let threshold_matches = fail_on
+    let matches = threshold_matches(&assessment, fail_on);
+    let identities = (
+        super::semantic::assessment_id(&assessment, &policy_digest),
+        super::semantic::observation_id(&assessment),
+    );
+    assembled_assessment(assessment, profile_id, policy_digest, matches, identities)
+}
+
+fn threshold_matches(
+    assessment: &super::qualification::service::SecurityAssessment,
+    fail_on: Option<CheckSeverityThreshold>,
+) -> Vec<ThresholdMatch> {
+    use super::qualification::evidence::AffectedStatus;
+    fail_on
         .map(|threshold| {
             assessment
                 .packages
@@ -395,7 +410,17 @@ fn prepare_assessment(
                 })
                 .collect::<Vec<_>>()
         })
-        .unwrap_or_default();
+        .unwrap_or_default()
+}
+
+fn assembled_assessment(
+    assessment: super::qualification::service::SecurityAssessment,
+    profile_id: String,
+    policy_digest: String,
+    threshold_matches: Vec<ThresholdMatch>,
+    identities: (String, String),
+) -> CheckUpdatesResult {
+    use super::CoverageStatus;
     let incomplete = assessment.coverage.status != CoverageStatus::Complete;
     CheckUpdatesResult {
         contract_version: "2".into(),
@@ -409,8 +434,8 @@ fn prepare_assessment(
         } else {
             1
         },
-        assessment_id: Some(super::semantic::assessment_id(&assessment, &policy_digest)),
-        observation_id: Some(super::semantic::observation_id(&assessment)),
+        assessment_id: Some(identities.0),
+        observation_id: Some(identities.1),
         profile_id: Some(profile_id),
         policy_digest: Some(policy_digest),
         diagnostics: assessment.diagnostics.clone(),
@@ -419,6 +444,136 @@ fn prepare_assessment(
         threshold_matches,
         omitted: None,
     }
+}
+
+/// Cheap bounded evidence survives queued/failed semantic preparation or a
+/// rejected commit. It is explicitly an observation summary, never durable state.
+pub(crate) fn deferred_observation_summary(
+    assessment: &super::qualification::service::SecurityAssessment,
+    profile_id: &str,
+    policy_digest: &str,
+    fail_on: Option<CheckSeverityThreshold>,
+    max_bytes: usize,
+    error: super::ObservationDiagnostic,
+) -> CheckUpdatesResult {
+    use super::qualification::evidence::AffectedStatus;
+    let mut result = failed_check(error, 3);
+    result.status = "partial".into();
+    result.profile_id = Some(profile_id.into());
+    result.policy_digest = Some(policy_digest.into());
+    let mut retained_bytes = 0;
+    if let Some(threshold) = fail_on {
+        for package in &assessment.packages {
+            for cluster in &package.installed.clusters {
+                if cluster.affected != AffectedStatus::Yes
+                    || !threshold.matches_severity(&cluster.severity)
+                {
+                    continue;
+                }
+                result.threshold_match_count += 1;
+                if result.threshold_matches.len() < 8 {
+                    let bytes = 512
+                        + 2 * package.instance_id.len()
+                        + cluster.ids.iter().map(|id| 2 * id.len()).sum::<usize>();
+                    if retained_bytes + bytes <= max_bytes / 4 {
+                        retained_bytes += bytes;
+                        result.threshold_matches.push(ThresholdMatch {
+                            instance_id: package.instance_id.clone(),
+                            advisory_ids: cluster.ids.clone(),
+                            severity: cluster.severity,
+                            threshold,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    result.omitted = Some(CheckOmissions {
+        inventory_instances: assessment.inventory.packages.len(),
+        advisory_records: assessment
+            .providers
+            .iter()
+            .flat_map(|provider| &provider.instances)
+            .map(|instance| instance.records.len())
+            .sum(),
+        finding_clusters: assessment
+            .packages
+            .iter()
+            .map(|package| package.installed.clusters.len())
+            .sum(),
+        candidate_checks: assessment
+            .packages
+            .iter()
+            .map(|package| package.candidates.len())
+            .sum(),
+        threshold_matches: result.threshold_match_count - result.threshold_matches.len(),
+    });
+    result
+}
+
+async fn prepare_monitor_assessment(
+    assessment: super::qualification::service::SecurityAssessment,
+    profile_id: String,
+    policy_digest: String,
+    fail_on: Option<CheckSeverityThreshold>,
+    max_bytes: usize,
+    deadline: std::time::Instant,
+) -> Result<CheckUpdatesResult, Box<CheckUpdatesResult>> {
+    let mut fallback = deferred_observation_summary(
+        &assessment,
+        &profile_id,
+        &policy_digest,
+        fail_on,
+        max_bytes,
+        check_deadline_error(),
+    );
+    let assessment = std::sync::Arc::new(assessment);
+    let input = assessment.clone();
+    let policy = policy_digest.clone();
+    let mut work = tokio::task::spawn_blocking(move || {
+        let check = || {
+            if std::time::Instant::now() >= deadline {
+                Err(check_deadline_error())
+            } else {
+                Ok(())
+            }
+        };
+        check()?;
+        let matches = threshold_matches(&input, fail_on);
+        check()?;
+        let semantic_id = super::semantic::assessment_id(&input, &policy);
+        check()?;
+        let observation_id = super::semantic::observation_id(&input);
+        check()?;
+        Ok::<_, super::ObservationDiagnostic>((matches, (semantic_id, observation_id)))
+    });
+    let (matches, identities) = match tokio::time::timeout_at(deadline.into(), &mut work).await {
+        Ok(Ok(Ok(parts))) => parts,
+        Ok(Ok(Err(error))) => {
+            fallback.diagnostics = vec![error];
+            return Err(Box::new(fallback));
+        }
+        Ok(Err(_)) => {
+            fallback.diagnostics = vec![super::ObservationDiagnostic::new(
+                "E_SECURITY_CHECK_FAILED",
+                "Observed evidence could not be finalized.",
+            )];
+            return Err(Box::new(fallback));
+        }
+        Err(_) => {
+            work.abort();
+            return Err(Box::new(fallback));
+        }
+    };
+    let assessment = std::sync::Arc::try_unwrap(assessment)
+        .expect("completed pure identity worker releases its observation handle");
+    Ok(assembled_assessment(
+        assessment,
+        profile_id,
+        policy_digest,
+        matches,
+        identities,
+    ))
 }
 
 pub(crate) fn bound_output(result: CheckUpdatesResult, max_bytes: usize) -> CheckUpdatesResult {
@@ -666,3 +821,6 @@ mod output_tests {
         assert!(serde_json::to_vec(&bounded).unwrap().len() <= 4096);
     }
 }
+
+#[cfg(test)]
+mod monitor_deadline_tests;

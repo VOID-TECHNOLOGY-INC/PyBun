@@ -75,6 +75,7 @@ impl MonitorResponse {
             response.current = Some(replay.current.clone());
             response.replay = Some(*replay);
         }
+        response.require_resynchronization();
         response
     }
     pub fn failure(action: &str, error: ObservationDiagnostic, exit_code: i32) -> Self {
@@ -97,7 +98,24 @@ impl MonitorResponse {
         }
         response.current = Some(result.current);
         response.replay = Some(result.replay);
+        response.require_resynchronization();
         response
+    }
+    pub(super) fn require_resynchronization(&mut self) {
+        let reset = |event: &MonitorEvent| event.event_type == MonitorEventType::ObservationReset;
+        if self.newly_committed_gap
+            || self.newly_committed_events.iter().any(reset)
+            || self
+                .replay
+                .as_ref()
+                .is_some_and(|page| page.events.iter().any(reset))
+        {
+            self.exit_code = 3;
+            if self.status != "error" {
+                self.status = "partial".into();
+            }
+            self.diagnostics.push(ObservationDiagnostic::new("E_MONITOR_RESYNC_REQUIRED","The event stream changed or has a gap; explicitly persist the current scope/resynchronization cursor before acknowledging events."));
+        }
     }
     pub fn bounded(mut self, max_bytes: usize) -> Self {
         let max_bytes = max_bytes.min(self.output_limit);
@@ -134,11 +152,13 @@ impl MonitorResponse {
         self.newly_committed_events.clear();
         self.newly_committed_truncated = self.newly_committed_count > 0;
         if let Some(replay) = &mut self.replay {
+            if !replay.events.is_empty() {
+                replay.next_cursor = None;
+                replay.has_more = true;
+            }
             replay.events.clear();
             replay.current.findings.clear();
             replay.current.diagnostics.clear();
-            replay.next_cursor = None;
-            replay.has_more = true;
         }
         self.status = "partial".into();
         self.exit_code = 3;
@@ -234,6 +254,25 @@ impl MonitorResponse {
                 event_type.as_str().unwrap_or("unknown"),
                 event.observed_at,
             ));
+        }
+        if let Some(page) = &self.replay {
+            if matches!(self.action.as_str(), "events" | "check") {
+                for event in page.events.iter().filter(|event| {
+                    !self
+                        .newly_committed_events
+                        .iter()
+                        .any(|new| new.event_id == event.event_id)
+                }) {
+                    let event_type = serde_json::to_value(event.event_type).expect("event type");
+                    lines.push(format!(
+                        "Replay event {}: {} observed_at={} (replayed, not a new notification).",
+                        event.event_id,
+                        event_type.as_str().unwrap_or("unknown"),
+                        event.observed_at
+                    ));
+                }
+            }
+            lines.push(format!("Replay page: next_cursor={} has_more={} low_water_mark={} high_water_mark={} resync_cursor={}",page.next_cursor.as_ref().map_or("none",EventReplayCursor::as_str),page.has_more,page.low_water_mark,page.high_water_mark,page.resync_cursor.as_str()));
         }
         for error in &self.diagnostics {
             lines.push(format!("{}: {}", error.code, error.message));

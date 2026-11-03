@@ -196,6 +196,137 @@ fn stale_concurrent_commit_keeps_observed_high_matches_separate_from_durable_sta
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn human_events_replays_event_ids_and_page_cursors_without_new_notifications() {
+    use httpmock::prelude::*;
+    let server = MockServer::start();
+    let (root, _state, config) = fixture::fixture(&server, true);
+    server.mock(|when, then| {
+        when.method(POST).path("/v1/querybatch");
+        then.json_body(serde_json::json!({"results":[{}]}));
+    });
+    let added = fixture::cli(
+        root.path(),
+        &config,
+        &["add", "--name", "app", "--profile", "app"],
+    );
+    let id = added["registration"]["monitor_id"].as_str().unwrap();
+    let checked = fixture::cli(root.path(), &config, &["check", id]);
+    let event = checked["newly_committed_events"][0]["event_id"]
+        .as_str()
+        .unwrap();
+    let cursor = checked["replay"]["next_cursor"].as_str().unwrap();
+    let run = |after: Option<&str>| {
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_pybun"));
+        command
+            .current_dir(root.path())
+            .args(["audit", "monitor", "events", id, "--security-config"])
+            .arg(root.path().join("operator.toml"));
+        if let Some(after) = after {
+            command.args(["--after", after]);
+        }
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        String::from_utf8(output.stdout).unwrap()
+    };
+    let replay = run(None);
+    assert!(
+        replay.contains(event) && replay.contains("baseline_observed"),
+        "{replay}"
+    );
+    assert!(
+        replay.contains("Replay event") && !replay.contains("Local event"),
+        "replay is not a new notification: {replay}"
+    );
+    assert!(
+        replay.contains("next_cursor=")
+            && replay.contains("has_more=false")
+            && replay.contains("low_water_mark="),
+        "{replay}"
+    );
+    let empty = run(Some(cursor));
+    assert!(!empty.contains(event), "{empty}");
+    assert!(
+        empty.contains("has_more=false") && empty.contains("next_cursor="),
+        "{empty}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.path().join("helper-ran"))
+            .unwrap()
+            .lines()
+            .count(),
+        1
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn final_review_check_after_replays_published_fix_after_lost_response() {
+    use httpmock::prelude::*;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    let server = MockServer::start();
+    let (root, _state, config) = fixture::fixture(&server, true);
+    server.reset();
+    let config = config.replace("max_output_bytes=65536", "max_output_bytes=524288");
+    let published = Arc::new(AtomicBool::new(false));
+    server.mock(|when,then|{when.method(GET).path("/simple/six/");let published=published.clone();then.respond_with(move|_|{let files=if published.load(Ordering::SeqCst){vec![serde_json::json!({"filename":"six-2-py3-none-any.whl","url":"six-2.whl","hashes":{},"size":100})]}else{vec![]};httpmock::HttpMockResponse::builder().status(200).body(serde_json::json!({"meta":{"api-version":"1.4"},"name":"six","versions":if files.is_empty(){vec![]}else{vec!["2"]},"files":files}).to_string()).build()});});
+    server.mock(|when,then|{when.method(POST).path("/v1/querybatch");then.respond_with(|request|{let body:Value=serde_json::from_slice(request.body_ref()).unwrap();httpmock::HttpMockResponse::builder().status(200).body(serde_json::json!({"results":vec![serde_json::json!({"vulns":[{"id":"REPLAY-FIX"}]});body["queries"].as_array().unwrap().len()]}).to_string()).build()});});
+    server.mock(|when,then|{when.method(GET).path("/v1/vulns/REPLAY-FIX");then.json_body(serde_json::json!({"id":"REPLAY-FIX","modified":"2026-01-01T00:00:00Z","affected":[{"package":{"name":"six","ecosystem":"PyPI"},"ranges":[{"type":"ECOSYSTEM","events":[{"introduced":"0"},{"fixed":"2"}]}]}]}));});
+    let added = fixture::cli(
+        root.path(),
+        &config,
+        &["add", "--name", "app", "--profile", "app"],
+    );
+    let id = added["registration"]["monitor_id"].as_str().unwrap();
+    let baseline = fixture::cli(root.path(), &config, &["check", id]);
+    let cursor = baseline["replay"]["next_cursor"].as_str().unwrap();
+    published.store(true, Ordering::SeqCst);
+    fixture::Session::start(root.path(), &config)
+        .lose_response(serde_json::json!({"action":"check","monitor_id":id,"after":cursor}));
+    let retained = fixture::cli(root.path(), &config, &["events", id, "--after", cursor]);
+    let fix = retained["replay"]["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|event| event["event_type"] == "fix_candidate_available")
+        .unwrap();
+    let event_id = fix["event_id"].as_str().unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_pybun"))
+        .current_dir(root.path())
+        .args([
+            "audit",
+            "monitor",
+            "check",
+            id,
+            "--after",
+            cursor,
+            "--security-config",
+        ])
+        .arg(root.path().join("operator.toml"))
+        .output()
+        .unwrap();
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(output.status.success(), "{text}");
+    assert!(
+        text.contains(event_id)
+            && text.contains("fix_candidate_available")
+            && text.contains("Replay event"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("Local event"),
+        "retained prompt was falsely labeled newly committed: {text}"
+    );
+}
+
 #[test]
 fn unconfigured_monitor_returns_coded_failure_without_initializing_state() {
     let root = tempfile::tempdir().unwrap();

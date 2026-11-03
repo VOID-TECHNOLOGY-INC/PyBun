@@ -71,6 +71,16 @@ class SecurityMonitorSchemaTests(unittest.TestCase):
                 invalid["detail"][field] = bad
                 self.assert_invalid(invalid)
 
+    def test_freshness_ttl_accepts_zero_without_relaxing_integer_bounds(self):
+        ttl = self.schema["$defs"]["MonitorConfig"]["properties"]["freshness_ttl_seconds"]
+        validator = Draft202012Validator(ttl)
+        for value in (0, 1, 86400):
+            with self.subTest(valid=value):
+                self.assertFalse(list(validator.iter_errors(value)))
+        for value in (-1, 0.5, "0", None, False):
+            with self.subTest(invalid=value):
+                self.assertTrue(list(validator.iter_errors(value)))
+
     def test_commit_state_is_required_and_orthogonal_to_errors(self):
         for state in ("not_committed", "committed", "indeterminate"):
             value = failure_envelope()

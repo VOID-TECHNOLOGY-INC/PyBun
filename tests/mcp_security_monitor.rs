@@ -139,6 +139,16 @@ fn output_bound_is_applied_after_full_durable_baseline_and_preserves_match_count
         24,
         "{replay}"
     );
+    let head = replay["replay"]["next_cursor"].as_str().unwrap();
+    let mut bounded = fixture::Session::start(root.path(), &config);
+    let empty = bounded.call(json!({"action":"events","monitor_id":id,"after":head}));
+    assert_eq!(empty["exit_code"], 3, "{empty}");
+    assert_eq!(empty["omitted"]["replay_events"], 0, "{empty}");
+    assert_eq!(empty["replay"]["events"], json!([]), "{empty}");
+    assert_eq!(empty["replay"]["next_cursor"], head, "{empty}");
+    assert_eq!(empty["replay"]["has_more"], false, "{empty}");
+    assert!(bounded.last_wire_bytes <= 4096);
+    bounded.finish();
     assert_eq!(
         std::fs::read_to_string(root.path().join("helper-ran")).unwrap(),
         calls
@@ -711,6 +721,104 @@ fn malformed_cursor_summary_respects_selected_profile_output_cap() {
         "selected profile cap exceeded: {}",
         session.last_wire_bytes
     );
+    session.finish();
+}
+
+#[cfg(unix)]
+#[test]
+fn same_profile_operator_policy_change_is_adopted_before_check_without_configure() {
+    use httpmock::prelude::*;
+    let server = MockServer::start();
+    let (root, _state, config) = fixture::fixture(&server, true);
+    server.reset();
+    let config = config.replace("max_output_bytes=65536", "max_output_bytes=524288");
+    server.mock(|when,then|{when.method(GET).path("/simple/six/");then.json_body(json!({"meta":{"api-version":"1.4"},"name":"six","versions":["2rc1"],"files":[{"filename":"six-2rc1-py3-none-any.whl","url":"six-2rc1.whl","hashes":{},"size":100}]}));});
+    server.mock(|when,then|{when.method(POST).path("/v1/querybatch");then.respond_with(|request|{let body:Value=serde_json::from_slice(request.body_ref()).unwrap();httpmock::HttpMockResponse::builder().status(200).body(json!({"results":vec![json!({"vulns":[{"id":"PRE-FIX"}]});body["queries"].as_array().unwrap().len()]}).to_string()).build()});});
+    server.mock(|when,then|{when.method(GET).path("/v1/vulns/PRE-FIX");then.json_body(json!({"id":"PRE-FIX","modified":"2026-01-01T00:00:00Z","affected":[{"package":{"name":"six","ecosystem":"PyPI"},"ranges":[{"type":"ECOSYSTEM","events":[{"introduced":"0"},{"fixed":"2rc1"}]}]}]}));});
+    let mut session = fixture::Session::start(root.path(), &config);
+    let added = session.call(json!({"action":"add","name":"app","profile":"app"}));
+    let id = added["registration"]["monitor_id"].as_str().unwrap();
+    let initial = session.call(json!({"action":"check","monitor_id":id}));
+    session.finish();
+    let updated=config.replace("allowed_modes=[\"online\",\"offline\",\"online_with_cache_fallback\"]","allowed_modes=[\"online\",\"offline\",\"online_with_cache_fallback\"]\ninclude_prereleases=true\nmax_cache_age_seconds=30");
+    let mut session = fixture::Session::start(root.path(), &updated);
+    let adopted = session.call(json!({"action":"check","monitor_id":id}));
+    assert_eq!(adopted["commit_status"], "committed", "{adopted}");
+    assert_ne!(
+        adopted["current"]["epoch_id"],
+        initial["current"]["epoch_id"]
+    );
+    let listed = session.call(json!({"action":"list"}));
+    let stored = &listed["registrations"][0];
+    assert_eq!(stored["config"]["include_prereleases"], true, "{stored}");
+    assert_eq!(stored["config"]["freshness_ttl_seconds"], 30, "{stored}");
+    assert_eq!(
+        stored["config_revision"], 2,
+        "one operator update must adopt once: {stored}"
+    );
+    assert_eq!(
+        adopted["current"]["findings"][0]["candidate"]["version"], "2rc1",
+        "{adopted}"
+    );
+    let repeated = session
+        .call(json!({"action":"check","monitor_id":id,"after":adopted["replay"]["next_cursor"]}));
+    assert_eq!(
+        repeated["current"]["epoch_id"],
+        adopted["current"]["epoch_id"]
+    );
+    assert_eq!(repeated["current"]["config_revision"], 2);
+    assert!(
+        repeated["check"]["assessment"]["packages"][0]["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|candidate| candidate["qualification"]["version"] == "2rc1"),
+        "{repeated}"
+    );
+    session.finish();
+}
+
+#[cfg(unix)]
+#[test]
+fn zero_freshness_ceiling_registers_and_checks_without_widening_authority() {
+    use httpmock::prelude::*;
+    let server = MockServer::start();
+    let (root, _state, config) = fixture::fixture(&server, true);
+    let config=config.replace("allowed_modes=[\"online\",\"offline\",\"online_with_cache_fallback\"]","allowed_modes=[\"online\",\"offline\",\"online_with_cache_fallback\"]\nmax_cache_age_seconds=0");
+    server.mock(|when, then| {
+        when.method(POST).path("/v1/querybatch");
+        then.json_body(json!({"results":[{}]}));
+    });
+    let added = fixture::cli(
+        root.path(),
+        &config,
+        &["add", "--name", "zero-cli", "--profile", "app"],
+    );
+    assert_eq!(
+        added["exit_code"], 0,
+        "valid zero-ceiling profile must register: {added}"
+    );
+    assert_eq!(added["registration"]["config"]["freshness_ttl_seconds"], 0);
+    let cli_id = added["registration"]["monitor_id"].as_str().unwrap();
+    let observed = fixture::cli(
+        root.path(),
+        &config,
+        &["check", cli_id, "--max-cache-age-seconds", "0"],
+    );
+    assert_eq!(observed["exit_code"], 0, "{observed}");
+    assert_eq!(observed["commit_status"], "committed");
+    let mut session = fixture::Session::start(root.path(), &config);
+    let registered = session.call(json!({"action":"add","name":"zero-mcp","profile":"app"}));
+    assert_eq!(registered["exit_code"], 0, "{registered}");
+    assert_eq!(
+        registered["registration"]["config"]["freshness_ttl_seconds"],
+        0
+    );
+    let id = registered["registration"]["monitor_id"].as_str().unwrap();
+    let observed =
+        session.call(json!({"action":"check","monitor_id":id,"max_cache_age_seconds":0}));
+    assert_eq!(observed["exit_code"], 0, "{observed}");
+    assert_eq!(observed["current"]["complete"], true);
     session.finish();
 }
 

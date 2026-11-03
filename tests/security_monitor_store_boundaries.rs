@@ -15,9 +15,6 @@ fn invalid_operator_configuration_is_secret_safe_and_cannot_create_registration(
     changed.name = " ".into();
     cases.push(changed);
     let mut changed = base.clone();
-    changed.freshness_ttl_seconds = 0;
-    cases.push(changed);
-    let mut changed = base.clone();
     changed.profile_id = "x".repeat(129);
     cases.push(changed);
     let mut changed = base.clone();
@@ -73,6 +70,16 @@ fn invalid_operator_configuration_is_secret_safe_and_cannot_create_registration(
     assert_eq!(
         normalized.config.domain.digest(),
         store.list().unwrap()[0].config.domain.digest()
+    );
+    let mut same_capture_only = base;
+    same_capture_only.freshness_ttl_seconds = 0;
+    assert_eq!(
+        store
+            .register(same_capture_only)
+            .unwrap()
+            .config
+            .freshness_ttl_seconds,
+        0
     );
 }
 #[test]
