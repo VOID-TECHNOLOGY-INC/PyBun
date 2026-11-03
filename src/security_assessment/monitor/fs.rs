@@ -46,7 +46,7 @@ struct Envelope<T> {
 pub(crate) struct Root {
     dir: Dir,
     path: PathBuf,
-    metadata: std::fs::Metadata,
+    _metadata: std::fs::Metadata,
 }
 pub(crate) struct Lock {
     pub _file: std::fs::File,
@@ -56,7 +56,6 @@ impl Lock {
     pub fn check(&self, root: &Root) -> MonitorResult<()> {
         check_deadline(self.deadline)?;
         root.validate()?;
-        let opened = self._file.metadata().map_err(|_| path_error())?;
         let current = root
             .dir
             .symlink_metadata("state.lock")
@@ -66,6 +65,7 @@ impl Lock {
         }
         #[cfg(unix)]
         {
+            let opened = self._file.metadata().map_err(|_| path_error())?;
             use cap_std::fs::MetadataExt as _;
             use std::os::unix::fs::MetadataExt as _;
             if opened.dev() != current.dev() || opened.ino() != current.ino() {
@@ -256,7 +256,7 @@ impl Root {
         let root = Self {
             dir,
             path: options.root.clone(),
-            metadata,
+            _metadata: metadata,
         };
         root.validate()?;
         if create {
@@ -291,13 +291,13 @@ impl Root {
         if self.path.canonicalize().map_err(|_| path_error())? != self.path {
             return Err(path_error());
         }
-        let current = std::fs::symlink_metadata(&self.path).map_err(|_| path_error())?;
         #[cfg(unix)]
         {
+            let current = std::fs::symlink_metadata(&self.path).map_err(|_| path_error())?;
             use std::os::unix::fs::MetadataExt;
             if !private_metadata(&current, true)
-                || current.dev() != self.metadata.dev()
-                || current.ino() != self.metadata.ino()
+                || current.dev() != self._metadata.dev()
+                || current.ino() != self._metadata.ino()
             {
                 return Err(path_error());
             }
@@ -503,15 +503,19 @@ impl Root {
     }
 }
 fn private_open() -> OpenOptions {
-    let mut options = OpenOptions::new();
     #[cfg(unix)]
     {
         use cap_std::fs::OpenOptionsExt;
+        let mut options = OpenOptions::new();
         options
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+        options
     }
-    options
+    #[cfg(not(unix))]
+    {
+        OpenOptions::new()
+    }
 }
 fn private_cap_metadata(metadata: &cap_std::fs::Metadata, directory: bool) -> bool {
     #[cfg(unix)]

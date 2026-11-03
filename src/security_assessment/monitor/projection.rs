@@ -3,7 +3,7 @@ use super::{model::*, state::*};
 use crate::security_assessment::{
     http::EvidenceFreshness,
     qualification::{
-        candidate::{CandidateKind, FixEvidence},
+        candidate::{CandidateKind, CandidateQualification, FixEvidence},
         evidence::AffectedStatus,
         findings::context_matches,
         registry::{PublishedFile, ReleaseAvailability},
@@ -322,21 +322,7 @@ pub(crate) fn project<'a>(
                         {
                             return None;
                         }
-                        if q.providers.len() != context.domain.authoritative_providers.len()
-                            || q.providers
-                                .iter()
-                                .map(|provider| &provider.provider_id)
-                                .collect::<BTreeSet<_>>()
-                                .len()
-                                != q.providers.len()
-                            || !context.domain.authoritative_providers.iter().all(|id| {
-                                q.providers
-                                    .iter()
-                                    .any(|provider| &provider.provider_id == id)
-                                    && candidate_query_complete(
-                                        assessment, package, &q.version, id, context, ttl,
-                                    )
-                            })
+                        if !required_candidate_coverage(assessment, package, q, context, ttl)
                             || q.candidate_kind
                                 != Some(CandidateKind::PublishedRemediationCandidate)
                             || q.fix_evidence != FixEvidence::KnownBoundary
@@ -653,6 +639,27 @@ fn merge_findings(findings: Vec<ObservedFinding>) -> Vec<ObservedFinding> {
         })
         .collect()
 }
+fn required_candidate_coverage(
+    assessment: &SecurityAssessment,
+    package: &PackageInstance,
+    q: &CandidateQualification,
+    context: &CheckContext,
+    ttl: u64,
+) -> bool {
+    q.providers.len() == context.domain.authoritative_providers.len()
+        && q.providers
+            .iter()
+            .map(|provider| &provider.provider_id)
+            .collect::<BTreeSet<_>>()
+            .len()
+            == q.providers.len()
+        && context.domain.authoritative_providers.iter().all(|id| {
+            q.providers
+                .iter()
+                .any(|provider| &provider.provider_id == id)
+                && candidate_query_complete(assessment, package, &q.version, id, context, ttl)
+        })
+}
 fn candidate_query_complete(
     assessment: &SecurityAssessment,
     package: &PackageInstance,
@@ -719,6 +726,10 @@ fn candidate_corrections(
                     )
             });
         let complete = q.authoritative
+            && required_candidate_coverage(assessment, package, q, context, ttl)
+            && context.domain.authoritative_providers.iter().all(|id| {
+                candidate_query_complete(assessment, package, &package.version, id, context, ttl)
+            })
             && q.current_authoritative
             && q.coverage.status == CoverageStatus::Complete
             && q.freshness.is_authoritative()

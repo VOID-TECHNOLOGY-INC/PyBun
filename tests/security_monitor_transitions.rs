@@ -1134,3 +1134,114 @@ fn stale_empty_provider_query_cannot_resolve_after_upgrade() {
     assert!(!contains(&result, MonitorEventType::FindingResolved));
     assert!(!result.current.complete);
 }
+
+fn verify_missing_provider_correction(positive: bool) {
+    use pybun::security_assessment::qualification::{
+        candidate::{CandidateProviderEvidence, qualify_candidate},
+        findings::assess_findings,
+    };
+    let (_temp, store, registration, mut config) = setup();
+    config.domain.authoritative_providers = vec!["osv".into(), "backup".into()];
+    store
+        .configure(&registration.monitor_id, 1, config.clone())
+        .unwrap();
+    let mut baseline = common::assessment(
+        &config,
+        "1",
+        vec![common::advisory("A", &[], true)],
+        Some("2"),
+        100,
+    );
+    let mut backup = baseline.providers[0].clone();
+    backup.provider_id = "backup".into();
+    baseline.providers.push(backup);
+    let package = &baseline.inventory.packages[0];
+    let proofs: Vec<_> = baseline
+        .providers
+        .iter()
+        .map(|provider| {
+            let current = provider
+                .instances
+                .iter()
+                .find(|instance| instance.instance_id == package.instance_id)
+                .unwrap();
+            let candidate = provider
+                .instances
+                .iter()
+                .find(|instance| instance.version == "2")
+                .unwrap();
+            CandidateProviderEvidence {
+                provider_id: &provider.provider_id,
+                related: &[],
+                candidate_instance_id: &candidate.instance_id,
+                current: Some(current),
+                candidate: Some(candidate),
+            }
+        })
+        .collect();
+    let qualified = qualify_candidate(
+        package,
+        "2",
+        baseline.packages[0].registry.as_ref(),
+        &config.domain.authoritative_providers,
+        &proofs,
+    );
+    assert!(qualified.authoritative);
+    baseline.packages[0].candidates[0].qualification = qualified;
+    baseline.packages[0].installed = assess_findings(
+        package,
+        &config.domain.authoritative_providers,
+        &baseline.providers,
+    );
+    let first = check(&store, &registration.monitor_id, &baseline, 100);
+    assert!(
+        first.current.findings[0]
+            .candidate
+            .as_ref()
+            .unwrap()
+            .qualified_remediation
+    );
+    let mut corrected = common::advisory("A", &[], false);
+    if !positive {
+        corrected["affected"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("ranges");
+        corrected["affected"][0]["versions"] = serde_json::json!(["1"]);
+    }
+    let partial = common::assessment(&config, "1", vec![corrected], Some("2"), 101);
+    assert!(
+        partial.packages[0].candidates[0]
+            .qualification
+            .authoritative
+    );
+    let result = check(&store, &registration.monitor_id, &partial, 101);
+    assert_eq!(
+        result.current.findings[0]
+            .candidate
+            .as_ref()
+            .unwrap()
+            .qualified_remediation,
+        !positive
+    );
+    assert_eq!(
+        contains(&result, MonitorEventType::CandidateChanged),
+        positive
+    );
+    assert!(
+        result.current.findings[0]
+            .candidate
+            .as_ref()
+            .unwrap()
+            .publication_available
+    );
+    assert!(result.current.findings[0].active);
+}
+#[test]
+fn incomplete_required_provider_set_cannot_negate_previous_fix_from_absent_boundary() {
+    verify_missing_provider_correction(false);
+}
+#[test]
+fn fresh_positive_candidate_removes_qualification_even_if_another_required_provider_fails() {
+    verify_missing_provider_correction(true);
+}
