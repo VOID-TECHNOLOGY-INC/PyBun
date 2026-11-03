@@ -159,3 +159,49 @@ fn held_parent_constructor_confines_creation_and_supports_existing_root_without_
     );
     assert!(!outside.join("other").exists());
 }
+
+#[test]
+fn read_only_open_and_list_do_not_require_write_access_to_state_lock() {
+    use std::os::unix::fs::PermissionsExt;
+    struct Restore(std::path::PathBuf);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o700));
+        }
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let base = temp.path().canonicalize().unwrap();
+    std::fs::create_dir(base.join("project")).unwrap();
+    let path = base.join("state");
+    let options = StoreOptions::new(path.clone());
+    let store = MonitorStore::create(options.clone()).unwrap();
+    let registered = store
+        .register(common::config(&base.join("project")))
+        .unwrap();
+    drop(store);
+    let original = std::fs::read(path.join("registry.json")).unwrap();
+    std::fs::set_permissions(
+        path.join("state.lock"),
+        std::fs::Permissions::from_mode(0o400),
+    )
+    .unwrap();
+    std::fs::set_permissions(
+        path.join("registry.json"),
+        std::fs::Permissions::from_mode(0o400),
+    )
+    .unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o500)).unwrap();
+    let _restore = Restore(path.clone());
+    let read = MonitorStore::open(options).unwrap();
+    assert_eq!(read.list().unwrap(), vec![registered.clone()]);
+    assert_eq!(
+        read.events(&registered.monitor_id, None).unwrap_err().code,
+        "E_MONITOR_BASELINE_REQUIRED"
+    );
+    assert_eq!(std::fs::read(path.join("registry.json")).unwrap(), original);
+    assert!(
+        !path
+            .join(format!("{}.checkpoint.json", registered.monitor_id))
+            .exists()
+    );
+}

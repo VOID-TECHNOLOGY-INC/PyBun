@@ -308,7 +308,9 @@ impl Root {
         check_deadline(deadline)?;
         self.validate()?;
         let mut options = private_open();
-        options.read(true).write(true);
+        // Unix flock serializes through a read-only descriptor; readers need
+        // no file-write authority merely to acquire the existing state lock.
+        options.read(true);
         let file = self
             .dir
             .open_with("state.lock", &options)
