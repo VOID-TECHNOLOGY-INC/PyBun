@@ -83,71 +83,60 @@ impl Root {
     pub fn open(options: &StoreOptions, create: bool) -> MonitorResult<Self> {
         Self::open_checked(options, create, &|| {})
     }
-    fn open_checked(
-        options: &StoreOptions,
-        create: bool,
-        before_create: &dyn Fn(),
-    ) -> MonitorResult<Self> {
+    fn checked_options(options: &StoreOptions) -> MonitorResult<Instant> {
         options.limits.validate()?;
         let deadline = options
             .deadline
             .unwrap_or_else(|| Instant::now() + Duration::from_secs(60));
         check_deadline(deadline)?;
-        #[cfg(not(unix))]
-        {
-            let _ = (options, create, before_create);
+        if !cfg!(unix) {
             return Err(MonitorError::new("E_MONITOR_STATE_UNSUPPORTED"));
         }
+        if !absolute_normal(&options.root) {
+            return Err(path_error());
+        }
+        if !options.allow_in_repository {
+            for ancestor in options.root.ancestors() {
+                check_deadline(deadline)?;
+                if std::fs::symlink_metadata(ancestor.join(".git")).is_ok() {
+                    return Err(path_error());
+                }
+            }
+        }
+        Ok(deadline)
+    }
+    fn open_checked(
+        options: &StoreOptions,
+        create: bool,
+        before_create: &dyn Fn(),
+    ) -> MonitorResult<Self> {
+        let deadline = Self::checked_options(options)?;
         #[cfg(unix)]
         {
-            use std::os::unix::fs::OpenOptionsExt;
-            if !absolute_normal(&options.root) {
-                return Err(path_error());
-            }
-            if !options.allow_in_repository
-                && options
-                    .root
-                    .ancestors()
-                    .any(|path| std::fs::symlink_metadata(path.join(".git")).is_ok())
-            {
-                return Err(path_error());
-            }
+            use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
             if create {
                 let mut ancestor = options.root.as_path();
-                let mut missing = vec![];
                 while !ancestor.exists() {
                     check_deadline(deadline)?;
-                    missing.push(ancestor.file_name().ok_or_else(path_error)?.to_owned());
                     ancestor = ancestor.parent().ok_or_else(path_error)?;
                 }
-                check_deadline(deadline)?;
                 if ancestor.canonicalize().map_err(|_| path_error())? != ancestor {
                     return Err(path_error());
                 }
+                let expected = std::fs::symlink_metadata(ancestor).map_err(|_| path_error())?;
+                before_create();
                 check_deadline(deadline)?;
-                let mut dir = Dir::open_ambient_dir(ancestor, cap_std::ambient_authority())
+                let parent = std::fs::OpenOptions::new()
+                    .read(true)
+                    .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_NONBLOCK)
+                    .open(ancestor)
                     .map_err(|_| path_error())?;
-                for name in missing.into_iter().rev() {
-                    use cap_std::fs::{DirBuilder, DirBuilderExt};
-                    let mut builder = DirBuilder::new();
-                    builder.mode(0o700);
-                    before_create();
-                    check_deadline(deadline)?;
-                    dir.create_dir_with(&name, &builder)
-                        .map_err(|_| path_error())?;
-                    let mut open = OpenOptions::new();
-                    open.read(true);
-                    use cap_std::fs::OpenOptionsExt;
-                    open.custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_NONBLOCK);
-                    check_deadline(deadline)?;
-                    dir = Dir::from_std_file(
-                        dir.open_with(&name, &open)
-                            .map_err(|_| path_error())?
-                            .into_std(),
-                    );
+                let actual = parent.metadata().map_err(|_| path_error())?;
+                if expected.dev() != actual.dev() || expected.ino() != actual.ino() {
+                    return Err(path_error());
                 }
+                return Self::from_parent_checked(options, ancestor, &parent, before_create);
             }
-            check_deadline(deadline)?;
             if options.root.canonicalize().map_err(|_| path_error())? != options.root {
                 return Err(path_error());
             }
@@ -157,44 +146,146 @@ impl Root {
                 .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_NONBLOCK)
                 .open(&options.root)
                 .map_err(|_| path_error())?;
-            let metadata = file.metadata().map_err(|_| path_error())?;
-            if !private_metadata(&metadata, true) {
+            Self::finish_open(
+                options,
+                Dir::from_std_file(file),
+                false,
+                false,
+                before_create,
+                deadline,
+            )
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (deadline, create, before_create);
+            Err(MonitorError::new("E_MONITOR_STATE_UNSUPPORTED"))
+        }
+    }
+    pub fn from_parent(
+        options: &StoreOptions,
+        parent_path: &std::path::Path,
+        parent: &std::fs::File,
+    ) -> MonitorResult<Self> {
+        Self::from_parent_checked(options, parent_path, parent, &|| {})
+    }
+    fn from_parent_checked(
+        options: &StoreOptions,
+        parent_path: &std::path::Path,
+        parent: &std::fs::File,
+        before_create: &dyn Fn(),
+    ) -> MonitorResult<Self> {
+        let deadline = Self::checked_options(options)?;
+        #[cfg(unix)]
+        {
+            use cap_std::fs::{DirBuilder, DirBuilderExt, OpenOptionsExt};
+            use std::os::unix::fs::MetadataExt;
+            if !absolute_normal(parent_path)
+                || parent_path.canonicalize().map_err(|_| path_error())? != parent_path
+            {
                 return Err(path_error());
             }
-            let root = Self {
-                dir: Dir::from_std_file(file),
-                path: options.root.canonicalize().map_err(|_| path_error())?,
-                metadata,
-            };
-            root.validate()?;
-            if create {
-                let exists = root.dir.symlink_metadata("state.lock").is_ok();
-                if !exists {
-                    if root
-                        .dir
-                        .entries()
-                        .map_err(|_| path_error())?
-                        .next()
-                        .is_some()
-                    {
-                        return Err(path_error());
-                    }
-                    before_create();
-                    check_deadline(deadline)?;
-                    let mut options = private_open();
-                    options.write(true).create_new(true);
-                    root.dir
-                        .open_with("state.lock", &options)
-                        .map_err(|_| path_error())?
-                        .sync_all()
-                        .map_err(|_| path_error())?;
-                    root.sync()?;
-                }
+            let held = parent.metadata().map_err(|_| path_error())?;
+            let current = std::fs::symlink_metadata(parent_path).map_err(|_| path_error())?;
+            if !held.is_dir()
+                || !current.is_dir()
+                || held.dev() != current.dev()
+                || held.ino() != current.ino()
+            {
+                return Err(path_error());
             }
-            let lock = root.lock(deadline)?;
-            drop(lock);
-            Ok(root)
+            let suffix = options
+                .root
+                .strip_prefix(parent_path)
+                .map_err(|_| path_error())?;
+            let mut dir = Dir::from_std_file(parent.try_clone().map_err(|_| path_error())?);
+            let mut created = false;
+            for component in suffix.components() {
+                let std::path::Component::Normal(name) = component else {
+                    return Err(path_error());
+                };
+                let mut builder = DirBuilder::new();
+                builder.mode(0o700);
+                before_create();
+                check_deadline(deadline)?;
+                // Exclusive mkdir prevents adopting a root that appeared after the grant.
+                dir.create_dir_with(name, &builder)
+                    .map_err(|_| path_error())?;
+                dir.try_clone()
+                    .map_err(|_| path_error())?
+                    .into_std_file()
+                    .sync_all()
+                    .map_err(|_| MonitorError::new("E_MONITOR_PERSISTENCE").indeterminate())?;
+                let mut open = OpenOptions::new();
+                open.read(true)
+                    .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_NONBLOCK);
+                check_deadline(deadline)?;
+                dir = Dir::from_std_file(
+                    dir.open_with(name, &open)
+                        .map_err(|_| path_error())?
+                        .into_std(),
+                );
+                created = true;
+            }
+            Self::finish_open(options, dir, true, created, before_create, deadline)
         }
+        #[cfg(not(unix))]
+        {
+            let _ = (parent_path, parent, before_create, deadline);
+            Err(MonitorError::new("E_MONITOR_STATE_UNSUPPORTED"))
+        }
+    }
+    #[cfg(unix)]
+    fn finish_open(
+        options: &StoreOptions,
+        dir: Dir,
+        create: bool,
+        new_root: bool,
+        before_create: &dyn Fn(),
+        deadline: Instant,
+    ) -> MonitorResult<Self> {
+        check_deadline(deadline)?;
+        let metadata = dir
+            .try_clone()
+            .map_err(|_| path_error())?
+            .into_std_file()
+            .metadata()
+            .map_err(|_| path_error())?;
+        if !private_metadata(&metadata, true) {
+            return Err(path_error());
+        }
+        let root = Self {
+            dir,
+            path: options.root.clone(),
+            metadata,
+        };
+        root.validate()?;
+        if create {
+            let exists = root.dir.symlink_metadata("state.lock").is_ok();
+            if new_root || !exists {
+                if root
+                    .dir
+                    .entries()
+                    .map_err(|_| path_error())?
+                    .next()
+                    .is_some()
+                {
+                    return Err(path_error());
+                }
+                before_create();
+                check_deadline(deadline)?;
+                let mut open = private_open();
+                open.write(true).create_new(true);
+                root.dir
+                    .open_with("state.lock", &open)
+                    .map_err(|_| path_error())?
+                    .sync_all()
+                    .map_err(|_| path_error())?;
+                root.sync()?;
+            }
+        }
+        let lock = root.lock(deadline)?;
+        drop(lock);
+        Ok(root)
     }
     fn validate(&self) -> MonitorResult<()> {
         if self.path.canonicalize().map_err(|_| path_error())? != self.path {
@@ -497,7 +588,13 @@ mod tests {
             let deadline = Instant::now() + Duration::from_millis(100);
             options.deadline = Some(deadline);
             let called = Cell::new(false);
-            let result = Root::open_checked(&options, true, &|| {
+            let parent_path = if existing_root {
+                path.as_path()
+            } else {
+                base.as_path()
+            };
+            let held = std::fs::File::open(parent_path).unwrap();
+            let result = Root::from_parent_checked(&options, parent_path, &held, &|| {
                 called.set(true);
                 while Instant::now() < deadline {
                     std::thread::park_timeout(deadline.saturating_duration_since(Instant::now()));
@@ -508,5 +605,71 @@ mod tests {
             assert!(!path.join("state.lock").exists());
             assert_eq!(path.exists(), existing_root);
         }
+    }
+    #[test]
+    fn ancestor_swap_cannot_redirect_creation_outside_held_parent() {
+        use std::{
+            cell::Cell,
+            os::unix::fs::{DirBuilderExt, symlink},
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let base = temp.path().canonicalize().unwrap();
+        let parent = base.join("anchor");
+        let outside = base.join("outside");
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&parent)
+            .unwrap();
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&outside)
+            .unwrap();
+        let moved = base.join("moved");
+        let options = StoreOptions::new(parent.join("state"));
+        let swapped = Cell::new(false);
+        let result = Root::open_checked(&options, true, &|| {
+            if !swapped.replace(true) {
+                std::fs::rename(&parent, &moved).unwrap();
+                symlink(&outside, &parent).unwrap();
+            }
+        });
+        assert!(swapped.get());
+        assert!(result.is_err());
+        assert!(
+            !outside.join("state").exists(),
+            "unapproved target must receive no writes"
+        );
+    }
+    #[test]
+    fn held_parent_is_not_reopened_after_path_swaps_during_walk() {
+        use std::{
+            cell::Cell,
+            os::unix::fs::{DirBuilderExt, symlink},
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let base = temp.path().canonicalize().unwrap();
+        let parent = base.join("anchor");
+        let outside = base.join("outside");
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&parent)
+            .unwrap();
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&outside)
+            .unwrap();
+        let held = std::fs::File::open(&parent).unwrap();
+        let moved = base.join("moved");
+        let options = StoreOptions::new(parent.join("state"));
+        let swapped = Cell::new(false);
+        let result = Root::from_parent_checked(&options, &parent, &held, &|| {
+            if !swapped.replace(true) {
+                std::fs::rename(&parent, &moved).unwrap();
+                symlink(&outside, &parent).unwrap();
+            }
+        });
+        assert!(swapped.get());
+        assert!(result.is_err());
+        assert!(!outside.join("state").exists());
     }
 }

@@ -18,6 +18,20 @@ impl MonitorStore {
         self.root.clone_handle()
     }
 
+    /// Construct beneath an already approved held directory. No parent/root
+    /// pathname is reopened as the authority for creating descendants.
+    pub fn create_from_parent(
+        options: StoreOptions,
+        parent_path: &std::path::Path,
+        parent_handle: &std::fs::File,
+    ) -> MonitorResult<Self> {
+        let root = Root::from_parent(&options, parent_path, parent_handle)?;
+        Ok(Self {
+            root,
+            options,
+            observer: Arc::new(NoObserver),
+        })
+    }
     pub fn create(options: StoreOptions) -> MonitorResult<Self> {
         Self::open_inner(options, true)
     }

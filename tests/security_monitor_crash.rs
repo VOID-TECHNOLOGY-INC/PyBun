@@ -671,3 +671,71 @@ fn contended_process_lock_honors_deadline_and_cannot_commit_after_timeout() {
         BaselineState::NotStarted
     );
 }
+
+#[test]
+fn losing_initialized_snapshot_resets_continuity_without_new_fix_and_rejects_fifo_or_symlink() {
+    use std::{
+        os::unix::fs::{PermissionsExt, symlink},
+        time::{Duration, Instant},
+    };
+    let (_temp, options, registration) = setup();
+    let store = MonitorStore::open(options.clone()).unwrap();
+    let ticket = store.prepare_check(&registration.monitor_id).unwrap();
+    let assessment = common::assessment(
+        &registration.config,
+        "1",
+        vec![common::advisory("A", &[], true)],
+        Some("2"),
+        100,
+    );
+    store
+        .commit_check(
+            &ticket,
+            &assessment,
+            CheckContext::online(registration.config.domain.clone(), 100),
+            None,
+        )
+        .unwrap();
+    let snapshot = options
+        .root
+        .join(format!("{}.checkpoint.json", registration.monitor_id));
+    let saved = std::fs::read(&snapshot).unwrap();
+    std::fs::remove_file(&snapshot).unwrap();
+    let reset = store.prepare_check(&registration.monitor_id).unwrap();
+    assert_ne!(reset.registration().epoch_id, registration.epoch_id);
+    let result = store
+        .commit_check(
+            &reset,
+            &assessment,
+            CheckContext::online(registration.config.domain, 101),
+            None,
+        )
+        .unwrap();
+    assert_eq!(
+        result.newly_committed_events[0].reason.as_deref(),
+        Some("observation_missing")
+    );
+    assert_eq!(
+        result.newly_committed_events[1].event_type,
+        MonitorEventType::BaselineObserved
+    );
+    let external = options.root.parent().unwrap().join("unapproved.json");
+    std::fs::write(&external, &saved).unwrap();
+    std::fs::set_permissions(&external, std::fs::Permissions::from_mode(0o600)).unwrap();
+    std::fs::remove_file(&snapshot).unwrap();
+    symlink(&external, &snapshot).unwrap();
+    assert!(store.events(&registration.monitor_id, None).is_err());
+    assert_eq!(std::fs::read(&external).unwrap(), saved);
+    std::fs::remove_file(&snapshot).unwrap();
+    assert!(
+        Command::new("mkfifo")
+            .args(["-m", "600"])
+            .arg(&snapshot)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let began = Instant::now();
+    assert!(store.events(&registration.monitor_id, None).is_err());
+    assert!(began.elapsed() < Duration::from_secs(1));
+}

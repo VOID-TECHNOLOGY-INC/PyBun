@@ -370,3 +370,46 @@ fn committed_check_with_expired_replay_cursor_still_returns_bounded_new_event_re
         .unwrap_err();
     assert_eq!(retry.receipt.unwrap(), receipt);
 }
+
+#[test]
+fn replay_scope_and_high_water_errors_return_requested_monitors_current_summary() {
+    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    std::fs::create_dir(root.join("project")).unwrap();
+    let config = common::config(&root.join("project"));
+    let store = MonitorStore::create(StoreOptions::new(root.join("state"))).unwrap();
+    let a = store.register(config.clone()).unwrap();
+    let b = store.register(config.clone()).unwrap();
+    let ticket = store.prepare_check(&a.monitor_id).unwrap();
+    store
+        .commit_check(
+            &ticket,
+            &common::assessment(&config, "1", vec![], None, 100),
+            CheckContext::online(config.domain, 100),
+            None,
+        )
+        .unwrap();
+    let wrong = store
+        .events(&a.monitor_id, Some(&EventReplayCursor::origin(&b)))
+        .unwrap_err();
+    assert_eq!(wrong.code, "E_MONITOR_CURSOR_SCOPE");
+    assert_eq!(wrong.replay.unwrap().current.monitor_id, a.monitor_id);
+    let bytes = URL_SAFE_NO_PAD
+        .decode(EventReplayCursor::origin(&a).as_str())
+        .unwrap();
+    let mut value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    value["sequence"] = serde_json::json!(2);
+    let cursor =
+        EventReplayCursor::parse(&URL_SAFE_NO_PAD.encode(serde_json::to_vec(&value).unwrap()))
+            .unwrap();
+    let future = store.events(&a.monitor_id, Some(&cursor)).unwrap_err();
+    assert_eq!(future.code, "E_MONITOR_CURSOR_SCOPE");
+    let details = future.replay.unwrap();
+    assert_eq!(details.high_water_mark, 1);
+    assert!(details.events.is_empty());
+    assert!(details.next_cursor.is_none());
+    for invalid in ["not-base64", "", &"x".repeat(3000)] {
+        assert!(EventReplayCursor::parse(invalid).is_err());
+    }
+}
