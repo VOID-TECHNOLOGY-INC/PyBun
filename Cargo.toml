@@ -28,6 +28,9 @@ hex = "0.4"
 base64 = "0.23"
 ed25519-dalek = { version = "2.1", features = ["std"] }
 fs2 = "0.4"
+cap-std = "3.4"
+pep440_rs = "0.7.3"
+httpdate = "1"
 # Native file system watcher (optional, for `pybun watch`)
 notify = { version = "8.2", optional = true }
 tokio = { version = "1.48.0", default-features = false, features = [

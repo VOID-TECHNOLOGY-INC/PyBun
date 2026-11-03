@@ -104,6 +104,40 @@ jobs:
       - name: test
         run: cargo test
 
+  security-observation-profiles:
+    name: security observations (Python ${{ matrix.python }}, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python: ["3.11", "3.13", "3.14"]
+        include:
+          - os: ubuntu-24.04
+            python: "3.8"
+          - os: macos-latest
+            python: "3.14"
+    env:
+      PYBUN_SECURITY_TEST_PYTHON: python
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - name: Install supported uv for backend fixtures
+        run: python -m pip install "uv==0.12.13"
+      - name: Configure isolated fixture cache
+        run: echo "PYBUN_PYPI_CACHE_DIR=$RUNNER_TEMP/security-observation-cache" >> "$GITHUB_ENV"
+      - name: Verify isolated helper and explicit venv layout
+        run: cargo test --test security_observations --test security_observation_providers
+      - name: Verify actual uv-created environment without startup hooks
+        run: cargo test --test security_observations actual_uv_environment -- --ignored
+
   package-managers:
     name: package managers (brew)
     runs-on: ${{ matrix.os }}
