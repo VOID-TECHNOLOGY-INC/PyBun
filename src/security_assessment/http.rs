@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 use tokio::sync::Semaphore;
 
@@ -99,6 +99,32 @@ impl ProviderEndpoint {
         Ok(self)
     }
 
+    fn redact_value(&self, value: &Value) -> Value {
+        let secrets: Vec<_> = self
+            .headers
+            .values()
+            .filter_map(|value| value.to_str().ok())
+            .flat_map(|value| [value, value.strip_prefix("Bearer ").unwrap_or(value)])
+            .collect();
+        let mut redacted = crate::support_bundle::redact_protocol_with_secrets(value, &secrets);
+        // A redacted protocol cursor cannot be used as a different request.
+        // Retain an invalid field so pagination reports incomplete evidence.
+        if let (Some(original), Some(results)) = (
+            value.get("results").and_then(Value::as_array),
+            redacted.get_mut("results").and_then(Value::as_array_mut),
+        ) {
+            for (original, result) in original.iter().zip(results) {
+                if let Some(token) = original.get("next_page_token")
+                    && result.get("next_page_token") != Some(token)
+                    && let Some(result) = result.as_object_mut()
+                {
+                    result.insert("next_page_token".into(), Value::Null);
+                }
+            }
+        }
+        redacted
+    }
+
     pub fn permits(&self, url: &Url) -> bool {
         url.origin() == self.url.origin()
             && url.path().starts_with(&self.prefix)
@@ -137,13 +163,49 @@ impl ProviderEndpoint {
         url: &Url,
         body: &Option<Value>,
     ) -> String {
-        super::model::semantic_digest(&(1, &self.config, query, method, url.as_str(), body))
+        super::model::semantic_digest(&(2, &self.config, query, method, url.as_str(), body))
     }
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FreshnessKind {
+    #[default]
+    Fresh,
+    OfflineCache,
+    StaleCache,
+}
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct EvidenceFreshness {
+    pub kind: FreshnessKind,
+    pub age_seconds: u64,
+}
+impl EvidenceFreshness {
+    pub fn is_authoritative(&self) -> bool {
+        self.kind == FreshnessKind::Fresh
+    }
+    pub(crate) fn merge(&mut self, other: Self) {
+        if other.kind == FreshnessKind::StaleCache
+            || (self.kind == FreshnessKind::Fresh && other.kind != FreshnessKind::Fresh)
+        {
+            self.kind = other.kind;
+        }
+        self.age_seconds = self.age_seconds.max(other.age_seconds);
+    }
+}
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ObservationMode {
+    #[default]
+    Online,
+    Offline,
+    OnlineWithCacheFallback,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct JsonEvidence {
+    pub freshness: EvidenceFreshness,
     pub value: Value,
     pub payload_digest: String,
     pub fetched_at: u64,
@@ -155,8 +217,12 @@ pub struct HttpSession {
     started: Instant,
     observed_at: u64,
     requests: AtomicUsize,
+    retained_evidence: AtomicUsize,
     admission: Semaphore,
     pages: Mutex<BTreeMap<String, usize>>,
+    cache: Option<super::qualification::cache::ObservationCache>,
+    mode: ObservationMode,
+    cache_diagnostics: Mutex<Vec<ObservationDiagnostic>>,
 }
 
 impl HttpSession {
@@ -176,11 +242,48 @@ impl HttpSession {
             started,
             observed_at,
             requests: AtomicUsize::new(0),
+            retained_evidence: AtomicUsize::new(0),
             admission,
             pages: Mutex::new(BTreeMap::new()),
+            cache: None,
+            mode: ObservationMode::Online,
+            cache_diagnostics: Mutex::new(vec![]),
         })
     }
 
+    pub fn with_cache(
+        mut self,
+        cache: super::qualification::cache::ObservationCache,
+        mode: ObservationMode,
+    ) -> Result<Self, ObservationDiagnostic> {
+        if cache.max_response_bytes() > self.limits.max_response_bytes {
+            return Err(ObservationDiagnostic::new(
+                "E_SECURITY_CACHE_LIMIT",
+                "Cache response limit exceeds this assessment's HTTP response budget.",
+            ));
+        }
+        self.cache = Some(cache);
+        self.mode = mode;
+        Ok(self)
+    }
+    pub fn cache_diagnostics(&self) -> Vec<ObservationDiagnostic> {
+        self.cache_diagnostics
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+    }
+    fn cache_diagnostic(&self, error: ObservationDiagnostic) {
+        let mut diagnostics = self
+            .cache_diagnostics
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if !diagnostics
+            .iter()
+            .any(|existing| existing.code == error.code)
+        {
+            diagnostics.push(error);
+        }
+    }
     pub fn limits(&self) -> &ObservationLimits {
         &self.limits
     }
@@ -189,6 +292,40 @@ impl HttpSession {
     }
     pub fn request_count(&self) -> usize {
         self.requests.load(Ordering::Relaxed)
+    }
+
+    pub fn remaining_evidence_bytes(&self) -> usize {
+        self.limits
+            .max_retained_evidence_bytes
+            .saturating_sub(self.retained_evidence.load(Ordering::Relaxed))
+    }
+
+    /// All providers and candidate re-queries share retained result capacity.
+    /// A failed reservation must not be represented as missing upstream data.
+    pub fn reserve_evidence(&self, bytes: usize) -> Result<(), ObservationDiagnostic> {
+        let mut retained = self.retained_evidence.load(Ordering::Relaxed);
+        loop {
+            if bytes
+                > self
+                    .limits
+                    .max_retained_evidence_bytes
+                    .saturating_sub(retained)
+            {
+                return Err(ObservationDiagnostic::new(
+                    "E_SECURITY_EVIDENCE_LIMIT",
+                    "Aggregate retained evidence exceeded the run's bounded JSON size; remaining evidence is incomplete.",
+                ));
+            }
+            match self.retained_evidence.compare_exchange_weak(
+                retained,
+                retained + bytes,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return Ok(()),
+                Err(current) => retained = current,
+            }
+        }
     }
 
     /// Page budgets belong to the run/provider, including later candidate
@@ -243,6 +380,94 @@ impl HttpSession {
         body: Option<Value>,
         query: &AuthorizedQuery,
     ) -> Result<JsonEvidence, ObservationDiagnostic> {
+        self.request_json_tracked(endpoint, method, url, body, query)
+            .await
+            .0
+    }
+
+    pub(crate) async fn request_json_tracked(
+        &self,
+        endpoint: &ProviderEndpoint,
+        method: Method,
+        url: Url,
+        body: Option<Value>,
+        query: &AuthorizedQuery,
+    ) -> (Result<JsonEvidence, ObservationDiagnostic>, bool) {
+        let attempted = AtomicBool::new(false);
+        let result = self
+            .request_json_cached(endpoint, method, url, body, query, &attempted)
+            .await;
+        (result, attempted.load(Ordering::Relaxed))
+    }
+
+    async fn request_json_cached(
+        &self,
+        endpoint: &ProviderEndpoint,
+        method: Method,
+        url: Url,
+        body: Option<Value>,
+        query: &AuthorizedQuery,
+        attempted: &AtomicBool,
+    ) -> Result<JsonEvidence, ObservationDiagnostic> {
+        self.remaining()?;
+        if endpoint.id() != query.provider_id
+            || !endpoint.permits(&url)
+            || !matches!(method, Method::GET | Method::POST)
+        {
+            return Err(endpoint_error());
+        }
+        let key = endpoint.observation_key(query, method.as_str(), &url, &body);
+        let cached = |kind| -> Result<JsonEvidence, ObservationDiagnostic> {
+            self.remaining()?;
+            let cache = self.cache.as_ref().ok_or_else(cache_miss)?;
+            let mut evidence = cache.read(&key, self.observed_at)?.ok_or_else(cache_miss)?;
+            evidence.value = endpoint.redact_value(&evidence.value);
+            self.remaining()?;
+            evidence.freshness = EvidenceFreshness {
+                kind,
+                age_seconds: self.observed_at.saturating_sub(evidence.fetched_at),
+            };
+            Ok(evidence)
+        };
+        if self.mode == ObservationMode::Offline {
+            return cached(FreshnessKind::OfflineCache);
+        }
+        match self
+            .request_json_inner(endpoint, method, url, body, query, attempted)
+            .await
+        {
+            Ok(evidence) => {
+                self.remaining()?;
+                if let Some(cache) = &self.cache
+                    && let Err(error) = cache.write(&key, &evidence)
+                {
+                    self.cache_diagnostic(error);
+                }
+                self.remaining()?;
+                Ok(evidence)
+            }
+            Err(error) => {
+                if self.mode == ObservationMode::OnlineWithCacheFallback {
+                    self.cache_diagnostic(error.clone());
+                    match cached(FreshnessKind::StaleCache) {
+                        Ok(evidence) => return Ok(evidence),
+                        Err(error) => self.cache_diagnostic(error),
+                    }
+                }
+                Err(error)
+            }
+        }
+    }
+
+    async fn request_json_inner(
+        &self,
+        endpoint: &ProviderEndpoint,
+        method: Method,
+        url: Url,
+        body: Option<Value>,
+        query: &AuthorizedQuery,
+        attempted: &AtomicBool,
+    ) -> Result<JsonEvidence, ObservationDiagnostic> {
         if endpoint.id() != query.provider_id
             || !endpoint.permits(&url)
             || !matches!(method, Method::GET | Method::POST)
@@ -271,6 +496,7 @@ impl HttpSession {
             if let Some(value) = &body {
                 request = request.json(value);
             }
+            attempted.store(true, Ordering::Relaxed);
             let response = match request.send().await {
                 Ok(response) => response,
                 Err(_) if attempt + 1 < self.limits.max_attempts => {
@@ -347,7 +573,8 @@ impl HttpSession {
             let value: Value = serde_json::from_slice(&bytes).map_err(|_| protocol_error())?;
             self.remaining()?;
             return Ok(JsonEvidence {
-                value: crate::support_bundle::redact_protocol(&value),
+                freshness: EvidenceFreshness::default(),
+                value: endpoint.redact_value(&value),
                 payload_digest: crate::security::sha256_bytes(&bytes),
                 fetched_at: self.observed_at,
             });
@@ -372,6 +599,13 @@ fn retry_delay(
         .checked_add(Duration::from_secs(now))
         .ok_or_else(protocol_error)?;
     Ok(date.duration_since(now).unwrap_or_default())
+}
+
+fn cache_miss() -> ObservationDiagnostic {
+    ObservationDiagnostic::new(
+        "E_SECURITY_CACHE_MISS",
+        "No cached observation is available in the currently authorized source/provider/auth-scope/schema partition.",
+    )
 }
 
 fn endpoint_error() -> ObservationDiagnostic {

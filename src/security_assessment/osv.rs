@@ -1,6 +1,6 @@
 //! Source-authorized OSV observations retaining full hydrated records.
 
-use super::http::{HttpSession, JsonEvidence, ProviderEndpoint};
+use super::http::{EvidenceFreshness, HttpSession, JsonEvidence, ProviderEndpoint};
 use super::*;
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
@@ -11,6 +11,7 @@ use std::path::Path;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AdvisoryRecord {
+    pub freshness: EvidenceFreshness,
     pub id: String,
     pub payload: Value,
     pub payload_digest: String,
@@ -18,9 +19,16 @@ pub struct AdvisoryRecord {
     pub coverage: CoverageUnit,
 }
 
+type HydratedRecords =
+    BTreeMap<String, (Result<(AdvisoryRecord, usize), ObservationDiagnostic>, bool)>;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InstanceAdvisories {
+    pub freshness: EvidenceFreshness,
+    /// At least one required detail was actually attempted, or the query
+    /// completed without needing details. Budget-only misses are false.
+    pub work_attempted: bool,
     pub instance_id: String,
     pub version: String,
     pub source_id: String,
@@ -53,13 +61,20 @@ pub async fn observe_advisories(
     policy: &SourcePolicy,
 ) -> AdvisoryObservation {
     let inventory_status = inventory.coverage.inventory_instances.status;
+    let inventory_over_limit = inventory.packages.len() > session.limits().max_inventory_instances;
+    let inventory_error = if inventory_over_limit {
+        "E_SECURITY_INVENTORY_LIMIT"
+    } else {
+        "E_SECURITY_INVENTORY"
+    };
     if matches!(
         inventory_status,
         CoverageStatus::Error | CoverageStatus::Unsupported
     ) || inventory.target.is_none()
+        || inventory_over_limit
     {
-        let mut coverage = failed_unit("E_SECURITY_INVENTORY", 0);
-        if inventory_status == CoverageStatus::Unsupported {
+        let mut coverage = failed_unit(inventory_error, inventory.packages.len());
+        if inventory_status == CoverageStatus::Unsupported && !inventory_over_limit {
             coverage.status = CoverageStatus::Unsupported;
         }
         return AdvisoryObservation {
@@ -68,9 +83,15 @@ pub async fn observe_advisories(
             observed_at: session.observed_at(),
             instances: vec![],
             coverage: coverage.clone(),
-            advisory_records: coverage,
+            advisory_records: CoverageUnit {
+                requested: 0,
+                complete: 0,
+                partial: 0,
+                errors: 0,
+                ..coverage
+            },
             diagnostics: vec![ObservationDiagnostic::new(
-                "E_SECURITY_INVENTORY",
+                inventory_error,
                 "Advisory requests require an observed inventory; inventory failure is not an empty scan.",
             )],
         };
@@ -97,6 +118,107 @@ pub async fn query_advisories(
     packages: &[PackageInstance],
     policy: &SourcePolicy,
 ) -> AdvisoryObservation {
+    query_authoritative_advisories(session, &[endpoint], packages, policy)
+        .await
+        .remove(0)
+}
+
+/// Hydrate each package/version across every required provider before spending
+/// on the next version. Provider latency cannot consume another provider's
+/// opportunity to complete the same candidate within the shared run budget.
+pub async fn query_authoritative_advisories(
+    session: &HttpSession,
+    endpoints: &[&ProviderEndpoint],
+    packages: &[PackageInstance],
+    policy: &SourcePolicy,
+) -> Vec<AdvisoryObservation> {
+    query_stream(session, endpoints, packages, &[], policy).await
+}
+
+/// Current-version positive witnesses get an initial detail before candidate
+/// work; remaining current details cannot consume every candidate's budget.
+pub(crate) async fn query_assessment_advisories(
+    session: &HttpSession,
+    endpoints: &[&ProviderEndpoint],
+    packages: &[PackageInstance],
+    current_ids: &[String],
+    policy: &SourcePolicy,
+) -> Vec<AdvisoryObservation> {
+    query_stream(session, endpoints, packages, current_ids, policy).await
+}
+async fn query_stream(
+    session: &HttpSession,
+    endpoints: &[&ProviderEndpoint],
+    packages: &[PackageInstance],
+    current_ids: &[String],
+    policy: &SourcePolicy,
+) -> Vec<AdvisoryObservation> {
+    let mut prepared: Vec<_> = endpoints
+        .iter()
+        .map(|endpoint| prepare_advisories(session, endpoint, packages, policy))
+        .collect();
+    let count = prepared
+        .iter()
+        .map(|prepared| prepared.result.instances.len())
+        .max()
+        .unwrap_or(0);
+    let current: BTreeSet<_> = current_ids.iter().map(String::as_str).collect();
+    for (index, package) in packages.iter().enumerate().take(count) {
+        futures::future::join_all(prepared.iter_mut().zip(endpoints).map(
+            |(prepared, endpoint)| async {
+                if current.contains(package.instance_id.as_str()) {
+                    prime_current(session, endpoint, packages, index, prepared).await;
+                } else {
+                    observe_index(session, endpoint, packages, index, prepared).await;
+                }
+            },
+        ))
+        .await;
+    }
+    for (index, package) in packages.iter().enumerate().take(count) {
+        if current.contains(package.instance_id.as_str()) {
+            futures::future::join_all(prepared.iter_mut().zip(endpoints).map(
+                |(prepared, endpoint)| observe_index(session, endpoint, packages, index, prepared),
+            ))
+            .await;
+        }
+    }
+    prepared.into_iter().map(finish_advisories).collect()
+}
+struct PreparedAdvisories {
+    result: AdvisoryObservation,
+    authorized: BTreeMap<usize, AuthorizedQuery>,
+    batches: Vec<Vec<usize>>,
+    index_batch: BTreeMap<usize, usize>,
+    loaded: BTreeSet<usize>,
+    primed: BTreeMap<usize, String>,
+    ids: BTreeMap<usize, BTreeSet<String>>,
+    next: BTreeMap<usize, String>,
+    tokens: BTreeMap<usize, BTreeSet<String>>,
+    records: BTreeMap<(String, String), HydratedRecords>,
+}
+impl PreparedAdvisories {
+    fn empty(result: AdvisoryObservation) -> Self {
+        Self {
+            result,
+            authorized: BTreeMap::new(),
+            batches: vec![],
+            index_batch: BTreeMap::new(),
+            loaded: BTreeSet::new(),
+            primed: BTreeMap::new(),
+            ids: BTreeMap::new(),
+            next: BTreeMap::new(),
+            tokens: BTreeMap::new(),
+            records: BTreeMap::new(),
+        }
+    }
+}
+fn prepare_advisories(
+    session: &HttpSession,
+    endpoint: &ProviderEndpoint,
+    packages: &[PackageInstance],
+    policy: &SourcePolicy,
+) -> PreparedAdvisories {
     let mut result = AdvisoryObservation {
         observation_version: 1,
         provider_id: endpoint.id().into(),
@@ -109,19 +231,27 @@ pub async fn query_advisories(
         advisory_records: CoverageUnit::default(),
         diagnostics: vec![],
     };
-    if packages.len() > session.limits().max_inventory_instances {
-        result.coverage = failed_unit("E_SECURITY_INVENTORY_LIMIT", packages.len());
+    if packages.len()
+        > session
+            .limits()
+            .max_inventory_instances
+            .saturating_add(session.limits().max_candidate_checks)
+    {
+        result.coverage = failed_unit("E_SECURITY_QUERY_LIMIT", packages.len());
+        result.advisory_records = failed_unit("E_SECURITY_QUERY_LIMIT", 0);
         result.diagnostics.push(ObservationDiagnostic::new(
-            "E_SECURITY_INVENTORY_LIMIT",
-            "The inventory exceeds the observation limit; no identities were submitted.",
+            "E_SECURITY_QUERY_LIMIT",
+            "Combined current and candidate query work exceeds the shared observation limit; no identities were submitted.",
         ));
-        return result;
+        return PreparedAdvisories::empty(result);
     }
     let mut authorized = BTreeMap::new();
     let mut groups: BTreeMap<(String, String), Vec<usize>> = BTreeMap::new();
     for package in packages {
         let index = result.instances.len();
         result.instances.push(InstanceAdvisories {
+            freshness: EvidenceFreshness::default(),
+            work_attempted: false,
             instance_id: package.instance_id.clone(),
             version: package.version.clone(),
             source_id: package.source.id.clone(),
@@ -164,39 +294,166 @@ pub async fn query_advisories(
             }
             Ok(query)
         })();
-        match query {
-            Ok(query) => {
-                result.instances[index].upstream_name = Some(query.name.clone());
-                result.instances[index].ecosystem = Some(query.ecosystem.clone());
-                result.instances[index].mapping_assumption = Some(query.assumption.clone());
-                groups
-                    .entry((query.source_id.clone(), query.auth_scope_id.clone()))
-                    .or_default()
-                    .push(index);
-                authorized.insert(index, query);
-            }
-            Err(error) => record_failure(&mut result, index, error),
+        if let Ok(query) = &query {
+            result.instances[index].upstream_name = Some(query.name.clone());
+            result.instances[index].ecosystem = Some(query.ecosystem.clone());
+            result.instances[index].mapping_assumption = Some(query.assumption.clone());
+        }
+        if let Err(error) = &query {
+            record_failure(&mut result, index, error.clone());
+        }
+        let metadata_bytes =
+            serde_json::to_vec(&result.instances[index]).map_or(usize::MAX, |value| value.len());
+        // Reserve space for bounded coverage reasons, counts and freshness in
+        // addition to the captured instance identity. Empty advisory results
+        // still retain source/provenance evidence and consume the shared cap.
+        if session
+            .reserve_evidence(metadata_bytes.saturating_add(1024))
+            .is_err()
+        {
+            result.instances.pop();
+            result.diagnostics.push(evidence_limit());
+            break;
+        }
+        if let Ok(query) = query {
+            groups
+                .entry((query.source_id.clone(), query.auth_scope_id.clone()))
+                .or_default()
+                .push(index);
+            authorized.insert(index, query);
         }
     }
-    let mut retained_bytes = 0;
-    for indices in groups.values() {
-        observe_group(
+
+    let mut ordered_groups: Vec<_> = groups.into_values().collect();
+    ordered_groups.sort_by_key(|indices| indices[0]);
+    let mut prepared = PreparedAdvisories::empty(result);
+    prepared.authorized = authorized;
+    for indices in ordered_groups {
+        for chunk in indices.chunks(1000) {
+            let batch = prepared.batches.len();
+            for index in chunk {
+                prepared.index_batch.insert(*index, batch);
+            }
+            prepared.batches.push(chunk.to_vec());
+        }
+    }
+    prepared
+}
+async fn load_batch(
+    session: &HttpSession,
+    endpoint: &ProviderEndpoint,
+    packages: &[PackageInstance],
+    index: usize,
+    prepared: &mut PreparedAdvisories,
+) {
+    let Some(batch) = prepared.index_batch.get(&index).copied() else {
+        return;
+    };
+    if prepared.loaded.insert(batch) {
+        let active: Vec<_> = prepared.batches[batch]
+            .iter()
+            .map(|index| (*index, None))
+            .collect();
+        query_page(session, endpoint, packages, &active, prepared).await;
+    }
+}
+async fn prime_current(
+    session: &HttpSession,
+    endpoint: &ProviderEndpoint,
+    packages: &[PackageInstance],
+    index: usize,
+    prepared: &mut PreparedAdvisories,
+) {
+    if !prepared.authorized.contains_key(&index) {
+        return;
+    }
+    load_batch(session, endpoint, packages, index, prepared).await;
+    let Some(id) = prepared
+        .ids
+        .get(&index)
+        .and_then(|ids| ids.first())
+        .cloned()
+    else {
+        return;
+    };
+    let pending = BTreeMap::from([(index, BTreeSet::from([id.clone()]))]);
+    let query = &prepared.authorized[&index];
+    let records = prepared
+        .records
+        .entry((query.source_id.clone(), query.auth_scope_id.clone()))
+        .or_default();
+    hydrate_indices(
+        session,
+        endpoint,
+        &[index],
+        &prepared.authorized,
+        &mut prepared.result,
+        records,
+        &pending,
+    )
+    .await;
+    prepared.primed.insert(index, id);
+}
+
+async fn observe_index(
+    session: &HttpSession,
+    endpoint: &ProviderEndpoint,
+    packages: &[PackageInstance],
+    index: usize,
+    prepared: &mut PreparedAdvisories,
+) {
+    if !prepared.authorized.contains_key(&index) {
+        return;
+    }
+    load_batch(session, endpoint, packages, index, prepared).await;
+    // Only this package/version's remaining pages precede its hydration.
+    // A later candidate's pagination cannot consume its provider bundle.
+    while let Some(token) = prepared.next.remove(&index) {
+        query_page(
             session,
             endpoint,
             packages,
-            indices,
-            &authorized,
-            &mut result,
-            &mut retained_bytes,
+            &[(index, Some(token))],
+            prepared,
         )
         .await;
+    }
+    let mut remaining = prepared.ids.remove(&index).unwrap_or_default();
+    if let Some(id) = prepared.primed.remove(&index) {
+        remaining.remove(&id);
+    }
+    let pending = BTreeMap::from([(index, remaining)]);
+    let query = &prepared.authorized[&index];
+    let records = prepared
+        .records
+        .entry((query.source_id.clone(), query.auth_scope_id.clone()))
+        .or_default();
+    hydrate_indices(
+        session,
+        endpoint,
+        &[index],
+        &prepared.authorized,
+        &mut prepared.result,
+        records,
+        &pending,
+    )
+    .await;
+}
+
+fn finish_advisories(prepared: PreparedAdvisories) -> AdvisoryObservation {
+    let mut result = prepared.result;
+    if result.instances.is_empty() && result.coverage.status == CoverageStatus::Error {
+        return result;
+    }
+    for instance in &mut result.instances {
+        instance.work_attempted |= instance.coverage.status == CoverageStatus::Complete;
     }
     result.coverage.complete = result
         .instances
         .iter()
         .filter(|instance| instance.coverage.status == CoverageStatus::Complete)
         .count();
-    result.coverage.partial = result.instances.len() - result.coverage.complete;
+    result.coverage.partial = result.coverage.requested - result.coverage.complete;
     if result.coverage.partial > 0 {
         result.coverage.status = CoverageStatus::Partial;
     }
@@ -231,133 +488,159 @@ pub async fn query_advisories(
     result
 }
 
-async fn observe_group(
+async fn query_page(
     session: &HttpSession,
     endpoint: &ProviderEndpoint,
     packages: &[PackageInstance],
+    active: &[(usize, Option<String>)],
+    prepared: &mut PreparedAdvisories,
+) {
+    let PreparedAdvisories {
+        result,
+        authorized,
+        ids,
+        next,
+        tokens,
+        ..
+    } = prepared;
+    if let Err(error) = session.reserve_provider_page(endpoint.id()) {
+        for (index, _) in active {
+            record_failure(result, *index, error.clone());
+        }
+        return;
+    }
+    let queries:Vec<_>=active.iter().map(|(index,token)| {
+        let query=&authorized[index];
+        let mut value=json!({"package":{"name":query.name,"ecosystem":query.ecosystem},"version":packages[*index].version});
+        if let Some(token)=token {value["page_token"]=json!(token);}
+        value
+    }).collect();
+    let (evidence, attempted) = session
+        .request_json_tracked(
+            endpoint,
+            Method::POST,
+            endpoint.url().clone(),
+            Some(json!({"queries":queries})),
+            &authorized[&active[0].0],
+        )
+        .await;
+    // Only an individually followed page advances a partial candidate. A
+    // batched first page must not mark its unvisited tail as assessed work.
+    if attempted || evidence.is_ok() {
+        for (index, token) in active {
+            if token.is_some() {
+                result.instances[*index].work_attempted = true;
+            }
+        }
+    }
+    let evidence = match evidence {
+        Ok(evidence) => evidence,
+        Err(error) => {
+            for (index, _) in active {
+                record_failure(result, *index, error.clone());
+            }
+            return;
+        }
+    };
+    for (index, _) in active {
+        result.instances[*index].freshness.merge(evidence.freshness);
+    }
+    let Some(responses) = evidence
+        .value
+        .get("results")
+        .and_then(Value::as_array)
+        .filter(|values| values.len() == active.len())
+    else {
+        for (index, _) in active {
+            record_failure(result, *index, schema_error());
+        }
+        return;
+    };
+    for ((index, _), response) in active.iter().zip(responses) {
+        if !response.is_object() {
+            record_failure(result, *index, schema_error());
+            continue;
+        }
+        if let Some(vulns) = response.get("vulns") {
+            if let Some(vulns) = vulns.as_array() {
+                for vuln in vulns {
+                    let Some(id) = vuln
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .filter(|id| endpoint.detail_url(id).is_ok())
+                    else {
+                        record_failure(result, *index, schema_error());
+                        continue;
+                    };
+                    if !ids.entry(*index).or_default().insert(id.into()) {
+                        record_failure(
+                            result,
+                            *index,
+                            ObservationDiagnostic::new(
+                                "E_SECURITY_PROVIDER_PAGE",
+                                "The provider repeated an advisory across pages.",
+                            ),
+                        );
+                    }
+                }
+            } else {
+                record_failure(result, *index, schema_error());
+            }
+        }
+        if let Some(token) = response.get("next_page_token") {
+            let Some(token) = token
+                .as_str()
+                .filter(|token| !token.is_empty() && token.len() <= 4096)
+            else {
+                record_failure(result, *index, schema_error());
+                continue;
+            };
+            if !tokens.entry(*index).or_default().insert(token.into()) {
+                record_failure(
+                    result,
+                    *index,
+                    ObservationDiagnostic::new(
+                        "E_SECURITY_PROVIDER_PAGE",
+                        "Provider pagination repeated a token or exceeded its page budget.",
+                    ),
+                );
+            } else {
+                next.insert(*index, token.into());
+            }
+        }
+    }
+}
+
+async fn hydrate_indices(
+    session: &HttpSession,
+    endpoint: &ProviderEndpoint,
     indices: &[usize],
     authorized: &BTreeMap<usize, AuthorizedQuery>,
     result: &mut AdvisoryObservation,
-    retained_bytes: &mut usize,
+    records: &mut HydratedRecords,
+    ids: &BTreeMap<usize, BTreeSet<String>>,
 ) {
-    let mut active: Vec<(usize, Option<String>)> =
-        indices.iter().map(|index| (*index, None)).collect();
-    let mut tokens: BTreeMap<usize, BTreeSet<String>> = BTreeMap::new();
-    let mut ids: BTreeMap<usize, BTreeSet<String>> = BTreeMap::new();
-    for page in 0..session.limits().max_pages {
-        if active.is_empty() {
-            break;
-        }
-        if let Err(error) = session.reserve_provider_page(endpoint.id()) {
-            for (index, _) in &active {
-                record_failure(result, *index, error.clone());
-            }
-            break;
-        }
-        let queries: Vec<_> = active.iter().map(|(index, token)| {
-            let query = &authorized[index];
-            let mut value = json!({"package":{"name":query.name,"ecosystem":query.ecosystem},"version":packages[*index].version});
-            if let Some(token) = token { value["page_token"] = json!(token); }
-            value
-        }).collect();
-        let evidence = session
-            .request_json(
-                endpoint,
-                Method::POST,
-                endpoint.url().clone(),
-                Some(json!({"queries":queries})),
-                &authorized[&active[0].0],
-            )
-            .await;
-        let evidence = match evidence {
-            Ok(evidence) => evidence,
-            Err(error) => {
-                for (index, _) in &active {
-                    record_failure(result, *index, error.clone());
-                }
-                break;
-            }
-        };
-        let Some(responses) = evidence
-            .value
-            .get("results")
-            .and_then(Value::as_array)
-            .filter(|values| values.len() == active.len())
-        else {
-            for (index, _) in &active {
-                record_failure(result, *index, schema_error());
-            }
-            break;
-        };
-        let mut next = Vec::new();
-        for ((index, _), response) in active.iter().zip(responses) {
-            if !response.is_object() {
-                record_failure(result, *index, schema_error());
-                continue;
-            }
-            if let Some(vulns) = response.get("vulns") {
-                if let Some(vulns) = vulns.as_array() {
-                    for vuln in vulns {
-                        let Some(id) = vuln
-                            .get("id")
-                            .and_then(Value::as_str)
-                            .filter(|id| endpoint.detail_url(id).is_ok())
-                        else {
-                            record_failure(result, *index, schema_error());
-                            continue;
-                        };
-                        if !ids.entry(*index).or_default().insert(id.to_owned()) {
-                            record_failure(
-                                result,
-                                *index,
-                                ObservationDiagnostic::new(
-                                    "E_SECURITY_PROVIDER_PAGE",
-                                    "The provider repeated an advisory across pages.",
-                                ),
-                            );
-                        }
-                    }
-                } else {
-                    record_failure(result, *index, schema_error());
-                }
-            }
-            if let Some(token) = response.get("next_page_token") {
-                let Some(token) = token
-                    .as_str()
-                    .filter(|token| !token.is_empty() && token.len() <= 4096)
-                else {
-                    record_failure(result, *index, schema_error());
-                    continue;
-                };
-                if page + 1 == session.limits().max_pages
-                    || !tokens.entry(*index).or_default().insert(token.into())
-                {
-                    record_failure(
-                        result,
-                        *index,
-                        ObservationDiagnostic::new(
-                            "E_SECURITY_PROVIDER_PAGE",
-                            "Provider pagination repeated a token or exceeded its page budget.",
-                        ),
-                    );
-                } else {
-                    next.push((*index, Some(token.into())));
-                }
-            }
-        }
-        active = next;
-    }
-    let mut records = BTreeMap::new();
     for index in indices {
         for id in ids.get(index).into_iter().flatten() {
             result.instances[*index].coverage.requested += 1;
             if !records.contains_key(id) {
-                let fetched = match endpoint.detail_url(id) {
-                    Ok(url) => session
-                        .request_json(endpoint, Method::GET, url, None, &authorized[index])
-                        .await
-                        .and_then(|evidence| hydrate(id, evidence)),
-                    Err(error) => Err(error),
+                let (fetched, attempted) = match endpoint.detail_url(id) {
+                    Ok(url) => {
+                        let (evidence, attempted) = session
+                            .request_json_tracked(
+                                endpoint,
+                                Method::GET,
+                                url,
+                                None,
+                                &authorized[index],
+                            )
+                            .await;
+                        (
+                            evidence.and_then(|evidence| hydrate(id, evidence)),
+                            attempted,
+                        )
+                    }
+                    Err(error) => (Err(error), false),
                 };
                 // A single hydrated payload can belong to many installed
                 // instances. Bound retained evidence across the whole run,
@@ -376,32 +659,23 @@ async fn observe_group(
                             .map_err(|_| schema_error())?
                             .len();
                     let size = size + failed_coverage_size.saturating_sub(current_coverage_size);
-                    if size
-                        > session
-                            .limits()
-                            .max_response_bytes
-                            .saturating_sub(*retained_bytes)
-                    {
+                    if size > session.remaining_evidence_bytes() {
                         Err(evidence_limit())
                     } else {
                         Ok((record, size))
                     }
                 });
-                records.insert(id.clone(), fetched);
+                records.insert(id.clone(), (fetched, attempted));
             }
-            match &records[id] {
+            result.instances[*index].work_attempted |= records[id].1;
+            match &records[id].0 {
                 Ok((record, size)) => {
-                    if *size
-                        > session
-                            .limits()
-                            .max_response_bytes
-                            .saturating_sub(*retained_bytes)
-                    {
-                        record_failure(result, *index, evidence_limit());
+                    if let Err(error) = session.reserve_evidence(size.saturating_add(1)) {
+                        record_failure(result, *index, error);
                         continue;
                     }
-                    *retained_bytes += size;
                     let mut record = record.clone();
+                    result.instances[*index].freshness.merge(record.freshness);
                     let scoped = matches_package(&record.payload, &authorized[index]);
                     if !scoped {
                         record.coverage = failed_unit("E_SECURITY_PROVIDER_SCOPE", 1);
@@ -479,6 +753,7 @@ fn hydrate(
         failed_unit("E_SECURITY_PROVIDER_SCHEMA", 1)
     };
     Ok(AdvisoryRecord {
+        freshness: evidence.freshness,
         id: id.into(),
         payload: evidence.value,
         payload_digest: evidence.payload_digest,
@@ -504,7 +779,13 @@ fn matches_package(payload: &Value, query: &AuthorizedQuery) -> bool {
                 && item
                     .pointer("/package/name")
                     .and_then(Value::as_str)
-                    .and_then(|name| normalize_name(name).ok())
+                    .and_then(|name| {
+                        if name == "*" {
+                            Some(query.name.clone())
+                        } else {
+                            normalize_name(name).ok()
+                        }
+                    })
                     .as_deref()
                     == Some(query.name.as_str())
         })

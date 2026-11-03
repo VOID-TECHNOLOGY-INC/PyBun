@@ -59,6 +59,7 @@ pub struct ObservationLimits {
     pub total_timeout_ms: u64,
     pub http_timeout_ms: u64,
     pub max_response_bytes: usize,
+    pub max_retained_evidence_bytes: usize,
     pub max_metadata_bytes: usize,
     pub max_inventory_instances: usize,
     pub max_requests: usize,
@@ -75,6 +76,7 @@ impl Default for ObservationLimits {
             total_timeout_ms: 60_000,
             http_timeout_ms: 10_000,
             max_response_bytes: 5 * 1024 * 1024,
+            max_retained_evidence_bytes: 50 * 1024 * 1024,
             max_metadata_bytes: 512 * 1024,
             max_inventory_instances: 1000,
             max_requests: 100,
@@ -101,6 +103,10 @@ impl ObservationLimits {
             (
                 self.max_metadata_bytes as u128,
                 cap.max_metadata_bytes as u128,
+            ),
+            (
+                self.max_retained_evidence_bytes as u128,
+                cap.max_retained_evidence_bytes as u128,
             ),
             (
                 self.max_inventory_instances as u128,
@@ -179,6 +185,7 @@ pub struct ObservedTarget {
     pub inspector: PathBuf,
     pub interpreter_digest: String,
     pub interpreter_identity_evidence: String,
+    pub marker_environment: std::collections::BTreeMap<String, String>,
     pub kind: InventoryTarget,
     pub backend: InventoryBackend,
     pub scope: InventoryScope,

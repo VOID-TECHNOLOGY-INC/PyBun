@@ -117,7 +117,7 @@ fn explain_scoped(
     analyze(evidence, &package)
 }
 
-fn analyze(evidence: GraphEvidence, package: &str) -> Result<Value, WhyError> {
+pub(crate) fn analyze(evidence: GraphEvidence, package: &str) -> Result<Value, WhyError> {
     let raw = evidence.metadata["resolution"]
         .as_object()
         .ok_or_else(invalid)?;
