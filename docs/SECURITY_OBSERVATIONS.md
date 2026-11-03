@@ -84,6 +84,12 @@ unapproved derived URLs and advisory reference fetching are prohibited.
 `HttpSession` enforces request/page/attempt/concurrency/response/deadline limits.
 Callers can narrow the default ceilings, not increase them.
 
+Each JSON response is capped at 5 MiB. Retained registry/advisory observations
+share a separate 50 MiB run budget (`max_retained_evidence_bytes`), including
+later candidate re-queries. Both caps can only be narrowed. Keeping these units
+separate permits a large valid index response while bounding accumulation and
+record duplication across providers; exhaustion is incomplete evidence.
+
 OSV observations remap each instance under current policy before disclosure.
 They preserve full hydrated advisory JSON, IDs/aliases, raw payload digest,
 fetch time, provider/source provenance, pagination and per-instance coverage.
@@ -115,3 +121,183 @@ cargo test --test security_observations actual_uv_environment -- --ignored
 `PYBUN_SECURITY_TEST_PYTHON` selects the trusted Python used by test fixtures;
 it does not affect the production library. CI installs its own test tools before
 creating fixture environments; observation itself never bootstraps tools.
+
+### Prerelease interpreter qualification
+
+The target Python version preserves CPython's release level and serial, for
+example `3.15.0rc2`, so a wheel requiring `>=3.15` is not qualified for that
+prerelease. The numeric three-component `version` written by stdlib `venv` is
+only a release-component hint: CPython writes that lossy form even for release
+candidates. The proven matching trusted executable supplies the complete version.
+Explicit UV PEP 440 versions and recognized five-component CPython versions must
+match in full. Unknown trailing components, conflicting version declarations and
+an explicit prerelease paired with a stable executable are rejected.
+
+The normal suite checks configuration tails against an installed stable Python.
+The explicit runtime regressions additionally require a separately provisioned
+prerelease executable; they never install one themselves. A macOS arm64
+CPython `3.15.0rc2` fixture was exercised with both stdlib and UV-created venvs.
+To repeat with a test-only installation outside project and user environments:
+
+```sh
+uv --no-config --cache-dir /tmp/pybun-prerelease-cache python install \
+  --install-dir /tmp/pybun-prerelease-python --no-bin --no-registry 3.15.0rc2
+PYBUN_SECURITY_PRERELEASE_PYTHON=/tmp/pybun-prerelease-python/cpython-3.15.0rc2-macos-aarch64-none/bin/python3.15 \
+  cargo test --test security_python_prerelease -- --include-ignored
+```
+
+The executable path varies by platform. These opt-in runtime tests verify the
+full observed version, executable proof and actual `Requires-Python` decisions;
+prerelease availability is not inferred from a synthetic target profile.
+
+### Exact marker environment
+
+`ObservedTarget.marker_environment` records all eleven canonical PEP 508 values:
+`implementation_name`, `implementation_version`, `os_name`, `platform_machine`,
+`platform_python_implementation`, `platform_release`, `platform_system`,
+`platform_version`, `python_full_version`, `python_version` and `sys_platform`.
+The fixed isolated helper observes these through the trusted CPython standard
+library. `platform_machine` retains its original case; it is not reconstructed
+from the lowercase architecture display value. Full Python and implementation
+versions preserve prerelease information.
+
+The maintained `pep508_rs` marker-environment builder validates version values;
+missing, malformed or internally inconsistent environments return coded
+unsupported evidence. There are no fabricated empty defaults. Marker values
+participate in the semantic inventory identity and environment fingerprint so a
+changed marker context cannot reuse an older target assessment silently.
+
+`cargo test --test security_marker_environment` compares a real venv observation
+with an independent isolated standard-library probe. A separate controlled-helper
+fixture injects the reported machine string `AMD64` and verifies case-sensitive
+marker comparisons; it is a formatting test, not evidence of an AMD64 host.
+The same real-venv observation test can be repeated on the explicitly provisioned
+prerelease executable by setting `PYBUN_SECURITY_TEST_PYTHON` to its path.
+
+## Candidate assessment service
+
+`qualification::service::assess_project` observes the installed environment with
+its explicitly trusted interpreter, then uses one `HttpSession` for current and
+candidate advisory queries and approved-source JSON Simple metadata. Optional
+frozen graph provenance uses the remaining run deadline and its private cache
+profile. `assess_inventory` accepts an already observed inventory for callers
+that have performed the same target authorization. These are library entry
+points; the legacy audit command and its JSON contract remain unchanged.
+
+A candidate requires a non-yanked compatible wheel from the same approved
+source and the exact observed target-tag profile. File URLs are evidence only:
+assessment does not fetch archives, run build hooks, install, resolve or verify
+an updated environment. Prerelease and development releases are excluded from
+discovery unless explicitly requested. Exact previous candidates are still
+revalidated when they fall outside the current discovery subset.
+
+Applicable OSV ranges and explicit versions are unioned using PEP 440 semantics.
+`published_remediation_candidate` additionally requires a relevant explicit
+fixed boundary for the installed version and complete fresh candidate queries
+against every configured authoritative provider. Current-query records are
+also evaluated at the candidate version, so omission from a candidate query
+cannot erase known reintroduction. Conflicting revisions, withdrawals and
+incomplete candidate-provider evidence retain their diagnostics and prevent a
+fresh fix assertion.
+An observed unaffected upgrade without explicit fixed evidence is
+`non_affected_upgrade_observed`. Missing fix information is not proof that no
+upstream fix exists.
+
+Candidates retain direct requirement blockers and their origins/digests.
+`metadata_recommendations` separately lists qualified candidates that pass known
+direct constraints. Full and transitive constraint completeness remains unknown;
+resolution is always `not_checked`, and verification is always `not_run`.
+Per-source/instance advisory clusters retain every contributing provider,
+record, alias and payload digest. Unknown severity is not converted into an
+invented numeric CVSS score. Inventory, advisory-record, finding-cluster and
+candidate-check coverage are reported separately from aggregate status.
+
+Continuation tokens bind inventory, scope, provider/source configuration,
+policy, target tags and assessment revision. They control traversal only and
+cannot prove exclusions or a minimum. Discovery and previous-candidate work
+share the run budget, with separate traversal positions. Only the observed
+prefix of each package advances; a request-budget miss does not silently skip
+its versions. Missing registry metadata preserves the previous discovery
+position, and circular metadata priority advances after actual requests.
+Unrevalidated previous candidates remain explicit in
+`pending_previous_candidates`. `lowest_proven_candidate` requires complete
+current enumeration and conclusive exclusion of every lower in-policy release;
+otherwise only the lowest assessed candidate is reported.
+
+## Optional observation cache and freshness
+
+Cache access requires an explicitly approved canonical directory owned by the
+current user with private permissions. The service pins that directory and uses
+bounded regular files, no-follow reads, private temporary files, file fsync,
+atomic replacement and directory fsync. It never creates a project cache or
+receipt. Windows reports the cache profile as unsupported. Corrupt, mismatched,
+future-schema and future-timestamp entries are errors, not empty observations.
+
+Cache keys bind the source, provider endpoint, authorization scope, query and
+schema; bearer bytes are excluded. HTTP responses are redacted before writing,
+and cache hits are redacted again for the current endpoint credentials.
+Explicit credentials are protected even in typed fields, object keys, short
+embedded strings and equivalent scalar values. Payload digests retain original
+response provenance; a separate cache digest detects stored-envelope corruption.
+The cache is user-controlled evidence, not an authorization source.
+
+Online mode always requests fresh evidence. Offline mode performs no HTTP and
+reports `offline_cache`, the original fetch time and age. Explicit online
+fallback reports `stale_cache` and the failed fresh request. Cache data never
+becomes authoritative merely because its payload is structurally complete.
+Cached positives remain visible, but cannot establish a newly observed patch or
+an authoritative monitor transition. Cache write failures preserve successful
+HTTP evidence and add an operational diagnostic; aggregate status remains
+partial. All cache operations remain subject to the shared run deadline.
+
+Candidate result axes are independent. `fix_evidence` is `known_boundary`,
+`unavailable` or `unsupported`; it is not an assertion that a compatible artifact
+was published. `availability` is `published_candidate`, `not_observed`, `unknown`
+or `source_build_required`. The separate `candidate_kind` is either
+`published_remediation_candidate`, `non_affected_upgrade_observed`, or null.
+Only published remediation has a nonempty `published_remediation_basis`, tying
+fresh qualifying boundaries to their exact provider/record/range/event evidence.
+Resolution and verification have singleton status types, so a serialized result
+cannot acquire an unperformed resolver or verification status.
+
+All same-instance/source/auth-scope/mapping/provider records discovered in any
+candidate query are re-evaluated for both installed and candidate versions,
+including earlier candidates. Query omission cannot erase a range discovered
+at another candidate. Withdrawn corrections remain explicit even when cached;
+a cached ordinary negative for a different version is not required to establish
+an independently fresh result. A fresh current affected/fixed witness plus
+complete fresh candidate queries from every authoritative provider can establish
+a positive remedy while another current-version query remains incomplete.
+Current negative/clearance coverage and aggregate status remain partial.
+
+Work and output budgets both affect traversal. Candidate queries and result
+retention follow the same circular package/version order. Successful checkpoints
+advance only an observed prefix whose assessment was actually retained. A failed package does
+not consume the result budget of every later package. Current-version queries
+first hydrate one witness, then defer their remaining pages/details until after
+candidate bundles, so a large current advisory list cannot consume every
+candidate opportunity. Mutable wheel URLs, hashes and requirements do not reset
+release-version positions; release-set digests use semantic PEP 440 keys.
+
+Pagination preserves the exact noncredential cursor returned by the provider.
+If credential redaction changes a functional cursor, the response remains
+incomplete; the service never substitutes the redacted text in a new request.
+An individually attempted follow-up page counts as traversal work even when
+pagination remains incomplete and returns no advisory IDs. That progress does
+not make the candidate authoritative.
+
+The continuation also holds a bounded scheduling width. When a leading admitted
+frame cannot complete, later runs halve this width toward one package and one
+candidate, narrowing registry/current-version admission and candidate admission
+together. Deferred packages retain their discovery and prior-candidate positions.
+A frame still too large at the minimum width rotates traversal to later work,
+with explicit incomplete diagnostics and pending prior candidates. This retry
+position is not an observed exclusion or proof of a lowest candidate. Unsupported
+or unavailable registry enumeration preserves the previous discovery position;
+current metadata evidence remains incomplete. Out-of-policy prior versions are
+still revalidated, but do not enter the default recommendation/minimum selection.
+
+The shared absolute deadline includes waiting for an inventory or optional graph
+worker. Expired queued work cannot launch its helper or begin graph observation.
+Graph timeout preserves already observed candidate facts and reports partial
+coverage; it cannot extend the check merely because the blocking pool is busy.

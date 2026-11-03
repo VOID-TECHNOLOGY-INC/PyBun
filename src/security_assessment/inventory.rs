@@ -47,6 +47,7 @@ impl InventoryRequest {
 #[serde(deny_unknown_fields)]
 struct InspectorResult {
     generator_version: String,
+    marker_environment: BTreeMap<String, String>,
     implementation: String,
     python_version: String,
     os: String,
@@ -112,6 +113,7 @@ pub fn observe_inventory(request: &InventoryRequest, observed_at: u64) -> Invent
             target.backend,
             &target.scope,
             &target.tag_profile,
+            &target.marker_environment,
         )
     });
     let semantic_constraints = result
@@ -243,16 +245,32 @@ fn observe(
             "Only the CPython installed metadata profile is supported.",
         ));
     }
-    let version = ["version", "version_info", "python-version"]
-        .iter()
-        .find_map(|key| config.get(*key))
-        .and_then(|v| parse_python_version(v))
-        .ok_or_else(|| {
-            diag(
-                "E_SECURITY_UNSUPPORTED_INVENTORY",
-                "The environment does not declare an exact CPython version.",
-            )
-        })?;
+    let mut configured_versions = Vec::new();
+    for key in ["version", "version_info", "python-version"] {
+        if let Some(value) = config.get(key) {
+            let parsed = parse_python_version(value).ok_or_else(|| {
+                diag(
+                    "E_SECURITY_UNSUPPORTED_INVENTORY",
+                    "The environment does not declare a supported exact CPython version.",
+                )
+            })?;
+            // CPython's stdlib venv deliberately records only these three
+            // numbers, even for a prerelease. It is a release-component hint;
+            // the proven trusted executable determines release level/serial.
+            let release_hint = key == "version"
+                && value.split('.').count() == 3
+                && value
+                    .split('.')
+                    .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()));
+            configured_versions.push((parsed, release_hint));
+        }
+    }
+    if configured_versions.is_empty() {
+        return Err(diag(
+            "E_SECURITY_UNSUPPORTED_INVENTORY",
+            "The environment does not declare an exact CPython version.",
+        ));
+    }
     let inspector = request.trusted_python.canonicalize().map_err(|_| {
         diag(
             "E_SECURITY_UNSUPPORTED_INVENTORY",
@@ -260,8 +278,21 @@ fn observe(
         )
     })?;
     let probe = inspect_python(&inspector, &request.limits, started)?;
+    let version = parse_python_version(&probe.python_version).ok_or_else(|| {
+        diag(
+            "E_SECURITY_UNSUPPORTED_INVENTORY",
+            "The trusted inspector returned an unsupported CPython version.",
+        )
+    })?;
+    validate_marker_environment(&probe, &version)?;
     if probe.implementation != "cpython"
-        || parse_python_version(&probe.python_version).as_ref() != Some(&version)
+        || configured_versions.iter().any(|(expected, release_hint)| {
+            if *release_hint {
+                expected.release() != version.release()
+            } else {
+                expected != &version
+            }
+        })
     {
         return Err(diag(
             "E_SECURITY_UNSUPPORTED_INVENTORY",
@@ -292,7 +323,8 @@ fn observe(
     } else {
         PathBuf::from(format!(
             "lib/python{}.{}/site-packages",
-            version.0, version.1
+            version.release()[0],
+            version.release()[1]
         ))
     };
     // Use a directory capability: metadata symlinks cannot escape this root.
@@ -464,6 +496,7 @@ fn observe(
         &environment,
         &config,
         &tag_profile.digest,
+        &probe.marker_environment,
         &path_extensions,
         result
             .packages
@@ -479,6 +512,7 @@ fn observe(
         inspector,
         interpreter_digest,
         interpreter_identity_evidence,
+        marker_environment: probe.marker_environment,
         kind: request.target,
         backend: request.backend,
         scope,
@@ -782,13 +816,107 @@ fn parse_venv_config(bytes: &[u8]) -> Result<BTreeMap<String, String>, Observati
     Ok(values)
 }
 
-fn parse_python_version(value: &str) -> Option<(u64, u64, u64)> {
-    let mut parts = value.split('.');
-    Some((
-        parts.next()?.parse().ok()?,
-        parts.next()?.parse().ok()?,
-        parts.next()?.parse().ok()?,
-    ))
+fn validate_marker_environment(
+    probe: &InspectorResult,
+    version: &pep440_rs::Version,
+) -> Result<(), ObservationDiagnostic> {
+    use pep508_rs::{MarkerEnvironment, MarkerEnvironmentBuilder};
+    let values = &probe.marker_environment;
+    let keys = [
+        "implementation_name",
+        "implementation_version",
+        "os_name",
+        "platform_machine",
+        "platform_python_implementation",
+        "platform_release",
+        "platform_system",
+        "platform_version",
+        "python_full_version",
+        "python_version",
+        "sys_platform",
+    ];
+    let invalid = || {
+        diag(
+            "E_SECURITY_UNSUPPORTED_MARKER_ENVIRONMENT",
+            "The trusted inspector did not provide a complete consistent PEP 508 marker environment.",
+        )
+    };
+    if values.len() != keys.len()
+        || keys.iter().any(|key| !values.contains_key(*key))
+        || values.values().any(|value| value.len() > 16384)
+    {
+        return Err(invalid());
+    }
+    let get = |key| values.get(key).map(String::as_str).ok_or_else(invalid);
+    let _: MarkerEnvironment = MarkerEnvironmentBuilder {
+        implementation_name: get("implementation_name")?,
+        implementation_version: get("implementation_version")?,
+        os_name: get("os_name")?,
+        platform_machine: get("platform_machine")?,
+        platform_python_implementation: get("platform_python_implementation")?,
+        platform_release: get("platform_release")?,
+        platform_system: get("platform_system")?,
+        platform_version: get("platform_version")?,
+        python_full_version: get("python_full_version")?,
+        python_version: get("python_version")?,
+        sys_platform: get("sys_platform")?,
+    }
+    .try_into()
+    .map_err(|_| invalid())?;
+    if get("implementation_name")? != probe.implementation
+        || get("python_full_version")?
+            .parse::<pep440_rs::Version>()
+            .ok()
+            .as_ref()
+            != Some(version)
+        || get("implementation_version")?
+            .parse::<pep440_rs::Version>()
+            .ok()
+            .as_ref()
+            != Some(version)
+        || get("python_version")? != format!("{}.{}", version.release()[0], version.release()[1])
+        || get("sys_platform")? != probe.os
+        || get("platform_machine")?.to_lowercase() != probe.architecture
+        || get("platform_python_implementation")? != "CPython"
+    {
+        return Err(invalid());
+    }
+    Ok(())
+}
+
+fn parse_python_version(value: &str) -> Option<pep440_rs::Version> {
+    // Support the five-field CPython/legacy virtualenv spelling explicitly;
+    // unknown extra components must never be silently discarded.
+    let parts: Vec<_> = value.split('.').collect();
+    let normalized;
+    let input = if parts.len() == 5 {
+        let serial = parts[4].parse::<u64>().ok()?;
+        let suffix = match parts[3] {
+            "alpha" => "a",
+            "beta" => "b",
+            "candidate" => "rc",
+            "final" if serial == 0 => "",
+            _ => return None,
+        };
+        normalized = if suffix.is_empty() {
+            parts[..3].join(".")
+        } else {
+            format!("{}{}{}", parts[..3].join("."), suffix, serial)
+        };
+        normalized.as_str()
+    } else {
+        value
+    };
+    let parsed = input.parse::<pep440_rs::Version>().ok()?;
+    if parsed.release().len() != 3
+        || parsed.epoch() != 0
+        || parsed.post().is_some()
+        || parsed.dev().is_some()
+        || !parsed.local().is_empty()
+    {
+        return None;
+    }
+    Some(parsed)
 }
 
 fn read_optional(

@@ -13,7 +13,7 @@ mod scope;
 pub(crate) use scope::check_scope;
 mod graph;
 pub(crate) use graph::provenance_graph_scoped;
-pub use graph::{GraphEvidence, provenance_graph};
+pub use graph::{BoundedGraphRequest, GraphEvidence, provenance_graph, provenance_graph_bounded};
 mod run;
 pub use run::{applicable as run_applicable, run};
 pub(crate) use run::{run_observed, run_scoped};

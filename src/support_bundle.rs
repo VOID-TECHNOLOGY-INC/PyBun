@@ -534,6 +534,44 @@ pub(crate) fn redact_protocol(value: &Value) -> Value {
     RedactionRules::default().redact_json_field("", value, true)
 }
 
+/// Provider responses may echo credentials that were supplied explicitly,
+/// rather than through the environment. Typed identity fields are no exception.
+pub(crate) fn redact_protocol_with_secrets(value: &Value, secrets: &[&str]) -> Value {
+    let mut secrets: Vec<_> = secrets
+        .iter()
+        .copied()
+        .filter(|value| !value.is_empty())
+        .collect();
+    secrets.sort_by_key(|value| std::cmp::Reverse(value.len()));
+    secrets.dedup();
+    fn mask(text: &str, secrets: &[&str]) -> String {
+        secrets.iter().fold(text.to_owned(), |text, secret| {
+            text.replace(secret, "<redacted>")
+        })
+    }
+    fn scrub(value: Value, secrets: &[&str]) -> Value {
+        match value {
+            Value::Object(map) => Value::Object(
+                map.into_iter()
+                    .map(|(key, value)| (mask(&key, secrets), scrub(value, secrets)))
+                    .collect(),
+            ),
+            Value::Array(items) => Value::Array(
+                items
+                    .into_iter()
+                    .map(|value| scrub(value, secrets))
+                    .collect(),
+            ),
+            Value::String(value) => Value::String(mask(&value, secrets)),
+            other if secrets.contains(&other.to_string().as_str()) => {
+                Value::String("<redacted>".into())
+            }
+            other => other,
+        }
+    }
+    scrub(redact_protocol(value), &secrets)
+}
+
 pub fn redact_response(text: &str) -> String {
     match serde_json::from_str::<Value>(text) {
         Ok(value) => redact_protocol(&value).to_string(),
@@ -688,7 +726,7 @@ impl RedactionRules {
             Value::Object(map) => {
                 let mut redacted = serde_json::Map::new();
                 for (key, value) in map {
-                    if self.key_matches(key) {
+                    if self.key_matches(key) && !(protocol && key == "next_page_token") {
                         redacted.insert(key.clone(), Value::String("<redacted>".to_string()));
                     } else {
                         redacted.insert(key.clone(), self.redact_json_field(key, value, protocol));
