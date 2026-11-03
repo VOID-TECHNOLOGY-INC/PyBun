@@ -1,5 +1,7 @@
 use pep508_rs::{MarkerEnvironment, MarkerEnvironmentBuilder, Requirement, VerbatimUrl};
-use pybun::security_assessment::{CoverageStatus, InventoryRequest, observe_inventory};
+#[cfg(unix)]
+use pybun::security_assessment::CoverageStatus;
+use pybun::security_assessment::{InventoryRequest, observe_inventory};
 use serde_json::{Value, json};
 use std::{
     fs,

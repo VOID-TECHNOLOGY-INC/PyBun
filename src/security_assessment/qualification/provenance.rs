@@ -851,7 +851,10 @@ impl Drop for PrivateSnapshot {
     }
 }
 fn create_private_directory(parent: &Dir, name: &str) -> Result<(), ObservationDiagnostic> {
+    #[cfg(unix)]
     let mut builder = cap_std::fs::DirBuilder::new();
+    #[cfg(not(unix))]
+    let builder = cap_std::fs::DirBuilder::new();
     #[cfg(unix)]
     {
         use cap_std::fs::DirBuilderExt;
