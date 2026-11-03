@@ -190,9 +190,18 @@ pub async fn authorize_and_run(
     prepared: super::config::PreparedCheck,
     observed_at: u64,
 ) -> CheckUpdatesResult {
+    match authorize_prepared(prepared).await {
+        Ok(authorized) => run_check(authorized, observed_at).await,
+        Err(error) => failed_check(error, 3),
+    }
+}
+
+pub(crate) async fn authorize_prepared(
+    prepared: super::config::PreparedCheck,
+) -> Result<super::config::AuthorizedCheck, super::ObservationDiagnostic> {
     let deadline = prepared.deadline();
     if std::time::Instant::now() >= deadline {
-        return failed_check(check_deadline_error(), 3);
+        return Err(check_deadline_error());
     }
     let authorization = tokio::task::spawn_blocking(move || {
         if std::time::Instant::now() >= deadline {
@@ -200,21 +209,14 @@ pub async fn authorize_and_run(
         }
         prepared.authorize()
     });
-    let authorized = match tokio::time::timeout_at(deadline.into(), authorization).await {
-        Ok(Ok(Ok(authorized))) => authorized,
-        Ok(Ok(Err(error))) => return failed_check(error, 3),
-        Ok(Err(_)) => {
-            return failed_check(
-                super::ObservationDiagnostic::new(
-                    "E_SECURITY_AUTHORITY",
-                    "Current operator authority could not be verified.",
-                ),
-                3,
-            );
-        }
-        Err(_) => return failed_check(check_deadline_error(), 3),
-    };
-    run_check(authorized, observed_at).await
+    match tokio::time::timeout_at(deadline.into(), authorization).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(_)) => Err(super::ObservationDiagnostic::new(
+            "E_SECURITY_AUTHORITY",
+            "Current operator authority could not be verified.",
+        )),
+        Err(_) => Err(check_deadline_error()),
+    }
 }
 fn check_deadline_error() -> super::ObservationDiagnostic {
     super::ObservationDiagnostic::new(
@@ -228,50 +230,16 @@ pub async fn run_check(
     authorized: super::config::AuthorizedCheck,
     observed_at: u64,
 ) -> CheckUpdatesResult {
-    use super::{
-        ObservationDiagnostic,
-        http::HttpSession,
-        qualification::{
-            cache::ObservationCache,
-            service::{AssessmentOptions, assess_project},
-        },
-    };
-    // Stop observation before the whole-request deadline so partial evidence and
-    // traversal progress can still be projected into a bounded response. This
-    // reserve narrows I/O time; it never extends the authorized total duration.
-    let remaining = authorized
-        .deadline
-        .saturating_duration_since(std::time::Instant::now());
-    let reserve = (remaining / 10).min(std::time::Duration::from_millis(250));
-    let observation_deadline = authorized.deadline - reserve;
-    let session = match HttpSession::new(authorized.inventory.limits.clone(), observed_at)
-        .and_then(|session| session.with_deadline(observation_deadline))
-        .and_then(|session| session.with_max_cache_age_seconds(authorized.max_cache_age_seconds))
-    {
-        Ok(session) => session,
+    use super::qualification::service::{AssessmentOptions, assess_project};
+    let context = match RawCheckContext::new(authorized, observed_at) {
+        Ok(context) => context,
         Err(error) => return failed_check(error, 3),
     };
-    let session = if let Some(root) = &authorized.cache_root {
-        match ObservationCache::open(root, authorized.inventory.limits.max_response_bytes)
-            .and_then(|cache| session.with_cache(cache, authorized.mode))
-        {
-            Ok(session) => session,
-            Err(error) => return failed_check(error, 3),
-        }
-    } else if authorized.mode != ObservationMode::Online {
-        return failed_check(
-            ObservationDiagnostic::new(
-                "E_SECURITY_CACHE_UNAVAILABLE",
-                "The selected offline/fallback profile has no approved cache.",
-            ),
-            3,
-        );
-    } else {
-        session
-    };
+    let authorized = &context.authorized;
+    let session = &context.session;
     let options = AssessmentOptions {
         include_prereleases: authorized.include_prereleases,
-        continuation: authorized.continuation,
+        continuation: authorized.continuation.clone(),
         previous_candidates: vec![],
     };
     let graph = authorized
@@ -279,7 +247,7 @@ pub async fn run_check(
         .as_ref()
         .map(|(request, bindings)| (request, bindings.as_slice()));
     let assessment = match assess_project(
-        &session,
+        session,
         &authorized.inventory,
         &authorized.providers,
         &authorized.sources,
@@ -291,30 +259,91 @@ pub async fn run_check(
         Ok(assessment) => assessment,
         Err(error) => return failed_check(error, 3),
     };
-    let deadline = authorized.deadline;
-    if std::time::Instant::now() >= deadline {
-        return failed_check(check_deadline_error(), 3);
+    context.finish(assessment).await
+}
+
+/// Internal raw observation context. Monitor checks persist the complete
+/// assessment before calling the same bounded one-shot finalization.
+pub(crate) struct RawCheckContext {
+    pub(crate) authorized: super::config::AuthorizedCheck,
+    pub(crate) session: super::http::HttpSession,
+}
+impl RawCheckContext {
+    pub(crate) fn new(
+        authorized: super::config::AuthorizedCheck,
+        observed_at: u64,
+    ) -> Result<Self, super::ObservationDiagnostic> {
+        use super::{http::HttpSession, qualification::cache::ObservationCache};
+        // One reserve covers projection, durable monitor commit when requested,
+        // and rendering. It narrows I/O without extending the total deadline.
+        let remaining = authorized
+            .deadline
+            .saturating_duration_since(std::time::Instant::now());
+        let reserve = (remaining / 10).min(std::time::Duration::from_millis(250));
+        let session = HttpSession::new(authorized.inventory.limits.clone(), observed_at)?
+            .with_deadline(authorized.deadline - reserve)?
+            .with_max_cache_age_seconds(authorized.max_cache_age_seconds)?;
+        let session = if let Some(root) = &authorized.cache_root {
+            session.with_cache(
+                ObservationCache::open(root, authorized.inventory.limits.max_response_bytes)?,
+                authorized.mode,
+            )?
+        } else if authorized.mode != super::http::ObservationMode::Online {
+            return Err(super::ObservationDiagnostic::new(
+                "E_SECURITY_CACHE_UNAVAILABLE",
+                "The selected offline/fallback profile has no approved cache.",
+            ));
+        } else {
+            session
+        };
+        Ok(Self {
+            authorized,
+            session,
+        })
     }
-    let finalization = tokio::task::spawn_blocking(move || {
-        finish_assessment(
+
+    pub(crate) fn prepare_observed(
+        self,
+        assessment: super::qualification::service::SecurityAssessment,
+    ) -> CheckUpdatesResult {
+        prepare_assessment(
             assessment,
-            authorized.profile_id,
-            authorized.policy_digest,
-            authorized.fail_on,
-            authorized.max_output_bytes,
-            deadline,
+            self.authorized.profile_id,
+            self.authorized.policy_digest,
+            self.authorized.fail_on,
         )
-    });
-    match tokio::time::timeout_at(deadline.into(), finalization).await {
-        Ok(Ok(result)) if std::time::Instant::now() < deadline => result,
-        Ok(Err(_)) => failed_check(
-            super::ObservationDiagnostic::new(
-                "E_SECURITY_CHECK_FAILED",
-                "Security observation finalization could not complete.",
+    }
+
+    pub(crate) async fn finish(
+        self,
+        assessment: super::qualification::service::SecurityAssessment,
+    ) -> CheckUpdatesResult {
+        let authorized = self.authorized;
+        let deadline = authorized.deadline;
+        if std::time::Instant::now() >= deadline {
+            return failed_check(check_deadline_error(), 3);
+        }
+        let finalization = tokio::task::spawn_blocking(move || {
+            finish_assessment(
+                assessment,
+                authorized.profile_id,
+                authorized.policy_digest,
+                authorized.fail_on,
+                authorized.max_output_bytes,
+                deadline,
+            )
+        });
+        match tokio::time::timeout_at(deadline.into(), finalization).await {
+            Ok(Ok(result)) if std::time::Instant::now() < deadline => result,
+            Ok(Err(_)) => failed_check(
+                super::ObservationDiagnostic::new(
+                    "E_SECURITY_CHECK_FAILED",
+                    "Security observation finalization could not complete.",
+                ),
+                3,
             ),
-            3,
-        ),
-        _ => failed_check(check_deadline_error(), 3),
+            _ => failed_check(check_deadline_error(), 3),
+        }
     }
 }
 
@@ -326,10 +355,23 @@ fn finish_assessment(
     max_output_bytes: usize,
     deadline: std::time::Instant,
 ) -> CheckUpdatesResult {
-    use super::{CoverageStatus, qualification::evidence::AffectedStatus};
     if std::time::Instant::now() >= deadline {
         return failed_check(check_deadline_error(), 3);
     }
+    let result = prepare_assessment(assessment, profile_id, policy_digest, fail_on);
+    if std::time::Instant::now() >= deadline {
+        return failed_check(check_deadline_error(), 3);
+    }
+    bound_output(result, max_output_bytes)
+}
+
+fn prepare_assessment(
+    assessment: super::qualification::service::SecurityAssessment,
+    profile_id: String,
+    policy_digest: String,
+    fail_on: Option<CheckSeverityThreshold>,
+) -> CheckUpdatesResult {
+    use super::{CoverageStatus, qualification::evidence::AffectedStatus};
     let threshold_matches = fail_on
         .map(|threshold| {
             assessment
@@ -355,7 +397,7 @@ fn finish_assessment(
         })
         .unwrap_or_default();
     let incomplete = assessment.coverage.status != CoverageStatus::Complete;
-    let result = CheckUpdatesResult {
+    CheckUpdatesResult {
         contract_version: "2".into(),
         operation: "security_check".into(),
         assessment_version: 1,
@@ -376,14 +418,10 @@ fn finish_assessment(
         threshold_match_count: threshold_matches.len(),
         threshold_matches,
         omitted: None,
-    };
-    if std::time::Instant::now() >= deadline {
-        return failed_check(check_deadline_error(), 3);
     }
-    bound_output(result, max_output_bytes)
 }
 
-fn bound_output(result: CheckUpdatesResult, max_bytes: usize) -> CheckUpdatesResult {
+pub(crate) fn bound_output(result: CheckUpdatesResult, max_bytes: usize) -> CheckUpdatesResult {
     let fits = |result: &CheckUpdatesResult| check_wire_fits(result, max_bytes, 2048);
     if fits(&result) {
         return result;

@@ -20,7 +20,7 @@ use std::{
     fs::{Metadata, OpenOptions},
     io::Read,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
@@ -30,9 +30,11 @@ const OUTPUT_BYTES: usize = 5 * 1024 * 1024;
 
 /// Immutable operator authority; credentials intentionally have no serialization
 /// or debug representation. Construct once at operator startup.
+#[derive(Clone)]
 pub struct SecurityAuthority {
     default_profile: Option<String>,
     profiles: BTreeMap<String, Arc<FrozenProfile>>,
+    monitor_state: Option<MonitorStateGrant>,
 }
 
 #[derive(Clone)]
@@ -99,6 +101,8 @@ struct Section {
     source_policies: BTreeMap<String, SourcePolicy>,
     #[serde(default)]
     limits: BTreeMap<String, u64>,
+    #[serde(default)]
+    monitor_state_root: Option<PathBuf>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -253,6 +257,7 @@ impl SecurityAuthority {
                 return Ok(Self {
                     default_profile: None,
                     profiles: BTreeMap::new(),
+                    monitor_state: None,
                 });
             }
         };
@@ -315,6 +320,11 @@ impl SecurityAuthority {
             }
         }
         let base = base.canonicalize().map_err(|_| authority_error())?;
+        let monitor_state = section
+            .monitor_state_root
+            .as_ref()
+            .map(|root| MonitorStateGrant::new(&base, root, limits.clone(), max_output_bytes))
+            .transpose()?;
         let mut profiles = BTreeMap::new();
         for mut profile in section.profiles {
             if !opaque_id(&profile.id)
@@ -440,6 +450,7 @@ impl SecurityAuthority {
         Ok(Self {
             default_profile: section.default_profile,
             profiles,
+            monitor_state,
         })
     }
 
@@ -458,6 +469,78 @@ impl SecurityAuthority {
             .or(self.default_profile.as_deref())
             .ok_or_else(authority_error)?;
         self.profiles.get(id).ok_or_else(authority_error)
+    }
+
+    /// Declared comparison identities only: no filesystem reads, helper execution,
+    /// or per-call mode, elapsed time, package versions, or runtime binding.
+    pub fn monitor_profile(
+        &self,
+        profile: Option<&str>,
+    ) -> Result<DeclaredMonitorProfile, ObservationDiagnostic> {
+        let profile = self.selected(profile)?;
+        if profile.target != CheckTarget::Installed {
+            return Err(unsupported());
+        }
+        if profile.providers.is_empty() || !profile.scope.members.is_empty() {
+            return Err(authority_error());
+        }
+        let source_policy_digest = semantic_digest(&(
+            &profile.policy,
+            profile.max_cache_age_seconds,
+            profile.include_prereleases,
+        ));
+        let provider_config_digest = semantic_digest(
+            &profile
+                .providers
+                .iter()
+                .map(canonical_endpoint)
+                .collect::<Vec<_>>(),
+        );
+        let index_config_digest = semantic_digest(&(
+            profile
+                .sources
+                .iter()
+                .map(|source| (source.source_id(), canonical_endpoint(source.provider())))
+                .collect::<Vec<_>>(),
+            profile.provenance.as_ref().map(|(_, _, bindings)| bindings),
+        ));
+        let authoritative_providers = profile
+            .providers
+            .iter()
+            .map(|provider| provider.id().to_owned())
+            .collect::<Vec<_>>();
+        let profile_binding = semantic_digest(&serde_json::json!({
+            "profile_id":profile.permissions.id,"project_root":profile.permissions.project_root,
+            "environment_root":profile.permissions.environment_root,"backend":profile.permissions.backend,
+            "target":"installed","scope":profile.scope,"source_policy_digest":source_policy_digest,
+            "provider_config_digest":provider_config_digest,"index_config_digest":index_config_digest,
+            "observation_version":1,"authoritative_providers":authoritative_providers,
+        }));
+        Ok(DeclaredMonitorProfile {
+            profile_id: profile.permissions.id.clone(),
+            profile_binding,
+            project_root: profile.permissions.project_root.clone(),
+            environment_root: profile.permissions.environment_root.clone(),
+            backend: profile.permissions.backend,
+            target: InventoryTarget::Installed,
+            scope: profile.scope.clone(),
+            source_policy_digest,
+            provider_config_digest,
+            index_config_digest,
+            observation_version: 1,
+            authoritative_providers,
+            max_cache_age_seconds: profile.max_cache_age_seconds,
+            include_prereleases: profile.include_prereleases,
+            limits: profile.limits.clone(),
+            max_output_bytes: profile.max_output_bytes,
+            allowed_modes: profile.allowed_modes.clone(),
+            profile: Arc::clone(profile),
+        })
+    }
+
+    /// A frozen explicit state-root grant. The lookup itself performs no I/O.
+    pub fn monitor_state_grant(&self) -> Result<MonitorStateGrant, ObservationDiagnostic> {
+        self.monitor_state.clone().ok_or_else(monitor_state_error)
     }
 
     /// Convenience for synchronous operator callers. Authorization and service
@@ -541,6 +624,10 @@ impl PreparedCheck {
     }
     pub fn max_output_bytes(&self) -> usize {
         self.profile.max_output_bytes
+    }
+    pub(crate) fn with_deadline(mut self, outer: Instant) -> Self {
+        self.deadline = self.deadline.min(outer);
+        self
     }
 
     /// Revalidate current grants before admitting any cache, helper, or HTTP work.
@@ -847,7 +934,7 @@ struct PinnedPath {
     kind: PathKind,
     digest: Option<String>,
 }
-#[derive(PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 struct FileIdentity {
     #[cfg(unix)]
     device: u64,
@@ -1019,4 +1106,409 @@ fn check_deadline(deadline: Option<Instant>) -> Result<(), ObservationDiagnostic
         ));
     }
     Ok(())
+}
+
+/// Stable declared monitor configuration. Public facts are descriptive; current
+/// authorization remains the private frozen grant and must precede state access.
+#[derive(Clone)]
+pub struct DeclaredMonitorProfile {
+    pub profile_id: String,
+    pub profile_binding: String,
+    pub project_root: PathBuf,
+    pub environment_root: PathBuf,
+    pub backend: InventoryBackend,
+    pub target: InventoryTarget,
+    pub scope: InventoryScope,
+    pub source_policy_digest: String,
+    pub provider_config_digest: String,
+    pub index_config_digest: String,
+    pub observation_version: u32,
+    pub authoritative_providers: Vec<String>,
+    pub max_cache_age_seconds: u64,
+    pub include_prereleases: bool,
+    pub limits: ObservationLimits,
+    pub max_output_bytes: usize,
+    pub allowed_modes: Vec<CheckMode>,
+    profile: Arc<FrozenProfile>,
+}
+impl DeclaredMonitorProfile {
+    /// Current target/config validation without scanning installed metadata or
+    /// contacting providers. Stored registrations cannot substitute for this.
+    pub fn authorize(&self, deadline: Instant) -> Result<(), ObservationDiagnostic> {
+        let profile = &self.profile;
+        profile.project.revalidate(deadline)?;
+        profile.environment.revalidate(deadline)?;
+        validate_scope(profile, &profile.limits, deadline)?;
+        profile.python.revalidate(deadline)?;
+        if let Some(cache) = &profile.cache {
+            cache.revalidate(deadline)?;
+        }
+        profile.policy.validate()?;
+        if let Some((executable, cache, bindings)) = &profile.provenance {
+            executable.revalidate(deadline)?;
+            cache.revalidate(deadline)?;
+            validate_bindings(bindings, &profile.policy, &profile.sources)?;
+        }
+        check_deadline(Some(deadline))
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum MonitorStateAccess {
+    Read,
+    WriteCreate,
+}
+
+/// Cloneable frozen root grant. Missing roots are never created by config code.
+#[derive(Clone)]
+pub struct MonitorStateGrant {
+    inner: Arc<MonitorStateGrantInner>,
+}
+struct MonitorStateGrantInner {
+    configured: PathBuf,
+    root: PathBuf,
+    anchor: PinnedPath,
+    suffix: Vec<std::ffi::OsString>,
+    root_identity: Mutex<Option<FileIdentity>>,
+    parent_identities: Mutex<BTreeMap<PathBuf, FileIdentity>>,
+    limits: ObservationLimits,
+    max_output_bytes: usize,
+}
+/// A currently verified directory capability for store creation. The store must
+/// walk the requested root relative to this handle, without an ambient reopen.
+pub struct MonitorStateCreationParent {
+    parent_path: PathBuf,
+    parent_handle: std::fs::File,
+    root: PathBuf,
+}
+impl MonitorStateCreationParent {
+    pub fn parent_path(&self) -> &Path {
+        &self.parent_path
+    }
+    pub fn parent_handle(&self) -> &std::fs::File {
+        &self.parent_handle
+    }
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+}
+
+/// One current preflight result, not a permanent authorization or a client path.
+pub struct AuthorizedMonitorState {
+    root: PathBuf,
+    exists: bool,
+    access: MonitorStateAccess,
+}
+impl AuthorizedMonitorState {
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+    pub fn exists(&self) -> bool {
+        self.exists
+    }
+    pub fn creation_allowed(&self) -> bool {
+        self.access == MonitorStateAccess::WriteCreate
+    }
+}
+impl MonitorStateGrant {
+    fn new(
+        base: &Path,
+        path: &Path,
+        limits: ObservationLimits,
+        max_output_bytes: usize,
+    ) -> Result<Self, ObservationDiagnostic> {
+        let configured = if path.is_absolute() {
+            path.to_owned()
+        } else {
+            base.join(path)
+        };
+        if !configured.is_absolute()
+            || configured.components().any(|part| {
+                matches!(
+                    part,
+                    std::path::Component::ParentDir | std::path::Component::CurDir
+                )
+            })
+        {
+            return Err(monitor_state_error());
+        }
+        let mut ancestor = configured.as_path();
+        let mut missing = Vec::new();
+        loop {
+            match std::fs::symlink_metadata(ancestor) {
+                Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => break,
+                Ok(_) => return Err(monitor_state_error()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    if missing.len() >= 64 {
+                        return Err(monitor_state_error());
+                    }
+                    missing.push(
+                        ancestor
+                            .file_name()
+                            .ok_or_else(monitor_state_error)?
+                            .to_owned(),
+                    );
+                    ancestor = ancestor.parent().ok_or_else(monitor_state_error)?;
+                }
+                Err(_) => return Err(monitor_state_error()),
+            }
+        }
+        let anchor = PinnedPath::new(base, ancestor, PathKind::PrivateDirectory)?;
+        missing.reverse();
+        let mut root = anchor.canonical.clone();
+        for name in &missing {
+            root.push(name);
+        }
+        let identity = missing.is_empty().then(|| anchor.identity.clone());
+        Ok(Self {
+            inner: Arc::new(MonitorStateGrantInner {
+                configured,
+                root,
+                anchor,
+                suffix: missing,
+                root_identity: Mutex::new(identity),
+                parent_identities: Mutex::new(BTreeMap::new()),
+                limits,
+                max_output_bytes,
+            }),
+        })
+    }
+    pub fn limits(&self) -> &ObservationLimits {
+        &self.inner.limits
+    }
+    pub fn max_output_bytes(&self) -> usize {
+        self.inner.max_output_bytes
+    }
+
+    /// Revalidate private root/parent identities before the store is opened.
+    /// Read-only absence is explicit and never initializes state or lock files.
+    pub fn authorize(
+        &self,
+        access: MonitorStateAccess,
+        deadline: Instant,
+    ) -> Result<AuthorizedMonitorState, ObservationDiagnostic> {
+        let current = self.current_root(deadline)?;
+        let mut pinned = self
+            .inner
+            .root_identity
+            .lock()
+            .map_err(|_| monitor_state_error())?;
+        match (&*pinned, &current) {
+            (Some(expected), Some(current)) if expected != current => {
+                return Err(monitor_state_error());
+            }
+            (Some(_), None) => return Err(monitor_state_error()),
+            (None, Some(current)) => *pinned = Some(current.clone()),
+            _ => {}
+        }
+        check_deadline(Some(deadline))?;
+        Ok(AuthorizedMonitorState {
+            root: self.inner.root.clone(),
+            exists: current.is_some(),
+            access,
+        })
+    }
+
+    /// Open and identity-match the closest existing approved private directory
+    /// before the store can create anything. An approval/open race fails before
+    /// mutation; later pathname changes cannot retarget this directory handle.
+    pub fn creation_parent(
+        &self,
+        deadline: Instant,
+    ) -> Result<MonitorStateCreationParent, ObservationDiagnostic> {
+        self.authorize(MonitorStateAccess::WriteCreate, deadline)?;
+        let (parent_path, expected) = {
+            let pins = self
+                .inner
+                .parent_identities
+                .lock()
+                .map_err(|_| monitor_state_error())?;
+            pins.iter()
+                .max_by_key(|(path, _)| path.components().count())
+                .map(|(path, identity)| (path.clone(), identity.clone()))
+                .unwrap_or_else(|| {
+                    (
+                        self.inner.anchor.canonical.clone(),
+                        self.inner.anchor.identity.clone(),
+                    )
+                })
+        };
+        check_deadline(Some(deadline))?;
+        let mut options = OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_NONBLOCK);
+        }
+        let parent_handle = options
+            .open(&parent_path)
+            .map_err(|_| monitor_state_error())?;
+        check_deadline(Some(deadline))?;
+        let metadata = parent_handle
+            .metadata()
+            .map_err(|_| monitor_state_error())?;
+        if !metadata.is_dir() || FileIdentity::from(&metadata) != expected {
+            return Err(monitor_state_error());
+        }
+        // Recheck the named grant after capturing its capability. The eventual
+        // mutation must retain this handle through the final component walk.
+        self.authorize(MonitorStateAccess::WriteCreate, deadline)?;
+        check_deadline(Some(deadline))?;
+        Ok(MonitorStateCreationParent {
+            parent_path,
+            parent_handle,
+            root: self.inner.root.clone(),
+        })
+    }
+
+    /// Pin the actual directory handle held by the store after authorized
+    /// creation. Reopening a path alone cannot prove which root was created.
+    pub fn pin_created_root(
+        &self,
+        created_root: &std::fs::File,
+        deadline: Instant,
+    ) -> Result<(), ObservationDiagnostic> {
+        check_deadline(Some(deadline))?;
+        let created = created_root.metadata().map_err(|_| monitor_state_error())?;
+        if !created.is_dir() {
+            return Err(monitor_state_error());
+        }
+        let created_identity = FileIdentity::from(&created);
+        // Bind the held creation handle before looking at the path. A rejected
+        // replacement must not be silently adopted by a later authorization.
+        {
+            let mut pinned = self
+                .inner
+                .root_identity
+                .lock()
+                .map_err(|_| monitor_state_error())?;
+            if pinned
+                .as_ref()
+                .is_some_and(|expected| expected != &created_identity)
+            {
+                return Err(monitor_state_error());
+            }
+            *pinned = Some(created_identity.clone());
+        }
+        let current = self
+            .current_root(deadline)?
+            .ok_or_else(monitor_state_error)?;
+        if current != created_identity {
+            return Err(monitor_state_error());
+        }
+        check_deadline(Some(deadline))
+    }
+    fn current_root(
+        &self,
+        deadline: Instant,
+    ) -> Result<Option<FileIdentity>, ObservationDiagnostic> {
+        self.inner.anchor.revalidate(deadline)?;
+        let mut current = self.inner.anchor.canonical.clone();
+        for name in &self.inner.suffix {
+            check_deadline(Some(deadline))?;
+            current.push(name);
+            match std::fs::symlink_metadata(&current) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    if self
+                        .inner
+                        .parent_identities
+                        .lock()
+                        .map_err(|_| monitor_state_error())?
+                        .contains_key(&current)
+                    {
+                        return Err(monitor_state_error());
+                    }
+                    return Ok(None);
+                }
+                Err(_) => return Err(monitor_state_error()),
+                Ok(metadata) if metadata.file_type().is_symlink() => {
+                    return Err(monitor_state_error());
+                }
+                Ok(_) => {}
+            }
+            check_deadline(Some(deadline))?;
+            if current.canonicalize().map_err(|_| monitor_state_error())? != current {
+                return Err(monitor_state_error());
+            }
+            let (identity, _) =
+                PinnedPath::current(&current, PathKind::PrivateDirectory, Some(deadline))?;
+            let mut pins = self
+                .inner
+                .parent_identities
+                .lock()
+                .map_err(|_| monitor_state_error())?;
+            if pins
+                .get(&current)
+                .is_some_and(|expected| expected != &identity)
+            {
+                return Err(monitor_state_error());
+            }
+            pins.entry(current.clone()).or_insert(identity);
+        }
+        check_deadline(Some(deadline))?;
+        if self
+            .inner
+            .configured
+            .canonicalize()
+            .map_err(|_| monitor_state_error())?
+            != self.inner.root
+        {
+            return Err(monitor_state_error());
+        }
+        let (identity, _) =
+            PinnedPath::current(&self.inner.root, PathKind::PrivateDirectory, Some(deadline))?;
+        Ok(Some(identity))
+    }
+}
+fn monitor_state_error() -> ObservationDiagnostic {
+    ObservationDiagnostic::new(
+        "E_SECURITY_MONITOR_STATE",
+        "The current explicit private monitor-state grant is unavailable, changed, or invalid.",
+    )
+}
+
+#[cfg(all(test, unix))]
+mod monitor_deadline_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    #[test]
+    fn an_outer_deadline_never_extends_or_restarts_prepared_authorization() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir(dir.path().join("environment")).unwrap();
+        std::fs::write(dir.path().join("python"), "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(
+            dir.path().join("python"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        let text = r#"[security_assessment]
+config_version=1
+default_profile="app"
+[[security_assessment.profiles]]
+id="app"
+project_root="."
+environment="environment"
+backend="uv"
+trusted_python="python"
+source_policy_id="empty"
+[security_assessment.source_policies.empty]
+"#;
+        let authority = SecurityAuthority::from_toml(text, dir.path()).unwrap();
+        let prepared = authority
+            .prepare(&CheckUpdatesRequest::default(), None)
+            .unwrap();
+        let original = prepared.deadline();
+        let clamped = prepared.with_deadline(original + Duration::from_secs(10));
+        assert_eq!(clamped.deadline(), original);
+        let expired = Instant::now() - Duration::from_millis(1);
+        let clamped = clamped.with_deadline(expired);
+        assert_eq!(clamped.deadline(), expired);
+        std::fs::remove_dir(dir.path().join("environment")).unwrap();
+        let diagnostic = match clamped.authorize() {
+            Ok(_) => panic!("expired work was authorized"),
+            Err(error) => error,
+        };
+        assert_eq!(diagnostic.code, "E_SECURITY_DEADLINE");
+    }
 }

@@ -9,12 +9,15 @@ use serde_json::{Value, json};
 use std::fs::OpenOptions;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum SecurityCapability {
     AuthorizedTargetMetadataRead,
     ApprovedProviderHttp,
+    AuthorizedStateRead,
+    AuthorizedStateWrite,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -106,7 +109,7 @@ pub(super) fn preparation_source(path: &Path) -> Result<String, Denied> {
 pub(super) struct ServerPolicy {
     pub root: PathBuf,
     pub effective: Result<Policy, Denied>,
-    security_authority: Result<SecurityAuthority, ObservationDiagnostic>,
+    security_authority: Result<Arc<SecurityAuthority>, ObservationDiagnostic>,
 }
 impl ServerPolicy {
     pub fn load(root: &Path, override_path: Option<&Path>) -> Self {
@@ -124,7 +127,7 @@ impl ServerPolicy {
         Self {
             root,
             effective,
-            security_authority,
+            security_authority: security_authority.map(Arc::new),
         }
     }
     fn read(
@@ -378,6 +381,100 @@ impl ServerPolicy {
         applied["effective_http_timeout_ms"] = json!(check.limits().http_timeout_ms);
         Ok(PreparedSecurityCheck { check, applied })
     }
+
+    /// Pure transport grants. Stored monitor bindings are resolved by the
+    /// shared service only after rate and state-root admission.
+    pub fn prepare_security_monitor(
+        &self,
+        request: &crate::security_assessment::monitor::service::MonitorRequest,
+    ) -> Result<PreparedSecurityMonitor, ObservationDiagnostic> {
+        use crate::security_assessment::monitor::service::MonitorAccessScope;
+        let denied = |code, message| ObservationDiagnostic::new(code, message);
+        let policy = self
+            .effective
+            .as_ref()
+            .map_err(|error| denied(error.0, error.1))?;
+        if policy
+            .denied_tools
+            .iter()
+            .any(|tool| tool == "pybun_security_monitor")
+        {
+            return Err(denied(
+                "E_MCP_POLICY_TOOL_DENIED",
+                "This tool is denied by the server operator.",
+            ));
+        }
+        let mut capabilities = vec![if request.writes() {
+            SecurityCapability::AuthorizedStateWrite
+        } else {
+            SecurityCapability::AuthorizedStateRead
+        }];
+        if request.action() == "check" {
+            capabilities.push(SecurityCapability::AuthorizedTargetMetadataRead);
+        }
+        if request.online() {
+            capabilities.push(SecurityCapability::ApprovedProviderHttp);
+        }
+        if capabilities
+            .iter()
+            .any(|capability| !policy.allowed_security_capabilities.contains(capability))
+        {
+            return Err(denied(
+                "E_MCP_POLICY_CAPABILITY_DENIED",
+                "The server has not granted the required explicit monitor capabilities.",
+            ));
+        }
+        if policy.require_sandbox || policy.max_cpu_time_s > 0 || policy.max_memory_mb > 0 {
+            let error = capability();
+            return Err(denied(error.0, error.1));
+        }
+        if request.online() && !policy.allow_network {
+            return Err(denied(
+                "E_MCP_POLICY_NETWORK_DENIED",
+                "Online monitor checks require the operator's network permission.",
+            ));
+        }
+        let scope = MonitorAccessScope {
+            profiles: Some(policy.allowed_security_profiles.iter().cloned().collect()),
+            backends: Some(policy.allowed_backends.iter().cloned().collect()),
+            directories: Some(policy.allowed_working_directories.clone()),
+        };
+        if !policy
+            .allowed_working_directories
+            .iter()
+            .any(|root| self.root.starts_with(root))
+        {
+            return Err(denied(
+                "E_MCP_POLICY_PATH_DENIED",
+                "The working directory is outside the operator's boundary.",
+            ));
+        }
+        let authority = self.security_authority.as_ref().map_err(Clone::clone)?;
+        if let Some(profile) = request.profile() {
+            let current = authority.monitor_profile(Some(profile)).map_err(|_| {
+                denied(
+                    "E_MONITOR_UNAVAILABLE",
+                    "The requested monitor configuration is unavailable.",
+                )
+            })?;
+            if !scope.permits(&current) {
+                return Err(denied(
+                    "E_MONITOR_UNAVAILABLE",
+                    "The requested monitor configuration is unavailable.",
+                ));
+            }
+        }
+        let state = authority.monitor_state_grant()?;
+        let timeout = (policy.max_execution_time_s > 0)
+            .then(|| policy.max_execution_time_s.saturating_mul(1000));
+        Ok(PreparedSecurityMonitor {
+            authority: authority.clone(),
+            scope,
+            timeout,
+            max_output_bytes: state.max_output_bytes(),
+            applied: json!({"authorized":true,"sandboxed":false,"capabilities":capabilities,"max_execution_time_s":policy.max_execution_time_s,"max_memory_mb":0,"max_cpu_time_s":0}),
+        })
+    }
     pub fn authorize(
         &self,
         tool: &str,
@@ -602,6 +699,14 @@ pub(super) struct PreparedSecurityCheck {
     pub check: PreparedCheck,
     pub applied: Value,
 }
+
+pub(super) struct PreparedSecurityMonitor {
+    pub authority: Arc<SecurityAuthority>,
+    pub scope: crate::security_assessment::monitor::service::MonitorAccessScope,
+    pub timeout: Option<u64>,
+    pub max_output_bytes: usize,
+    pub applied: Value,
+}
 pub(super) struct Authorized {
     pub args: Value,
     pub applied: Value,
@@ -663,7 +768,7 @@ mod tests {
     fn bounded_preparation_is_rejected_when_it_cannot_be_enforced() {
         let root = std::env::current_dir().unwrap().canonicalize().unwrap();
         let policy = ServerPolicy {
-            security_authority: SecurityAuthority::from_toml("", Path::new(".")),
+            security_authority: SecurityAuthority::from_toml("", Path::new(".")).map(Arc::new),
             root: root.clone(),
             effective: Ok(Policy {
                 allow_network: true,
@@ -746,7 +851,7 @@ mod tests {
         let tools = super::super::schema::build_tools_list();
         let names = tools.iter().map(|tool| tool.name.clone()).collect();
         let server = ServerPolicy {
-            security_authority: SecurityAuthority::from_toml("", Path::new(".")),
+            security_authority: SecurityAuthority::from_toml("", Path::new(".")).map(Arc::new),
             root: root.clone(),
             effective: Ok(Policy {
                 denied_tools: names,
@@ -777,7 +882,7 @@ mod tests {
             ..Default::default()
         };
         let server = ServerPolicy {
-            security_authority: SecurityAuthority::from_toml("", Path::new(".")),
+            security_authority: SecurityAuthority::from_toml("", Path::new(".")).map(Arc::new),
             root,
             effective: Ok(policy.clone()),
         };
@@ -789,7 +894,7 @@ mod tests {
     fn flag_like_package_arguments_cannot_inject_typed_paths() {
         let root = std::env::current_dir().unwrap().canonicalize().unwrap();
         let server = ServerPolicy {
-            security_authority: SecurityAuthority::from_toml("", Path::new(".")),
+            security_authority: SecurityAuthority::from_toml("", Path::new(".")).map(Arc::new),
             root: root.clone(),
             effective: Ok(Policy {
                 require_sandbox: false,
@@ -823,7 +928,7 @@ mod tests {
             ..Default::default()
         };
         let server = ServerPolicy {
-            security_authority: SecurityAuthority::from_toml("", Path::new(".")),
+            security_authority: SecurityAuthority::from_toml("", Path::new(".")).map(Arc::new),
             root,
             effective: Ok(policy.clone()),
         };

@@ -658,6 +658,80 @@ pub struct AuditArgs {
 pub enum AuditCommands {
     /// Observe published security update candidates without changing the environment.
     CheckUpdates(CheckUpdatesArgs),
+    /// Explicit run-once security monitors and durable local event replay.
+    Monitor(MonitorArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct MonitorArgs {
+    #[command(subcommand)]
+    pub command: MonitorCommands,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct MonitorOperatorArgs {
+    /// Trusted operator configuration; never inferred from the project.
+    #[arg(long, global = true)]
+    pub security_config: Option<std::path::PathBuf>,
+    /// Narrow the shared deadline including state persistence.
+    #[arg(long, global = true, value_parser = clap::value_parser!(u64).range(1..=60_000))]
+    pub timeout_ms: Option<u64>,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum MonitorCommands {
+    Add {
+        #[command(flatten)]
+        operator: MonitorOperatorArgs,
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        profile: Option<String>,
+        #[arg(long)]
+        project: Option<std::path::PathBuf>,
+        #[arg(long, value_enum, default_value = "installed")]
+        target: crate::security_assessment::check::CheckTarget,
+    },
+    List {
+        #[command(flatten)]
+        operator: MonitorOperatorArgs,
+        #[arg(long)]
+        profile: Option<String>,
+    },
+    Check {
+        #[command(flatten)]
+        operator: MonitorOperatorArgs,
+        monitor_id: String,
+        #[arg(long)]
+        after: Option<String>,
+        #[arg(long, value_enum, default_value = "online")]
+        mode: crate::security_assessment::check::CheckMode,
+        #[arg(long, value_enum)]
+        fail_on: Option<crate::security_assessment::check::CheckSeverityThreshold>,
+        #[arg(long)]
+        max_cache_age_seconds: Option<u64>,
+    },
+    Events {
+        #[command(flatten)]
+        operator: MonitorOperatorArgs,
+        monitor_id: String,
+        #[arg(long)]
+        after: Option<String>,
+    },
+    Configure {
+        #[command(flatten)]
+        operator: MonitorOperatorArgs,
+        monitor_id: String,
+        #[arg(long)]
+        expected_revision: u64,
+        #[arg(long)]
+        profile: String,
+    },
+    Remove {
+        #[command(flatten)]
+        operator: MonitorOperatorArgs,
+        monitor_id: String,
+    },
 }
 
 #[derive(Args, Debug)]

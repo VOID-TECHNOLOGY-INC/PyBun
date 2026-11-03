@@ -1121,6 +1121,12 @@ async fn dispatch_maintenance(
             }
         }
         Commands::Audit(args) => {
+            if let Some(crate::cli::AuditCommands::Monitor(monitor)) = &args.command {
+                return (
+                    "audit monitor".into(),
+                    super::security::monitor(monitor).await,
+                );
+            }
             if let Some(crate::cli::AuditCommands::CheckUpdates(check)) = &args.command {
                 return (
                     "audit check-updates".into(),

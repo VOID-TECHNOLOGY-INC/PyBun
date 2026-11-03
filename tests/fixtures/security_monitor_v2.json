@@ -1,0 +1,157 @@
+{
+  "command": "pybun audit monitor",
+  "detail": {
+    "action": "events",
+    "commit_status": "not_committed",
+    "contract_version": "2",
+    "current": {
+      "complete": true,
+      "config_revision": 1,
+      "diagnostics": [],
+      "epoch_id": "3153e7fe-cbb8-462f-9ef0-da7bcc5231b3",
+      "findings": [
+        {
+          "active": true,
+          "aliases": [
+            "COMMIT-HIGH"
+          ],
+          "candidate": null,
+          "complete": true,
+          "evidence": [
+            {
+              "affected": "yes",
+              "complete": true,
+              "currently_fresh": true,
+              "evaluated_version": "1",
+              "fetched_at": 1793734587,
+              "payload_digest": "a4599e744bfa4e5951b96abf428ab066603a8c3ce77003c0bf452b789e884775",
+              "provider_id": "advisory",
+              "record_id": "COMMIT-HIGH",
+              "severity": "high",
+              "was_authoritative": true,
+              "withdrawn": false
+            }
+          ],
+          "finding_id": "f9ad2428-f5d3-47bf-9f7d-50014447272b",
+          "last_known_severity": "high",
+          "observed_affected": "yes",
+          "package_key": "0dcbe75decba5e4627fe4be26079c55dd5a7c18d6085a2e70839a1730223ca73",
+          "package_name": "six",
+          "related_lineages": [],
+          "scope_variant": "ca7879dfd6a18714ab2905ff557e6bf84fbbf3df02b2d77575c3dd73d03b0bbf",
+          "semantic_digest": "4baf3bd576379f9150c26509ec551364431d5ed1853ff1d69d5bd3d56bc41fb7",
+          "severity": "high",
+          "source": {
+            "auth_scope_id": "public",
+            "id": "public",
+            "kind": "public_registry"
+          },
+          "vulnerable_versions": [
+            "1"
+          ]
+        }
+      ],
+      "generation": 1,
+      "initialized": true,
+      "monitor_id": "f0747a76-5326-4862-a855-d71982c19197",
+      "observed_at": 1793734587
+    },
+    "diagnostics": [],
+    "exit_code": 0,
+    "newly_committed_count": 0,
+    "newly_committed_events": [],
+    "newly_committed_gap": false,
+    "newly_committed_truncated": false,
+    "operation": "security_monitor",
+    "replay": {
+      "current": {
+        "complete": true,
+        "config_revision": 1,
+        "diagnostics": [],
+        "epoch_id": "3153e7fe-cbb8-462f-9ef0-da7bcc5231b3",
+        "findings": [
+          {
+            "active": true,
+            "aliases": [
+              "COMMIT-HIGH"
+            ],
+            "candidate": null,
+            "complete": true,
+            "evidence": [
+              {
+                "affected": "yes",
+                "complete": true,
+                "currently_fresh": true,
+                "evaluated_version": "1",
+                "fetched_at": 1793734587,
+                "payload_digest": "a4599e744bfa4e5951b96abf428ab066603a8c3ce77003c0bf452b789e884775",
+                "provider_id": "advisory",
+                "record_id": "COMMIT-HIGH",
+                "severity": "high",
+                "was_authoritative": true,
+                "withdrawn": false
+              }
+            ],
+            "finding_id": "f9ad2428-f5d3-47bf-9f7d-50014447272b",
+            "last_known_severity": "high",
+            "observed_affected": "yes",
+            "package_key": "0dcbe75decba5e4627fe4be26079c55dd5a7c18d6085a2e70839a1730223ca73",
+            "package_name": "six",
+            "related_lineages": [],
+            "scope_variant": "ca7879dfd6a18714ab2905ff557e6bf84fbbf3df02b2d77575c3dd73d03b0bbf",
+            "semantic_digest": "4baf3bd576379f9150c26509ec551364431d5ed1853ff1d69d5bd3d56bc41fb7",
+            "severity": "high",
+            "source": {
+              "auth_scope_id": "public",
+              "id": "public",
+              "kind": "public_registry"
+            },
+            "vulnerable_versions": [
+              "1"
+            ]
+          }
+        ],
+        "generation": 1,
+        "initialized": true,
+        "monitor_id": "f0747a76-5326-4862-a855-d71982c19197",
+        "observed_at": 1793734587
+      },
+      "events": [
+        {
+          "candidate_version": null,
+          "epoch_id": "3153e7fe-cbb8-462f-9ef0-da7bcc5231b3",
+          "event_id": "event-v1.WyJmMDc0N2E3Ni01MzI2LTQ4NjItYTg1NS1kNzE5ODJjMTkxOTciLCIzMTUzZTdmZS1jYmI4LTQ2MmYtOWVmMC1kYTdiY2M1MjMxYjMiLDFd",
+          "event_type": "baseline_observed",
+          "finding_id": null,
+          "monitor_id": "f0747a76-5326-4862-a855-d71982c19197",
+          "observed_at": 1793734587,
+          "package_key": null,
+          "reason": null,
+          "related_lineages": [],
+          "sequence": 1
+        }
+      ],
+      "has_more": false,
+      "high_water_mark": 1,
+      "low_water_mark": 1,
+      "next_cursor": "eyJjdXJzb3JfdmVyc2lvbiI6MSwibW9uaXRvcl9pZCI6ImYwNzQ3YTc2LTUzMjYtNDg2Mi1hODU1LWQ3MTk4MmMxOTE5NyIsImVwb2NoX2lkIjoiMzE1M2U3ZmUtY2JiOC00NjJmLTllZjAtZGE3YmNjNTIzMWIzIiwic2VxdWVuY2UiOjF9",
+      "origin_cursor": "eyJjdXJzb3JfdmVyc2lvbiI6MSwibW9uaXRvcl9pZCI6ImYwNzQ3YTc2LTUzMjYtNDg2Mi1hODU1LWQ3MTk4MmMxOTE5NyIsImVwb2NoX2lkIjoiMzE1M2U3ZmUtY2JiOC00NjJmLTllZjAtZGE3YmNjNTIzMWIzIiwic2VxdWVuY2UiOjB9",
+      "resync_cursor": "eyJjdXJzb3JfdmVyc2lvbiI6MSwibW9uaXRvcl9pZCI6ImYwNzQ3YTc2LTUzMjYtNDg2Mi1hODU1LWQ3MTk4MmMxOTE5NyIsImVwb2NoX2lkIjoiMzE1M2U3ZmUtY2JiOC00NjJmLTllZjAtZGE3YmNjNTIzMWIzIiwic2VxdWVuY2UiOjB9"
+    },
+    "status": "complete"
+  },
+  "diagnostics": [],
+  "duration_ms": 3,
+  "events": [
+    {
+      "timestamp_ms": 0,
+      "type": "command_start"
+    },
+    {
+      "timestamp_ms": 3,
+      "type": "command_end"
+    }
+  ],
+  "status": "ok",
+  "version": "2"
+}

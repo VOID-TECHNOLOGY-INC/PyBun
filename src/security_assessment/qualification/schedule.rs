@@ -53,6 +53,12 @@ impl AssessmentContinuation {
         &self.0
     }
 
+    /// Distinguish an ordinary domain change from malformed stored traversal
+    /// state without interpreting a generic engine error as permission to reset.
+    pub fn matches_domain(&self, domain: &AssessmentDomain) -> Result<bool, ObservationDiagnostic> {
+        Ok(self.decode()?.domain_digest == semantic_digest(domain))
+    }
+
     /// Call this before metadata/network work; release-set validation follows
     /// only after authorized current metadata is available.
     pub fn validate_domain(&self, domain: &AssessmentDomain) -> Result<(), ObservationDiagnostic> {

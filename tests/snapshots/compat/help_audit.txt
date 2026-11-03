@@ -5,6 +5,7 @@ Usage: pybun audit [OPTIONS]
 
 Commands:
   check-updates  Observe published security update candidates without changing the environment
+  monitor        Explicit run-once security monitors and durable local event replay
   help           Print this message or the help of the given subcommand(s)
 
 Options:
@@ -12,12 +13,12 @@ Options:
           Output format for machine readability [default: text] [possible values: text, json]
       --progress <PROGRESS>
           Progress UI mode (auto hides on non-TTY) [env: PYBUN_PROGRESS=] [default: auto] [possible values: auto, always, never]
+      --no-progress
+          Disable progress UI
       --severity-threshold <SEVERITY_THRESHOLD>
           Only report vulnerabilities at or above this severity level [default: low] [possible values: low, medium, high, critical]
       --fail-on <LEVEL>
           Exit with a non-zero status (and JSON status: "error") when vulnerabilities at or above this severity are found. Useful for CI gating (e.g. `pybun audit --fail-on=high`). Off by default [possible values: low, medium, high, critical]
-      --no-progress
-          Disable progress UI
       --system
           Allow scanning the resolved system Python instead of a project-local environment. Without this flag, `pybun audit` refuses to silently fall back to system Python when no project venv is found (mirrors `pybun install --system`; see Issue #338)
   -h, --help

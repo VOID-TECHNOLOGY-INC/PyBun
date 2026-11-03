@@ -6,6 +6,47 @@ const SECURITY_FAILURE_BYTES: usize = 4096;
 // Fixed JSON-RPC/content framing, excluding the caller-supplied request ID.
 const SECURITY_RPC_RESERVE: usize = 128;
 
+fn bounded_monitor_body(mut value: Value, max_bytes: usize) -> Value {
+    use crate::security_assessment::check::check_wire_fits;
+    if check_wire_fits(&value, max_bytes, SECURITY_RPC_RESERVE) {
+        return value;
+    }
+    let count = |value: &Value| value.as_array().map_or(0, Vec::len);
+    let omitted = json!({"current_findings":count(&value["current"]["findings"]),"newly_committed_events":count(&value["newly_committed_events"]),"replay_events":count(&value["replay"]["events"]),"registrations":count(&value["registrations"]),"threshold_matches":value["check"]["threshold_match_count"],"prior_omissions":value["omitted"]});
+    if let Some(object) = value.as_object_mut() {
+        for field in ["check", "registrations", "registration"] {
+            object.remove(field);
+        }
+    }
+    if value["current"].is_object() {
+        value["current"]["findings"] = json!([]);
+        value["current"]["diagnostics"] = json!([]);
+    }
+    if value["replay"].is_object() {
+        value["replay"]["events"] = json!([]);
+        value["replay"]["current"] = value["current"].clone();
+        value["replay"]["next_cursor"] = Value::Null;
+        value["replay"]["has_more"] = json!(true);
+    }
+    value["newly_committed_events"] = json!([]);
+    value["newly_committed_truncated"] = json!(true);
+    value["omitted"] = omitted;
+    value["status"] = json!("partial");
+    value["exit_code"] = json!(3);
+    let mut diagnostics = value["diagnostics"].as_array().cloned().unwrap_or_default();
+    if !diagnostics
+        .iter()
+        .any(|item| item["code"] == "E_SECURITY_OUTPUT_LIMIT")
+    {
+        diagnostics.push(json!({"code":"E_SECURITY_OUTPUT_LIMIT","message":"The observation exceeds the wire limit; retry the same input replay cursor for retained events."}));
+    }
+    value["diagnostics"] = json!(diagnostics);
+    if !check_wire_fits(&value, max_bytes, SECURITY_RPC_RESERVE) {
+        value.as_object_mut().unwrap().remove("replay");
+    }
+    value
+}
+
 fn bounded_security_body(value: Value, max_bytes: usize) -> Value {
     use crate::security_assessment::{
         ObservationDiagnostic,
@@ -92,7 +133,7 @@ fn bounded_security_body(value: Value, max_bytes: usize) -> Value {
 // Tool handlers may return a failed execution inside an otherwise valid payload.
 fn tool_content_failed(tool: &str, value: &Value) -> bool {
     value["status"] == "error"
-        || (tool == "pybun_security_check"
+        || (matches!(tool, "pybun_security_check" | "pybun_security_monitor")
             && (value["status"] != "complete" || value["exit_code"] != 0))
         || (matches!(tool, "pybun_run" | "pybun_test")
             && value["exit_code"].as_i64().is_some_and(|code| code != 0))
@@ -121,7 +162,7 @@ impl McpServer {
         {
             let result = Err(rejected.value(&config, tool).to_string());
             // A rejected call may persist its security audit event, but never enters a tool.
-            if tool != "pybun_security_check"
+            if !matches!(tool, "pybun_security_check" | "pybun_security_monitor")
                 && let Err(error) = self.audit_log.prepare_for_call(&json!({}))
             {
                 eprintln!("warning: failed to prepare rate-limit audit: {error}");
@@ -133,12 +174,12 @@ impl McpServer {
                 &result,
                 self.audit_log.config.hash_inputs,
                 audit::AuditDiff {
-                    complete: tool != "pybun_security_check",
+                    complete: !matches!(tool, "pybun_security_check" | "pybun_security_monitor"),
                     ..Default::default()
                 },
                 0,
             );
-            if tool == "pybun_security_check" {
+            if matches!(tool, "pybun_security_check" | "pybun_security_monitor") {
                 self.audit_log.record_memory(entry);
             } else {
                 self.audit_log.record(entry);
@@ -166,6 +207,9 @@ impl McpServer {
 
         if tool_name == "pybun_security_check" {
             return self.handle_security_check(id, tool_args).await;
+        }
+        if tool_name == "pybun_security_monitor" {
+            return self.handle_security_monitor(id, tool_args).await;
         }
 
         let backend = if crate::backend::native_selected() {
@@ -265,6 +309,145 @@ impl McpServer {
                 }),
             ),
         }
+    }
+
+    async fn handle_security_monitor(&mut self, id: Value, requested: Value) -> JsonRpcResponse {
+        use crate::security_assessment::{
+            ObservationDiagnostic,
+            monitor::service::{MonitorRequest, MonitorResponse},
+        };
+        let started = Instant::now();
+        let action = requested["action"]
+            .as_str()
+            .filter(|value| {
+                matches!(
+                    *value,
+                    "list" | "add" | "check" | "events" | "configure" | "remove"
+                )
+            })
+            .unwrap_or("invalid")
+            .to_string();
+        let failure = |error, code| MonitorResponse::failure(&action, error, code).json();
+        let request = match serde_json::from_value::<MonitorRequest>(requested.clone()) {
+            Ok(request) => request,
+            Err(_) => {
+                return self.finish_security_monitor(
+                    id,
+                    &requested,
+                    failure(
+                        ObservationDiagnostic::new(
+                            "E_MONITOR_INPUT",
+                            "Monitor arguments contain an unsupported action, field or value.",
+                        ),
+                        2,
+                    ),
+                    started.elapsed().as_millis() as u64,
+                    SECURITY_FAILURE_BYTES,
+                );
+            }
+        };
+        if let Err(error) = request.validate() {
+            return self.finish_security_monitor(
+                id,
+                &requested,
+                failure(error, 2),
+                started.elapsed().as_millis() as u64,
+                SECURITY_FAILURE_BYTES,
+            );
+        }
+        let prepared = match self.policy.prepare_security_monitor(&request) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                let mut value = failure(error, 3);
+                value["policy_applied"] = json!({"authorized":false});
+                return self.finish_security_monitor(
+                    id,
+                    &requested,
+                    value,
+                    started.elapsed().as_millis() as u64,
+                    SECURITY_FAILURE_BYTES,
+                );
+            }
+        };
+        if let Err(rejected) = self.admit_tool("pybun_security_monitor", &requested) {
+            let mut value = failure(
+                ObservationDiagnostic::new(
+                    "mcp.rate_limit_exceeded",
+                    "The MCP call rate limit was exceeded.",
+                ),
+                3,
+            );
+            if let Ok(rejected) = serde_json::from_str::<Value>(&rejected) {
+                for field in ["retry_after_ms", "rate_limit_applied"] {
+                    if let Some(decoration) = rejected.get(field) {
+                        value[field] = decoration.clone();
+                    }
+                }
+            }
+            return JsonRpcResponse::success(
+                id,
+                json!({"content":[{"type":"text","text":bounded_monitor_body(value,prepared.max_output_bytes).to_string()}],"isError":true}),
+            );
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_secs());
+        let result = crate::security_assessment::monitor::service::execute(
+            prepared.authority,
+            request,
+            prepared.scope,
+            prepared.timeout,
+            now,
+        )
+        .await;
+        let max_output_bytes = prepared.max_output_bytes.min(result.output_limit());
+        let mut value = result.json();
+        value["policy_applied"] = prepared.applied;
+        value["rate_limit_applied"] =
+            json!({"admitted":true,"limits":self.rate_config().describe("pybun_security_monitor")});
+        self.finish_security_monitor(
+            id,
+            &requested,
+            value,
+            started.elapsed().as_millis() as u64,
+            max_output_bytes,
+        )
+    }
+
+    fn finish_security_monitor(
+        &mut self,
+        id: Value,
+        requested: &Value,
+        value: Value,
+        duration_ms: u64,
+        max_bytes: usize,
+    ) -> JsonRpcResponse {
+        let value = bounded_monitor_body(value, max_bytes);
+        let failed = tool_content_failed("pybun_security_monitor", &value);
+        let text = value.to_string();
+        let recorded = if failed {
+            Err(text.clone())
+        } else {
+            Ok(text.clone())
+        };
+        let entry = audit::build_audit_entry(
+            &self.session_id,
+            "pybun_security_monitor",
+            requested,
+            &recorded,
+            self.audit_log.config.hash_inputs,
+            audit::AuditDiff {
+                writes: vec![],
+                complete: false,
+            },
+            duration_ms,
+        );
+        self.audit_log.record_memory(entry);
+        let mut result = json!({"content":[{"type":"text","text":text}]});
+        if failed {
+            result["isError"] = json!(true);
+        }
+        JsonRpcResponse::success(id, result)
     }
 
     async fn handle_security_check(&mut self, id: Value, requested: Value) -> JsonRpcResponse {

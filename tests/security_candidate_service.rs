@@ -92,6 +92,66 @@ fn inventory(policy: &SourcePolicy) -> InventoryObservation {
 }
 
 #[tokio::test]
+async fn known_withdrawal_reaches_the_shared_assessment_after_query_omission() {
+    use pybun::security_assessment::osv::KnownAdvisoryId;
+    use pybun::security_assessment::qualification::service::assess_inventory_with_history;
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET).path("/simple/demo/");
+        then.json_body(
+            json!({"meta":{"api-version":"1.4"},"name":"demo","versions":[],"files":[]}),
+        );
+    });
+    server.mock(|when, then| {
+        when.method(POST).path("/v1/querybatch");
+        then.json_body(json!({"results":[{}]}));
+    });
+    let detail = server.mock(|when, then| {
+        when.method(GET).path("/v1/vulns/OLD");
+        then.json_body(json!({"id":"OLD","modified":"2026-01-02T00:00:00Z","withdrawn":"2026-01-02T00:00:00Z"}));
+    });
+    let provider = ProviderEndpoint::new(ProviderConfig {
+        id: "osv".into(),
+        url: server.url("/v1/querybatch"),
+        auth_scope_id: "public".into(),
+        allow_insecure_loopback: true,
+    })
+    .unwrap();
+    let source = RegistrySource::new(RegistrySourceConfig {
+        source_id: "public-pypi".into(),
+        provider: ProviderConfig {
+            id: "registry".into(),
+            url: server.url("/simple/"),
+            auth_scope_id: "public".into(),
+            allow_insecure_loopback: true,
+        },
+    })
+    .unwrap();
+    let policy = policy();
+    let session = HttpSession::new(ObservationLimits::default(), 20).unwrap();
+    let result = assess_inventory_with_history(
+        &session,
+        &inventory(&policy),
+        &policy,
+        &[provider],
+        &[source],
+        &AssessmentOptions::default(),
+        &[KnownAdvisoryId {
+            instance_id: "instance".into(),
+            provider_id: "osv".into(),
+            record_id: "OLD".into(),
+        }],
+    )
+    .await
+    .unwrap();
+    let record = &result.providers[0].instances[0].records[0];
+    assert_eq!(record.id, "OLD");
+    assert_eq!(record.coverage.status, CoverageStatus::Complete);
+    assert!(record.payload.get("withdrawn").is_some());
+    detail.assert_calls(1);
+}
+
+#[tokio::test]
 async fn shared_service_retains_blocked_candidates_and_queries_current_and_candidates_together() {
     let server = MockServer::start();
     let index=server.mock(|when,then|{when.method(GET).path("/simple/demo/");then.json_body(json!({"meta":{"api-version":"1.4"},"name":"demo","versions":["2","3rc1"],"files":[{"filename":"demo-2-py3-none-any.whl","url":"demo-2.whl","hashes":{},"size":100},{"filename":"demo-3rc1-py3-none-any.whl","url":"demo-3rc1.whl","hashes":{},"size":100}]}));});
