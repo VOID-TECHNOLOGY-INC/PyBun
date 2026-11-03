@@ -634,7 +634,10 @@ pub struct DriftArgs {
 }
 
 #[derive(Args, Debug)]
+#[command(args_conflicts_with_subcommands = true)]
 pub struct AuditArgs {
+    #[command(subcommand)]
+    pub command: Option<AuditCommands>,
     /// Only report vulnerabilities at or above this severity level.
     #[arg(long, default_value = "low", value_enum)]
     pub severity_threshold: SeverityLevel,
@@ -649,6 +652,40 @@ pub struct AuditArgs {
     /// `pybun install --system`; see Issue #338).
     #[arg(long)]
     pub system: bool,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum AuditCommands {
+    /// Observe published security update candidates without changing the environment.
+    CheckUpdates(CheckUpdatesArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct CheckUpdatesArgs {
+    /// Explicit trusted operator configuration; project files never grant authority implicitly.
+    #[arg(long, value_name = "PATH")]
+    pub security_config: Option<std::path::PathBuf>,
+    /// Approved profile, or the configuration's default profile.
+    #[arg(long)]
+    pub profile: Option<String>,
+    /// Must match the selected profile's authorized project.
+    #[arg(long, value_name = "PATH")]
+    pub project: Option<std::path::PathBuf>,
+    #[arg(long, value_enum, default_value = "installed")]
+    pub target: crate::security_assessment::check::CheckTarget,
+    #[arg(long, value_enum, default_value = "online")]
+    pub mode: crate::security_assessment::check::CheckMode,
+    #[arg(long, value_enum)]
+    pub fail_on: Option<crate::security_assessment::check::CheckSeverityThreshold>,
+    /// Narrow the profile's shared wall deadline.
+    #[arg(long, value_parser = clap::value_parser!(u64).range(1..=60_000))]
+    pub timeout_ms: Option<u64>,
+    /// Narrow the profile's cache age ceiling in seconds.
+    #[arg(long)]
+    pub max_cache_age_seconds: Option<u64>,
+    /// Opaque bounded discovery continuation from a previous observation.
+    #[arg(long)]
+    pub continuation: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]

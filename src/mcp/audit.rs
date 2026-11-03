@@ -340,10 +340,7 @@ impl McpAuditLog {
             return;
         }
 
-        self.recent.push_back(entry.clone());
-        while self.recent.len() > 20 {
-            self.recent.pop_front();
-        }
+        self.record_memory(entry.clone());
 
         let Some(path) = &self.config.path else {
             return;
@@ -360,6 +357,15 @@ impl McpAuditLog {
 
         if let Err(err) = write_result {
             eprintln!("warning: failed to append MCP audit log: {err}");
+        }
+    }
+
+    /// Read-only checks may retain recent security events, including denials,
+    /// without obtaining any durable audit-log write authority.
+    pub(super) fn record_memory(&mut self, entry: AuditEntry) {
+        self.recent.push_back(entry);
+        while self.recent.len() > 20 {
+            self.recent.pop_front();
         }
     }
 

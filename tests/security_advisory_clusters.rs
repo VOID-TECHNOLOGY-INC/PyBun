@@ -604,3 +604,61 @@ fn cached_related_withdrawal_is_retained_as_correction_to_current_active_alias()
             .any(|record| record.evaluation.withdrawn.is_some())
     );
 }
+
+#[test]
+fn exact_provider_declared_severity_labels_have_levels_without_inventing_cvss_scores() {
+    for (label, expected) in [
+        ("LOW", "low"),
+        ("MODERATE", "medium"),
+        ("medium", "medium"),
+        ("HIGH", "high"),
+        ("CRITICAL", "critical"),
+    ] {
+        let mut observed = observation("a", "A", &[]);
+        let record = &mut observed.instances[0].records[0];
+        record.payload["database_specific"] = json!({"severity":label});
+        record.payload_digest = semantic_digest(&record.payload);
+        let result = assess_findings(&package(), &["a".into()], &[observed]);
+        assert_eq!(
+            serde_json::to_value(result.clusters[0].severity).unwrap(),
+            json!(expected)
+        );
+        assert_eq!(
+            serde_json::to_value(&result.clusters[0].records[0]).unwrap()["severity"],
+            json!(expected)
+        );
+    }
+    for value in [
+        json!(null),
+        json!(10),
+        json!("IMPORTANT"),
+        json!("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"),
+    ] {
+        let mut observed = observation("a", "A", &[]);
+        observed.instances[0].records[0].payload["database_specific"] = json!({"severity":value});
+        let result = assess_findings(&package(), &["a".into()], &[observed]);
+        assert_eq!(
+            serde_json::to_value(result.clusters[0].severity).unwrap(),
+            json!("unknown")
+        );
+    }
+}
+
+#[test]
+fn mixed_unknown_severity_stays_conservative_and_known_label_changes_are_semantic() {
+    let mut a = observation("a", "A", &["B"]);
+    a.instances[0].records[0].payload["database_specific"] = json!({"severity":"LOW"});
+    let b = observation("b", "B", &[]);
+    let mixed = assess_findings(&package(), &["a".into(), "b".into()], &[a.clone(), b]);
+    assert_eq!(
+        serde_json::to_value(mixed.clusters[0].severity).unwrap(),
+        json!("unknown")
+    );
+    let low = assess_findings(&package(), &["a".into()], &[a.clone()]);
+    a.instances[0].records[0].payload["database_specific"] = json!({"severity":"HIGH"});
+    let high = assess_findings(&package(), &["a".into()], &[a]);
+    assert_ne!(
+        low.clusters[0].cluster_digest,
+        high.clusters[0].cluster_digest
+    );
+}

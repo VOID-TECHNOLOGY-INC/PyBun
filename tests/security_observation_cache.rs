@@ -376,3 +376,89 @@ async fn offline_cache_is_redacted_again_for_rotated_endpoint_credentials() {
     );
     forbidden.assert_calls(0);
 }
+
+#[tokio::test]
+async fn expired_cache_is_incomplete_and_never_causes_an_offline_request() {
+    use httpmock::prelude::*;
+    use pybun::security_assessment::ObservationLimits;
+    use pybun::security_assessment::http::{HttpSession, ObservationMode};
+    let server = MockServer::start();
+    let network = server.mock(|when, then| {
+        when.path("/v1/querybatch");
+        then.json_body(json!({"results": []}));
+    });
+    let (endpoint, proof) = approved(&server);
+    let root = private_root();
+    let online = HttpSession::new(ObservationLimits::default(), 20)
+        .unwrap()
+        .with_cache(
+            ObservationCache::open(root.path(), 1024).unwrap(),
+            ObservationMode::Online,
+        )
+        .unwrap();
+    online
+        .request_json(
+            &endpoint,
+            reqwest::Method::POST,
+            endpoint.url().clone(),
+            None,
+            &proof,
+        )
+        .await
+        .unwrap();
+    let offline = HttpSession::new(ObservationLimits::default(), 31)
+        .unwrap()
+        .with_max_cache_age_seconds(10)
+        .unwrap()
+        .with_cache(
+            ObservationCache::open(root.path(), 1024).unwrap(),
+            ObservationMode::Offline,
+        )
+        .unwrap();
+    let error = offline
+        .request_json(
+            &endpoint,
+            reqwest::Method::POST,
+            endpoint.url().clone(),
+            None,
+            &proof,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, "E_SECURITY_CACHE_EXPIRED");
+    assert_eq!(offline.request_count(), 0);
+    network.assert_calls(1);
+    let boundary = HttpSession::new(ObservationLimits::default(), 30)
+        .unwrap()
+        .with_max_cache_age_seconds(10)
+        .unwrap()
+        .with_cache(
+            ObservationCache::open(root.path(), 1024).unwrap(),
+            ObservationMode::Offline,
+        )
+        .unwrap();
+    let evidence = boundary
+        .request_json(
+            &endpoint,
+            reqwest::Method::POST,
+            endpoint.url().clone(),
+            None,
+            &proof,
+        )
+        .await
+        .unwrap();
+    assert_eq!(evidence.freshness.age_seconds, 10);
+    network.assert_calls(1);
+}
+
+#[test]
+fn an_expired_external_deadline_cannot_start_a_new_session_window() {
+    use pybun::security_assessment::{ObservationLimits, http::HttpSession};
+    let expired = std::time::Instant::now() - std::time::Duration::from_secs(1);
+    let error = HttpSession::new(ObservationLimits::default(), 20)
+        .unwrap()
+        .with_deadline(expired)
+        .err()
+        .expect("expired absolute budget");
+    assert_eq!(error.code, "E_SECURITY_DEADLINE");
+}
