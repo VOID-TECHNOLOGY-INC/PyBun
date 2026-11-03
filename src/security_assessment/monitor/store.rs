@@ -561,6 +561,16 @@ fn result(
     let gap = count > newly.len() as u64;
     let replay = super::replay::page(snapshot, after).map_err(|mut error| {
         error.commit_status = CommitStatus::Committed;
+        error.receipt = Some(Box::new(super::state::CommittedEventReceipt {
+            newly_committed_events: newly
+                .iter()
+                .take(REPLAY_PAGE_SIZE)
+                .map(|event| (*event).clone())
+                .collect(),
+            newly_committed_count: count,
+            newly_committed_truncated: count > REPLAY_PAGE_SIZE as u64,
+            newly_committed_gap: gap,
+        }));
         error
     })?;
     Ok(super::state::CheckResult {

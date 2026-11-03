@@ -33,6 +33,7 @@ pub(crate) struct PackageFacts<'a> {
     pub presence_fresh: bool,
     pub advisory_complete: bool,
     pub unaffected: bool,
+    pub disqualified_candidates: BTreeSet<String>,
     pub registries: Vec<(&'a RegistryObservation, bool)>,
 }
 pub(crate) struct ObservedFinding {
@@ -321,7 +322,23 @@ pub(crate) fn project<'a>(
                         {
                             return None;
                         }
-                        if q.candidate_kind != Some(CandidateKind::PublishedRemediationCandidate)
+                        if q.providers.len() != context.domain.authoritative_providers.len()
+                            || q.providers
+                                .iter()
+                                .map(|provider| &provider.provider_id)
+                                .collect::<BTreeSet<_>>()
+                                .len()
+                                != q.providers.len()
+                            || !context.domain.authoritative_providers.iter().all(|id| {
+                                q.providers
+                                    .iter()
+                                    .any(|provider| &provider.provider_id == id)
+                                    && candidate_query_complete(
+                                        assessment, package, &q.version, id, context, ttl,
+                                    )
+                            })
+                            || q.candidate_kind
+                                != Some(CandidateKind::PublishedRemediationCandidate)
                             || q.fix_evidence != FixEvidence::KnownBoundary
                             || !q.authoritative
                             || q.coverage.status != CoverageStatus::Complete
@@ -469,7 +486,11 @@ pub(crate) fn project<'a>(
             && row.is_some_and(|row| {
                 row.installed.complete && row.installed.affected == AffectedStatus::No
             });
+        let disqualified_candidates = candidate_corrections(assessment, row, package, context, ttl);
         if let Some(existing) = result.packages.get_mut(&key) {
+            existing
+                .disqualified_candidates
+                .extend(disqualified_candidates);
             existing.versions.insert(version);
             existing.findings.extend(observed);
             existing.presence_fresh &= present;
@@ -485,6 +506,7 @@ pub(crate) fn project<'a>(
                 key,
                 PackageFacts {
                     source: package.source.clone(),
+                    disqualified_candidates,
                     versions: BTreeSet::from([version]),
                     findings: observed,
                     presence_fresh: present,
@@ -630,6 +652,102 @@ fn merge_findings(findings: Vec<ObservedFinding>) -> Vec<ObservedFinding> {
             }
         })
         .collect()
+}
+fn candidate_query_complete(
+    assessment: &SecurityAssessment,
+    package: &PackageInstance,
+    version: &str,
+    provider_id: &str,
+    context: &CheckContext,
+    ttl: u64,
+) -> bool {
+    let providers: Vec<_> = assessment
+        .providers
+        .iter()
+        .filter(|provider| provider.provider_id == provider_id)
+        .collect();
+    providers.len() == 1
+        && time_fresh(providers[0].observed_at, context.now, ttl)
+        && providers[0].instances.iter().any(|instance| {
+            context_matches(package, instance)
+                && canonical_version(&instance.version).ok() == canonical_version(version).ok()
+                && instance.coverage.status == CoverageStatus::Complete
+                && fresh(
+                    instance.freshness,
+                    providers[0].observed_at,
+                    context.now,
+                    ttl,
+                )
+                && instance.records.iter().all(|record| {
+                    record.coverage.status == CoverageStatus::Complete
+                        && fresh(record.freshness, record.fetched_at, context.now, ttl)
+                })
+        })
+}
+fn candidate_corrections(
+    assessment: &SecurityAssessment,
+    row: Option<&crate::security_assessment::qualification::service::PackageAssessment>,
+    package: &PackageInstance,
+    context: &CheckContext,
+    ttl: u64,
+) -> BTreeSet<String> {
+    let mut result = BTreeSet::new();
+    if context.mode != ObservationMode::Online {
+        return result;
+    }
+    for candidate in row.into_iter().flat_map(|row| &row.candidates) {
+        let q = &candidate.qualification;
+        let positive = q
+            .providers
+            .iter()
+            .flat_map(|provider| {
+                provider
+                    .candidate
+                    .iter()
+                    .map(move |record| (&provider.provider_id, record))
+            })
+            .any(|(provider, record)| {
+                record.complete
+                    && record.affected == AffectedStatus::Yes
+                    && raw_fresh(
+                        assessment,
+                        package,
+                        provider,
+                        (&record.record_id, &record.payload_digest, None),
+                        context,
+                        ttl,
+                    )
+            });
+        let complete = q.authoritative
+            && q.current_authoritative
+            && q.coverage.status == CoverageStatus::Complete
+            && q.freshness.is_authoritative()
+            && q.freshness.age_seconds <= ttl
+            && q.providers.iter().all(|provider| {
+                provider.complete
+                    && provider
+                        .candidate
+                        .iter()
+                        .chain(&provider.current)
+                        .all(|record| {
+                            record.complete
+                                && raw_fresh(
+                                    assessment,
+                                    package,
+                                    &provider.provider_id,
+                                    (&record.record_id, &record.payload_digest, None),
+                                    context,
+                                    ttl,
+                                )
+                        })
+            });
+        if (positive || complete && q.fix_evidence == FixEvidence::Unavailable)
+            && let Ok(version) = canonical_version(&q.version)
+        {
+            result.insert(version);
+        }
+    }
+    result
 }
 fn failure(result: &mut Projected<'_>, scope: &str, code: &str, coverage: &str) {
     result.complete = false;

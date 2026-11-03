@@ -304,3 +304,69 @@ fn replay_retention_reports_gap_and_advances_only_to_last_returned_event() {
     let resume = store.events(&registered.monitor_id, Some(&last)).unwrap();
     assert!(resume.events.is_empty());
 }
+
+#[test]
+fn committed_check_with_expired_replay_cursor_still_returns_bounded_new_event_receipt() {
+    use pybun::security_assessment::monitor::CommitStatus;
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    std::fs::create_dir(root.join("project")).unwrap();
+    let config = common::config(&root.join("project"));
+    let mut options = StoreOptions::new(root.join("state"));
+    options.limits.retained_events = 1;
+    let store = MonitorStore::create(options).unwrap();
+    let registered = store.register(config.clone()).unwrap();
+    let ticket = store.prepare_check(&registered.monitor_id).unwrap();
+    store
+        .commit_check(
+            &ticket,
+            &common::assessment(
+                &config,
+                "1",
+                vec![common::advisory("A", &[], false)],
+                None,
+                100,
+            ),
+            CheckContext::online(config.domain.clone(), 100),
+            None,
+        )
+        .unwrap();
+    let ticket = store.prepare_check(&registered.monitor_id).unwrap();
+    let changed = common::assessment(
+        &config,
+        "1",
+        vec![
+            common::advisory("A", &[], false),
+            common::advisory("B", &[], false),
+        ],
+        None,
+        101,
+    );
+    let error = store
+        .commit_check(
+            &ticket,
+            &changed,
+            CheckContext::online(config.domain.clone(), 101),
+            Some(&EventReplayCursor::origin(&registered)),
+        )
+        .unwrap_err();
+    assert_eq!(error.code, "E_MONITOR_CURSOR_EXPIRED");
+    assert_eq!(error.commit_status, CommitStatus::Committed);
+    let receipt = error.receipt.unwrap();
+    assert_eq!(receipt.newly_committed_count, 1);
+    assert!(!receipt.newly_committed_gap);
+    assert_eq!(receipt.newly_committed_events.len(), 1);
+    assert_eq!(
+        receipt.newly_committed_events,
+        store.events(&registered.monitor_id, None).unwrap().events
+    );
+    let retry = store
+        .commit_check(
+            &ticket,
+            &changed,
+            CheckContext::online(config.domain, 101),
+            Some(&EventReplayCursor::origin(&registered)),
+        )
+        .unwrap_err();
+    assert_eq!(retry.receipt.unwrap(), receipt);
+}

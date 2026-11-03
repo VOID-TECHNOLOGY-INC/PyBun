@@ -81,6 +81,13 @@ impl Root {
     }
 
     pub fn open(options: &StoreOptions, create: bool) -> MonitorResult<Self> {
+        Self::open_checked(options, create, &|| {})
+    }
+    fn open_checked(
+        options: &StoreOptions,
+        create: bool,
+        before_create: &dyn Fn(),
+    ) -> MonitorResult<Self> {
         options.limits.validate()?;
         let deadline = options
             .deadline
@@ -88,7 +95,7 @@ impl Root {
         check_deadline(deadline)?;
         #[cfg(not(unix))]
         {
-            let _ = (options, create);
+            let _ = (options, create, before_create);
             return Err(MonitorError::new("E_MONITOR_STATE_UNSUPPORTED"));
         }
         #[cfg(unix)]
@@ -109,24 +116,30 @@ impl Root {
                 let mut ancestor = options.root.as_path();
                 let mut missing = vec![];
                 while !ancestor.exists() {
+                    check_deadline(deadline)?;
                     missing.push(ancestor.file_name().ok_or_else(path_error)?.to_owned());
                     ancestor = ancestor.parent().ok_or_else(path_error)?;
                 }
+                check_deadline(deadline)?;
                 if ancestor.canonicalize().map_err(|_| path_error())? != ancestor {
                     return Err(path_error());
                 }
+                check_deadline(deadline)?;
                 let mut dir = Dir::open_ambient_dir(ancestor, cap_std::ambient_authority())
                     .map_err(|_| path_error())?;
                 for name in missing.into_iter().rev() {
                     use cap_std::fs::{DirBuilder, DirBuilderExt};
                     let mut builder = DirBuilder::new();
                     builder.mode(0o700);
+                    before_create();
+                    check_deadline(deadline)?;
                     dir.create_dir_with(&name, &builder)
                         .map_err(|_| path_error())?;
                     let mut open = OpenOptions::new();
                     open.read(true);
                     use cap_std::fs::OpenOptionsExt;
                     open.custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_NONBLOCK);
+                    check_deadline(deadline)?;
                     dir = Dir::from_std_file(
                         dir.open_with(&name, &open)
                             .map_err(|_| path_error())?
@@ -134,9 +147,11 @@ impl Root {
                     );
                 }
             }
+            check_deadline(deadline)?;
             if options.root.canonicalize().map_err(|_| path_error())? != options.root {
                 return Err(path_error());
             }
+            check_deadline(deadline)?;
             let file = std::fs::OpenOptions::new()
                 .read(true)
                 .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_NONBLOCK)
@@ -164,6 +179,8 @@ impl Root {
                     {
                         return Err(path_error());
                     }
+                    before_create();
+                    check_deadline(deadline)?;
                     let mut options = private_open();
                     options.write(true).create_new(true);
                     root.dir
@@ -458,4 +475,38 @@ fn check_deadline(deadline: Instant) -> MonitorResult<()> {
 }
 fn persistence(_: std::io::Error) -> MonitorError {
     MonitorError::new("E_MONITOR_PERSISTENCE")
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    #[test]
+    fn root_creation_rechecks_deadline_immediately_before_each_mutation() {
+        use std::{cell::Cell, os::unix::fs::DirBuilderExt};
+        for existing_root in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let base = temp.path().canonicalize().unwrap();
+            let path = base.join("state");
+            if existing_root {
+                std::fs::DirBuilder::new()
+                    .mode(0o700)
+                    .create(&path)
+                    .unwrap();
+            }
+            let mut options = StoreOptions::new(path.clone());
+            let deadline = Instant::now() + Duration::from_millis(100);
+            options.deadline = Some(deadline);
+            let called = Cell::new(false);
+            let result = Root::open_checked(&options, true, &|| {
+                called.set(true);
+                while Instant::now() < deadline {
+                    std::thread::park_timeout(deadline.saturating_duration_since(Instant::now()));
+                }
+            });
+            assert!(called.get());
+            assert_eq!(result.err().unwrap().code, "E_MONITOR_DEADLINE");
+            assert!(!path.join("state.lock").exists());
+            assert_eq!(path.exists(), existing_root);
+        }
+    }
 }

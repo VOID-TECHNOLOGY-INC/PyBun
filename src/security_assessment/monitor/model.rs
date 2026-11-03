@@ -24,10 +24,11 @@ pub struct MonitorError {
     pub commit_status: CommitStatus,
     pub message: String,
     pub replay: Option<Box<super::state::ReplayPage>>,
+    pub receipt: Option<Box<super::state::CommittedEventReceipt>>,
 }
 impl MonitorError {
     pub(crate) fn new(code: &str) -> Self {
-        Self {replay:None,code:code.into(),commit_status:CommitStatus::NotCommitted,message:"Monitor state operation could not be completed; existing evidence must not be treated as rolled back or resolved.".into()}
+        Self {receipt:None,replay:None,code:code.into(),commit_status:CommitStatus::NotCommitted,message:"Monitor state operation could not be completed; existing evidence must not be treated as rolled back or resolved.".into()}
     }
     pub(crate) fn indeterminate(mut self) -> Self {
         self.commit_status = CommitStatus::Indeterminate;

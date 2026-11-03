@@ -108,6 +108,21 @@ pub(crate) fn apply(snapshot: &mut Snapshot, projection: &Projected<'_>) -> Moni
                     projection.inventory_complete,
                 );
                 value.last_known_severity = value.last_known_severity.or(old.last_known_severity);
+                if let (Some(previous), Some(current)) = (&old.candidate, &mut value.candidate)
+                    && previous.source_id == current.source_id
+                    && previous.auth_scope_id == current.auth_scope_id
+                    && previous.version == current.version
+                {
+                    for artifact in &mut current.artifacts {
+                        if let Some(prior) = previous
+                            .artifacts
+                            .iter()
+                            .find(|prior| artifact_agrees(prior, artifact) == Some(true))
+                        {
+                            *artifact = prior.clone();
+                        }
+                    }
+                }
                 let mut changes = vec![];
                 if let Some(reason) = alignment.correction {
                     value.active = old.active || observed.positive;
@@ -379,6 +394,44 @@ pub(crate) fn apply(snapshot: &mut Snapshot, projection: &Projected<'_>) -> Moni
             )?;
         }
     }
+    if projection.online {
+        for index in 0..snapshot.lineages.len() {
+            let node = &snapshot.lineages[index];
+            if node.merged_into.is_some() || !node.finding.active {
+                continue;
+            }
+            let Some(candidate) = node
+                .finding
+                .candidate
+                .as_ref()
+                .filter(|candidate| candidate.qualified_remediation)
+            else {
+                continue;
+            };
+            if !projection
+                .packages
+                .get(&node.finding.package_key)
+                .is_some_and(|package| package.disqualified_candidates.contains(&candidate.version))
+            {
+                continue;
+            }
+            let mut value = node.finding.clone();
+            let candidate = value.candidate.as_mut().expect("candidate checked above");
+            candidate.qualified_remediation = false;
+            let version = candidate.version.clone();
+            snapshot.lineages[index].finding = value.clone();
+            if !baseline {
+                event(
+                    snapshot,
+                    MonitorEventType::CandidateChanged,
+                    Some(&value),
+                    Some("advisory_remediation_corrected".into()),
+                    Some(version),
+                    vec![],
+                )?;
+            }
+        }
+    }
     // Publication disappearance is a separate axis from advisory completeness.
     // Only exact prior artifacts and fresh same-source registry facts can negate it.
     if projection.online {
@@ -467,6 +520,42 @@ pub(crate) fn apply(snapshot: &mut Snapshot, projection: &Projected<'_>) -> Moni
     }
     Ok(())
 }
+/// Reported digest metadata may grow or shrink without changing the bytes.
+/// No common strong digest is insufficient to negate an existing artifact.
+fn artifact_agrees(prior: &ArtifactIdentity, current: &ArtifactIdentity) -> Option<bool> {
+    if prior.filename != current.filename {
+        return Some(false);
+    }
+    if prior.target_tag_digest != current.target_tag_digest {
+        return None;
+    }
+    let mut equal = false;
+    let mut different = false;
+    for algorithm in ["sha256", "sha384", "sha512"] {
+        if let Some((a, b)) = prior
+            .hashes
+            .get(algorithm)
+            .zip(current.hashes.get(algorithm))
+        {
+            if a.eq_ignore_ascii_case(b) {
+                equal = true;
+            } else {
+                different = true;
+            }
+        }
+    }
+    match (equal, different) {
+        (true, false) => Some(true),
+        (false, true) => Some(false),
+        (true, true) => None,
+        (false, false) if prior.hashes.is_empty() && current.hashes.is_empty() => prior
+            .url_identity
+            .as_ref()
+            .zip(current.url_identity.as_ref())
+            .map(|(a, b)| a == b),
+        _ => None,
+    }
+}
 fn unavailable(
     candidate: &MonitorCandidate,
     package: &super::projection::PackageFacts<'_>,
@@ -495,22 +584,27 @@ fn unavailable(
             let matches: Vec<_> = release
                 .into_iter()
                 .flat_map(|release| &release.files)
-                .filter(|file| {
-                    super::projection::artifact(
-                        file,
-                        &package.source,
-                        &candidate.version,
-                        &prior.target_tag_digest,
-                    )
-                    .artifact_id
-                        == prior.artifact_id
-                })
+                .filter(|file| file.filename == prior.filename)
                 .collect();
             if matches.is_empty() {
                 negative |= complete;
                 continue;
             }
             for file in matches {
+                let current = super::projection::artifact(
+                    file,
+                    &package.source,
+                    &candidate.version,
+                    &prior.target_tag_digest,
+                );
+                match artifact_agrees(prior, &current) {
+                    None => return false,
+                    Some(false) => {
+                        negative |= complete;
+                        continue;
+                    }
+                    Some(true) => {}
+                }
                 if file.coverage.status != CoverageStatus::Complete {
                     continue;
                 }

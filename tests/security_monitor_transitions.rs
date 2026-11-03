@@ -949,3 +949,188 @@ fn partial_alias_components_cannot_overwrite_current_fresh_positive_of_same_line
     assert!(!contains(&result, MonitorEventType::NewAdvisory));
     assert!(!contains(&result, MonitorEventType::FindingResolved));
 }
+
+fn verify_hash_augmentation(candidate_complete: bool) {
+    use pybun::security_assessment::CoverageStatus;
+
+    let (_temp, store, registration, config) = setup();
+    let records = vec![common::advisory("A", &[], true)];
+    let first = check(
+        &store,
+        &registration.monitor_id,
+        &common::assessment(&config, "1", records.clone(), Some("2"), 100),
+        100,
+    );
+    let artifact = first.current.findings[0]
+        .candidate
+        .as_ref()
+        .unwrap()
+        .artifacts[0]
+        .clone();
+    let mut augmented = common::assessment(&config, "1", records, Some("2"), 101);
+    for release in &mut augmented.packages[0]
+        .registry
+        .as_mut()
+        .unwrap()
+        .catalog
+        .releases
+    {
+        for file in &mut release.files {
+            file.hashes.insert("sha512".into(), "a".repeat(128));
+        }
+    }
+    if !candidate_complete {
+        augmented.packages[0].candidates[0]
+            .qualification
+            .authoritative = false;
+        augmented.packages[0].candidates[0]
+            .qualification
+            .coverage
+            .status = CoverageStatus::Partial;
+    }
+    let updated = check(&store, &registration.monitor_id, &augmented, 101);
+    assert!(!contains(&updated, MonitorEventType::CandidateChanged));
+    assert!(!contains(&updated, MonitorEventType::CandidateUnavailable));
+    assert_eq!(
+        updated.current.findings[0]
+            .candidate
+            .as_ref()
+            .unwrap()
+            .artifacts[0]
+            .artifact_id,
+        artifact.artifact_id
+    );
+    assert!(
+        updated.current.findings[0]
+            .candidate
+            .as_ref()
+            .unwrap()
+            .publication_available
+    );
+}
+
+#[test]
+fn extra_hash_metadata_does_not_change_fresh_candidate() {
+    verify_hash_augmentation(true);
+}
+#[test]
+fn extra_hash_metadata_does_not_make_retained_candidate_unavailable() {
+    verify_hash_augmentation(false);
+}
+
+#[test]
+fn fresh_exact_candidate_advisory_correction_removes_remediation_claim_without_unpublishing() {
+    for versions_only in [false, true] {
+        let (_temp, store, registration, config) = setup();
+        check(
+            &store,
+            &registration.monitor_id,
+            &common::assessment(
+                &config,
+                "1",
+                vec![common::advisory("A", &[], true)],
+                Some("2"),
+                100,
+            ),
+            100,
+        );
+        let mut corrected = common::advisory("A", &[], false);
+        if versions_only {
+            corrected["affected"][0]
+                .as_object_mut()
+                .unwrap()
+                .remove("ranges");
+            corrected["affected"][0]["versions"] = serde_json::json!(["1"]);
+        }
+        let observed = common::assessment(&config, "1", vec![corrected], Some("2"), 101);
+        let result = check(&store, &registration.monitor_id, &observed, 101);
+        assert!(contains(&result, MonitorEventType::CandidateChanged));
+        assert!(!contains(&result, MonitorEventType::CandidateUnavailable));
+        let prior = result.current.findings[0].candidate.as_ref().unwrap();
+        assert!(!prior.qualified_remediation);
+        assert!(prior.publication_available);
+        assert!(result.current.findings[0].active);
+        let repeated = check(&store, &registration.monitor_id, &observed, 102);
+        assert!(!contains(&repeated, MonitorEventType::CandidateChanged));
+    }
+}
+
+#[test]
+fn missing_configured_provider_cannot_publish_fix_even_when_input_qualified_for_smaller_provider_set()
+ {
+    let (_temp, store, registration, mut config) = setup();
+    config.domain.authoritative_providers.push("backup".into());
+    let changed = store
+        .configure(&registration.monitor_id, 1, config.clone())
+        .unwrap();
+    let result = check(
+        &store,
+        &changed.monitor_id,
+        &common::assessment(
+            &config,
+            "1",
+            vec![common::advisory("A", &[], true)],
+            Some("2"),
+            100,
+        ),
+        100,
+    );
+    assert!(result.current.findings[0].active);
+    assert!(result.current.findings[0].candidate.is_none());
+    assert!(!result.current.complete);
+}
+#[test]
+fn cached_first_severity_cannot_seed_authoritative_increase_history() {
+    let (_temp, store, registration, config) = setup();
+    check(
+        &store,
+        &registration.monitor_id,
+        &common::assessment(&config, "1", vec![], None, 100),
+        100,
+    );
+    let mut low = common::advisory("B", &[], true);
+    low["database_specific"]["severity"] = serde_json::json!("LOW");
+    let ticket = store.prepare_check(&registration.monitor_id).unwrap();
+    let offline = store
+        .commit_check(
+            &ticket,
+            &common::assessment(&config, "1", vec![low], None, 101),
+            CheckContext::offline(config.domain.clone(), 101),
+            None,
+        )
+        .unwrap();
+    assert!(offline.current.findings[0].last_known_severity.is_none());
+    let mut critical = common::advisory("B", &[], true);
+    critical["database_specific"]["severity"] = serde_json::json!("CRITICAL");
+    let fresh = check(
+        &store,
+        &registration.monitor_id,
+        &common::assessment(&config, "1", vec![critical], None, 102),
+        102,
+    );
+    assert!(contains(&fresh, MonitorEventType::NewAdvisory));
+    assert!(!contains(&fresh, MonitorEventType::SeverityIncreased));
+}
+
+#[test]
+fn stale_empty_provider_query_cannot_resolve_after_upgrade() {
+    let (_temp, store, registration, config) = setup();
+    check(
+        &store,
+        &registration.monitor_id,
+        &common::assessment(
+            &config,
+            "1",
+            vec![common::advisory("A", &[], true)],
+            Some("2"),
+            100,
+        ),
+        100,
+    );
+    let mut changed = common::assessment(&config, "2", vec![], None, 100000);
+    changed.providers[0].observed_at = 100;
+    let result = check(&store, &registration.monitor_id, &changed, 100000);
+    assert!(result.current.findings[0].active);
+    assert!(!contains(&result, MonitorEventType::FindingResolved));
+    assert!(!result.current.complete);
+}

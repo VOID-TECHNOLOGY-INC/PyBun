@@ -171,6 +171,13 @@ pub struct ReplayPage {
     pub current: MonitorSummary,
 }
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct CommittedEventReceipt {
+    pub newly_committed_events: Vec<MonitorEvent>,
+    pub newly_committed_count: u64,
+    pub newly_committed_truncated: bool,
+    pub newly_committed_gap: bool,
+}
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct CheckResult {
     pub commit_status: CommitStatus,
     pub newly_committed_events: Vec<MonitorEvent>,
