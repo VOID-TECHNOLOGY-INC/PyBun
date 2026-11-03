@@ -12,6 +12,20 @@ pub struct MonitorStore {
     pub(crate) observer: Arc<dyn CommitObserver>,
 }
 impl MonitorStore {
+    fn require_expected_registration(
+        actual: &Registration,
+        expected: Option<&Registration>,
+    ) -> MonitorResult<()> {
+        if let Some(expected) = expected
+            && (actual.monitor_id != expected.monitor_id
+                || actual.epoch_id != expected.epoch_id
+                || actual.config_revision != expected.config_revision
+                || actual.config != expected.config)
+        {
+            return Err(MonitorError::new("E_MONITOR_STALE_CHECK"));
+        }
+        Ok(())
+    }
     /// Clone the actually opened directory, even if its pathname was replaced.
     /// The caller must independently validate that identity against its grant.
     pub fn root_handle(&self) -> std::io::Result<std::fs::File> {
@@ -133,6 +147,13 @@ impl MonitorStore {
         }
     }
     pub fn remove(&self, id: &str) -> MonitorResult<bool> {
+        self.remove_inner(id, None)
+    }
+    /// Delete only the registration scope authorized by the caller's lookup.
+    pub fn remove_expected(&self, expected: &Registration) -> MonitorResult<bool> {
+        self.remove_inner(&expected.monitor_id, Some(expected))
+    }
+    fn remove_inner(&self, id: &str, expected: Option<&Registration>) -> MonitorResult<bool> {
         if !valid_id(id) {
             return Err(MonitorError::new("E_MONITOR_ID"));
         }
@@ -140,6 +161,13 @@ impl MonitorStore {
         let Some(mut registry) = self.registry(&_lock)? else {
             return Ok(false);
         };
+        if let Some(actual) = registry
+            .monitors
+            .iter()
+            .find(|entry| entry.monitor_id == id)
+        {
+            Self::require_expected_registration(actual, expected)?;
+        }
         let old = registry.monitors.len();
         registry.monitors.retain(|entry| entry.monitor_id != id);
         if old == registry.monitors.len() {
@@ -286,6 +314,23 @@ impl MonitorStore {
         .map_err(MonitorError::indeterminate)
     }
     pub fn prepare_check(&self, id: &str) -> MonitorResult<super::state::PreparedCheck> {
+        self.prepare_check_inner(id, None)
+    }
+
+    /// Pin the previously authorized registration before snapshot access or
+    /// repair. This operation's own same-scope recovery may advance its epoch.
+    pub fn prepare_check_expected(
+        &self,
+        expected: &Registration,
+    ) -> MonitorResult<super::state::PreparedCheck> {
+        self.prepare_check_inner(&expected.monitor_id, Some(expected))
+    }
+
+    fn prepare_check_inner(
+        &self,
+        id: &str,
+        expected: Option<&Registration>,
+    ) -> MonitorResult<super::state::PreparedCheck> {
         if !valid_id(id) {
             return Err(MonitorError::new("E_MONITOR_ID"));
         }
@@ -296,6 +341,7 @@ impl MonitorStore {
             .iter()
             .position(|entry| entry.monitor_id == id)
             .ok_or_else(|| MonitorError::new("E_MONITOR_NOT_FOUND"))?;
+        Self::require_expected_registration(&registry.monitors[index], expected)?;
         let previous = self.snapshot(id, &lock)?;
         if previous.is_none()
             && registry.monitors[index].baseline_state != BaselineState::NotStarted
@@ -367,6 +413,22 @@ impl MonitorStore {
         id: &str,
         after: Option<&super::state::EventReplayCursor>,
     ) -> MonitorResult<super::state::ReplayPage> {
+        self.events_inner(id, after, None)
+    }
+    /// Read replay/current data only under the previously authorized scope.
+    pub fn events_expected(
+        &self,
+        expected: &Registration,
+        after: Option<&super::state::EventReplayCursor>,
+    ) -> MonitorResult<super::state::ReplayPage> {
+        self.events_inner(&expected.monitor_id, after, Some(expected))
+    }
+    fn events_inner(
+        &self,
+        id: &str,
+        after: Option<&super::state::EventReplayCursor>,
+        expected: Option<&Registration>,
+    ) -> MonitorResult<super::state::ReplayPage> {
         if !valid_id(id) {
             return Err(MonitorError::new("E_MONITOR_ID"));
         }
@@ -377,6 +439,7 @@ impl MonitorStore {
             .iter()
             .find(|entry| entry.monitor_id == id)
             .ok_or_else(|| MonitorError::new("E_MONITOR_NOT_FOUND"))?;
+        Self::require_expected_registration(registration, expected)?;
         let snapshot = self.snapshot(id, &lock)?;
         let Some(snapshot) = snapshot.filter(|snapshot| snapshot.epoch_id == registration.epoch_id)
         else {

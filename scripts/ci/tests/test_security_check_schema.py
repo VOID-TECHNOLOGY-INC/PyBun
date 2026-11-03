@@ -188,7 +188,8 @@ class SecurityCheckSchemaTests(unittest.TestCase):
 
     def test_continuation_has_its_own_schema(self):
         self.assertIn("AssessmentContinuation", self.schema["$defs"])
-        self.assertNotIn("EventReplayCursor", self.schema["$defs"])
+        self.assertNotEqual(self.schema["$defs"]["AssessmentContinuation"],
+                            self.schema["$defs"].get("EventReplayCursor"))
         invalid = self.golden()
         invalid["detail"]["assessment"]["continuation"] = {"monitor_id": "fake"}
         self.assert_invalid(invalid)

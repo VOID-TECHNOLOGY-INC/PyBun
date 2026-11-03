@@ -171,7 +171,7 @@ fn render(
         }
     };
     // Schema print contains only bundled definitions, never user/authentication data.
-    if command == "schema print" || command == "audit check-updates" {
+    if command == "schema print" || command == "audit check-updates" || command == "audit monitor" {
         // The shared check sanitizes external evidence before assigning its
         // digests; a second blanket redaction would change transport parity.
         return Some(output);

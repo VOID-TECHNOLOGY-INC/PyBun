@@ -24,6 +24,11 @@ pub(super) fn build_tools_list() -> Vec<Tool> {
     let required_limits: Vec<_> = limit_properties.keys().cloned().collect();
     let mut tools = vec![
         Tool {
+            name: "pybun_security_monitor".into(),
+            description: "Explicit run-once security monitor registration, checks and durable local replay. Default denied; stored registrations confer no authority. No scheduler, external notification delivery, installation or resolution.".into(),
+            input_schema: monitor_schema(),
+        },
+        Tool {
             name: "pybun_security_check".into(),
             description: "Read-only security update assessment of an explicitly granted, frozen operator profile. Does not install, resolve, update, or register a monitor. Default denied; requires compatible metadata/HTTP capabilities. Offline mode makes no provider requests.".into(),
             input_schema: json!({"type":"object","additionalProperties":false,"properties":{
@@ -403,4 +408,88 @@ pub(super) fn build_tools_list() -> Vec<Tool> {
         });
     }
     tools
+}
+
+fn monitor_schema() -> serde_json::Value {
+    let mut variants = vec![];
+    for (action, required, fields) in [
+        ("list", vec![], vec!["profile"]),
+        (
+            "add",
+            vec!["name"],
+            vec!["name", "profile", "project", "target"],
+        ),
+        (
+            "check",
+            vec!["monitor_id"],
+            vec![
+                "monitor_id",
+                "after",
+                "mode",
+                "fail_on",
+                "max_cache_age_seconds",
+                "limits",
+            ],
+        ),
+        ("events", vec!["monitor_id"], vec!["monitor_id", "after"]),
+        (
+            "configure",
+            vec!["monitor_id", "expected_revision", "profile"],
+            vec!["monitor_id", "expected_revision", "profile"],
+        ),
+        ("remove", vec!["monitor_id"], vec!["monitor_id"]),
+    ] {
+        let mut properties = serde_json::Map::new();
+        properties.insert("action".into(), json!({"const":action}));
+        properties.insert(
+            "timeout_ms".into(),
+            json!({"type":["integer","null"],"minimum":1,"maximum":60000}),
+        );
+        for field in fields {
+            let schema = match field {
+                "mode" => {
+                    json!({"enum":["online","offline","online_with_cache_fallback"],"default":"online"})
+                }
+                "target" => json!({"enum":["installed","locked"],"default":"installed"}),
+                "fail_on" => json!({"enum":["low","medium","high","critical",null]}),
+                "expected_revision" => json!({"type":"integer","minimum":1}),
+                "max_cache_age_seconds" => json!({"type":["integer","null"],"minimum":0}),
+                "limits" => {
+                    let limits = serde_json::to_value(
+                        crate::security_assessment::ObservationLimits::default(),
+                    )
+                    .unwrap();
+                    let fields: serde_json::Map<String, serde_json::Value> = limits
+                        .as_object()
+                        .unwrap()
+                        .iter()
+                        .map(|(name, cap)| {
+                            (
+                                name.clone(),
+                                json!({"type":"integer","minimum":1,"maximum":cap}),
+                            )
+                        })
+                        .collect();
+                    let required: Vec<_> = fields.keys().cloned().collect();
+                    json!({"type":["object","null"],"additionalProperties":false,"properties":fields,"required":required})
+                }
+                "after" => {
+                    json!({"type":["string","null"],"maxLength":2048,"description":"Monitor event replay cursor, not assessment continuation."})
+                }
+                "name" => json!({"type":"string","minLength":1,"maxLength":200}),
+                "profile" if action == "configure" => {
+                    json!({"type":"string","description":"Must equal the monitor's stored configured profile binding."})
+                }
+                "profile" | "project" => {
+                    json!({"type":["string","null"],"description":"Approved configured profile or exact matching project; never an authority grant."})
+                }
+                _ => json!({"type":"string","minLength":1,"maxLength":200}),
+            };
+            properties.insert(field.into(), schema);
+        }
+        let mut required = required;
+        required.push("action");
+        variants.push(json!({"type":"object","additionalProperties":false,"properties":properties,"required":required}));
+    }
+    json!({"oneOf":variants})
 }

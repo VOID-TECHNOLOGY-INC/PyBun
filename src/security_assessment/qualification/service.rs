@@ -86,6 +86,26 @@ pub async fn assess_project(
         return Err(input_error());
     }
 
+    let inventory = observe_project_inventory(session, request).await?;
+    let mut assessment = assess_inventory(
+        session,
+        &inventory,
+        &request.source_policy,
+        providers,
+        sources,
+        options,
+    )
+    .await?;
+    attach_project_provenance(session, request, &mut assessment, provenance).await?;
+    Ok(assessment)
+}
+
+/// Run the fixed inventory helper once within the existing observation budget.
+pub(crate) async fn observe_project_inventory(
+    session: &HttpSession,
+    request: &InventoryRequest,
+) -> Result<InventoryObservation, ObservationDiagnostic> {
+    request.source_policy.validate()?;
     if request.limits != *session.limits() {
         return Err(input_error());
     }
@@ -118,21 +138,26 @@ pub async fn assess_project(
             .unwrap_or_else(input_error));
     }
     session.remaining()?;
-    let mut assessment = assess_inventory(
-        session,
-        &inventory,
-        &request.source_policy,
-        providers,
-        sources,
-        options,
-    )
-    .await?;
+    Ok(inventory)
+}
+
+/// Attach optional frozen graph evidence without repeating the inventory scan.
+pub(crate) async fn attach_project_provenance(
+    session: &HttpSession,
+    request: &InventoryRequest,
+    assessment: &mut SecurityAssessment,
+    provenance: Option<(&ProvenanceRequest, &[ApprovedRegistryBinding])>,
+) -> Result<(), ObservationDiagnostic> {
+    if provenance.is_some_and(|(request, _)| request.limits != *session.limits()) {
+        return Err(input_error());
+    }
+    let deadline = std::time::Instant::now() + session.remaining().unwrap_or_default();
     let mut graph_diagnostics = vec![];
     let graph = match (provenance, session.remaining()) {
         (Some((graph_request, bindings)), Ok(_)) => {
             let graph_request = graph_request.clone();
             let bindings = bindings.to_vec();
-            let inventory = inventory.clone();
+            let inventory = assessment.inventory.clone();
             let policy = request.source_policy.clone();
             let graph_task = tokio::task::spawn_blocking(move || {
                 if std::time::Instant::now() >= deadline {
@@ -191,7 +216,67 @@ pub async fn assess_project(
     }
     assessment.diagnostics.extend(graph_diagnostics);
     assessment.provenance = graph;
-    Ok(assessment)
+    Ok(())
+}
+
+/// Validate a saved cursor before metadata effects. False means its decoded
+/// domain changed; malformed cursors and same-domain position errors are not
+/// silently converted into a restart.
+pub(crate) fn continuation_matches_inventory(
+    inventory: &InventoryObservation,
+    policy: &SourcePolicy,
+    providers: &[ProviderEndpoint],
+    sources: &[RegistrySource],
+    options: &AssessmentOptions,
+) -> Result<bool, ObservationDiagnostic> {
+    let Some(cursor) = &options.continuation else {
+        return Ok(true);
+    };
+    cursor.matches_domain(&assessment_domain(
+        inventory,
+        policy,
+        providers,
+        sources,
+        options.include_prereleases,
+    )?)
+}
+
+fn assessment_domain(
+    inventory: &InventoryObservation,
+    policy: &SourcePolicy,
+    providers: &[ProviderEndpoint],
+    sources: &[RegistrySource],
+    include_prereleases: bool,
+) -> Result<AssessmentDomain, ObservationDiagnostic> {
+    let target = inventory.target.as_ref().ok_or_else(input_error)?;
+    let mut packages: Vec<_> = inventory.packages.iter().collect();
+    packages.sort_by_key(|package| &package.instance_id);
+    let mut ordered_providers: Vec<_> = providers.iter().collect();
+    ordered_providers.sort_by_key(|provider| provider.id());
+    let mut ordered_sources: Vec<_> = sources.iter().collect();
+    ordered_sources.sort_by_key(|source| source.source_id());
+    Ok(AssessmentDomain {
+        inventory_digest: semantic_digest(&(&inventory.inventory_id, &packages)),
+        scope_digest: semantic_digest(&(
+            &target.project_root,
+            &target.environment_root,
+            &target.scope,
+            &inventory.direct_constraints,
+        )),
+        provider_digest: semantic_digest(&(
+            ordered_providers
+                .iter()
+                .map(|provider| provider.config())
+                .collect::<Vec<_>>(),
+            ordered_sources
+                .iter()
+                .map(|source| (source.source_id(), source.provider().config()))
+                .collect::<Vec<_>>(),
+        )),
+        policy_digest: semantic_digest(&(policy, include_prereleases)),
+        tag_profile_digest: semantic_digest(&target.tag_profile),
+        evidence_revision: 1,
+    })
 }
 
 pub async fn assess_inventory(
@@ -201,6 +286,20 @@ pub async fn assess_inventory(
     providers: &[ProviderEndpoint],
     sources: &[RegistrySource],
     options: &AssessmentOptions,
+) -> Result<SecurityAssessment, ObservationDiagnostic> {
+    assess_inventory_with_history(session, inventory, policy, providers, sources, options, &[])
+        .await
+}
+
+/// Revalidate approved historical record IDs alongside current query results.
+pub async fn assess_inventory_with_history(
+    session: &HttpSession,
+    inventory: &InventoryObservation,
+    policy: &SourcePolicy,
+    providers: &[ProviderEndpoint],
+    sources: &[RegistrySource],
+    options: &AssessmentOptions,
+    history: &[crate::security_assessment::osv::KnownAdvisoryId],
 ) -> Result<SecurityAssessment, ObservationDiagnostic> {
     session.remaining()?;
     policy.validate()?;
@@ -229,28 +328,13 @@ pub async fn assess_inventory(
     {
         return Err(input_error());
     }
-    let domain = AssessmentDomain {
-        inventory_digest: semantic_digest(&(&inventory.inventory_id, &packages)),
-        scope_digest: semantic_digest(&(
-            &target.project_root,
-            &target.environment_root,
-            &target.scope,
-            &inventory.direct_constraints,
-        )),
-        provider_digest: semantic_digest(&(
-            ordered_providers
-                .iter()
-                .map(|provider| provider.config())
-                .collect::<Vec<_>>(),
-            ordered_sources
-                .iter()
-                .map(|source| (source.source_id(), source.provider().config()))
-                .collect::<Vec<_>>(),
-        )),
-        policy_digest: semantic_digest(&(policy, options.include_prereleases)),
-        tag_profile_digest: semantic_digest(&target.tag_profile),
-        evidence_revision: 1,
-    };
+    let domain = assessment_domain(
+        inventory,
+        policy,
+        providers,
+        sources,
+        options.include_prereleases,
+    )?;
     let metadata_order =
         AssessmentContinuation::metadata_order(&domain, &ids, options.continuation.as_ref())?;
     if let Some(cursor) = &options.continuation {
@@ -415,6 +499,7 @@ pub async fn assess_inventory(
         &queries,
         &admitted_order,
         policy,
+        history,
     )
     .await;
     let observed_work: Vec<_> = plan

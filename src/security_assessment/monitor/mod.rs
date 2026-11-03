@@ -6,6 +6,7 @@ mod model;
 mod projection;
 mod reducer;
 mod replay;
+pub mod service;
 mod state;
 mod store;
 pub use fs::{CommitObserver, CommitStage, CommitTarget};

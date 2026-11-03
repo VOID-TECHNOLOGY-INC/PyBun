@@ -19,6 +19,16 @@ pub struct AdvisoryRecord {
     pub coverage: CoverageUnit,
 }
 
+/// A previously observed locator remapped to the current inventory instance.
+/// It grants no authority: current source mapping and disclosure are checked
+/// before any detail request, including when the query omits this record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KnownAdvisoryId {
+    pub instance_id: String,
+    pub provider_id: String,
+    pub record_id: String,
+}
+
 type HydratedRecords =
     BTreeMap<String, (Result<(AdvisoryRecord, usize), ObservationDiagnostic>, bool)>;
 
@@ -132,7 +142,17 @@ pub async fn query_authoritative_advisories(
     packages: &[PackageInstance],
     policy: &SourcePolicy,
 ) -> Vec<AdvisoryObservation> {
-    query_stream(session, endpoints, packages, &[], policy).await
+    query_stream(session, endpoints, packages, &[], policy, &[]).await
+}
+
+pub async fn query_authoritative_advisories_with_history(
+    session: &HttpSession,
+    endpoints: &[&ProviderEndpoint],
+    packages: &[PackageInstance],
+    policy: &SourcePolicy,
+    history: &[KnownAdvisoryId],
+) -> Vec<AdvisoryObservation> {
+    query_stream(session, endpoints, packages, &[], policy, history).await
 }
 
 /// Current-version positive witnesses get an initial detail before candidate
@@ -143,8 +163,9 @@ pub(crate) async fn query_assessment_advisories(
     packages: &[PackageInstance],
     current_ids: &[String],
     policy: &SourcePolicy,
+    history: &[KnownAdvisoryId],
 ) -> Vec<AdvisoryObservation> {
-    query_stream(session, endpoints, packages, current_ids, policy).await
+    query_stream(session, endpoints, packages, current_ids, policy, history).await
 }
 async fn query_stream(
     session: &HttpSession,
@@ -152,11 +173,49 @@ async fn query_stream(
     packages: &[PackageInstance],
     current_ids: &[String],
     policy: &SourcePolicy,
+    history: &[KnownAdvisoryId],
 ) -> Vec<AdvisoryObservation> {
     let mut prepared: Vec<_> = endpoints
         .iter()
         .map(|endpoint| prepare_advisories(session, endpoint, packages, policy))
         .collect();
+    let indices: BTreeMap<_, _> = packages
+        .iter()
+        .enumerate()
+        .map(|(index, package)| (package.instance_id.as_str(), index))
+        .collect();
+    for (prepared, endpoint) in prepared.iter_mut().zip(endpoints) {
+        for prior in history {
+            if session.remaining().is_err() {
+                break;
+            }
+            if prior.provider_id != endpoint.id() {
+                continue;
+            }
+            let Some(&index) = indices.get(prior.instance_id.as_str()) else {
+                continue;
+            };
+            if !prepared.authorized.contains_key(&index) {
+                continue;
+            }
+            if endpoint.detail_url(&prior.record_id).is_err() {
+                record_failure(&mut prepared.result, index, schema_error());
+                continue;
+            }
+            let ids = prepared.known_ids.entry(index).or_default();
+            if ids.contains(&prior.record_id) {
+                continue;
+            }
+            if let Err(error) = session
+                .remaining()
+                .and_then(|_| session.reserve_evidence(prior.record_id.len().saturating_add(128)))
+            {
+                record_failure(&mut prepared.result, index, error);
+                break;
+            }
+            ids.insert(prior.record_id.clone());
+        }
+    }
     let count = prepared
         .iter()
         .map(|prepared| prepared.result.instances.len())
@@ -193,6 +252,7 @@ struct PreparedAdvisories {
     loaded: BTreeSet<usize>,
     primed: BTreeMap<usize, String>,
     ids: BTreeMap<usize, BTreeSet<String>>,
+    known_ids: BTreeMap<usize, BTreeSet<String>>,
     next: BTreeMap<usize, String>,
     tokens: BTreeMap<usize, BTreeSet<String>>,
     records: BTreeMap<(String, String), HydratedRecords>,
@@ -207,6 +267,7 @@ impl PreparedAdvisories {
             loaded: BTreeSet::new(),
             primed: BTreeMap::new(),
             ids: BTreeMap::new(),
+            known_ids: BTreeMap::new(),
             next: BTreeMap::new(),
             tokens: BTreeMap::new(),
             records: BTreeMap::new(),
@@ -372,6 +433,7 @@ async fn prime_current(
         .ids
         .get(&index)
         .and_then(|ids| ids.first())
+        .or_else(|| prepared.known_ids.get(&index).and_then(|ids| ids.first()))
         .cloned()
     else {
         return;
@@ -419,6 +481,7 @@ async fn observe_index(
         .await;
     }
     let mut remaining = prepared.ids.remove(&index).unwrap_or_default();
+    remaining.extend(prepared.known_ids.remove(&index).unwrap_or_default());
     if let Some(id) = prepared.primed.remove(&index) {
         remaining.remove(&id);
     }

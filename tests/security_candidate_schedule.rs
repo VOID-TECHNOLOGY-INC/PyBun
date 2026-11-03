@@ -26,6 +26,31 @@ fn input(name: &str, count: usize) -> DiscoveryInput {
 }
 
 #[test]
+fn domain_change_is_distinct_from_a_malformed_saved_continuation() {
+    let original = domain();
+    let plan = plan_candidates(
+        &original,
+        &[input("package", 30)],
+        &[],
+        &ObservationLimits::default(),
+        None,
+    )
+    .unwrap();
+    assert!(plan.continuation.matches_domain(&original).unwrap());
+    let changed = AssessmentDomain {
+        inventory_digest: "ordinary-upgrade".into(),
+        ..original
+    };
+    assert!(!plan.continuation.matches_domain(&changed).unwrap());
+    let corrupt: AssessmentContinuation =
+        serde_json::from_value(serde_json::json!("not-a-cursor")).unwrap();
+    assert_eq!(
+        corrupt.matches_domain(&changed).unwrap_err().code,
+        "E_SECURITY_CONTINUATION"
+    );
+}
+
+#[test]
 fn twenty_first_version_is_reached_and_cursor_does_not_prove_a_minimum() {
     let limits = ObservationLimits::default();
     let inputs = vec![input("package", 30)];

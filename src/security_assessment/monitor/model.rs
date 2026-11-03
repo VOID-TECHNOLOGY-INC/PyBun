@@ -244,7 +244,6 @@ impl MonitorConfig {
             || self.name.trim().is_empty()
             || self.name.len() > 200
             || self.name.chars().any(char::is_control)
-            || self.freshness_ttl_seconds == 0
         {
             return Err(MonitorError::new("E_MONITOR_CONFIG"));
         }
