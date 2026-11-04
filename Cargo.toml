@@ -28,7 +28,7 @@ hex = "0.4"
 base64 = "0.23"
 ed25519-dalek = { version = "2.1", features = ["std"] }
 fs2 = "0.4"
-cap-std = "3.4"
+cap-std = "4.0"
 pep440_rs = "0.7.3"
 pep508_rs = "0.9.2"
 httpdate = "1"
